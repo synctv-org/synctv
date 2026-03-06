@@ -13,7 +13,10 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{room::AutoPlaySettings, Media, MediaId, PlayMode, Playlist, User, UserId, UserRole, UserStatus},
+    models::{
+        room::AutoPlaySettings, Media, MediaId, PlayMode, Playlist, User, UserId, UserRole,
+        UserStatus,
+    },
     repository::{MediaRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},

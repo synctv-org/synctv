@@ -272,7 +272,7 @@ impl ClientApiImpl {
         crate::http::validation::validate_id(&req.user_id, "user_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
 
-        if req.reason.len() > Self::BAN_REASON_MAX {
+        if req.reason.chars().count() > Self::BAN_REASON_MAX {
             return Err(ApiError::InvalidInput(format!(
                 "Ban reason too long (maximum {} characters)",
                 Self::BAN_REASON_MAX

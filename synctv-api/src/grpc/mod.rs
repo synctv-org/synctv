@@ -667,12 +667,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 providers.emby.clone(),
                 user_provider_credential_repository.clone(),
             )),
-            provider_stores: Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new({
-                match &redis_conn {
-                    Some(shared) => Some(shared.read().await.clone()),
-                    None => None,
-                }
-            })),
+            provider_stores: Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
+                redis_conn.clone(),
+            )),
             proxy_provider_registry: Arc::new(providers.build_proxy_registry()),
             proxy_services: std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
                 room_service: room_service.clone(),

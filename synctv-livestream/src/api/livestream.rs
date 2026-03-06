@@ -583,5 +583,4 @@ impl HlsStreamingApi {
             Err(anyhow::anyhow!("Segment manager not configured"))
         }
     }
-
 }

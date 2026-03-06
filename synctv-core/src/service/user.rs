@@ -387,12 +387,7 @@ impl UserService {
         self.validate_password(&password)?;
 
         let password_hash = hash_password(&password).await?;
-        let mut user = User::new(
-            username.clone(),
-            email,
-            password_hash,
-            SignupMethod::Email,
-        );
+        let mut user = User::new(username.clone(), email, password_hash, SignupMethod::Email);
         if let Some(role) = role {
             user.role = role;
         }

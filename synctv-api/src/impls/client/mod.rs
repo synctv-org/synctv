@@ -149,9 +149,9 @@ impl ClientApiImpl {
         providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
         settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     ) -> Self {
-        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
-            Arc::new(jwt_service.clone()),
-        ));
+        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
+            jwt_service.clone(),
+        )));
         Self {
             user_service,
             room_service,
@@ -177,9 +177,9 @@ impl ClientApiImpl {
     /// Create a new `ClientApiImpl` from a config struct.
     #[must_use]
     pub fn from_config(config: ClientApiConfig) -> Self {
-        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
-            Arc::new(config.jwt_service.clone()),
-        ));
+        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
+            config.jwt_service.clone(),
+        )));
         Self {
             user_service: config.user_service,
             room_service: config.room_service,

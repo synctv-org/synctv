@@ -111,14 +111,22 @@ pub trait TicketStore: Send + Sync {
 // ============================================================================
 
 /// Redis-backed ticket store for multi-replica deployments.
+///
+/// Uses a shared `Arc<RwLock<ConnectionManager>>` so that in Sentinel mode the
+/// background health check can hot-swap the inner connection on failover and
+/// this store automatically picks up the new master.
 pub struct RedisTicketStore {
-    conn: redis::aio::ConnectionManager,
+    shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
 }
 
 impl RedisTicketStore {
     #[must_use]
-    pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
-        Self { conn }
+    pub fn new(shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
+        Self { shared_conn }
+    }
+
+    async fn conn(&self) -> redis::aio::ConnectionManager {
+        self.shared_conn.read().await.clone()
     }
 }
 
@@ -134,7 +142,7 @@ impl TicketStore for RedisTicketStore {
         let json = serde_json::to_string(data)
             .map_err(|e| Error::Internal(format!("Failed to serialize ticket data: {e}")))?;
 
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn().await;
         let _: () = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
             conn.set_ex(&key, json, ttl_secs),
@@ -148,7 +156,7 @@ impl TicketStore for RedisTicketStore {
 
     async fn consume(&self, ticket: &str) -> Result<Option<WsTicketData>> {
         let key = format!("{WS_TICKET_PREFIX}{ticket}");
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn().await;
 
         // Get and delete atomically using Lua script
         let lua_script = redis::Script::new(
@@ -188,49 +196,75 @@ impl TicketStore for RedisTicketStore {
 // In-memory implementation
 // ============================================================================
 
-/// In-memory ticket store for single-replica deployments using moka cache with TTL.
+/// Wrapper that pairs ticket data with its per-entry TTL for moka's `Expiry` trait.
+#[derive(Clone)]
+struct TtlTicketData {
+    data: WsTicketData,
+    ttl: std::time::Duration,
+}
+
+/// Moka `Expiry` implementation that uses the per-entry TTL.
+struct TicketEntryExpiry;
+
+impl moka::Expiry<String, TtlTicketData> for TicketEntryExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &TtlTicketData,
+        _current_time: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        Some(value.ttl)
+    }
+}
+
+/// In-memory ticket store for single-replica deployments using moka cache with per-entry TTL.
 pub struct InMemoryTicketStore {
-    cache: moka::future::Cache<String, WsTicketData>,
-    ttl_secs: u64,
+    cache: moka::future::Cache<String, TtlTicketData>,
 }
 
 impl InMemoryTicketStore {
     #[must_use]
-    pub fn new(ttl_secs: u64) -> Self {
+    pub fn new(_ttl_secs: u64) -> Self {
         Self {
             cache: moka::future::Cache::builder()
-                .time_to_live(std::time::Duration::from_secs(ttl_secs))
+                .expire_after(TicketEntryExpiry)
                 .max_capacity(10_000)
                 .build(),
-            ttl_secs,
         }
     }
 }
 
 #[async_trait]
 impl TicketStore for InMemoryTicketStore {
-    async fn store(&self, ticket: &str, data: &WsTicketData, _ttl_secs: u64) -> Result<()> {
-        self.cache.insert(ticket.to_string(), data.clone()).await;
+    async fn store(&self, ticket: &str, data: &WsTicketData, ttl_secs: u64) -> Result<()> {
+        self.cache
+            .insert(
+                ticket.to_string(),
+                TtlTicketData {
+                    data: data.clone(),
+                    ttl: std::time::Duration::from_secs(ttl_secs),
+                },
+            )
+            .await;
         Ok(())
     }
 
     async fn consume(&self, ticket: &str) -> Result<Option<WsTicketData>> {
-        // Use remove() for atomic get-and-delete to prevent TOCTOU race conditions
-        // where two concurrent requests could both get() the same ticket.
-        // Since remove() may return entries that moka hasn't lazily evicted yet,
-        // we manually check TTL expiry on the returned value.
-        let data = match self.cache.remove(ticket).await {
-            Some(d) => d,
+        // Use remove() for atomic get-and-delete to prevent TOCTOU race conditions.
+        // Since moka uses lazy eviction, remove() may return entries that haven't
+        // been evicted yet, so we manually check TTL expiry on the returned value.
+        let entry = match self.cache.remove(ticket).await {
+            Some(e) => e,
             None => return Ok(None),
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        if now.saturating_sub(data.created_at) > self.ttl_secs {
-            return Ok(None); // Expired
+        if now.saturating_sub(entry.data.created_at) > entry.ttl.as_secs() {
+            return Ok(None);
         }
-        Ok(Some(data))
+        Ok(Some(entry.data))
     }
 
     fn backend_name(&self) -> &'static str {
@@ -271,12 +305,17 @@ impl WsTicketService {
     }
 
     /// Create a new WebSocket ticket service with Redis (multi-replica mode).
+    ///
+    /// Accepts a shared `Arc<RwLock<ConnectionManager>>` that follows Sentinel failover.
     #[must_use]
     pub fn with_redis(
-        redis_conn: redis::aio::ConnectionManager,
+        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         ticket_ttl_secs: Option<u64>,
     ) -> Self {
-        Self::from_store(Arc::new(RedisTicketStore::new(redis_conn)), ticket_ttl_secs)
+        Self::from_store(
+            Arc::new(RedisTicketStore::new(shared_conn)),
+            ticket_ttl_secs,
+        )
     }
 
     /// Create a new WebSocket ticket service with memory storage (single-replica mode).
@@ -290,12 +329,12 @@ impl WsTicketService {
     ///
     /// In cluster mode, Redis is **required**; passing `None` returns an error.
     pub fn new(
-        redis_conn: Option<redis::aio::ConnectionManager>,
+        redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
         ticket_ttl_secs: Option<u64>,
         cluster_mode: bool,
     ) -> Result<Self> {
-        if let Some(conn) = redis_conn {
-            Ok(Self::with_redis(conn, ticket_ttl_secs))
+        if let Some(shared_conn) = redis_conn {
+            Ok(Self::with_redis(shared_conn, ticket_ttl_secs))
         } else {
             if cluster_mode {
                 return Err(Error::Internal(

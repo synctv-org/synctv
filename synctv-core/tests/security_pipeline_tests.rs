@@ -190,7 +190,6 @@ async fn test_deleted_user_rejected() {
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
 
-
 // ============================================================================
 // SecurityPipeline tests with UserCache (fast path)
 // ============================================================================

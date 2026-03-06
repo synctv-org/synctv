@@ -21,11 +21,7 @@ CREATE INDEX idx_rooms_status ON rooms(status) WHERE deleted_at IS NULL;
 CREATE INDEX idx_rooms_is_banned ON rooms(is_banned) WHERE is_banned = TRUE;  -- Quick lookup of banned rooms
 CREATE INDEX idx_rooms_created_at ON rooms(created_at);
 CREATE INDEX idx_rooms_deleted_at ON rooms(deleted_at) WHERE deleted_at IS NOT NULL;
-CREATE INDEX idx_rooms_name ON rooms USING gin(to_tsvector('english', name));
-CREATE INDEX idx_rooms_description ON rooms USING gin(to_tsvector('english', description));
-
--- pg_trgm GIN indexes for ILIKE pattern matching (the tsvector indexes above
--- only support full-text search @@, not ILIKE/LIKE queries used in room search)
+-- pg_trgm GIN indexes for ILIKE pattern matching
 -- NOTE: pg_trgm extension is created in 20240101000001_create_users_table.sql
 CREATE INDEX idx_rooms_name_trgm ON rooms USING gin (name gin_trgm_ops) WHERE deleted_at IS NULL;
 CREATE INDEX idx_rooms_description_trgm ON rooms USING gin (description gin_trgm_ops) WHERE deleted_at IS NULL;

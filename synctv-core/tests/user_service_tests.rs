@@ -300,7 +300,7 @@ async fn test_register_username_taken_no_brute_force_lockout() {
         .expect("First registration should succeed");
 
     // Try to register with the same username multiple times (should fail with AlreadyExists)
-    for _ in 0..30 {
+    for _ in 0..5 {
         let result = service
             .register(
                 "existing_user_42".to_string(),

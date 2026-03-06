@@ -22,13 +22,9 @@ pub(super) fn sanitize_url_derived_title(raw: &str) -> String {
     // Sanitize control characters and trim whitespace
     let sanitized = crate::http::validation::sanitize_string(&decoded);
 
-    // Truncate to max allowed length (byte-safe: find last char boundary)
-    if sanitized.len() > MEDIA_TITLE_MAX {
-        let mut end = MEDIA_TITLE_MAX;
-        while end > 0 && !sanitized.is_char_boundary(end) {
-            end -= 1;
-        }
-        sanitized[..end].to_string()
+    // Truncate to max allowed character count
+    if sanitized.chars().count() > MEDIA_TITLE_MAX {
+        sanitized.chars().take(MEDIA_TITLE_MAX).collect()
     } else {
         sanitized.into_owned()
     }

@@ -702,18 +702,18 @@ fn test_sanitize_url_derived_title_truncates_long_names() {
 fn test_sanitize_url_derived_title_truncates_at_char_boundary() {
     use crate::http::validation::limits::MEDIA_TITLE_MAX;
 
-    // Create a string with multi-byte UTF-8 characters that would cause a
-    // non-char-boundary truncation if done naively.
-    // Each CJK character is 3 bytes. Fill to just over the limit.
-    let num_chars = (MEDIA_TITLE_MAX / 3) + 10; // will exceed MEDIA_TITLE_MAX in bytes
+    // Create a string with multi-byte UTF-8 characters that exceeds the limit.
+    // Each CJK character is 3 bytes. Use more than MEDIA_TITLE_MAX characters.
+    let num_chars = MEDIA_TITLE_MAX + 10;
     let long_cjk: String = std::iter::repeat_n('\u{4e00}', num_chars).collect();
-    assert!(long_cjk.len() > MEDIA_TITLE_MAX);
+    assert!(long_cjk.chars().count() > MEDIA_TITLE_MAX);
 
     let title = super::media::sanitize_url_derived_title(&long_cjk);
     assert!(
-        title.len() <= MEDIA_TITLE_MAX,
-        "Truncated title should not exceed MEDIA_TITLE_MAX"
+        title.chars().count() <= MEDIA_TITLE_MAX,
+        "Truncated title should not exceed MEDIA_TITLE_MAX characters"
     );
+    assert_eq!(title.chars().count(), MEDIA_TITLE_MAX);
     // Verify it's valid UTF-8 (would panic on invalid boundary)
     assert!(title.is_char_boundary(title.len()));
 }

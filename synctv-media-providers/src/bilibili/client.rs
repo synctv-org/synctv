@@ -867,7 +867,9 @@ impl BilibiliClient {
             "bilivideo.cn",
             "hdslb.com",
         ];
-        BILIBILI_DOMAINS.iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
+        BILIBILI_DOMAINS
+            .iter()
+            .any(|d| host == *d || host.ends_with(&format!(".{d}")))
     }
 
     /// Validate that a URL points to a known Bilibili domain.
@@ -875,12 +877,11 @@ impl BilibiliClient {
     /// Returns `Ok(())` if the URL's host is a known Bilibili domain,
     /// or an error otherwise.
     pub fn validate_bilibili_url(url: &str) -> Result<(), BilibiliError> {
-        let parsed = url::Url::parse(url).map_err(|e| {
-            BilibiliError::Parse(format!("Invalid URL: {e}"))
-        })?;
-        let host = parsed.host_str().ok_or_else(|| {
-            BilibiliError::Parse("URL has no host".to_string())
-        })?;
+        let parsed =
+            url::Url::parse(url).map_err(|e| BilibiliError::Parse(format!("Invalid URL: {e}")))?;
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| BilibiliError::Parse("URL has no host".to_string()))?;
         if !Self::is_bilibili_domain(host) {
             return Err(BilibiliError::Parse(format!(
                 "URL host is not a known Bilibili domain: {host}"

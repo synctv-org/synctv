@@ -239,29 +239,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_udpio_pair2() {
-        println!("test_new_udpio_pair2 begin...");
-        let mut socket: Vec<UdpIO> = Vec::new();
-
-        for i in 1..=65535 {
-            println!("cur port:== {i}");
-            //if i % 2 == 1 {
-            println!("cur port: {i}");
-            if let Some(udpio) = UdpIO::new_with_local_port(i).await {
-                socket.push(udpio);
-            } else {
-                println!("new local port fail: {i}");
+        // Bind a handful of known high ports to verify port allocation,
+        // then confirm new_udpio_pair still works with ports occupied.
+        let mut sockets: Vec<UdpIO> = Vec::new();
+        for port in [10000, 10001, 10002, 10003, 10004] {
+            if let Some(udpio) = UdpIO::new_with_local_port(port).await {
+                sockets.push(udpio);
             }
-            //}
         }
 
-        println!("socket size: {}", socket.len());
-
-        if let Some((udpio1, udpid2)) = new_udpio_pair().await {
-            println!(
-                "{:?} == {:?}",
-                udpio1.get_local_port(),
-                udpid2.get_local_port()
-            );
+        if let Some((udpio1, udpio2)) = new_udpio_pair().await {
+            let port1 = udpio1.get_local_port();
+            let port2 = udpio2.get_local_port();
+            assert!(port1.is_some(), "First UDP socket should have valid port");
+            assert!(port2.is_some(), "Second UDP socket should have valid port");
+            assert_ne!(port1, port2, "UDP sockets should have different ports");
         }
     }
 

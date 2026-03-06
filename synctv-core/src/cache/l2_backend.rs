@@ -471,87 +471,86 @@ mod tests {
         }
     }
 
+    /// Short timeout for tests — just needs to prove the timeout mechanism works.
+    const TEST_TIMEOUT: Duration = Duration::from_millis(200);
+
     /// Test that get() times out when operation takes too long
     #[tokio::test]
     async fn test_get_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(10)); // 10s delay
+        let backend = SlowMockBackend::new(Duration::from_secs(2));
         let start = std::time::Instant::now();
 
-        // Wrap the get call with timeout - should timeout in 5s (REDIS_OPERATION_TIMEOUT)
-        let result = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, backend.get("test_key")).await;
+        let result = tokio::time::timeout(TEST_TIMEOUT, backend.get("test_key")).await;
 
         let elapsed = start.elapsed();
 
-        // Should have timed out
         assert!(result.is_err(), "Expected timeout error");
-        // Should have timed out around REDIS_OPERATION_TIMEOUT (5s), not waited full 10s
         assert!(
-            elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {elapsed:?}"
+            elapsed < Duration::from_millis(500),
+            "Timeout should occur around 200ms, took {elapsed:?}"
         );
     }
 
     /// Test that set() times out when operation takes too long
     #[tokio::test]
     async fn test_set_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(10));
+        let backend = SlowMockBackend::new(Duration::from_secs(2));
         let start = std::time::Instant::now();
 
-        let result =
-            tokio::time::timeout(REDIS_OPERATION_TIMEOUT, backend.set("key", "{}", 60)).await;
+        let result = tokio::time::timeout(TEST_TIMEOUT, backend.set("key", "{}", 60)).await;
 
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "Expected timeout error");
         assert!(
-            elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {elapsed:?}"
+            elapsed < Duration::from_millis(500),
+            "Timeout should occur around 200ms, took {elapsed:?}"
         );
     }
 
     /// Test that delete() times out when operation takes too long
     #[tokio::test]
     async fn test_delete_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(10));
+        let backend = SlowMockBackend::new(Duration::from_secs(2));
         let start = std::time::Instant::now();
 
-        let result = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, backend.delete("key")).await;
+        let result = tokio::time::timeout(TEST_TIMEOUT, backend.delete("key")).await;
 
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "Expected timeout error");
         assert!(
-            elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {elapsed:?}"
+            elapsed < Duration::from_millis(500),
+            "Timeout should occur around 200ms, took {elapsed:?}"
         );
     }
 
     /// Test that get_batch() times out when operation takes too long
     #[tokio::test]
     async fn test_get_batch_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(10));
+        let backend = SlowMockBackend::new(Duration::from_secs(2));
         let keys: Vec<String> = vec!["key1".to_string(), "key2".to_string()];
         let start = std::time::Instant::now();
 
-        let result = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, backend.get_batch(&keys)).await;
+        let result = tokio::time::timeout(TEST_TIMEOUT, backend.get_batch(&keys)).await;
 
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "Expected timeout error");
         assert!(
-            elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {elapsed:?}"
+            elapsed < Duration::from_millis(500),
+            "Timeout should occur around 200ms, took {elapsed:?}"
         );
     }
 
     /// Test that set_if_newer() times out when operation takes too long
     #[tokio::test]
     async fn test_set_if_newer_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(10));
+        let backend = SlowMockBackend::new(Duration::from_secs(2));
         let start = std::time::Instant::now();
 
         let result = tokio::time::timeout(
-            REDIS_OPERATION_TIMEOUT,
+            TEST_TIMEOUT,
             backend.set_if_newer("key", "{}", 60, "2024-01-01T00:00:00Z"),
         )
         .await;
@@ -560,26 +559,25 @@ mod tests {
 
         assert!(result.is_err(), "Expected timeout error");
         assert!(
-            elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {elapsed:?}"
+            elapsed < Duration::from_millis(500),
+            "Timeout should occur around 200ms, took {elapsed:?}"
         );
     }
 
     /// Test that delete_by_prefix() times out when operation takes too long
     #[tokio::test]
     async fn test_delete_by_prefix_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(10));
+        let backend = SlowMockBackend::new(Duration::from_secs(2));
         let start = std::time::Instant::now();
 
-        let result =
-            tokio::time::timeout(REDIS_OPERATION_TIMEOUT, backend.delete_by_prefix("prefix")).await;
+        let result = tokio::time::timeout(TEST_TIMEOUT, backend.delete_by_prefix("prefix")).await;
 
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "Expected timeout error");
         assert!(
-            elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {elapsed:?}"
+            elapsed < Duration::from_millis(500),
+            "Timeout should occur around 200ms, took {elapsed:?}"
         );
     }
 
@@ -589,17 +587,15 @@ mod tests {
         let backend = SlowMockBackend::new(Duration::from_millis(10));
 
         // All these should complete quickly
-        let get_result = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, backend.get("key")).await;
+        let get_result = tokio::time::timeout(TEST_TIMEOUT, backend.get("key")).await;
         assert!(get_result.is_ok());
         assert!(get_result.unwrap().is_ok());
 
-        let set_result =
-            tokio::time::timeout(REDIS_OPERATION_TIMEOUT, backend.set("key", "{}", 60)).await;
+        let set_result = tokio::time::timeout(TEST_TIMEOUT, backend.set("key", "{}", 60)).await;
         assert!(set_result.is_ok());
         assert!(set_result.unwrap().is_ok());
 
-        let delete_result =
-            tokio::time::timeout(REDIS_OPERATION_TIMEOUT, backend.delete("key")).await;
+        let delete_result = tokio::time::timeout(TEST_TIMEOUT, backend.delete("key")).await;
         assert!(delete_result.is_ok());
         assert!(delete_result.unwrap().is_ok());
     }

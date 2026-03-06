@@ -667,11 +667,7 @@ async fn test_token_includes_password_version() {
         .verify_access_token(&token_v0)
         .expect("Failed to verify token v0");
 
-    assert_eq!(
-        claims_v0.pv,
-        0,
-        "Token should include password version"
-    );
+    assert_eq!(claims_v0.pv, 0, "Token should include password version");
 
     // Token with password version 5
     let token_v5 = jwt_service
@@ -683,8 +679,7 @@ async fn test_token_includes_password_version() {
         .expect("Failed to verify token v5");
 
     assert_eq!(
-        claims_v5.pv,
-        5,
+        claims_v5.pv, 5,
         "Token should include updated password version"
     );
 }

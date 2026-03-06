@@ -370,8 +370,13 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
     let client_result = redis::Client::open("redis://127.0.0.1:1");
 
     if let Ok(client) = client_result {
-        // Try to create connection manager - this might fail for unreachable Redis
-        if let Ok(conn) = redis::aio::ConnectionManager::new(client).await {
+        // Try to create connection manager with a short timeout — port 1 is unreachable
+        let conn_result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            redis::aio::ConnectionManager::new(client),
+        )
+        .await;
+        if let Ok(Ok(conn)) = conn_result {
             let limiter = RateLimiter::new(
                 Some(Arc::new(RwLock::new(conn))),
                 "redis_strict:".to_string(),

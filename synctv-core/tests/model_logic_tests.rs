@@ -195,11 +195,7 @@ fn test_user_can_create_room_role_and_status_interaction() {
 
 #[test]
 fn test_user_can_unbind_provider_email_signup() {
-    let user = make_user(
-        UserRole::User,
-        UserStatus::Active,
-        SignupMethod::Email,
-    );
+    let user = make_user(UserRole::User, UserStatus::Active, SignupMethod::Email);
     // Email users can always unbind OAuth2 providers (they still have email)
     assert!(user.can_unbind_provider(0, true));
     assert!(user.can_unbind_provider(1, true));
@@ -208,11 +204,7 @@ fn test_user_can_unbind_provider_email_signup() {
 
 #[test]
 fn test_user_can_unbind_provider_oauth2_signup() {
-    let user = make_user(
-        UserRole::User,
-        UserStatus::Active,
-        SignupMethod::OAuth2,
-    );
+    let user = make_user(UserRole::User, UserStatus::Active, SignupMethod::OAuth2);
     // OAuth2 user needs at least one OAuth2 or has email
     assert!(!user.can_unbind_provider(1, false)); // Only 1 OAuth2, no email -> cannot unbind
     assert!(user.can_unbind_provider(2, false)); // 2 OAuth2 -> can unbind one

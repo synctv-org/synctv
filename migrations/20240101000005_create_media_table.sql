@@ -50,7 +50,6 @@ CREATE UNIQUE INDEX unique_media_name ON media (playlist_id, name);
 CREATE UNIQUE INDEX unique_media_position ON media (playlist_id, position);
 
 -- Create indexes
-CREATE INDEX idx_media_playlist ON media(playlist_id, position);
 CREATE INDEX idx_media_room ON media(room_id);
 CREATE INDEX idx_media_creator ON media(creator_id);
 CREATE INDEX idx_media_added_at ON media(added_at DESC);

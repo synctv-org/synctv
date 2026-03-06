@@ -983,9 +983,7 @@ mod websocket_auth_priority {
     #[test]
     fn test_missing_all_credentials_produces_unauthorized() {
         let headers = axum::http::HeaderMap::new();
-        let query = WsQuery {
-            ticket: None,
-        };
+        let query = WsQuery { ticket: None };
 
         assert!(headers.get("Authorization").is_none());
         assert!(query.ticket.is_none());

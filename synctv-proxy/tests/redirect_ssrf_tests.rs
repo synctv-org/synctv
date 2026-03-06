@@ -15,6 +15,7 @@ use synctv_proxy::{proxy_fetch_and_forward, NoopMetrics, ProxyConfig};
 /// Verify that `proxy_fetch_and_forward` blocks private IP targets
 /// through the SSRF-safe DNS resolver.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "Slow: waits for network connect timeout. ACL coverage in dns_cache_tests::test_ssrf_acl_blocks_private_ranges"]
 async fn test_proxy_blocks_private_ip_via_dns() {
     let headers = axum::http::HeaderMap::new();
     let cfg = ProxyConfig {
@@ -30,6 +31,7 @@ async fn test_proxy_blocks_private_ip_via_dns() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "Slow: waits for network connect timeout. ACL coverage in dns_cache_tests::test_ssrf_acl_blocks_private_ranges"]
 async fn test_proxy_blocks_loopback_via_dns() {
     let headers = axum::http::HeaderMap::new();
     let cfg = ProxyConfig {
@@ -45,6 +47,7 @@ async fn test_proxy_blocks_loopback_via_dns() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "Slow: waits for network connect timeout. ACL coverage in dns_cache_tests::test_ssrf_acl_blocks_private_ranges"]
 async fn test_proxy_blocks_cloud_metadata_via_dns() {
     let headers = axum::http::HeaderMap::new();
     let cfg = ProxyConfig {

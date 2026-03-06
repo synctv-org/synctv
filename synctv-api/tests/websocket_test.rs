@@ -495,7 +495,7 @@ mod ws_auth_scenarios {
     fn test_missing_all_auth_methods() {
         // Simulates what extract_user_id returns when no auth is provided
         let err = AppError::unauthorized(
-            "Missing authentication: provide token via Authorization header, ?ticket=, or ?token=",
+            "Missing authentication: provide token via Authorization header or ?ticket=",
         );
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert!(err.message.contains("Missing authentication"));
@@ -1015,15 +1015,28 @@ mod websocket_e2e {
         room.id.as_str().to_string()
     }
 
-    /// Connect to the WebSocket endpoint using token query parameter.
+    /// Connect to the WebSocket endpoint using Authorization header.
     async fn ws_connect(
         addr: &str,
         room_id: &str,
         token: &str,
     ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
     {
-        let url = format!("ws://{addr}/ws/rooms/{room_id}?token={token}");
-        let (ws_stream, response) = tokio_tungstenite::connect_async(&url)
+        let url = format!("ws://{addr}/ws/rooms/{room_id}");
+        let request = tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header(
+                "Sec-WebSocket-Key",
+                tungstenite::handshake::client::generate_key(),
+            )
+            .header("Host", addr)
+            .body(())
+            .expect("build WS request");
+        let (ws_stream, response) = tokio_tungstenite::connect_async(request)
             .await
             .expect("WebSocket connect failed");
         assert_eq!(
@@ -1263,11 +1276,21 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let url = format!(
-            "ws://{}/ws/rooms/fake_room?token=invalid.jwt.token",
-            server.addr
-        );
-        let result = tokio_tungstenite::connect_async(&url).await;
+        let url = format!("ws://{}/ws/rooms/fake_room", server.addr);
+        let request = tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("Authorization", "Bearer invalid.jwt.token")
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header(
+                "Sec-WebSocket-Key",
+                tungstenite::handshake::client::generate_key(),
+            )
+            .header("Host", &*server.addr)
+            .body(())
+            .unwrap();
+        let result = tokio_tungstenite::connect_async(request).await;
 
         assert!(
             result.is_err(),
@@ -1295,11 +1318,21 @@ mod websocket_e2e {
             register_test_user(&server.user_service, &server.jwt_service, "outsider_nm").await;
 
         // Attempt to connect as the outsider
-        let url = format!(
-            "ws://{}/ws/rooms/{}?token={}",
-            server.addr, room_id, outsider_token
-        );
-        let result = tokio_tungstenite::connect_async(&url).await;
+        let url = format!("ws://{}/ws/rooms/{}", server.addr, room_id);
+        let request = tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("Authorization", format!("Bearer {outsider_token}"))
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header(
+                "Sec-WebSocket-Key",
+                tungstenite::handshake::client::generate_key(),
+            )
+            .header("Host", &*server.addr)
+            .body(())
+            .unwrap();
+        let result = tokio_tungstenite::connect_async(request).await;
 
         assert!(result.is_err(), "Non-member should be rejected with 403");
     }
@@ -2373,12 +2406,12 @@ mod websocket_e2e {
     }
 
     // ========================================================================
-    // Test (#73): WebSocket connection with valid ticket succeeds
+    // Test (#73): WebSocket connection with valid JWT succeeds
     //
     // NOTE: Full ticket-based auth requires a running WsTicketService (Redis).
-    // We test the fallback path: a raw JWT passed via `?token=` succeeds,
-    // proving the WebSocket upgrade + auth pipeline is working. The ticket
-    // path is tested at the unit level in the ticket module.
+    // We test the Authorization header path: a raw JWT passed via Bearer
+    // header succeeds, proving the WebSocket upgrade + auth pipeline is
+    // working. The ticket path is tested at the unit level in the ticket module.
     // ========================================================================
 
     #[tokio::test]
@@ -2391,17 +2424,9 @@ mod websocket_e2e {
             register_test_user(&server.user_service, &server.jwt_service, "valid_auth_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Auth Test Room").await;
 
-        // Connect using ?token= query parameter (a valid JWT)
-        let url = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, token);
-        let (mut ws, response) = tokio_tungstenite::connect_async(&url)
-            .await
-            .expect("WebSocket connection with valid token should succeed");
-
-        assert_eq!(
-            response.status(),
-            tungstenite::http::StatusCode::SWITCHING_PROTOCOLS,
-            "Expected HTTP 101 Switching Protocols for valid token"
-        );
+        // Connect using Authorization header with a valid JWT
+        // ws_connect already asserts HTTP 101 Switching Protocols
+        let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
         // Should receive the initial UserJoined message confirming successful auth
         let initial = tokio::time::timeout(
@@ -2999,6 +3024,24 @@ mod websocket_connection_limit_timing {
         room.id.as_str().to_string()
     }
 
+    /// Build a WebSocket request with Authorization header (no `?token=` query param).
+    fn ws_request(addr: &str, room_id: &str, token: &str) -> tungstenite::http::Request<()> {
+        let url = format!("ws://{addr}/ws/rooms/{room_id}");
+        tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header(
+                "Sec-WebSocket-Key",
+                tungstenite::handshake::client::generate_key(),
+            )
+            .header("Host", addr)
+            .body(())
+            .expect("build WS request")
+    }
+
     // ========================================================================
     // TEST 1: Connection limit exceeded returns HTTP 429 (not 101)
     // ========================================================================
@@ -3026,10 +3069,10 @@ mod websocket_connection_limit_timing {
         let room_id = create_test_room(&server.room_service, &user_id, "Limit Test Room").await;
 
         // First connection should succeed (HTTP 101)
-        let url1 = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, token);
-        let (ws1, response1) = tokio_tungstenite::connect_async(&url1)
-            .await
-            .expect("First WebSocket connect should succeed");
+        let (ws1, response1) =
+            tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &token))
+                .await
+                .expect("First WebSocket connect should succeed");
         assert_eq!(
             response1.status(),
             tungstenite::http::StatusCode::SWITCHING_PROTOCOLS,
@@ -3044,8 +3087,8 @@ mod websocket_connection_limit_timing {
 
         // Second connection (same user) should fail with HTTP 429
         // This is the KEY assertion - the limit check must happen BEFORE upgrade
-        let url2 = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, token);
-        let result = tokio_tungstenite::connect_async(&url2).await;
+        let result =
+            tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &token)).await;
 
         match result {
             Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
@@ -3093,10 +3136,10 @@ mod websocket_connection_limit_timing {
         let room_id = create_test_room(&server.room_service, &user_id, "Normal Flow Room").await;
 
         // Connection should succeed (HTTP 101)
-        let url = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, token);
-        let (_ws, response) = tokio_tungstenite::connect_async(&url)
-            .await
-            .expect("WebSocket connect should succeed");
+        let (_ws, response) =
+            tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &token))
+                .await
+                .expect("WebSocket connect should succeed");
 
         assert_eq!(
             response.status(),
@@ -3139,13 +3182,10 @@ mod websocket_connection_limit_timing {
             .expect("user2 join room");
 
         // Both users should be able to connect (HTTP 101)
-        let url1 = format!(
-            "ws://{}/ws/rooms/{}?token={}",
-            server.addr, room_id, user1_token
-        );
-        let (_ws1, response1) = tokio_tungstenite::connect_async(&url1)
-            .await
-            .expect("User1 WebSocket connect should succeed");
+        let (_ws1, response1) =
+            tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &user1_token))
+                .await
+                .expect("User1 WebSocket connect should succeed");
 
         assert_eq!(
             response1.status(),
@@ -3153,13 +3193,10 @@ mod websocket_connection_limit_timing {
             "User1 should get HTTP 101"
         );
 
-        let url2 = format!(
-            "ws://{}/ws/rooms/{}?token={}",
-            server.addr, room_id, user2_token
-        );
-        let (_ws2, response2) = tokio_tungstenite::connect_async(&url2)
-            .await
-            .expect("User2 WebSocket connect should succeed");
+        let (_ws2, response2) =
+            tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &user2_token))
+                .await
+                .expect("User2 WebSocket connect should succeed");
 
         assert_eq!(
             response2.status(),
@@ -3197,10 +3234,10 @@ mod websocket_connection_limit_timing {
         let room_id = create_test_room(&server.room_service, &user_id, "Reconnect Room").await;
 
         // First connection
-        let url = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, token);
-        let (ws1, response1) = tokio_tungstenite::connect_async(&url)
-            .await
-            .expect("First connect should succeed");
+        let (ws1, response1) =
+            tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &token))
+                .await
+                .expect("First connect should succeed");
 
         assert_eq!(
             response1.status(),
@@ -3219,9 +3256,10 @@ mod websocket_connection_limit_timing {
         assert_eq!(server.connection_manager.user_connection_count(&user_id), 0);
 
         // Should be able to reconnect (HTTP 101)
-        let (ws2, response2) = tokio_tungstenite::connect_async(&url)
-            .await
-            .expect("Reconnect should succeed");
+        let (ws2, response2) =
+            tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &token))
+                .await
+                .expect("Reconnect should succeed");
 
         assert_eq!(
             response2.status(),

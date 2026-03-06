@@ -620,9 +620,7 @@ mod tests {
 
     #[test]
     fn test_ws_query_no_auth() {
-        let query = WsQuery {
-            ticket: None,
-        };
+        let query = WsQuery { ticket: None };
         assert!(query.ticket.is_none());
     }
 
@@ -731,9 +729,7 @@ mod tests {
     #[test]
     fn test_auth_priority_no_auth_at_all() {
         let headers = HeaderMap::new();
-        let query = WsQuery {
-            ticket: None,
-        };
+        let query = WsQuery { ticket: None };
 
         assert!(headers.get("Authorization").is_none());
         assert!(query.ticket.is_none());

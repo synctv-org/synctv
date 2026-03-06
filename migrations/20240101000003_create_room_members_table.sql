@@ -48,8 +48,6 @@ CREATE INDEX idx_room_members_room_active ON room_members(room_id) WHERE left_at
 -- This index allows the query to be satisfied entirely from the index without table lookups
 CREATE INDEX idx_room_members_user_active ON room_members(user_id, room_id, role, status, joined_at DESC)
     WHERE left_at IS NULL;
-CREATE INDEX idx_room_members_room_count ON room_members(room_id)
-    WHERE left_at IS NULL;
 
 -- Permission-related indexes
 CREATE INDEX idx_room_members_role ON room_members(room_id, role)
@@ -58,8 +56,6 @@ CREATE INDEX idx_room_members_status ON room_members(room_id, status)
     WHERE left_at IS NULL;
 CREATE INDEX idx_room_members_banned ON room_members(banned_at)
     WHERE banned_at IS NOT NULL;
-CREATE INDEX idx_room_members_version ON room_members(room_id, user_id, version)
-    WHERE left_at IS NULL;
 
 -- Constraints: 1=creator, 2=admin, 3=member, 4=guest
 ALTER TABLE room_members

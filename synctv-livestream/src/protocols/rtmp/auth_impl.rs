@@ -327,8 +327,13 @@ impl AuthCallback for RtmpAuthCallbackImpl {
     }
 
     async fn on_unpublish(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
+        // NOTE: app_name and stream_name are the REWRITTEN values (room_id, media_id)
+        // after AuthPublishRewrite, so use remove_stream() which looks up by (room_id, media_id)
+        // directly instead of remove_by_app_stream() which uses the original RTMP key.
         let tracked = if let Some(tracker) = &self.stream_tracker {
-            tracker.remove_by_app_stream(app_name, stream_name)
+            tracker
+                .remove_stream(app_name, stream_name)
+                .map(|user_id| (user_id, app_name.to_string(), stream_name.to_string()))
         } else {
             None
         };
@@ -393,8 +398,9 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         }
 
         // Also clean up stream tracker entry if present
+        // NOTE: app_name and stream_name are REWRITTEN (room_id, media_id), use remove_stream()
         if let Some(tracker) = &self.stream_tracker {
-            tracker.remove_by_app_stream(app_name, stream_name);
+            let _ = tracker.remove_stream(app_name, stream_name);
         }
     }
 }

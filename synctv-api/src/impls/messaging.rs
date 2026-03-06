@@ -2578,14 +2578,12 @@ fn cluster_event_to_server_messages(
             media_ids
                 .iter()
                 .map(|mid| ServerMessage {
-                    message: Some(Message::MediaRemoved(
-                        crate::proto::client::MediaRemoved {
-                            room_id: room_id.to_string(),
-                            media_id: mid.as_str().to_string(),
-                            removed_by: username.clone(),
-                            removed_by_user_id: user_id.as_str().to_string(),
-                        },
-                    )),
+                    message: Some(Message::MediaRemoved(crate::proto::client::MediaRemoved {
+                        room_id: room_id.to_string(),
+                        media_id: mid.as_str().to_string(),
+                        removed_by: username.clone(),
+                        removed_by_user_id: user_id.as_str().to_string(),
+                    })),
                 })
                 .collect()
         }
@@ -2731,9 +2729,7 @@ fn cluster_event_to_server_messages(
             })),
         }],
         ClusterEvent::SystemNotification {
-            message,
-            timestamp,
-            ..
+            message, timestamp, ..
         } => {
             let data = serde_json::json!({
                 "type": "system_notification",
@@ -3108,7 +3104,10 @@ mod tests {
 
         let msgs = cluster_event_to_server_messages(&event, "room_test");
         assert_eq!(msgs.len(), 1);
-        assert!(matches!(&msgs[0].message, Some(Message::WebrtcIceCandidate(_))));
+        assert!(matches!(
+            &msgs[0].message,
+            Some(Message::WebrtcIceCandidate(_))
+        ));
     }
 
     #[test]

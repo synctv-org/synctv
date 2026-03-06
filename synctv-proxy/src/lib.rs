@@ -403,9 +403,7 @@ pub async fn proxy_m3u8_and_rewrite(
     if let Ok(parsed) = url::Url::parse(url) {
         let scheme = parsed.scheme();
         if scheme != "http" && scheme != "https" {
-            return Err(anyhow::anyhow!(
-                "M3U8 URL has disallowed scheme: {scheme}"
-            ));
+            return Err(anyhow::anyhow!("M3U8 URL has disallowed scheme: {scheme}"));
         }
     }
 
@@ -449,7 +447,7 @@ pub async fn proxy_m3u8_and_rewrite(
     let m3u8_text = String::from_utf8(m3u8_bytes.to_vec())
         .map_err(|e| anyhow::anyhow!("M3U8 response is not valid UTF-8: {e}"))?;
 
-    let rewritten = rewrite_m3u8(&m3u8_text, url, proxy_base);
+    let rewritten = rewrite_m3u8(&m3u8_text, url, proxy_base)?;
 
     Response::builder()
         .status(StatusCode::OK)
@@ -674,15 +672,17 @@ pub const MAX_M3U8_URLS: usize = 1000;
 /// - Maximum 1000 URLs per playlist (prevents abuse)
 ///
 /// # Security
-/// - Returns original m3u8 unchanged if proxy_base contains line breaks (prevents response injection)
-pub fn rewrite_m3u8(m3u8: &str, source_url: &str, proxy_base: &str) -> String {
+/// - Returns an error if proxy_base contains line breaks (prevents response injection)
+pub fn rewrite_m3u8(
+    m3u8: &str,
+    source_url: &str,
+    proxy_base: &str,
+) -> Result<String, anyhow::Error> {
     // Security: Reject proxy_base with line breaks to prevent response splitting/injection
     if proxy_base.contains('\n') || proxy_base.contains('\r') {
-        tracing::warn!(
-            proxy_base = %proxy_base,
-            "proxy_base contains line breaks, returning original m3u8"
-        );
-        return m3u8.to_string();
+        return Err(anyhow::anyhow!(
+            "proxy_base contains line break characters, refusing to rewrite M3U8"
+        ));
     }
 
     let base = url::Url::parse(source_url).ok();
@@ -738,7 +738,7 @@ pub fn rewrite_m3u8(m3u8: &str, source_url: &str, proxy_base: &str) -> String {
         );
     }
 
-    output
+    Ok(output)
 }
 
 /// Resolve a possibly-relative URL to absolute using the given base URL.
@@ -839,7 +839,9 @@ const CROSS_ORIGIN_DROP_HEADERS: &[&str] = &["referer"];
 /// Extract the origin (scheme + host + port) from a URL string.
 /// Returns `None` if the URL cannot be parsed.
 fn url_origin(url: &str) -> Option<String> {
-    url::Url::parse(url).ok().map(|u| u.origin().ascii_serialization())
+    url::Url::parse(url)
+        .ok()
+        .map(|u| u.origin().ascii_serialization())
 }
 
 /// Result of `send_with_redirect_validation`.
@@ -916,8 +918,8 @@ async fn send_with_redirect_validation(
         }
 
         // Determine if this redirect crosses origin boundaries.
-        let is_cross_origin = url_origin(&location)
-            .is_some_and(|redirect_origin| redirect_origin != original_origin);
+        let is_cross_origin =
+            url_origin(&location).is_some_and(|redirect_origin| redirect_origin != original_origin);
 
         // SSRF protection is handled by the DNS resolver at connection time
         let mut redirect_req = PROXY_CLIENT.get(&location);
@@ -947,7 +949,7 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
 
-// ------------------------------------------------------------------
+    // ------------------------------------------------------------------
     // CORS preflight helper function tests
     // ------------------------------------------------------------------
 
@@ -1079,7 +1081,7 @@ mod tests {
         );
     }
 
-#[test]
+    #[test]
     fn test_handle_cors_preflight_wildcard_mode() {
         let config = CorsConfig::new_wildcard();
         let response = handle_cors_preflight(Some("https://example.com"), &config);
@@ -1198,7 +1200,8 @@ mod tests {
             m3u8,
             "https://cdn.example.com/path/master.m3u8",
             "/proxy/stream",
-        );
+        )
+        .unwrap();
         assert!(rewritten.contains("/proxy/stream?url="));
         assert!(rewritten.contains("cdn%2Eexample%2Ecom"));
     }
@@ -1206,29 +1209,29 @@ mod tests {
     #[test]
     fn test_rewrite_m3u8_rejects_newline_in_proxy_base() {
         let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\nseg1.ts\n";
-        // proxy_base with LF should return original m3u8 unchanged
-        let rewritten = rewrite_m3u8(
+        // proxy_base with LF should return an error
+        let result = rewrite_m3u8(
             m3u8,
             "https://cdn.example.com/path/master.m3u8",
             "/proxy/stream\nSet-Cookie: malicious=value",
         );
-        assert_eq!(rewritten, m3u8);
+        assert!(result.is_err());
 
-        // proxy_base with CR should also return original m3u8 unchanged
-        let rewritten = rewrite_m3u8(
+        // proxy_base with CR should also return an error
+        let result = rewrite_m3u8(
             m3u8,
             "https://cdn.example.com/path/master.m3u8",
             "/proxy/stream\rSet-Cookie: malicious=value",
         );
-        assert_eq!(rewritten, m3u8);
+        assert!(result.is_err());
 
-        // proxy_base with CRLF should also return original m3u8 unchanged
-        let rewritten = rewrite_m3u8(
+        // proxy_base with CRLF should also return an error
+        let result = rewrite_m3u8(
             m3u8,
             "https://cdn.example.com/path/master.m3u8",
             "/proxy/stream\r\nSet-Cookie: malicious=value",
         );
-        assert_eq!(rewritten, m3u8);
+        assert!(result.is_err());
     }
 
     #[test]

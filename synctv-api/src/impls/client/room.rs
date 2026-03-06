@@ -88,9 +88,9 @@ impl ClientApiImpl {
         page_size: i32,
     ) -> Result<crate::proto::client::ListParticipatedRoomsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        // Clamp negative i32 values to valid u32 range before passing to PageParams.
+        // Clamp negative i32 values to valid u32 range and cap page_size to 100.
         let page = u32::try_from(page).unwrap_or(1);
-        let page_size = u32::try_from(page_size).unwrap_or(1);
+        let page_size = u32::try_from(page_size).unwrap_or(1).min(100);
         let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
         let (rooms, total) = self
             .room_service

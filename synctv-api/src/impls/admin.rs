@@ -1494,8 +1494,7 @@ impl AdminApiImpl {
 
         // Use list_joined_rooms_with_details to get room data in a single JOIN query,
         // eliminating the N+1 pattern of one get_room() call per joined room.
-        let pagination =
-            synctv_core::models::PageParams::new(Some(page), Some(page_size));
+        let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
         let (joined_rooms_with_details, _) = self
             .room_service
             .list_joined_rooms_with_details(&uid, pagination)

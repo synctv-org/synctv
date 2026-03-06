@@ -59,7 +59,7 @@ async fn test_client_session_handshake_timeout_on_no_response() {
         let mut buf = vec![0u8; 1537];
         let _ = stream.read_exact(&mut buf).await;
         // Hold connection open without responding
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
     });
 
     // Connect client
@@ -74,7 +74,7 @@ async fn test_client_session_handshake_timeout_on_no_response() {
     assert_eq!(handshaker.state, ClientHandshakeState::ReadS0S1S2);
 
     // Try to read S0/S1/S2 with timeout - this should timeout
-    let handshake_timeout = Duration::from_secs(10);
+    let handshake_timeout = Duration::from_secs(1);
     let start = Instant::now();
 
     let read_result = timeout(handshake_timeout, async {
@@ -89,14 +89,14 @@ async fn test_client_session_handshake_timeout_on_no_response() {
 
     let elapsed = start.elapsed();
 
-    // The timeout should trigger within reasonable time (10s + tolerance)
+    // The timeout should trigger within reasonable time (1s + tolerance)
     assert!(
         read_result.is_err(),
         "Expected timeout when server doesn't respond"
     );
     assert!(
-        elapsed < Duration::from_secs(12),
-        "Timeout should occur within ~10 seconds, took {elapsed:?}"
+        elapsed < Duration::from_secs(2),
+        "Timeout should occur within ~1 second, took {elapsed:?}"
     );
 
     server_handle.abort();

@@ -574,41 +574,44 @@ impl RoomService {
         // This is best-effort: notification failures do not affect room creation.
         if need_review {
             if let Some(ref notif_service) = self.user_notification_service {
-                let admin_query = UserListQuery {
-                    pagination: PageParams::new(Some(1), Some(100)),
-                    search: None,
-                    status: Some(UserStatus::Active),
-                    role: Some(UserRole::Root),
-                };
-                let admin_users = self.user_service.list_users(&admin_query).await;
-                if let Ok((admins, _)) = admin_users {
-                    let room_name = created_room.name.clone();
-                    for admin in admins {
-                        if let Err(e) = notif_service
-                            .create_system_announcement(
-                                admin.id.clone(),
-                                format!("Room Pending Review: {room_name}"),
-                                format!(
-                                    "User {} created room \"{room_name}\" which requires admin review.",
-                                    created_by.as_str()
-                                ),
-                                Some(serde_json::json!({
-                                    "room_id": created_room.id.as_str(),
-                                    "room_name": &room_name,
-                                    "creator_id": created_by.as_str(),
-                                })),
-                            )
-                            .await
-                        {
-                            tracing::warn!(
-                                admin_id = %admin.id,
-                                error = %e,
-                                "Failed to notify admin about pending room"
-                            );
-                        }
+                // Notify both Root and Admin users about pending rooms
+                let mut all_admins = Vec::new();
+                for role in [UserRole::Root, UserRole::Admin] {
+                    let query = UserListQuery {
+                        pagination: PageParams::new(Some(1), Some(100)),
+                        search: None,
+                        status: Some(UserStatus::Active),
+                        role: Some(role),
+                    };
+                    if let Ok((users, _)) = self.user_service.list_users(&query).await {
+                        all_admins.extend(users);
                     }
-                } else {
-                    tracing::warn!("Failed to query admin users for pending room notification");
+                }
+
+                let room_name = created_room.name.clone();
+                for admin in all_admins {
+                    if let Err(e) = notif_service
+                        .create_system_announcement(
+                            admin.id.clone(),
+                            format!("Room Pending Review: {room_name}"),
+                            format!(
+                                "User {} created room \"{room_name}\" which requires admin review.",
+                                created_by.as_str()
+                            ),
+                            Some(serde_json::json!({
+                                "room_id": created_room.id.as_str(),
+                                "room_name": &room_name,
+                                "creator_id": created_by.as_str(),
+                            })),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            admin_id = %admin.id,
+                            error = %e,
+                            "Failed to notify admin about pending room"
+                        );
+                    }
                 }
             }
         }

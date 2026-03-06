@@ -1075,9 +1075,15 @@ mod tests {
     #[tokio::test]
     async fn test_redis_failure_falls_back_to_in_memory() {
         let client = redis::Client::open("redis://127.0.0.1:1").unwrap();
-        let conn = redis::aio::ConnectionManager::new(client).await;
+        let conn = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            redis::aio::ConnectionManager::new(client),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok());
 
-        if conn.is_err() {
+        if conn.is_none() {
             let limiter = RateLimiter::in_memory_only("fallback_test:".to_string());
             for i in 0..5 {
                 limiter

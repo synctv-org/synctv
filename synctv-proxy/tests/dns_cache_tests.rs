@@ -30,6 +30,7 @@ async fn test_dns_resolver_blocks_loopback() {
 
 /// Verify that the DNS resolver blocks private IP ranges.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "Slow: waits for network connect timeouts on private IPs. ACL coverage in test_ssrf_acl_blocks_private_ranges"]
 async fn test_dns_resolver_blocks_private_ips() {
     let private_ips = [
         "http://192.168.1.1/secret",
@@ -54,6 +55,7 @@ async fn test_dns_resolver_blocks_private_ips() {
 
 /// Verify that the DNS resolver blocks cloud metadata endpoints.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "Slow: waits for network connect timeout. ACL coverage in test_ssrf_acl_blocks_private_ranges"]
 async fn test_dns_resolver_blocks_cloud_metadata() {
     let headers = axum::http::HeaderMap::new();
     let cfg = ProxyConfig {

@@ -205,7 +205,7 @@ impl HttpFlvSession {
 
     fn flush_response_data(&mut self) -> anyhow::Result<()> {
         let data = self.muxer.writer.extract_current_bytes();
-        let bytes = bytes::Bytes::from(data.to_vec());
+        let bytes = data.freeze();
 
         // P2#18: Use try_send to apply backpressure. Track consecutive dropped frames
         // and disconnect the subscriber after too many drops to prevent a slow client

@@ -279,13 +279,9 @@ fn build_app_state(config: RouterConfig) -> AppState {
     );
 
     // Create lazy provider store registry (stores created on first access per-provider)
-    // Resolve Redis connection synchronously at startup (lock is uncontended at this point)
-    let redis_for_stores = config
-        .redis_conn
-        .as_ref()
-        .and_then(|shared| shared.try_read().ok().map(|guard| guard.clone()));
+    // Uses the shared Redis connection handle for Sentinel failover safety
     let provider_stores = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
-        redis_for_stores,
+        config.redis_conn.clone(),
     ));
 
     // Build proxy provider registry from ProviderSet (single source of truth)

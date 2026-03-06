@@ -86,7 +86,7 @@ async fn test_client_session_handshake_timeout_no_response() {
 
     // Verify that read_timeout actually times out
     let start = tokio::time::Instant::now();
-    let result = io.read_timeout(Duration::from_secs(2)).await;
+    let result = io.read_timeout(Duration::from_millis(500)).await;
     let elapsed = start.elapsed();
 
     assert!(
@@ -95,8 +95,8 @@ async fn test_client_session_handshake_timeout_no_response() {
     );
     // Allow 10% tolerance
     assert!(
-        elapsed >= Duration::from_millis(1800),
-        "Timeout should occur after approximately 2 seconds, got {elapsed:?}"
+        elapsed >= Duration::from_millis(450),
+        "Timeout should occur after approximately 500ms, got {elapsed:?}"
     );
 }
 

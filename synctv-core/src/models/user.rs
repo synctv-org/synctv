@@ -339,7 +339,7 @@ pub struct User {
     pub status: UserStatus,
 
     pub signup_method: SignupMethod,
-    pub email_verified: bool,                // Whether email has been verified
+    pub email_verified: bool, // Whether email has been verified
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub password_changed_at: DateTime<Utc>, // Timestamp of last password change (for token invalidation)
@@ -465,7 +465,10 @@ impl User {
         }
 
         match self.signup_method {
-            SignupMethod::Email | SignupMethod::Password | SignupMethod::AdminCreated | SignupMethod::Unknown => true,
+            SignupMethod::Email
+            | SignupMethod::Password
+            | SignupMethod::AdminCreated
+            | SignupMethod::Unknown => true,
             SignupMethod::OAuth2 => {
                 // OAuth2 users get a random password at signup (pv=0).
                 // If pv > 0, the user explicitly changed/set their password.
@@ -480,9 +483,10 @@ impl User {
     #[must_use]
     pub const fn can_unbind_provider(&self, has_oauth2_count: usize, has_email: bool) -> bool {
         match self.signup_method {
-            SignupMethod::Email | SignupMethod::Password | SignupMethod::AdminCreated | SignupMethod::Unknown => {
-                true
-            }
+            SignupMethod::Email
+            | SignupMethod::Password
+            | SignupMethod::AdminCreated
+            | SignupMethod::Unknown => true,
             SignupMethod::OAuth2 => {
                 // OAuth2 users must keep at least one OAuth2 or add email
                 has_oauth2_count > 1 || has_email
@@ -591,5 +595,4 @@ mod tests {
             "OAuth2 user with empty hash should NOT have usable password regardless of pv"
         );
     }
-
 }

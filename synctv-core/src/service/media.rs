@@ -772,7 +772,10 @@ impl MediaService {
         .flatten();
 
         if let Some(ref playing_id) = playing_media_id {
-            if media_ids.iter().any(|mid| mid.as_str() == playing_id.as_str()) {
+            if media_ids
+                .iter()
+                .any(|mid| mid.as_str() == playing_id.as_str())
+            {
                 return Err(Error::InvalidInput(
                     "Cannot remove media that is currently playing".to_string(),
                 ));

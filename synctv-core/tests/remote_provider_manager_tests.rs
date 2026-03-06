@@ -518,18 +518,20 @@ async fn test_tls_configuration_insecure() {
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
-    // Create instance with insecure TLS
-    // Note: The add() will try to create a channel with insecure TLS,
-    // which may fail due to crypto provider or transport issues.
-    // We just verify the config is accepted and stored.
-    let instance = make_test_instance_tls("test-instance-9", true);
+    // Create instance with insecure TLS. The add() eagerly connects for
+    // insecure TLS (connect_with_connector), so use a short timeout to avoid
+    // waiting for the remote to respond. The test exercises the TLS code path.
+    let instance = {
+        let mut inst = make_test_instance_tls("test-instance-9", true);
+        inst.timeout = "2s".to_string();
+        inst
+    };
 
-    // This might fail due to rustls crypto provider issues in test environment
-    // The important thing is that the config structure is validated
-    let result = manager.add(instance.clone()).await;
+    // Wrap with timeout to avoid 270s+ waits on DNS/connect to example.com
+    let result = tokio::time::timeout(Duration::from_secs(5), manager.add(instance.clone())).await;
 
-    // If it succeeds, verify the config
-    if result.is_ok() {
+    // If it succeeds (unlikely with port 1), verify the stored config
+    if let Ok(Ok(())) = &result {
         let repo = ProviderInstanceRepository::new(infra.pool);
         let fetched = repo.get_by_name("test-instance-9").await.unwrap();
         assert!(fetched.is_some());
@@ -540,7 +542,7 @@ async fn test_tls_configuration_insecure() {
             "Instance should have insecure TLS enabled"
         );
     }
-    // If it fails, that's also acceptable in test environment
+    // Timeout or connection error is expected and acceptable
 }
 
 // ─── Test 10: Fallback to local provider (no remote instance) ───────────────

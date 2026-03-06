@@ -1874,20 +1874,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_redlock_accepts_three_masters() {
-        // This test will fail to connect but validates the count check works
+        // This test will fail to connect but validates the count check works.
+        // Use 127.0.0.1 with unused ports — connection is refused instantly
+        // (no DNS lookup or connect timeout delay).
         let config = RedlockConfig {
             master_urls: vec![
-                "redis://nonexistent1:6379".to_string(),
-                "redis://nonexistent2:6379".to_string(),
-                "redis://nonexistent3:6379".to_string(),
+                "redis://127.0.0.1:1".to_string(),
+                "redis://127.0.0.1:2".to_string(),
+                "redis://127.0.0.1:3".to_string(),
             ],
             ..Default::default()
         };
 
-        // Should fail at connection, not at master count validation
-        let result = Redlock::new(config).await;
-        // This will fail because hosts don't exist, but the count validation passed
-        assert!(result.is_err());
+        // Should fail at connection, not at master count validation.
+        // Wrap with timeout since ConnectionManager has internal retry logic.
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), Redlock::new(config)).await;
+        // Either timed out or got a connection error — both mean count validation passed
+        assert!(
+            result.is_err() || result.unwrap().is_err(),
+            "Should fail due to unreachable Redis, not count validation"
+        );
     }
 
     /// Test that documents the Sentinel failover vulnerability.

@@ -369,8 +369,7 @@ impl UserService for ClientServiceImpl {
         let req = request.into_inner();
         let page = u32::try_from(req.page).unwrap_or(1);
         let page_size = u32::try_from(req.page_size).unwrap_or(10).min(100);
-        let params =
-            synctv_core::models::PageParams::new(Some(page), Some(page_size));
+        let params = synctv_core::models::PageParams::new(Some(page), Some(page_size));
         let response = self
             .client_api
             .get_joined_rooms(
@@ -1246,7 +1245,7 @@ impl EmailService for ClientServiceImpl {
         let result = email_api
             .confirm_email(&req.email, &req.token)
             .await
-            .map_err(Status::invalid_argument)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(ConfirmEmailResponse {
             message: result.message,
@@ -1281,7 +1280,7 @@ impl EmailService for ClientServiceImpl {
         let result = email_api
             .confirm_password_reset(&req.email, &req.token, &req.new_password)
             .await
-            .map_err(Status::invalid_argument)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(ConfirmPasswordResetResponse {
             message: result.message,

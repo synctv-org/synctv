@@ -275,6 +275,7 @@ pub trait CredentialStorage: Send + Sync {
 pub struct InMemoryCredentialStorage {
     credentials: Arc<RwLock<HashMap<String, StoredCredential>>>,
     encryption: Option<FieldEncryption>,
+    next_id: std::sync::atomic::AtomicU64,
 }
 
 impl Default for InMemoryCredentialStorage {
@@ -290,6 +291,7 @@ impl InMemoryCredentialStorage {
         Self {
             credentials: Arc::new(RwLock::new(HashMap::new())),
             encryption: None,
+            next_id: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
@@ -307,6 +309,7 @@ impl InMemoryCredentialStorage {
         Self {
             credentials: Arc::new(RwLock::new(HashMap::new())),
             encryption: Some(encryption),
+            next_id: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
@@ -316,10 +319,12 @@ impl InMemoryCredentialStorage {
     }
 
     /// Generate a unique ID for new credentials
-    fn generate_id() -> String {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        format!("cred_{}", COUNTER.fetch_add(1, Ordering::SeqCst))
+    fn generate_id(&self) -> String {
+        format!(
+            "cred_{}",
+            self.next_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
     }
 
     /// Encrypt sensitive fields in credential data before storage
@@ -368,9 +373,16 @@ impl CredentialStorage for InMemoryCredentialStorage {
         let server_id = encrypted_data.server_id();
         let key = Self::make_key(user_id, provider, &server_id);
 
-        // Store with encrypted data
+        let mut credentials = self.credentials.write().await;
+
+        // Preserve existing ID on upsert (matches PostgreSQL ON CONFLICT behavior)
+        let id = credentials
+            .get(&key)
+            .map(|existing| existing.id.clone())
+            .unwrap_or_else(|| self.generate_id());
+
         let credential = StoredCredential {
-            id: Self::generate_id(),
+            id,
             user_id: user_id.to_string(),
             provider,
             server_id: server_id.clone(),
@@ -379,10 +391,8 @@ impl CredentialStorage for InMemoryCredentialStorage {
             expires_at: None,
         };
 
-        self.credentials
-            .write()
-            .await
-            .insert(key, credential.clone());
+        credentials.insert(key, credential.clone());
+        drop(credentials);
 
         // Return credential with decrypted data for caller convenience
         let decrypted_data = self.decrypt_data(credential.data.clone())?;
@@ -625,8 +635,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Should be the same key but new ID
-        assert_ne!(cred1.id, cred2.id);
+        // Should preserve the same ID on upsert (matches PostgreSQL ON CONFLICT behavior)
+        assert_eq!(cred1.id, cred2.id);
 
         // Should only have one credential
         let all = storage.list_by_user("user1").await.unwrap();

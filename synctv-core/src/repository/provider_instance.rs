@@ -243,7 +243,6 @@ impl ProviderInstanceRepository {
 
         Ok(())
     }
-
 }
 
 /// User Provider Credential Repository
@@ -492,7 +491,6 @@ impl UserProviderCredentialRepository {
 
         Ok(result.rows_affected())
     }
-
 }
 
 #[cfg(test)]

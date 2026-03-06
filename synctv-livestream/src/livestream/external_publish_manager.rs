@@ -199,24 +199,6 @@ impl ExternalPublishManager {
             )));
         }
 
-        // L-6: If get_existing returned None, the stream may be unhealthy.
-        // Explicitly remove any unhealthy entry from the pool before acquiring
-        // the creation lock. This ensures the stale entry is gone so the new
-        // stream creation path starts cleanly without waiting on the lock while
-        // a zombie entry remains visible to other callers.
-        if let Some(stale) = self.pool.streams.get(&stream_key) {
-            if !stale.lifecycle().is_healthy().await {
-                drop(stale);
-                if let Some((_, removed)) = self.pool.streams.remove(&stream_key) {
-                    warn!(
-                        "Removed unhealthy external publish stream for {}/{} before creation",
-                        room_id, media_id
-                    );
-                    let _ = removed.stop().await;
-                }
-            }
-        }
-
         // Acquire per-key creation lock
         let _guard = self.pool.acquire_creation_lock(&stream_key).await;
 

@@ -602,7 +602,7 @@ mod timeout_tests {
             let mut buf = vec![0u8; 1537];
             let _ = stream.read_exact(&mut buf).await;
             // Delay beyond timeout
-            tokio::time::sleep(Duration::from_secs(15)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
         });
 
         let client_stream = TcpStream::connect(addr).await.unwrap();
@@ -615,7 +615,7 @@ mod timeout_tests {
         handshaker.handshake().await.unwrap();
 
         // Try to read with timeout
-        let handshake_timeout = Duration::from_secs(5);
+        let handshake_timeout = Duration::from_secs(1);
         let start = Instant::now();
 
         let read_result = timeout(handshake_timeout, async {
@@ -631,8 +631,8 @@ mod timeout_tests {
 
         assert!(read_result.is_err(), "Expected timeout when server is slow");
         assert!(
-            elapsed < Duration::from_secs(6),
-            "Timeout should occur within ~5 seconds"
+            elapsed < Duration::from_secs(2),
+            "Timeout should occur within ~1 second"
         );
 
         server_handle.abort();
@@ -650,14 +650,14 @@ mod timeout_tests {
         let server_handle = tokio::spawn(async move {
             let _stream = server.accept().await;
             // Server waits for data but client won't send
-            tokio::time::sleep(Duration::from_secs(20)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
         });
 
         // Connect client but don't send handshake data
         let _client_stream = TcpStream::connect(addr).await.unwrap();
 
         // Just hold connection without sending data
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         server_handle.abort();
     }

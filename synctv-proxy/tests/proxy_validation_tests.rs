@@ -35,20 +35,16 @@ fn test_max_manifest_size_is_10mb() {
     assert_eq!(MAX_MANIFEST_SIZE, 10_485_760);
 }
 
-/// Test that oversized responses are blocked
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_oversized_response_blocked() {
-    // This test verifies that trying to proxy a private IP is blocked
-    // which indirectly tests URL validation before size checks
-    let headers = axum::http::HeaderMap::new();
-    let cfg = ProxyConfig {
-        url: "http://192.168.1.1/large-file.mp4",
-        provider_headers: &HashMap::new(),
-        client_headers: &headers,
-    };
-    let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
-
-    assert!(result.is_err(), "Should block private IP");
+/// Test that oversized responses are blocked (via SSRF ACL on private IP)
+#[test]
+fn test_oversized_response_blocked() {
+    // Verify SSRF ACL blocks private IPs before any network I/O
+    use std::net::IpAddr;
+    let ip: IpAddr = "192.168.1.1".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "Should block private IP"
+    );
 }
 
 /// Test Content-Length validation for large responses

@@ -10,14 +10,16 @@
 //! Run with: cargo test --test `ws_ticket_redis_tests`
 #![allow(clippy::unwrap_used)]
 
+use std::sync::Arc;
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::WsTicketService;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
+use tokio::sync::RwLock;
 
 async fn start_redis() -> (
     testcontainers::ContainerAsync<Redis>,
-    redis::aio::ConnectionManager,
+    Arc<RwLock<redis::aio::ConnectionManager>>,
 ) {
     let container =
         tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
@@ -33,7 +35,7 @@ async fn start_redis() -> (
     let conn = redis::aio::ConnectionManager::new(client)
         .await
         .expect("Failed to create connection manager");
-    (container, conn)
+    (container, Arc::new(RwLock::new(conn)))
 }
 
 fn user_id(id: &str) -> UserId {

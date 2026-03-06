@@ -103,7 +103,8 @@ fn test_rewrite_m3u8_absolute_segment_unchanged() {
         m3u8,
         "https://origin.example.com/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
     // The absolute URL should be percent-encoded in the url= parameter
     assert!(rewritten.contains("url=https%3A%2F%2Fcdn%2Eexample%2Ecom%2Fseg1%2Ets"));
 }
@@ -119,7 +120,8 @@ fn test_rewrite_m3u8_ext_x_key_uri_rewritten() {
         m3u8,
         "https://cdn.example.com/path/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
     // The URI in EXT-X-KEY should be rewritten to an absolute proxied URL
     assert!(
         rewritten.contains("URI=\"/proxy/stream?url="),
@@ -143,7 +145,8 @@ fn test_rewrite_m3u8_ext_x_media_uri_rewritten() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
     assert!(
         rewritten.contains("URI=\"/proxy/stream?url="),
         "EXT-X-MEDIA URI should be rewritten, got: {rewritten}"
@@ -157,7 +160,8 @@ fn test_rewrite_m3u8_proxy_base_with_query_uses_ampersand() {
         m3u8,
         "https://cdn.example.com/path/master.m3u8",
         "/proxy/stream?provider=abc",
-    );
+    )
+    .unwrap();
     // When proxy_base already has a '?', the separator should be '&'
     assert!(
         rewritten.contains("/proxy/stream?provider=abc&url="),
@@ -168,7 +172,8 @@ fn test_rewrite_m3u8_proxy_base_with_query_uses_ampersand() {
 #[test]
 fn test_rewrite_m3u8_empty_playlist() {
     let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\n";
-    let rewritten = rewrite_m3u8(m3u8, "https://cdn.example.com/master.m3u8", "/proxy/stream");
+    let rewritten =
+        rewrite_m3u8(m3u8, "https://cdn.example.com/master.m3u8", "/proxy/stream").unwrap();
     // Should not crash; output should still contain the header tags
     assert!(rewritten.contains("#EXTM3U"));
     assert!(rewritten.contains("#EXT-X-VERSION:3"));
@@ -188,7 +193,8 @@ fn test_rewrite_m3u8_max_urls_truncated() {
         &m3u8,
         "https://cdn.example.com/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
     // Live stream should NOT contain #EXT-X-ENDLIST after truncation
     assert!(
         !rewritten.contains("#EXT-X-ENDLIST"),
@@ -475,7 +481,8 @@ fn test_rewrite_m3u8_ext_x_map_uri_rewritten() {
         m3u8,
         "https://cdn.example.com/hls/stream/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
     // The URI in EXT-X-MAP should be rewritten to a proxied URL
     assert!(
         rewritten.contains("URI=\"/proxy/stream?url="),
@@ -505,7 +512,8 @@ fn test_rewrite_m3u8_ext_x_map_absolute_uri() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
     // Absolute URI in EXT-X-MAP should be proxied as-is
     assert!(
         rewritten
@@ -526,7 +534,8 @@ fn test_rewrite_m3u8_ext_x_map_with_byterange() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
     // The URI should be rewritten and BYTERANGE should be preserved
     assert!(
         rewritten.contains("URI=\"/proxy/stream?url="),
@@ -556,7 +565,8 @@ fn test_rewrite_m3u8_variant_playlist_with_ext_x_map() {
         m3u8,
         "https://cdn.example.com/hls/720p/playlist.m3u8",
         "/proxy/stream?quality=720",
-    );
+    )
+    .unwrap();
     // EXT-X-MAP should use & since proxy_base has query
     assert!(
         rewritten.contains("URI=\"/proxy/stream?quality=720&url="),
@@ -772,7 +782,8 @@ fn test_m3u8_ssrf_path_traversal_attack() {
         m3u8,
         "https://cdn.example.com/hls/stream/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // The rewritten URL should still point to cdn.example.com
     // Directory traversal should be normalized by url::Url::join
@@ -801,7 +812,8 @@ fn test_m3u8_ssrf_private_ip_in_segment() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // The segment URL should be encoded as a parameter to our proxy
     assert!(
@@ -830,7 +842,8 @@ fn test_m3u8_ssrf_localhost_in_key_uri() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // The key URI should be rewritten to go through our proxy
     assert!(
@@ -857,7 +870,8 @@ fn test_m3u8_ssrf_newline_injection() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // Verify normal processing - should have exactly 2 segment URLs
     let url_count = rewritten.matches("/proxy/stream?url=").count();
@@ -876,7 +890,8 @@ fn test_m3u8_ssrf_control_characters() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // The null byte should be encoded (percent_encode handles UTF-8)
     // or the URL resolution should handle it gracefully
@@ -896,7 +911,8 @@ fn test_m3u8_ssrf_deep_traversal() {
         m3u8,
         "https://cdn.example.com/hls/stream/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // Path should be normalized to root of the host
     assert!(
@@ -925,7 +941,8 @@ fn test_m3u8_ssrf_ext_x_map_internal_uri() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // The metadata IP should be proxied through our endpoint
     assert!(
@@ -975,7 +992,8 @@ fn test_m3u8_ssrf_protocol_relative() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // Protocol-relative URL should inherit the scheme from base
     assert!(
@@ -1012,7 +1030,8 @@ fn test_m3u8_ssrf_file_url_rewritten() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // The file:// URL should be encoded in the proxy URL
     assert!(
@@ -1071,7 +1090,8 @@ fn test_m3u8_ssrf_special_chars_encoded() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // The entire URL including special chars should be encoded
     // & should become %26, : should become %3A, etc.
@@ -1094,7 +1114,8 @@ fn test_m3u8_ssrf_backslash_handling() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // Backslash should be encoded as %5C
     // The URL resolution should handle it gracefully
@@ -1113,7 +1134,8 @@ fn test_m3u8_ssrf_encoded_traversal() {
         m3u8,
         "https://cdn.example.com/hls/stream/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // The double-encoding should result in a valid URL
     // url::Url::join will treat %2e%2e%2f as literal characters, not as ../
@@ -1138,7 +1160,8 @@ fn test_m3u8_no_double_encode_space() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // The %20 should NOT become %2520 (double-encoded)
     assert!(
@@ -1163,7 +1186,8 @@ fn test_m3u8_no_double_encode_cjk() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // Should NOT double-encode: %E4 should not become %25E4
     assert!(
@@ -1186,7 +1210,8 @@ fn test_m3u8_no_double_encode_query_params() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // %20 should NOT become %2520
     assert!(
@@ -1204,7 +1229,8 @@ fn test_m3u8_mixed_encoding() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // Already-encoded %20 should stay as %20 (not %2520)
     // Raw space should be encoded as %20
@@ -1255,7 +1281,8 @@ fn test_m3u8_ext_x_key_no_double_encode() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // %20 in the key URI should NOT become %2520
     assert!(
@@ -1277,7 +1304,8 @@ fn test_m3u8_ext_x_map_no_double_encode() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // %20 in the map URI should NOT become %2520
     assert!(
@@ -1295,7 +1323,8 @@ fn test_m3u8_plus_sign_handling() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // + should be encoded as %2B (since we encode non-alphanumeric)
     // This is correct behavior for path segments
@@ -1314,7 +1343,8 @@ fn test_m3u8_raw_special_chars_encoded_once() {
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",
         "/proxy/stream",
-    );
+    )
+    .unwrap();
 
     // Space should be encoded (as %20, not as +)
     assert!(

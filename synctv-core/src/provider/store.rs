@@ -127,9 +127,11 @@ impl Expiry<String, Duration> for LockEntryExpiry {
 ///
 /// Locks use a separate `moka::sync::Cache<String, Duration>` with per-entry TTL so that
 /// leaked guards auto-expire rather than holding the lock forever.
+/// A `Mutex` guards the check-and-insert to prevent TOCTOU races.
 pub struct InMemoryProviderStore {
     cache: moka::future::Cache<String, TtlValue>,
     locks: moka::sync::Cache<String, Duration>,
+    lock_mutex: Mutex<()>,
 }
 
 impl InMemoryProviderStore {
@@ -142,6 +144,7 @@ impl InMemoryProviderStore {
             locks: moka::sync::Cache::builder()
                 .expire_after(LockEntryExpiry)
                 .build(),
+            lock_mutex: Mutex::new(()),
         }
     }
 }
@@ -171,11 +174,14 @@ impl ProviderStore for InMemoryProviderStore {
     }
 
     async fn lock(&self, key: &str, ttl: Duration) -> Result<StoreLockGuard, StoreError> {
-        // Try to insert the lock key. If it already exists, the lock is held.
+        // Atomic check-and-insert under mutex to prevent TOCTOU race.
+        let _guard = self.lock_mutex.lock();
         if self.locks.contains_key(key) {
             return Err(StoreError::LockFailed(format!("key already locked: {key}")));
         }
         self.locks.insert(key.to_string(), ttl);
+        drop(_guard);
+
         let locks = self.locks.clone();
         let key_owned = key.to_string();
         Ok(StoreLockGuard::new(move || {
@@ -189,13 +195,22 @@ impl ProviderStore for InMemoryProviderStore {
 // ---------------------------------------------------------------------------
 
 /// Redis-backed provider store with distributed locking via `SET NX EX`.
+///
+/// Uses a shared `Arc<RwLock<ConnectionManager>>` so that in Sentinel mode the
+/// background health check can hot-swap the inner connection on failover and
+/// this store automatically picks up the new master.
 pub struct RedisProviderStore {
-    conn: redis::aio::ConnectionManager,
+    shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
 }
 
 impl RedisProviderStore {
-    pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
-        Self { conn }
+    pub fn new(shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
+        Self { shared_conn }
+    }
+
+    /// Get a cloned connection snapshot for the current operation.
+    async fn conn(&self) -> redis::aio::ConnectionManager {
+        self.shared_conn.read().await.clone()
     }
 }
 
@@ -204,7 +219,7 @@ impl ProviderStore for RedisProviderStore {
     async fn get_raw(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let result: Option<Vec<u8>> = redis::cmd("GET")
             .arg(key)
-            .query_async(&mut self.conn.clone())
+            .query_async(&mut self.conn().await)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))?;
         Ok(result)
@@ -216,7 +231,7 @@ impl ProviderStore for RedisProviderStore {
             .arg(value)
             .arg("EX")
             .arg(ttl.as_secs().max(1))
-            .query_async::<()>(&mut self.conn.clone())
+            .query_async::<()>(&mut self.conn().await)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))?;
         Ok(())
@@ -225,7 +240,7 @@ impl ProviderStore for RedisProviderStore {
     async fn delete(&self, key: &str) -> Result<(), StoreError> {
         redis::cmd("DEL")
             .arg(key)
-            .query_async::<()>(&mut self.conn.clone())
+            .query_async::<()>(&mut self.conn().await)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))?;
         Ok(())
@@ -234,25 +249,25 @@ impl ProviderStore for RedisProviderStore {
     async fn lock(&self, key: &str, ttl: Duration) -> Result<StoreLockGuard, StoreError> {
         let ttl_secs = ttl.as_secs().max(1);
         for _ in 0..10 {
-            // SET key 1 NX EX ttl returns OK (Some("OK")) on success, nil (None) if key exists
             let result: Option<String> = redis::cmd("SET")
                 .arg(key)
                 .arg(1)
                 .arg("NX")
                 .arg("EX")
                 .arg(ttl_secs)
-                .query_async(&mut self.conn.clone())
+                .query_async(&mut self.conn().await)
                 .await
                 .map_err(|e| StoreError::Backend(e.to_string()))?;
 
             if result.is_some() {
                 let key_owned = key.to_string();
-                let mut conn_clone = self.conn.clone();
+                let shared = self.shared_conn.clone();
                 return Ok(StoreLockGuard::new(move || {
                     tokio::spawn(async move {
+                        let mut conn = shared.read().await.clone();
                         let _: Result<(), _> = redis::cmd("DEL")
                             .arg(&key_owned)
-                            .query_async(&mut conn_clone)
+                            .query_async(&mut conn)
                             .await;
                     });
                 }));
@@ -317,13 +332,13 @@ impl<S: ProviderStore> ProviderStore for PrefixedProviderStore<S> {
 /// No need to pre-register provider names — calling `load("some_new_provider")`
 /// automatically creates a prefixed store backed by Redis (if available) or in-memory.
 pub struct ProviderStoreRegistry {
-    redis: Option<redis::aio::ConnectionManager>,
+    redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     stores: Mutex<HashMap<String, Arc<dyn ProviderStore>>>,
 }
 
 impl ProviderStoreRegistry {
-    /// Create a new registry, optionally backed by Redis.
-    pub fn new(redis: Option<redis::aio::ConnectionManager>) -> Self {
+    /// Create a new registry, optionally backed by Redis (Sentinel-safe shared handle).
+    pub fn new(redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>) -> Self {
         Self {
             redis,
             stores: Mutex::new(HashMap::new()),
@@ -341,8 +356,8 @@ impl ProviderStoreRegistry {
             .or_insert_with(|| {
                 let prefix = format!("synctv:provider:{name}");
                 match &self.redis {
-                    Some(conn) => Arc::new(PrefixedProviderStore::new(
-                        RedisProviderStore::new(conn.clone()),
+                    Some(shared_conn) => Arc::new(PrefixedProviderStore::new(
+                        RedisProviderStore::new(shared_conn.clone()),
                         prefix,
                     )),
                     None => Arc::new(PrefixedProviderStore::new(

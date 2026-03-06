@@ -116,9 +116,8 @@ impl CredentialEncryption {
             )
         })?;
 
-        let combined =
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-                .internal_with_err("Invalid base64 in encrypted credential")?;
+        let combined = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+            .internal_with_err("Invalid base64 in encrypted credential")?;
 
         if combined.len() < 1 + NONCE_SIZE {
             return Err(Error::Internal(

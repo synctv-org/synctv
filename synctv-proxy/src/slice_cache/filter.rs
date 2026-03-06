@@ -317,7 +317,13 @@ pub(super) async fn full_body_cache_path(
                 _ => cache.config().segment_ttl,
             };
             cache
-                .put_full_body(url, provider_headers, data.clone(), content_type.as_deref(), ttl)
+                .put_full_body(
+                    url,
+                    provider_headers,
+                    data.clone(),
+                    content_type.as_deref(),
+                    ttl,
+                )
                 .await;
 
             let mut builder = Response::builder()

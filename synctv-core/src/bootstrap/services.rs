@@ -115,27 +115,6 @@ impl Services {
 ///
 /// When `redis_handles` is `None` (standalone mode without Redis), all services
 /// use in-memory fallbacks.
-/// Check whether cluster mode requires Redis and Redis is absent.
-///
-/// Returns `Ok(())` when the configuration is valid, or `Err` when cluster
-/// mode is enabled but Redis handles are not provided.
-///
-/// This is extracted as a standalone function so it can be unit-tested
-/// without constructing a full `PgPool` or `CacheInvalidationService`.
-pub fn validate_cluster_redis_requirement(
-    config: &Config,
-    has_redis: bool,
-) -> Result<(), anyhow::Error> {
-    let cluster_mode = config.cluster_runtime_enabled();
-    if cluster_mode && !has_redis {
-        return Err(anyhow::anyhow!(
-            "Cluster mode is enabled (cluster.enabled=true) but Redis is not configured. \
-             Redis is required for cross-replica coordination in cluster mode. \
-             Either configure redis.url or disable cluster mode."
-        ));
-    }
-    Ok(())
-}
 
 pub async fn init_services(
     pool: PgPool,
@@ -144,9 +123,6 @@ pub async fn init_services(
     cache_invalidation: Arc<CacheInvalidationService>,
 ) -> Result<Services, anyhow::Error> {
     info!("Initializing services...");
-
-    // ── Fail-fast: cluster mode requires Redis ──────────────────────────
-    validate_cluster_redis_requirement(config, redis_handles.is_some())?;
 
     let cluster_mode = config.cluster_runtime_enabled();
 
@@ -268,7 +244,7 @@ pub async fn init_services(
         config.password_complexity.clone(),
         token_blacklist,
         key_builder,
-        brute_force,
+        brute_force.clone(),
     );
     user_service.set_cache_invalidation(cache_invalidation.clone());
 
@@ -294,9 +270,12 @@ pub async fn init_services(
     info!("UserService initialized");
 
     // Initialize RoomService
-    let mut room_service = RoomService::new(pool.clone(), user_service.clone());
-    room_service.set_cache_invalidation(cache_invalidation.clone());
-    room_service.set_playback_cache_invalidation(cache_invalidation.clone());
+    let mut room_service = build_room_service(
+        pool.clone(),
+        user_service.clone(),
+        cache_invalidation.clone(),
+        brute_force.clone(),
+    );
     info!("RoomService initialized");
 
     // Initialize CacheManager and start cross-replica invalidation listener
@@ -434,7 +413,7 @@ pub async fn init_services(
     info!("Settings registry initialized");
 
     // Initialize Email service (optional - requires SMTP configuration)
-    let email_service = init_email_service(config, redis_client.as_ref());
+    let email_service = init_email_service(config, redis_handles.as_ref().map(|h| h.conn.clone()));
     if email_service.is_some() {
         info!("Email service initialized");
     } else {
@@ -457,18 +436,12 @@ pub async fn init_services(
     //
     // Use Redis-backed JTI dedup when available (shared handle follows Sentinel failover).
     // Falls back to in-memory for standalone mode.
-    let publish_key_service = if let Some(ref rh) = redis_handles {
-        info!("Publish key service initialized with Redis JTI deduplication");
-        PublishKeyService::with_redis_shared(
-            jwt_service.clone(),
-            24,
-            rh.conn.clone(),
-            config.redis.key_prefix.clone(),
-        )
-    } else {
-        info!("Publish key service initialized with in-memory JTI deduplication");
-        PublishKeyService::with_default_ttl(jwt_service.clone())
-    };
+    let publish_key_service = build_publish_key_service(
+        jwt_service.clone(),
+        redis_handles.as_ref(),
+        &config.redis.key_prefix,
+        cluster_mode,
+    );
 
     // Initialize User Notification service
     let notification_repo = NotificationRepository::new(pool.clone());
@@ -696,6 +669,72 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
     .map_err(|e| anyhow::anyhow!("Failed to initialize JWT service: {e}"))
 }
 
+fn build_room_service(
+    pool: PgPool,
+    user_service: UserService,
+    cache_invalidation: Arc<CacheInvalidationService>,
+    brute_force: crate::service::auth::BruteForceProtection,
+) -> RoomService {
+    let mut room_service = RoomService::new(pool, user_service);
+    room_service.set_brute_force_service(brute_force);
+    room_service.set_cache_invalidation(cache_invalidation.clone());
+    room_service.set_playback_cache_invalidation(cache_invalidation);
+    room_service
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublishKeyBackendMode {
+    Memory,
+    RedisBestEffort,
+    RedisFailClosed,
+}
+
+const fn publish_key_backend_mode(cluster_mode: bool, has_redis: bool) -> PublishKeyBackendMode {
+    match (cluster_mode, has_redis) {
+        (true, true) => PublishKeyBackendMode::RedisFailClosed,
+        (false, true) => PublishKeyBackendMode::RedisBestEffort,
+        (_, false) => PublishKeyBackendMode::Memory,
+    }
+}
+
+fn build_publish_key_service(
+    jwt_service: JwtService,
+    redis_handles: Option<&RedisHandles>,
+    key_prefix: &str,
+    cluster_mode: bool,
+) -> PublishKeyService {
+    match publish_key_backend_mode(cluster_mode, redis_handles.is_some()) {
+        PublishKeyBackendMode::RedisFailClosed => {
+            let redis_handles = redis_handles.expect(
+                "cluster mode requires Redis handles; this invariant is validated before init_services",
+            );
+            info!("Publish key service initialized with Redis JTI deduplication (fail-closed)");
+            PublishKeyService::with_redis_shared_fail_closed(
+                jwt_service,
+                24,
+                redis_handles.conn.clone(),
+                key_prefix.to_string(),
+            )
+        }
+        PublishKeyBackendMode::RedisBestEffort => {
+            let redis_handles = redis_handles.expect(
+                "Redis-backed publish key mode requires Redis handles to be present",
+            );
+            info!("Publish key service initialized with Redis JTI deduplication");
+            PublishKeyService::with_redis_shared(
+                jwt_service,
+                24,
+                redis_handles.conn.clone(),
+                key_prefix.to_string(),
+            )
+        }
+        PublishKeyBackendMode::Memory => {
+            info!("Publish key service initialized with in-memory JTI deduplication");
+            PublishKeyService::with_default_ttl(jwt_service)
+        }
+    }
+}
+
 /// Initialize credential encryption from environment variable or secret file
 ///
 /// Tries the following sources in order:
@@ -733,7 +772,7 @@ fn init_credential_encryption() -> Option<crate::service::CredentialEncryption> 
 /// for multi-node safety. Otherwise falls back to in-memory storage.
 fn init_email_service(
     config: &Config,
-    redis_client: Option<&redis::Client>,
+    redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
 ) -> Option<Arc<EmailService>> {
     // Check if SMTP host is configured
     if config.email.smtp_host.is_empty() {
@@ -752,18 +791,19 @@ fn init_email_service(
 
     let cluster_mode = config.cluster_runtime_enabled();
 
-    let result = if let Some(client) = redis_client {
-        info!("Email verification code store: Redis (multi-node safe)");
-        EmailService::with_redis(Some(email_config), Arc::new(client.clone()))
-    } else {
-        if cluster_mode {
-            warn!(
-                "Email verification codes are stored in-memory but cluster mode is active. \
-                 Verification codes will NOT be shared across replicas. \
-                 Configure Redis to fix this."
-            );
+    let result = match (cluster_mode, redis_conn) {
+        (true, Some(shared_conn)) => {
+            info!("Email verification code store: Redis (cluster mode)");
+            EmailService::with_redis(Some(email_config), shared_conn)
         }
-        EmailService::new(Some(email_config))
+        (true, None) => unreachable!(
+            "cluster.enabled=true requires Redis and is validated before service initialization"
+        ),
+        (false, Some(shared_conn)) => {
+            info!("Email verification code store: Redis (multi-node safe)");
+            EmailService::with_redis(Some(email_config), shared_conn)
+        }
+        (false, None) => EmailService::new(Some(email_config)),
     };
 
     match result {
@@ -779,68 +819,106 @@ fn init_email_service(
 mod tests {
     use super::*;
 
-    /// Helper: create a default config with cluster mode disabled.
-    fn standalone_config() -> Config {
-        Config::default()
-    }
-
-    /// Helper: create a config with cluster.enabled = true.
-    fn cluster_enabled_config() -> Config {
-        let mut cfg = Config::default();
-        cfg.cluster.enabled = true;
-        cfg
-    }
-
-    /// Helper: create a config with a non-empty cluster_secret while cluster mode stays disabled.
-    fn cluster_secret_config() -> Config {
-        let mut cfg = Config::default();
-        cfg.server.cluster_secret = "s3cret-token-for-test".to_string();
-        cfg
-    }
-
-    // ── P0#5: Cluster mode must fail-fast without Redis ─────────────
-
     #[test]
-    fn test_cluster_enabled_without_redis_returns_error() {
-        let config = cluster_enabled_config();
-        let result = validate_cluster_redis_requirement(&config, false);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("Cluster mode is enabled"),
-            "Error message should mention cluster mode: {msg}"
-        );
-        assert!(
-            msg.contains("Redis"),
-            "Error message should mention Redis: {msg}"
+    fn test_publish_key_backend_mode_is_fail_closed_in_cluster() {
+        assert_eq!(
+            publish_key_backend_mode(true, true),
+            PublishKeyBackendMode::RedisFailClosed
         );
     }
 
     #[test]
-    fn test_cluster_secret_without_redis_is_ok_when_cluster_disabled() {
-        let config = cluster_secret_config();
-        let result = validate_cluster_redis_requirement(&config, false);
-        assert!(result.is_ok());
+    fn test_publish_key_backend_mode_is_best_effort_in_standalone_with_redis() {
+        assert_eq!(
+            publish_key_backend_mode(false, true),
+            PublishKeyBackendMode::RedisBestEffort
+        );
     }
 
     #[test]
-    fn test_cluster_enabled_with_redis_is_ok() {
-        let config = cluster_enabled_config();
-        let result = validate_cluster_redis_requirement(&config, true);
-        assert!(result.is_ok());
+    fn test_publish_key_backend_mode_is_memory_without_redis() {
+        assert_eq!(
+            publish_key_backend_mode(false, false),
+            PublishKeyBackendMode::Memory
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_room_service_wires_brute_force_protection() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let jwt_service = JwtService::with_durations(
+            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+            24,
+            30,
+            24,
+            60,
+        )
+            .expect("jwt service");
+        let username_cache = UsernameCache::new(
+            Arc::new(NoopCacheL2),
+            "test:user:".to_string(),
+            100,
+            60,
+        );
+        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
+            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
+        );
+        let user_service = UserService::new(
+            pool.clone(),
+            jwt_service,
+            username_cache,
+            Config::default().password_complexity,
+            token_blacklist,
+            crate::cache::KeyBuilder::new("test"),
+            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
+        );
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            None,
+            "node-test".to_string(),
+            "test:cache:stream".to_string(),
+        ));
+
+        let room_service = build_room_service(
+            pool,
+            user_service,
+            cache_invalidation,
+            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
+        );
+
+        assert!(room_service.has_brute_force_service());
     }
 
     #[test]
-    fn test_standalone_without_redis_is_ok() {
-        let config = standalone_config();
-        let result = validate_cluster_redis_requirement(&config, false);
-        assert!(result.is_ok());
+    fn test_cluster_enabled_without_redis_fails_at_config_validation_layer() {
+        let mut config = Config::default();
+        config.cluster.enabled = true;
+        config.server.cluster_secret = "cluster-secret".to_string();
+        config.redis.url.clear();
+
+        let errors = config
+            .validate()
+            .expect_err("cluster.enabled=true without Redis must fail config validation");
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("cluster mode requires Redis")),
+            "Expected cluster/Redis validation error, got: {errors:?}"
+        );
     }
 
     #[test]
-    fn test_standalone_with_redis_is_ok() {
-        let config = standalone_config();
-        let result = validate_cluster_redis_requirement(&config, true);
-        assert!(result.is_ok());
+    fn test_standalone_without_redis_has_no_cluster_redis_validation_error() {
+        let mut config = Config::default();
+        config.cluster.enabled = false;
+        config.redis.url.clear();
+
+        let errors = config.validate().err().unwrap_or_default();
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.contains("cluster mode requires Redis")),
+            "cluster=false should not be rejected by cluster/Redis rule: {errors:?}"
+        );
     }
 }

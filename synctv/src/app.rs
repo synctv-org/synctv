@@ -390,20 +390,9 @@ impl Application {
             });
         }
 
-        let Some(ref redis_conn) = core.services.redis_conn else {
-            error!(
-                "CRITICAL: Cluster mode is enabled (cluster.enabled=true) but Redis is not configured. \
-                 Cannot safely start - each node would believe it is the leader, causing split-brain."
-            );
-            error!(
-                "To fix: either set cluster.enabled=false for single-node mode, \
-                 or configure redis.url to enable proper leader election."
-            );
-            return Err(anyhow::anyhow!(
-                "Cluster mode requires Redis for leader election. \
-                 Either set cluster.enabled=false or configure redis.url."
-            ));
-        };
+        let redis_conn = core.services.redis_conn.as_ref().expect(
+            "cluster.enabled=true invariant violated: Redis must be configured before runtime init",
+        );
 
         // With Redis configured, cluster mode may be active.
         // Leader election failure in this scenario would be catastrophic:
@@ -664,96 +653,78 @@ impl Application {
 
         // ClusterManager (requires Redis)
         let permission_service = Some(core.services.room_service.permission_service().clone());
+        let redis_handles = infra.redis_handles.as_ref().expect(
+            "cluster.enabled=true invariant violated: Redis must be configured before runtime init",
+        );
 
-        let cluster_manager = if let Some(ref rh) = infra.redis_handles {
-            // Create a cancellation token for the cluster manager that is a child
-            // of the ShutdownCoordinator's token, so coordinator shutdown also
-            // cancels all cluster background tasks.
-            let cluster_cancel = shutdown.register_token("cluster_manager");
+        // Create a cancellation token for the cluster manager that is a child
+        // of the ShutdownCoordinator's token, so coordinator shutdown also
+        // cancels all cluster background tasks.
+        let cluster_cancel = shutdown.register_token("cluster_manager");
 
-            let cluster_config = ClusterConfig {
-                redis_client: Some(rh.client.clone()),
-                redis_conn: Some(rh.conn_snapshot().await),
-                cluster_enabled: infra.config.cluster.enabled,
-                node_id: infra.node_id.clone(),
-                dedup_window: Duration::from_secs(
-                    infra
-                        .config
-                        .cluster
-                        .catchup_window_secs
-                        .saturating_mul(3)
-                        .max(900),
-                ),
-                cleanup_interval: Duration::from_secs(30),
-                critical_channel_capacity: infra.config.cluster.critical_channel_capacity,
-                publish_channel_capacity: infra.config.cluster.publish_channel_capacity,
-                key_prefix: infra.config.redis.key_prefix.clone(),
-                catchup_window_secs: infra.config.cluster.catchup_window_secs,
-                stream_max_length: infra.config.cluster.stream_max_length,
-                parent_cancel_token: Some(cluster_cancel),
-            };
-            match ClusterManager::new(
-                cluster_config,
-                permission_service,
-                Some((*core.cache_invalidation).clone()),
-            )
-            .await
-            {
-                Ok(manager) => {
-                    info!("ClusterManager initialized with cross-replica cache invalidation");
-                    Some(Arc::new(manager))
-                }
-                Err(e) => {
-                    // When cluster mode is explicitly enabled, ClusterManager failure
-                    // is a fatal error - the cluster cannot operate without it.
-                    // In standalone mode, we can continue without cluster features.
-                    if infra.config.cluster.enabled {
-                        return Err(anyhow::anyhow!(
-                            "Failed to create ClusterManager (cluster mode): {e}. \
-                             ClusterManager is required when cluster.enabled=true."
-                        ));
-                    }
-                    error!("Failed to create ClusterManager: {}", e);
-                    error!("Continuing in single-node mode");
-                    None
-                }
+        let cluster_config = ClusterConfig {
+            redis_client: Some(redis_handles.client.clone()),
+            redis_conn: Some(redis_handles.conn_snapshot().await),
+            cluster_enabled: infra.config.cluster.enabled,
+            node_id: infra.node_id.clone(),
+            dedup_window: Duration::from_secs(
+                infra
+                    .config
+                    .cluster
+                    .catchup_window_secs
+                    .saturating_mul(3)
+                    .max(900),
+            ),
+            cleanup_interval: Duration::from_secs(30),
+            critical_channel_capacity: infra.config.cluster.critical_channel_capacity,
+            publish_channel_capacity: infra.config.cluster.publish_channel_capacity,
+            key_prefix: infra.config.redis.key_prefix.clone(),
+            catchup_window_secs: infra.config.cluster.catchup_window_secs,
+            stream_max_length: infra.config.cluster.stream_max_length,
+            parent_cancel_token: Some(cluster_cancel),
+        };
+        let cluster_manager = match ClusterManager::new(
+            cluster_config,
+            permission_service,
+            Some((*core.cache_invalidation).clone()),
+        )
+        .await
+        {
+            Ok(manager) => {
+                info!("ClusterManager initialized with cross-replica cache invalidation");
+                Arc::new(manager)
             }
-        } else {
-            return Err(anyhow::anyhow!(
-                "Cluster mode requires Redis-backed ClusterManager, but Redis is not configured"
-            ));
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to create ClusterManager (cluster mode): {e}. \
+                     ClusterManager is required when cluster.enabled=true."
+                ));
+            }
         };
 
         // Wire cluster broadcaster into PlaybackService
-        if let Some(ref cm) = cluster_manager {
-            core.services
-                .room_service
-                .set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
-                    cluster_manager: cm.clone(),
-                }));
-            info!("PlaybackService wired with cluster broadcaster");
-        }
+        core.services
+            .room_service
+            .set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
+                cluster_manager: cluster_manager.clone(),
+            }));
+        info!("PlaybackService wired with cluster broadcaster");
 
         // Cluster discovery (NodeRegistry, HealthMonitor) — requires Redis
         // D1 fix: When cluster is explicitly enabled, discovery failures are fatal.
         let (node_registry, health_monitor, _load_balancer, dns_refresh_handle) =
-            if let (Some(ref cm), Some(ref rh)) = (&cluster_manager, &infra.redis_handles) {
-                init_cluster_discovery(&infra.config, rh, cm, &connection_manager).await?
-            } else {
-                (None, None, None, None)
-            };
+            init_cluster_discovery(&infra.config, redis_handles, &cluster_manager, &connection_manager)
+                .await?;
 
         // Track DNS refresh task
         if let Some(handle) = dns_refresh_handle {
             shutdown.register_task("dns_refresh", handle);
         }
 
-        let redis_publish_tx = cluster_manager
-            .as_ref()
-            .and_then(|cm| cm.redis_publish_tx().cloned());
+        let redis_publish_tx = cluster_manager.redis_publish_tx().cloned();
 
         Ok(ClusterState {
-            cluster_manager,
+            cluster_manager: Some(cluster_manager),
             connection_manager,
             redis_publish_tx,
             node_registry,

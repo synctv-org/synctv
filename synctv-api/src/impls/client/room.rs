@@ -543,24 +543,6 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::CheckRoomPasswordResponse, ApiError> {
         let rid = RoomId::from_string(room_id.to_string());
 
-        // --- Rate limit: per-IP per-room password check (5 attempts / 300s window) ---
-        const MAX_PASSWORD_ATTEMPTS: u32 = 5;
-        const PASSWORD_WINDOW_SECONDS: u64 = 300; // 5 minutes
-        if let Some(ref rate_limiter) = self.rate_limiter {
-            let rate_key = format!("room_password_check:{client_ip}:{room_id}");
-            if let Err(e) = rate_limiter
-                .check_rate_limit(&rate_key, MAX_PASSWORD_ATTEMPTS, PASSWORD_WINDOW_SECONDS)
-                .await
-            {
-                tracing::warn!(
-                    client_ip = %client_ip,
-                    room_id = %room_id,
-                    "Room password check rate limit exceeded"
-                );
-                return Err(ApiError::from(synctv_core::Error::from(e)));
-            }
-        }
-
         // Validate password length
         validate_password_for_verify(&req.password)?;
 
@@ -573,11 +555,13 @@ impl ClientApiImpl {
         // Record start time for timing attack protection
         let start = std::time::Instant::now();
 
+        let parsed_client_ip = client_ip.parse().ok();
+
         let valid = self
             .room_service
-            .check_room_password(&rid, &req.password)
+            .check_room_password_with_rate_limit(&rid, &req.password, parsed_client_ip)
             .await
-            .map_err(|e| ApiError::Internal(format!("Password verification failed: {e}")))?;
+            .map_err(ApiError::from)?;
 
         if !valid {
             tracing::info!(

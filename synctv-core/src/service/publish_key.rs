@@ -74,6 +74,11 @@ pub trait JtiStore: Send + Sync {
 
     /// A label for logging/debug purposes.
     fn backend_name(&self) -> &'static str;
+
+    /// Whether backend errors reject the claim instead of degrading locally.
+    fn fail_closed(&self) -> bool {
+        false
+    }
 }
 
 // ============================================================================
@@ -218,6 +223,10 @@ impl JtiStore for RedisJtiStore {
 
     async fn is_claimed(&self, jti: &str) -> bool {
         self.local_cache.contains_key(jti)
+    }
+
+    fn fail_closed(&self) -> bool {
+        self.fail_closed
     }
 
     fn backend_name(&self) -> &'static str {

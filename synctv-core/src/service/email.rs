@@ -119,14 +119,24 @@ const EMAIL_CODE_KEY_PREFIX: &str = "email:code:";
 
 /// Redis-backed verification code store (multi-node safe).
 pub struct RedisVerificationCodeStore {
-    redis: Arc<redis::Client>,
+    shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
     ttl_minutes: i64,
 }
 
 impl RedisVerificationCodeStore {
     #[must_use]
-    pub const fn new(redis: Arc<redis::Client>, ttl_minutes: i64) -> Self {
-        Self { redis, ttl_minutes }
+    pub const fn new(
+        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        ttl_minutes: i64,
+    ) -> Self {
+        Self {
+            shared_conn,
+            ttl_minutes,
+        }
+    }
+
+    async fn conn(&self) -> redis::aio::ConnectionManager {
+        self.shared_conn.read().await.clone()
     }
 }
 
@@ -137,11 +147,7 @@ impl VerificationCodeStore for RedisVerificationCodeStore {
         let value = serde_json::to_string(code)
             .internal_with_err("Failed to serialize verification code")?;
 
-        let mut conn = self
-            .redis
-            .get_multiplexed_async_connection()
-            .await
-            .internal_with_err("Redis connection failed")?;
+        let mut conn = self.conn().await;
 
         let ttl_seconds = self.ttl_minutes * 60;
         use redis::AsyncCommands;
@@ -166,11 +172,7 @@ impl VerificationCodeStore for RedisVerificationCodeStore {
     ) -> Result<()> {
         let key = format!("{EMAIL_CODE_KEY_PREFIX}{email}");
 
-        let mut conn = self
-            .redis
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+        let mut conn = self.conn().await;
 
         // Lua script: atomically read, check attempts, verify code, and return result.
         //
@@ -421,9 +423,15 @@ impl EmailService {
         Self::from_store(config, store, code_ttl_minutes)
     }
 
-    /// Create a new email service with Redis support (multi-node safe)
-    pub fn with_redis(config: Option<EmailConfig>, redis: Arc<redis::Client>) -> Result<Self> {
-        let store = Arc::new(RedisVerificationCodeStore::new(redis, 10));
+    /// Create a new email service with Redis support (multi-node safe).
+    ///
+    /// Uses a shared Redis `ConnectionManager` handle so Sentinel failover
+    /// updates are picked up automatically.
+    pub fn with_redis(
+        config: Option<EmailConfig>,
+        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    ) -> Result<Self> {
+        let store = Arc::new(RedisVerificationCodeStore::new(shared_conn, 10));
         Self::from_store(config, store, 10)
     }
 

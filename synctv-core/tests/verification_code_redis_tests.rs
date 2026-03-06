@@ -12,7 +12,11 @@ use synctv_core::service::{EmailService, RedisVerificationCodeStore, Verificatio
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
-async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, Arc<redis::Client>) {
+async fn start_redis(
+) -> (
+    testcontainers::ContainerAsync<Redis>,
+    Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+) {
     let container =
         tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
             .await
@@ -24,7 +28,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, Arc<redis::Cli
         .await
         .expect("Failed to get port");
     let redis_url = format!("redis://{host}:{port}");
-    let client = Arc::new(redis::Client::open(redis_url).expect("Failed to create Redis client"));
+    let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
 
     // Wait for Redis to be ready to accept connections (container port mapping
     // may be available before Redis is actually listening).
@@ -35,7 +39,10 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, Arc<redis::Cli
                 .await
                 .is_ok()
             {
-                return (container, client);
+                let manager = redis::aio::ConnectionManager::new(client.clone())
+                    .await
+                    .expect("Failed to create Redis connection manager");
+                return (container, Arc::new(tokio::sync::RwLock::new(manager)));
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

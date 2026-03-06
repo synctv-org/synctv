@@ -346,20 +346,19 @@ impl WsTicketService {
             }
 
             if Self::detect_multi_replica_environment() {
-                return Err(Error::Internal(
-                    "MULTI-REPLICA RISK: WebSocket ticket service cannot use in-memory storage \
-                     in a multi-replica environment (Kubernetes / Docker Swarm / REPLICAS env detected). \
-                     Tickets created on one replica will NOT be valid on others. \
-                     Configure Redis to fix this."
-                        .to_string(),
-                ));
+                warn!(
+                    "WebSocket ticket service is using in-memory storage while multi-replica \
+                     environment signals are present (Kubernetes / Docker Swarm / REPLICAS env). \
+                     This is only safe when cluster.enabled=false and traffic stays single-replica. \
+                     Configure Redis before enabling cluster mode."
+                );
+            } else {
+                warn!(
+                    "WebSocket ticket service using in-memory storage. \
+                     This is only suitable for single-replica deployments. \
+                     For multi-replica setups, configure Redis."
+                );
             }
-
-            warn!(
-                "WebSocket ticket service using in-memory storage. \
-                 This is only suitable for single-replica deployments. \
-                 For multi-replica setups, configure Redis."
-            );
 
             Ok(Self::with_memory(ticket_ttl_secs))
         }
@@ -581,6 +580,28 @@ impl WsTicketService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env_var<T>(key: &str, value: Option<&str>, test: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let original = std::env::var(key).ok();
+
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+
+        let result = test();
+
+        match original {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+
+        result
+    }
 
     fn create_test_user_id(id: &str) -> UserId {
         UserId::from_string(id.to_string())
@@ -817,6 +838,22 @@ mod tests {
             "memory",
             "Non-cluster mode without Redis should use memory backend"
         );
+    }
+
+    /// Test: `cluster.enabled=false` must remain the only runtime switch.
+    /// Even inside Kubernetes (where KUBERNETES_SERVICE_HOST exists), non-cluster
+    /// mode should still allow memory-backed tickets when Redis is absent.
+    #[test]
+    fn test_non_cluster_mode_allows_memory_even_when_k8s_env_is_present() {
+        with_env_var("KUBERNETES_SERVICE_HOST", Some("10.0.0.1"), || {
+            let result = WsTicketService::new(None, Some(30), false);
+            assert!(
+                result.is_ok(),
+                "cluster=false should not be overridden by environment heuristics"
+            );
+            let service = result.unwrap();
+            assert_eq!(service.backend_name(), "memory");
+        });
     }
 
     /// Test: `from_store` allows custom backends for testing purposes.

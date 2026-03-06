@@ -308,6 +308,11 @@ impl RoomService {
         self.brute_force_service = Some(service);
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_brute_force_service(&self) -> bool {
+        self.brute_force_service.is_some()
+    }
+
     /// Inject the settings registry for reading `create_room_need_review` and other global settings.
     pub fn set_settings_registry(&mut self, registry: Arc<crate::service::SettingsRegistry>) {
         self.settings_registry = Some(registry);

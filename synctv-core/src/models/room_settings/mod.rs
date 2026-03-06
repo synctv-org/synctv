@@ -301,7 +301,6 @@ room_setting!(AllowGuestJoin, bool, "allow_guest_join", false);
 room_setting!(RequirePassword, bool, "require_password", false);
 room_setting!(RequireApproval, bool, "require_approval", false);
 room_setting!(AllowAutoJoin, bool, "allow_auto_join", true);
-room_setting!(AutoPlayNext, bool, "auto_play_next", false);
 
 /// Maximum allowed value for `max_members` setting (used in validator below)
 const MAX_MEMBERS_LIMIT: u64 = 10_000;
@@ -436,8 +435,6 @@ pub struct RoomSettings {
     pub allow_auto_join: AllowAutoJoin,
     pub chat_enabled: ChatEnabled,
     pub danmaku_enabled: DanmakuEnabled,
-    #[serde(default)]
-    pub auto_play_next: AutoPlayNext,
     #[serde(default)]
     pub auto_play: AutoPlay,
     #[serde(default)]

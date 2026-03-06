@@ -730,7 +730,7 @@ impl PlaybackService {
         room_id: &RoomId,
         settings: &RoomSettings,
     ) -> Result<Option<RoomPlaybackState>> {
-        let enabled = settings.auto_play.value.enabled || settings.auto_play_next.0;
+        let enabled = settings.auto_play.value.enabled;
         let mode = settings.auto_play.value.mode;
 
         if !enabled {
@@ -937,7 +937,7 @@ impl PlaybackService {
         settings: &RoomSettings,
         current_time: f64,
     ) -> Result<Option<RoomPlaybackState>> {
-        let enabled = settings.auto_play.value.enabled || settings.auto_play_next.0;
+        let enabled = settings.auto_play.value.enabled;
 
         if !enabled {
             return Ok(None);

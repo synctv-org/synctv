@@ -260,7 +260,7 @@ mod tests {
         let limiter = RateLimiter::in_memory_only("email_token_test:".to_string());
 
         // Create service with aggressive rate limiting for testing
-        let config = EmailTokenRateLimitConfig {
+        let _config = EmailTokenRateLimitConfig {
             max_tokens_per_user: 2,
             window_seconds: 60,
         };

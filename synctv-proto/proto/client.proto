@@ -451,7 +451,6 @@ message ListPlaylistsRequest {
     int32 page_size = 3;  // Items per page (default 50). Validation: max 100
 }
 
-// DEPRECATED: Use GetPlaylistResponse and ListPlaylistContentsResponse instead
 message ListPlaylistsResponse {
     repeated Playlist playlists = 1;
     int32 total = 2; // Total number of playlists matching filter

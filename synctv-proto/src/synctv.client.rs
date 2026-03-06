@@ -546,7 +546,6 @@ pub struct ListPlaylistsRequest {
     #[prost(int32, tag = "3")]
     pub page_size: i32,
 }
-/// DEPRECATED: Use GetPlaylistResponse and ListPlaylistContentsResponse instead
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListPlaylistsResponse {

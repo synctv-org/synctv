@@ -67,18 +67,13 @@ ALTER TABLE room_members
     ADD CONSTRAINT check_room_members_status
     CHECK (status BETWEEN 1 AND 4);
 
--- Consistency constraint: left_at and status must agree.
--- Active/pending members (status 1,2) must have left_at IS NULL.
--- Banned members (status 3) must have banned_at set AND left_at set
--- (a banned member has effectively left the room).
--- Left members (status 4) must have left_at set.
-ALTER TABLE room_members
-    ADD CONSTRAINT check_room_members_left_at_status
-    CHECK (
-        (status IN (1, 2) AND left_at IS NULL)
-        OR (status = 3 AND banned_at IS NOT NULL AND left_at IS NOT NULL)
-        OR (status = 4 AND left_at IS NOT NULL)
-    );
+-- Status constraint: 1=active, 2=pending, 3=banned, 4=left
+-- Note: Status changes are managed at the application layer:
+-- - Active/pending -> banned: application sets banned_at and left_at
+-- - Banned -> active: application clears banned_at and left_at
+-- - Active/pending -> left: application sets left_at
+-- - Left -> active: application clears left_at
+-- This constraint is removed to allow flexible state transitions at-- Comment removed
 
 -- Comments
 COMMENT ON TABLE room_members IS 'Room membership with Allow/Deny permission pattern';

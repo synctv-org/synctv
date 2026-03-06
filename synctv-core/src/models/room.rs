@@ -364,9 +364,6 @@ impl Default for RoomListQuery {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RoomSettingsJson {
     pub require_password: bool,
-    /// Auto-play settings (deprecated, use `auto_play`)
-    #[serde(default)]
-    pub auto_play_next: bool,
     /// Auto-play settings
     #[serde(default)]
     pub auto_play: AutoPlaySettings,

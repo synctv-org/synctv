@@ -17,10 +17,8 @@ use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        room::AutoPlaySettings,
-        room_settings::{AutoPlay, AutoPlayNext},
-        Media, MediaId, PlayMode, Playlist, PlaylistId, RoomId, RoomSettings, User, UserId,
-        UserRole, UserStatus,
+        room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode, Playlist,
+        PlaylistId, RoomId, RoomSettings, User, UserId, UserRole, UserStatus,
     },
     repository::{MediaRepository, UserRepository},
     service::{
@@ -82,7 +80,6 @@ fn make_settings_with_mode(mode: PlayMode) -> RoomSettings {
             mode,
             delay: 0,
         }),
-        auto_play_next: AutoPlayNext(true),
         ..Default::default()
     }
 }
@@ -540,14 +537,13 @@ async fn test_auto_play_disabled_returns_none() {
         .await
         .unwrap();
 
-    // Disabled: auto_play.enabled = false AND auto_play_next = false
+    // Disabled: auto_play.enabled = false
     let settings = RoomSettings {
         auto_play: AutoPlay::new(AutoPlaySettings {
             enabled: false,
             mode: PlayMode::Sequential,
             delay: 0,
         }),
-        auto_play_next: AutoPlayNext(false),
         ..Default::default()
     };
 

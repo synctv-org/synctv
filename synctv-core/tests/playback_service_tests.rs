@@ -577,7 +577,11 @@ async fn test_play_next_at_end_of_playlist() {
 
     // Sequential mode (no loop) - play_next should return None
     let settings = RoomSettings {
-        auto_play_next: room_settings::AutoPlayNext(false),
+        auto_play: room_settings::AutoPlay::new(synctv_core::models::room::AutoPlaySettings {
+            enabled: false,
+            mode: synctv_core::models::PlayMode::Sequential,
+            delay: 0,
+        }),
         ..Default::default()
     };
 

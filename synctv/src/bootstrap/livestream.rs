@@ -131,10 +131,12 @@ pub async fn init_livestream(
             node_id: node_id.to_string(),
             cleanup_check_interval_seconds: config.livestream.cleanup_check_interval_seconds,
             stream_timeout_seconds: config.livestream.stream_timeout_seconds,
-            cluster_secret: if config.server.cluster_secret.is_empty() {
-                None
-            } else {
+            cluster_secret: if config.cluster_runtime_enabled()
+                && !config.server.cluster_secret.is_empty()
+            {
                 Some(config.server.cluster_secret.clone())
+            } else {
+                None
             },
             gop_cache_max_memory_mb: config.livestream.gop_cache_max_memory_mb,
             grpc_address: config.advertise_grpc_address(),

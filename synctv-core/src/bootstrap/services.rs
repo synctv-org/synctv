@@ -126,11 +126,11 @@ pub fn validate_cluster_redis_requirement(
     config: &Config,
     has_redis: bool,
 ) -> Result<(), anyhow::Error> {
-    let cluster_mode = config.cluster.enabled || !config.server.cluster_secret.is_empty();
+    let cluster_mode = config.cluster_runtime_enabled();
     if cluster_mode && !has_redis {
         return Err(anyhow::anyhow!(
-            "Cluster mode is enabled (cluster.enabled=true or cluster_secret is set) but Redis \
-             is not configured. Redis is required for cross-replica coordination in cluster mode. \
+            "Cluster mode is enabled (cluster.enabled=true) but Redis is not configured. \
+             Redis is required for cross-replica coordination in cluster mode. \
              Either configure redis.url or disable cluster mode."
         ));
     }
@@ -148,7 +148,7 @@ pub async fn init_services(
     // ── Fail-fast: cluster mode requires Redis ──────────────────────────
     validate_cluster_redis_requirement(config, redis_handles.is_some())?;
 
-    let cluster_mode = config.cluster.enabled || !config.server.cluster_secret.is_empty();
+    let cluster_mode = config.cluster_runtime_enabled();
 
     // Initialize JWT service
     info!("Loading JWT keys...");
@@ -765,7 +765,7 @@ fn init_email_service(
         use_tls: config.email.use_tls,
     };
 
-    let cluster_mode = config.cluster.enabled || !config.server.cluster_secret.is_empty();
+    let cluster_mode = config.cluster_runtime_enabled();
 
     let result = if let Some(client) = redis_client {
         info!("Email verification code store: Redis (multi-node safe)");
@@ -806,7 +806,7 @@ mod tests {
         cfg
     }
 
-    /// Helper: create a config with a non-empty cluster_secret (implicit cluster mode).
+    /// Helper: create a config with a non-empty cluster_secret while cluster mode stays disabled.
     fn cluster_secret_config() -> Config {
         let mut cfg = Config::default();
         cfg.server.cluster_secret = "s3cret-token-for-test".to_string();
@@ -832,12 +832,10 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_secret_without_redis_returns_error() {
+    fn test_cluster_secret_without_redis_is_ok_when_cluster_disabled() {
         let config = cluster_secret_config();
         let result = validate_cluster_redis_requirement(&config, false);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("cluster_secret"));
+        assert!(result.is_ok());
     }
 
     #[test]

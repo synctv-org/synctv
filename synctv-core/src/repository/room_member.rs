@@ -225,6 +225,11 @@ impl RoomMemberRepository {
         if options.check_max_members {
             let max_members = options.max_members;
             if max_members > 0 {
+                sqlx::query("SELECT id FROM rooms WHERE id = $1 FOR UPDATE")
+                    .bind(member.room_id.as_str())
+                    .execute(&mut **tx)
+                    .await?;
+
                 // Lock all member rows for this room to prevent concurrent inserts
                 // from seeing the same count value
                 let count_row = sqlx::query(

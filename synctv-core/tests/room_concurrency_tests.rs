@@ -72,8 +72,8 @@ async fn create_test_pool() -> TestPostgres {
         let mut retries = 0u32;
         loop {
             match sqlx::postgres::PgPoolOptions::new()
-                .max_connections(10) // Higher for concurrent tests
-                .acquire_timeout(std::time::Duration::from_secs(2))
+                .max_connections(64) // Higher for concurrent tests with serialized room-row locking
+                .acquire_timeout(std::time::Duration::from_secs(10))
                 .connect(&database_url)
                 .await
             {

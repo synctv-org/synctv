@@ -147,6 +147,15 @@ pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> t
     }
 }
 
+fn should_register_cluster_grpc_service(
+    config: &synctv_core::Config,
+    node_registry_available: bool,
+) -> bool {
+    config.cluster_runtime_enabled()
+        && !config.server.cluster_secret.is_empty()
+        && node_registry_available
+}
+
 // Use synctv_proto for all server traits and message types (single source of truth)
 use crate::proto::admin_service_server::AdminServiceServer;
 use crate::proto::client::{
@@ -245,7 +254,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         oauth2_service,
         audit_service,
         node_registry,
-        redis_client,
+        redis_client: _,
         redis_conn,
         shutdown_rx,
         builtin_stun_url,
@@ -714,13 +723,18 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         ));
     }
 
-    // Register cluster gRPC service (requires cluster_secret and NodeRegistry)
-    if config.server.cluster_secret.is_empty() {
+    // Register cluster gRPC service only in cluster mode.
+    if !config.cluster_runtime_enabled() {
+        tracing::info!("Cluster mode disabled — cluster gRPC service will not be registered");
+    } else if config.server.cluster_secret.is_empty() {
         tracing::error!(
             "cluster_secret is empty — cluster gRPC service will NOT be registered. \
              Cluster coordination will be disabled. Set cluster_secret in config to enable."
         );
-    } else if let Some(ref nr) = node_registry {
+    } else if should_register_cluster_grpc_service(config, node_registry.is_some()) {
+        let nr = node_registry
+            .as_ref()
+            .expect("node_registry presence checked by should_register_cluster_grpc_service");
         let cluster_server =
             synctv_cluster::grpc::ClusterServer::new(nr.clone(), cluster_node_id.clone())
                 .with_connection_manager(std::sync::Arc::new(
@@ -736,40 +750,10 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         tracing::info!(
             "Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)"
         );
-    } else if let Some(redis_client) = redis_client {
-        // Fallback: create a standalone NodeRegistry for cluster gRPC (single-node mode with Redis)
-        let fallback_result = synctv_cluster::discovery::NodeRegistry::new(
-            redis_client,
-            cluster_node_id.clone(),
-            30,
-            &config.redis.key_prefix,
-        )
-        .map_err(|e| e.to_string());
-        match fallback_result {
-            Ok(fallback_registry) => {
-                let cluster_server = synctv_cluster::grpc::ClusterServer::new(
-                    std::sync::Arc::new(fallback_registry),
-                    cluster_node_id.clone(),
-                )
-                .with_connection_manager(std::sync::Arc::new(
-                    connection_manager_for_provider.clone(),
-                ));
-                let cluster_interceptor =
-                    ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
-                router = router.add_service(
-                    synctv_cluster::grpc::ClusterServiceServer::with_interceptor(
-                        cluster_server,
-                        move |req| cluster_interceptor.validate(req),
-                    ),
-                );
-                tracing::info!("Cluster gRPC service registered with shared-secret auth (standalone NodeRegistry)");
-            }
-            Err(e) => {
-                tracing::warn!("Failed to create NodeRegistry for cluster gRPC: {e}");
-            }
-        }
     } else {
-        tracing::info!("No Redis configured — skipping cluster gRPC service registration");
+        tracing::warn!(
+            "Cluster mode is enabled but NodeRegistry is unavailable — cluster gRPC service will not be registered"
+        );
     }
 
     // Register gRPC health check service (standard grpc.health.v1.Health).
@@ -843,4 +827,38 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_register_cluster_grpc_service;
+
+    #[test]
+    fn test_cluster_grpc_service_requires_cluster_mode() {
+        let mut config = synctv_core::Config::default();
+        config.server.cluster_secret = "shared-secret".to_string();
+
+        assert!(
+            !should_register_cluster_grpc_service(&config, true),
+            "cluster_secret alone must not enable cluster gRPC"
+        );
+
+        config.cluster.enabled = true;
+        assert!(
+            should_register_cluster_grpc_service(&config, true),
+            "cluster-enabled deployments with a secret and registry should expose cluster gRPC"
+        );
+    }
+
+    #[test]
+    fn test_cluster_grpc_service_requires_node_registry() {
+        let mut config = synctv_core::Config::default();
+        config.cluster.enabled = true;
+        config.server.cluster_secret = "shared-secret".to_string();
+
+        assert!(
+            !should_register_cluster_grpc_service(&config, false),
+            "cluster gRPC must not be registered before NodeRegistry is ready"
+        );
+    }
 }

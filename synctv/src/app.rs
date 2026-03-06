@@ -81,6 +81,28 @@ pub struct Application {
     shutdown: ShutdownCoordinator,
 }
 
+fn cluster_runtime_enabled(config: &Config) -> bool {
+    config.cluster_runtime_enabled()
+}
+
+fn should_start_cache_invalidation_listener(config: &Config, has_redis: bool) -> bool {
+    cluster_runtime_enabled(config) && has_redis
+}
+
+fn build_connection_manager(
+    limits: ConnectionLimits,
+    redis_conn: Option<redis::aio::ConnectionManager>,
+    redis_key_prefix: &str,
+) -> ConnectionManager {
+    let manager = if let Some(conn) = redis_conn {
+        ConnectionManager::new(limits).with_redis(conn, redis_key_prefix)
+    } else {
+        ConnectionManager::new(limits)
+    };
+    manager.start();
+    manager
+}
+
 impl Application {
     /// Build the application through phased initialization.
     ///
@@ -283,12 +305,12 @@ impl Application {
         // Start the cache invalidation Redis subscriber BEFORE init_services.
         // Issue #44: subscriber must be running before any service publishes an
         // invalidation event to avoid dropped messages during initialization.
-        if infra.redis_handles.is_some() {
+        if should_start_cache_invalidation_listener(&infra.config, infra.redis_handles.is_some()) {
             if let Err(e) = cache_invalidation.start().await {
                 // When cluster mode is explicitly enabled, cache invalidation failure
                 // is a fatal error - the cluster cannot maintain cache consistency without it.
                 // In standalone mode, we can continue with local-only caching.
-                if infra.config.cluster.enabled {
+                if cluster_runtime_enabled(&infra.config) {
                     return Err(anyhow::anyhow!(
                         "Failed to start cache invalidation listener (cluster mode): {e}. \
                          Cache consistency is required when cluster.enabled=true."
@@ -357,31 +379,8 @@ impl Application {
         core: &CoreState,
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<LeaderState> {
-        // Without Redis, we need to decide: AlwaysLeader (single-node) or error (cluster)?
-        let Some(ref redis_conn) = core.services.redis_conn else {
-            // CRITICAL: In cluster mode, falling back to AlwaysLeader would cause split-brain.
-            // Multiple nodes could all believe they are the leader and run singleton tasks
-            // (partition management, cleanup) simultaneously, causing database corruption
-            // or inconsistent state.
-            if infra.config.cluster.enabled {
-                error!(
-                    "CRITICAL: Cluster mode is enabled (cluster.enabled=true) but Redis is not configured. \
-                     Cannot safely start - each node would believe it is the leader, causing split-brain."
-                );
-                error!(
-                    "To fix: either set cluster.enabled=false for single-node mode, \
-                     or configure redis.url to enable proper leader election."
-                );
-                return Err(anyhow::anyhow!(
-                    "Cluster mode requires Redis for leader election. \
-                     Either set cluster.enabled=false or configure redis.url."
-                ));
-            }
-
-            // Safe: cluster mode is disabled, this is a single-node deployment.
-            // Using AlwaysLeader is correct because there's only one node.
-            info!("No Redis configured — using AlwaysLeader (single node)");
-            // Set metrics: standalone mode (0), always leader
+        if !cluster_runtime_enabled(&infra.config) {
+            info!("Cluster mode disabled — using AlwaysLeader");
             synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(0);
             synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(1);
             synctv_core::metrics::cluster::LEADER_ELECTION_EPOCH.set(0);
@@ -389,6 +388,21 @@ impl Application {
             return Ok(LeaderState {
                 leader_check: Arc::new(synctv_core::service::AlwaysLeader),
             });
+        }
+
+        let Some(ref redis_conn) = core.services.redis_conn else {
+            error!(
+                "CRITICAL: Cluster mode is enabled (cluster.enabled=true) but Redis is not configured. \
+                 Cannot safely start - each node would believe it is the leader, causing split-brain."
+            );
+            error!(
+                "To fix: either set cluster.enabled=false for single-node mode, \
+                 or configure redis.url to enable proper leader election."
+            );
+            return Err(anyhow::anyhow!(
+                "Cluster mode requires Redis for leader election. \
+                 Either set cluster.enabled=false or configure redis.url."
+            ));
         };
 
         // With Redis configured, cluster mode may be active.
@@ -623,14 +637,33 @@ impl Application {
             max_duration: Duration::from_secs(infra.config.connection_limits.max_duration_seconds),
             webrtc_session_timeout: Duration::from_hours(2), // 2 hours (matches ConnectionLimits::default())
         };
-        let connection_manager = ConnectionManager::new(connection_limits);
-        connection_manager.start();
+        let redis_conn_for_connections = if let Some(ref rh) = infra.redis_handles {
+            Some(rh.conn_snapshot().await)
+        } else {
+            None
+        };
+        let connection_manager = build_connection_manager(
+            connection_limits,
+            redis_conn_for_connections,
+            &infra.config.redis.key_prefix,
+        );
         info!(
             max_per_user = infra.config.connection_limits.max_per_user,
             max_per_room = infra.config.connection_limits.max_per_room,
             max_total = infra.config.connection_limits.max_total,
             "Connection manager initialized with configurable limits"
         );
+
+        if !cluster_runtime_enabled(&infra.config) {
+            info!("Cluster mode disabled — skipping ClusterManager and discovery");
+            return Ok(ClusterState {
+                cluster_manager: None,
+                connection_manager,
+                redis_publish_tx: None,
+                node_registry: None,
+                health_monitor: None,
+            });
+        }
 
         // ClusterManager (requires Redis)
         let permission_service = Some(core.services.room_service.permission_service().clone());
@@ -689,8 +722,9 @@ impl Application {
                 }
             }
         } else {
-            info!("No Redis configured — skipping ClusterManager (single-node mode)");
-            None
+            return Err(anyhow::anyhow!(
+                "Cluster mode requires Redis-backed ClusterManager, but Redis is not configured"
+            ));
         };
 
         // Wire cluster broadcaster into PlaybackService
@@ -833,5 +867,92 @@ impl Application {
             livestream_state: servers.livestream_state,
             shutdown,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cluster_runtime_enabled_depends_only_on_cluster_flag() {
+        let mut config = Config::default();
+        config.server.cluster_secret = "shared-secret".to_string();
+
+        assert!(
+            !cluster_runtime_enabled(&config),
+            "cluster_secret alone must not activate cluster runtime"
+        );
+
+        config.cluster.enabled = true;
+        assert!(
+            cluster_runtime_enabled(&config),
+            "cluster.enabled=true must activate cluster runtime"
+        );
+    }
+
+    #[test]
+    fn test_cache_invalidation_listener_requires_cluster_mode_and_redis() {
+        let mut config = Config::default();
+        assert!(!should_start_cache_invalidation_listener(&config, false));
+        assert!(!should_start_cache_invalidation_listener(&config, true));
+
+        config.cluster.enabled = true;
+        assert!(!should_start_cache_invalidation_listener(&config, false));
+        assert!(should_start_cache_invalidation_listener(&config, true));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn test_build_connection_manager_wires_redis_when_available() {
+        use redis::AsyncCommands;
+        use synctv_core::models::{RoomId, UserId};
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::redis::Redis;
+
+        let redis = tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
+            .await
+            .expect("Redis container startup timed out")
+            .expect("Failed to start Redis container");
+
+        let port = redis
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Redis port should be exposed");
+        let redis_url = format!("redis://127.0.0.1:{port}");
+        let client = redis::Client::open(redis_url).expect("Redis client should be created");
+        let app_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .expect("App connection manager should be created");
+
+        let manager =
+            build_connection_manager(ConnectionLimits::default(), Some(app_conn), "test-app:");
+
+        manager
+            .register(
+                "conn-1".to_string(),
+                UserId::from_string("user-1".to_string()),
+            )
+            .await
+            .expect("Connection registration should succeed");
+        manager
+            .join_room("conn-1", RoomId::from_string("room-1".to_string()))
+            .await
+            .expect("Room join should succeed");
+
+        let mut verify_conn = redis::aio::ConnectionManager::new(client)
+            .await
+            .expect("Verification connection should be created");
+        let count: i64 = verify_conn
+            .get("test-app:connections:room:room-1")
+            .await
+            .expect("Redis room counter should exist when ConnectionManager is wired");
+
+        assert_eq!(
+            count, 1,
+            "Distributed room counter should be written to Redis"
+        );
+
+        manager.shutdown();
     }
 }

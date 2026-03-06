@@ -164,6 +164,39 @@ async fn test_join_room_moves_between_rooms() {
     assert_eq!(conn.room_id.unwrap().as_str(), "r2");
 }
 
+#[tokio::test]
+async fn test_join_room_rejection_preserves_previous_room_membership() {
+    let limits = synctv_cluster::sync::ConnectionLimits {
+        max_per_room: 1,
+        ..Default::default()
+    };
+    let mgr = ConnectionManager::new(limits);
+    let room_a = rid("room_a");
+    let room_b = rid("room_b");
+
+    mgr.register("conn_a".to_string(), uid("user_a"))
+        .await
+        .unwrap();
+    mgr.register("conn_b".to_string(), uid("user_b"))
+        .await
+        .unwrap();
+
+    mgr.join_room("conn_a", room_a.clone()).await.unwrap();
+    mgr.join_room("conn_b", room_b.clone()).await.unwrap();
+
+    let err = mgr.join_room("conn_a", room_b.clone()).await.unwrap_err();
+    assert!(err.contains("Room at capacity"));
+
+    assert_eq!(mgr.room_connection_count(&room_a), 1);
+    assert_eq!(mgr.room_connection_count(&room_b), 1);
+
+    let conn = mgr.get_connection("conn_a").unwrap();
+    assert_eq!(
+        conn.room_id.as_ref().map(|room| room.as_str()),
+        Some("room_a")
+    );
+}
+
 // ============================================================================
 // Test 3: max_duration timeout
 // ============================================================================

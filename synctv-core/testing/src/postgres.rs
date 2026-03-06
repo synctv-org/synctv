@@ -66,8 +66,8 @@ pub async fn create_test_pool() -> (TestContainer, PgPool) {
         let mut retries = 0u32;
         loop {
             match PgPoolOptions::new()
-                .acquire_timeout(std::time::Duration::from_secs(2))
-                .max_connections(5)
+                .acquire_timeout(std::time::Duration::from_secs(5))
+                .max_connections(20)
                 .connect(&connection_string)
                 .await
             {
@@ -128,8 +128,8 @@ pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) 
         let mut retries = 0u32;
         loop {
             match PgPoolOptions::new()
-                .acquire_timeout(std::time::Duration::from_secs(2))
-                .max_connections(5)
+                .acquire_timeout(std::time::Duration::from_secs(5))
+                .max_connections(20)
                 .connect(&connection_string)
                 .await
             {

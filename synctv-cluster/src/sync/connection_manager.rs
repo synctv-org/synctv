@@ -824,7 +824,11 @@ impl ConnectionManager {
     /// Returns Ok(()) if connection is allowed, or Err with reason if rejected.
     ///
     /// When Redis is configured, enforces per-user limits across all replicas.
-    /// Falls back to per-node limits if Redis is unavailable.
+    ///
+    /// If Redis becomes unavailable while distributed enforcement is enabled,
+    /// registration fails closed instead of silently degrading to per-node-only
+    /// limits. In cluster mode, allowing local-only admission would let replicas
+    /// oversubscribe the same user concurrently.
     pub async fn register(&self, connection_id: String, user_id: UserId) -> Result<(), String> {
         // Atomically reserve a slot in the total connection count.
         // fetch_add returns the previous value; if it was already at the limit,
@@ -838,12 +842,13 @@ impl ConnectionManager {
             ));
         }
 
+        let total_key = format!("{}connections:total", self.redis_key_prefix);
+
         // Increment distributed total connection counter (best-effort).
         // Uses the same atomic INCR+EXPIRE Lua script as redis_incr_and_check()
         // to prevent a crash between the two operations from leaving a key
         // without a TTL.
         if let Some(ref conn) = self.redis_conn {
-            let total_key = format!("{}connections:total", self.redis_key_prefix);
             let mut conn_clone = conn.clone();
             let script = redis::Script::new(
                 "local count = redis.call('INCR', KEYS[1]) \
@@ -865,6 +870,9 @@ impl ConnectionManager {
         // window where two replicas could both pass the check concurrently.
         //
         // When Redis is not configured, fall back to the local DashMap count.
+        // App wiring only enables Redis-backed ConnectionManager in cluster mode,
+        // so a Redis error here means distributed state is unavailable and we
+        // must fail closed instead of weakening enforcement.
         if let Some(ref conn) = self.redis_conn {
             let redis_key = format!(
                 "{}connections:user:{}",
@@ -889,17 +897,15 @@ impl ConnectionManager {
                     ));
                 }
                 Err(e) => {
-                    // Redis error -- fall back to local-only check below.
-                    warn!("Distributed user connection check failed, using local fallback: {e}");
-                    // Fall through to local check.
-                    let user_count = self.user_connections.get(&user_id).map_or(0, |c| c.len());
-                    if user_count >= self.limits.max_per_user {
-                        self.total_connections.fetch_sub(1, Ordering::AcqRel);
-                        return Err(format!(
-                            "Too many connections for this user (max {})",
-                            self.limits.max_per_user
-                        ));
+                    self.total_connections.fetch_sub(1, Ordering::AcqRel);
+                    if self.redis_decr(conn, &total_key).await.is_err() {
+                        self.enqueue_retry(PendingRedisOp::Decr(total_key.clone()));
                     }
+                    warn!("Distributed user connection check failed; rejecting connection: {e}");
+                    return Err(
+                        "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
+                            .to_string(),
+                    );
                 }
             }
         } else {
@@ -991,11 +997,10 @@ impl ConnectionManager {
     /// Enforces per-room connection limits to prevent resource exhaustion.
     /// When Redis is configured, limits are enforced across all replicas.
     ///
-    /// If the connection is already in a different room, it is removed from
-    /// the old room first (preventing a double-join / leaked entry).
+    /// If the connection already belongs to a different room, the move is only
+    /// committed after the target room passes all capacity checks. This avoids
+    /// dropping the existing room membership when the new room rejects the move.
     pub async fn join_room(&self, connection_id: &str, room_id: RoomId) -> Result<(), String> {
-        // Check if connection already belongs to a room and remove it from the old
-        // room's entry before adding to the new one (prevent double-join).
         let old_room_id: Option<RoomId> = {
             let old = self
                 .connections
@@ -1004,34 +1009,13 @@ impl ConnectionManager {
 
             if let Some(ref old_room) = old {
                 if old_room == &room_id {
-                    // Already in the target room -- nothing to do
                     return Ok(());
-                }
-                // Remove from old room's connection list
-                if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
-                    old_room_conns.retain(|id| id != connection_id);
-                    if old_room_conns.is_empty() {
-                        drop(old_room_conns);
-                        self.room_connections.remove(old_room);
-                    }
                 }
             }
             old
         };
 
-        // Decrement old room's distributed counter if we left a room
-        if let Some(ref old_room) = old_room_id {
-            if let Some(ref conn) = self.redis_conn {
-                let old_key = format!(
-                    "{}connections:room:{}",
-                    self.redis_key_prefix,
-                    old_room.as_str()
-                );
-                let _ = self.redis_decr(conn, &old_key).await;
-            }
-        }
-
-        // Check per-room limit locally, then increment Redis, then add to local map.
+        // Check per-room limit locally, then increment Redis, then commit the move.
         //
         // The DashMap entry lock is NOT held across the Redis await to avoid
         // blocking the entire shard during Redis RTT. This means there is a
@@ -1049,11 +1033,10 @@ impl ConnectionManager {
                     self.limits.max_per_room
                 ));
             }
-            // Lock dropped here
         }
 
         // Step 2: Check distributed per-room limit via Redis (no DashMap lock held)
-        let redis_room_incremented = if let Some(ref _conn) = self.redis_conn {
+        let redis_room_incremented = if let Some(ref redis_conn) = self.redis_conn {
             let redis_key = format!(
                 "{}connections:room:{}",
                 self.redis_key_prefix,
@@ -1065,38 +1048,31 @@ impl ConnectionManager {
             {
                 Ok(true) => true,
                 Ok(false) => {
-                    let _ = self.redis_decr(_conn, &redis_key).await;
+                    let _ = self.redis_decr(redis_conn, &redis_key).await;
                     return Err(format!(
                         "Room at capacity across all replicas ({} connections)",
                         self.limits.max_per_room
                     ));
                 }
                 Err(e) => {
-                    warn!("Distributed room connection check failed, using local fallback: {e}");
-                    false
+                    warn!("Distributed room connection check failed; rejecting room join: {e}");
+                    return Err(
+                        "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
+                            .to_string(),
+                    );
                 }
             }
         } else {
             false
         };
 
-        // Step 3: Add connection to local map (short-lived lock)
-        {
-            let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
-            room_entry.push(connection_id.to_string());
-        }
-
-        // Update connection info
+        // Step 3: Update connection info first. If the connection disappeared,
+        // roll back the distributed increment and leave prior room membership intact.
         let conn_info_updated = if let Some(mut conn) = self.connections.get_mut(connection_id) {
             conn.room_id = Some(room_id.clone());
             conn.last_activity = Instant::now();
             Some(conn.clone())
         } else {
-            // Connection disappeared -- roll back the room_connections entry
-            if let Some(mut room_conns) = self.room_connections.get_mut(&room_id) {
-                room_conns.retain(|id| id != connection_id);
-            }
-            // Roll back Redis counter
             if redis_room_incremented {
                 if let Some(ref conn) = self.redis_conn {
                     let redis_key = format!(
@@ -1109,6 +1085,36 @@ impl ConnectionManager {
             }
             return Err("Connection not found".to_string());
         };
+
+        // Step 4: Commit the room move locally after all checks have passed.
+        {
+            let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
+            room_entry.push(connection_id.to_string());
+        }
+
+        if let Some(ref old_room) = old_room_id {
+            if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
+                old_room_conns.retain(|id| id != connection_id);
+                if old_room_conns.is_empty() {
+                    drop(old_room_conns);
+                    self.room_connections.remove(old_room);
+                }
+            }
+        }
+
+        // Step 5: Decrement the old room's distributed counter only after the
+        // move succeeds. If it fails, enqueue a retry so Redis eventually matches
+        // the in-memory truth.
+        if let (Some(old_room), Some(redis_conn)) = (&old_room_id, &self.redis_conn) {
+            let old_key = format!(
+                "{}connections:room:{}",
+                self.redis_key_prefix,
+                old_room.as_str()
+            );
+            if self.redis_decr(redis_conn, &old_key).await.is_err() {
+                self.enqueue_retry(PendingRedisOp::Decr(old_key));
+            }
+        }
 
         // Update Redis metadata with new room_id (best-effort)
         if let (Some(info), Some(ref conn)) = (conn_info_updated, &self.redis_conn) {

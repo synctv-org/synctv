@@ -72,24 +72,6 @@ impl SingleLockCacheSim {
             data: RwLock::new((Vec::new(), Vec::new(), Vec::new(), 0, 0, 0)),
         }
     }
-
-    fn save_video(&self, data: &[u8], ts: u32) {
-        let mut guard = self.data.write();
-        guard.0 = data.to_vec();
-        guard.3 = ts;
-    }
-
-    fn save_audio(&self, data: &[u8], ts: u32) {
-        let mut guard = self.data.write();
-        guard.1 = data.to_vec();
-        guard.4 = ts;
-    }
-
-    fn save_metadata(&self, data: &[u8], ts: u32) {
-        let mut guard = self.data.write();
-        guard.2 = data.to_vec();
-        guard.5 = ts;
-    }
 }
 
 // ==================================================================
@@ -99,68 +81,88 @@ impl SingleLockCacheSim {
 /// Benchmark split lock vs single lock under high contention
 #[test]
 fn test_split_lock_vs_single_lock_performance() {
-    const ITERATIONS: usize = 10_000;
-    const THREAD_COUNT: usize = 8;
+    const HOLD_TIME: Duration = Duration::from_millis(40);
 
-    // Test split lock
     let split_cache = Arc::new(SplitCacheSim::new());
-    let start = Instant::now();
+    let split_barrier = Arc::new(std::sync::Barrier::new(4));
 
-    let handles: Vec<_> = (0..THREAD_COUNT)
+    let handles: Vec<_> = (0..3)
         .map(|tid| {
             let cache = Arc::clone(&split_cache);
+            let barrier = Arc::clone(&split_barrier);
             thread::spawn(move || {
-                for i in 0..ITERATIONS {
-                    let data = vec![tid as u8; 64];
-                    match tid % 3 {
-                        0 => cache.save_video(&data, i as u32),
-                        1 => cache.save_audio(&data, i as u32),
-                        _ => cache.save_metadata(&data, i as u32),
+                barrier.wait();
+                let data = vec![tid as u8; 64];
+                match tid {
+                    0 => {
+                        let mut guard = cache.video_seq.write();
+                        thread::sleep(HOLD_TIME);
+                        *guard = (data, 1);
+                    }
+                    1 => {
+                        let mut guard = cache.audio_seq.write();
+                        thread::sleep(HOLD_TIME);
+                        *guard = (data, 1);
+                    }
+                    _ => {
+                        let mut guard = cache.metadata.write();
+                        thread::sleep(HOLD_TIME);
+                        *guard = (data, 1);
                     }
                 }
             })
         })
         .collect();
 
+    let start = Instant::now();
+    split_barrier.wait();
     for h in handles {
         h.join().unwrap();
     }
     let split_duration = start.elapsed();
 
-    // Test single lock
     let single_cache = Arc::new(SingleLockCacheSim::new());
-    let start = Instant::now();
+    let single_barrier = Arc::new(std::sync::Barrier::new(4));
 
-    let handles: Vec<_> = (0..THREAD_COUNT)
+    let handles: Vec<_> = (0..3)
         .map(|tid| {
             let cache = Arc::clone(&single_cache);
+            let barrier = Arc::clone(&single_barrier);
             thread::spawn(move || {
-                for i in 0..ITERATIONS {
-                    let data = vec![tid as u8; 64];
-                    match tid % 3 {
-                        0 => cache.save_video(&data, i as u32),
-                        1 => cache.save_audio(&data, i as u32),
-                        _ => cache.save_metadata(&data, i as u32),
+                barrier.wait();
+                let data = vec![tid as u8; 64];
+                let mut guard = cache.data.write();
+                thread::sleep(HOLD_TIME);
+                match tid {
+                    0 => {
+                        guard.0 = data;
+                        guard.3 = 1;
+                    }
+                    1 => {
+                        guard.1 = data;
+                        guard.4 = 1;
+                    }
+                    _ => {
+                        guard.2 = data;
+                        guard.5 = 1;
                     }
                 }
             })
         })
         .collect();
 
+    let start = Instant::now();
+    single_barrier.wait();
     for h in handles {
         h.join().unwrap();
     }
     let single_duration = start.elapsed();
 
-    // Split lock should be at least as fast as single lock
-    // Under contention, split lock should be significantly faster
     println!("Split lock: {split_duration:?}, Single lock: {single_duration:?}");
 
-    // Note: This is not a strict assertion because timing can vary
-    // but we can observe the trend
     assert!(
-        split_duration <= single_duration * 2,
-        "Split lock should not be significantly slower than single lock"
+        split_duration < single_duration,
+        "Split lock should finish faster when independent writers hold separate locks"
     );
 }
 

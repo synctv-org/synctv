@@ -700,6 +700,7 @@ mod websocket_e2e {
     fn build_test_chat_service(
         pool: &sqlx::PgPool,
         username_cache: UsernameCache,
+        rate_limit_config: synctv_core::service::RateLimitConfig,
     ) -> Arc<synctv_core::service::ChatService> {
         let chat_repo = Arc::new(synctv_core::repository::ChatRepository::new(pool.clone()));
         let chat_rate_limiter = RateLimiter::in_memory_only("test_chat:".to_string());
@@ -721,7 +722,7 @@ mod websocket_e2e {
         Arc::new(synctv_core::service::ChatService::new(
             chat_repo,
             chat_rate_limiter,
-            synctv_core::service::RateLimitConfig::default(),
+            rate_limit_config,
             content_filter,
             username_cache,
             permission_service,
@@ -731,7 +732,19 @@ mod websocket_e2e {
 
     /// Build a minimal `AppState` with real database and Redis for E2E testing.
     async fn setup_e2e_server(infra: &TestInfra) -> E2EServer {
-        setup_e2e_server_with_node(infra, "test_node_1").await
+        setup_e2e_server_with_chat_rate_limit(
+            infra,
+            synctv_core::service::RateLimitConfig::default(),
+        )
+        .await
+    }
+
+    async fn setup_e2e_server_with_chat_rate_limit(
+        infra: &TestInfra,
+        chat_rate_limit_config: synctv_core::service::RateLimitConfig,
+    ) -> E2EServer {
+        setup_e2e_server_with_node_and_chat_rate_limit(infra, "test_node_1", chat_rate_limit_config)
+            .await
     }
 
     /// Build a minimal `AppState` with a custom `node_id`.
@@ -739,6 +752,19 @@ mod websocket_e2e {
     /// Useful for cross-replica tests: call twice with different node IDs
     /// but the same `TestInfra` to simulate two server replicas.
     async fn setup_e2e_server_with_node(infra: &TestInfra, node_id: &str) -> E2EServer {
+        setup_e2e_server_with_node_and_chat_rate_limit(
+            infra,
+            node_id,
+            synctv_core::service::RateLimitConfig::default(),
+        )
+        .await
+    }
+
+    async fn setup_e2e_server_with_node_and_chat_rate_limit(
+        infra: &TestInfra,
+        node_id: &str,
+        chat_rate_limit_config: synctv_core::service::RateLimitConfig,
+    ) -> E2EServer {
         let pool = infra.pool.clone();
         let redis_url = infra.redis_url.clone();
 
@@ -884,7 +910,11 @@ mod websocket_e2e {
             email_token_service: None,
             publish_key_service: None,
             notification_service: None,
-            chat_service: Some(build_test_chat_service(&pool, username_cache_for_chat)),
+            chat_service: Some(build_test_chat_service(
+                &pool,
+                username_cache_for_chat,
+                chat_rate_limit_config,
+            )),
             audit_service: {
                 let (audit_svc, _audit_handle) =
                     synctv_core::service::AuditService::new(pool.clone());
@@ -1882,7 +1912,15 @@ mod websocket_e2e {
     #[ignore = "Disabled: CI timeout"]
     async fn test_ws_rate_limiter_blocks_excess_chat() {
         let infra = TestInfra::new().await;
-        let server = setup_e2e_server(&infra).await;
+        let server = setup_e2e_server_with_chat_rate_limit(
+            &infra,
+            synctv_core::service::RateLimitConfig {
+                chat_per_second: 2,
+                window_seconds: 60,
+                ..Default::default()
+            },
+        )
+        .await;
 
         let (user_id, token) =
             register_test_user(&server.user_service, &server.jwt_service, "ratelimit_user").await;

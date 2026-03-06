@@ -711,6 +711,18 @@ impl Config {
         &self.redis.url
     }
 
+    /// Whether cross-replica cluster runtime is enabled.
+    ///
+    /// `cluster.enabled` is the single source of truth for activating
+    /// multi-replica coordination (leader election, cluster pub/sub,
+    /// discovery, and other cross-node runtime services). Standalone
+    /// deployments may still configure Redis for caching and other
+    /// non-cluster features.
+    #[must_use]
+    pub const fn cluster_runtime_enabled(&self) -> bool {
+        self.cluster.enabled
+    }
+
     /// Get gRPC address
     #[must_use]
     pub fn grpc_address(&self) -> String {
@@ -1448,12 +1460,7 @@ impl Config {
         }
 
         // Log info when Redis is not configured in standalone mode.
-        // Cluster mode Redis validation is handled below (around line 1588) to also cover
-        // the case where only cluster_secret is set without cluster.enabled=true.
-        if self.redis.url.is_empty()
-            && !self.cluster.enabled
-            && self.server.cluster_secret.is_empty()
-        {
+        if self.redis.url.is_empty() && !self.cluster_runtime_enabled() {
             tracing::info!(
                 "Redis is not configured — running in standalone mode with in-memory fallbacks. \
                  All features work, but data (rate limits, brute-force counters, token blacklist) \
@@ -1571,12 +1578,12 @@ impl Config {
         // Redis is essential for cross-replica pub/sub, leader election, node registry,
         // distributed rate limiting, and brute-force protection. Running cluster mode
         // without Redis causes silent data loss and broken multi-replica coordination.
-        let cluster_mode_active = self.cluster.enabled || !self.server.cluster_secret.is_empty();
+        let cluster_mode_active = self.cluster_runtime_enabled();
         if cluster_mode_active && self.redis.url.is_empty() {
             errors.push(
                 "cluster mode requires Redis to be configured. \
                  Set redis.url (or SYNCTV_REDIS_URL env var) before enabling \
-                 cluster.enabled=true or server.cluster_secret."
+                 cluster.enabled=true."
                     .to_string(),
             );
         }
@@ -1668,13 +1675,13 @@ impl Config {
         }
 
         // **WebRTC Issue (#21)**: Validate STUN external address.
-        // In cluster/K8s/NAT environments (indicated by cluster_secret being set),
+        // In cluster/K8s/NAT environments,
         // stun_external_addr is REQUIRED because pods sit behind NAT and the
         // default advertise_host (pod IP) is not reachable from the internet.
         // Without an explicit external address, STUN reflexive candidates will
         // contain internal IPs and WebRTC connections will fail.
         if self.webrtc.enable_builtin_stun && self.webrtc.stun_external_addr.is_empty() {
-            if self.server.cluster_secret.is_empty() {
+            if !self.cluster_runtime_enabled() {
                 tracing::warn!(
                     "webrtc.enable_builtin_stun=true but stun_external_addr is not set. \
                          STUN server will advertise reflexive candidates using advertise_host. \
@@ -1684,7 +1691,7 @@ impl Config {
             } else {
                 errors.push(
                     "webrtc.stun_external_addr must be set when running in cluster mode \
-                         (cluster_secret is configured). In NAT/K8s environments, STUN needs \
+                         (cluster.enabled=true). In NAT/K8s environments, STUN needs \
                          the server's public IP:port to generate valid reflexive candidates. \
                          Example: webrtc.stun_external_addr = \"203.0.113.1:3478\""
                         .to_string(),
@@ -2261,8 +2268,6 @@ mod tests {
                 enable_reflection: false,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
-                // A non-empty cluster_secret is required whenever Redis is configured (Issue #39).
-                // Tests that explicitly clear this field test the validation error path.
                 cluster_secret: "test-cluster-secret-for-validation".to_string(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
@@ -2278,7 +2283,8 @@ mod tests {
             },
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig {
-                // In cluster mode (cluster_secret is set), hls_shared_storage must be true.
+                // Keep shared storage enabled so cluster-mode tests can opt in by
+                // toggling `cluster.enabled` without additional changes.
                 hls_shared_storage: true,
                 ..LivestreamConfig::default()
             },
@@ -2286,7 +2292,8 @@ mod tests {
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig {
-                // In cluster mode (cluster_secret is set), stun_external_addr is required.
+                // Keep a valid external STUN address so cluster-mode tests can opt in by
+                // toggling `cluster.enabled` without additional changes.
                 stun_external_addr: "203.0.113.1:3478".to_string(),
                 ..WebRTCConfig::default()
             },
@@ -2313,9 +2320,10 @@ mod tests {
 
     #[test]
     fn test_validate_cluster_mode_requires_hls_shared_storage() {
-        // In cluster mode (cluster_secret is set), hls_shared_storage must be true
+        // In cluster mode (`cluster.enabled=true`), hls_shared_storage must be true
         // to prevent 404 errors when HLS segments are served from different replicas.
         let mut config = valid_prod_config();
+        config.cluster.enabled = true;
         config.livestream.hls_shared_storage = false;
         let errors = config.validate().unwrap_err();
         assert!(errors
@@ -2333,8 +2341,8 @@ mod tests {
         config.cluster.enabled = false;
         // Remove Redis to ensure cluster mode is fully disabled
         config.redis.url = String::new();
-        // Also need to set stun_external_addr to empty since cluster_secret is now empty
-        // (the validation only requires stun_external_addr when cluster_secret is set)
+        // Also need to clear stun_external_addr since standalone mode no longer
+        // requires an external STUN address.
         config.webrtc.stun_external_addr = String::new();
         // hls_shared_storage=false should be allowed in standalone mode
         config.livestream.hls_shared_storage = false;
@@ -2542,6 +2550,7 @@ mod tests {
     #[test]
     fn test_validate_webrtc_p2p_mode_allowed_in_cluster() {
         let mut config = valid_prod_config();
+        config.cluster.enabled = true;
         config.server.cluster_secret = "shared-secret-123".to_string();
         config.webrtc.mode = WebRTCMode::PeerToPeer;
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
@@ -2551,6 +2560,7 @@ mod tests {
     #[test]
     fn test_validate_webrtc_signaling_only_mode_allowed_in_cluster() {
         let mut config = valid_prod_config();
+        config.cluster.enabled = true;
         config.server.cluster_secret = "shared-secret-123".to_string();
         config.webrtc.mode = WebRTCMode::SignalingOnly;
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
@@ -2609,18 +2619,16 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_cluster_secret_without_redis_requires_redis() {
+    fn test_validate_cluster_secret_without_cluster_enabled_is_standalone() {
         let mut config = valid_prod_config();
-        // cluster_secret set (cluster mode active) but no Redis
+        // cluster_secret alone must not implicitly enable cluster mode
         config.server.cluster_secret = "shared-secret".to_string();
         config.redis.url = String::new();
-        config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
-        let errors = config.validate().unwrap_err();
+        config.livestream.hls_shared_storage = false;
+        config.webrtc.stun_external_addr = String::new();
         assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("cluster mode requires Redis to be configured")),
-            "Expected cluster+no-redis error, got: {errors:?}"
+            config.validate().is_ok(),
+            "cluster_secret alone should not require cluster runtime services"
         );
     }
 

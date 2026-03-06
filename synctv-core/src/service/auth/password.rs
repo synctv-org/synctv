@@ -2,9 +2,43 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2, ParamsBuilder, Version,
 };
+use std::sync::LazyLock;
 use tokio::task;
 
 use crate::{Error, Result};
+
+fn build_argon2() -> Result<Argon2<'static>> {
+    let params = ParamsBuilder::new()
+        .m_cost(65536)
+        .t_cost(3)
+        .p_cost(4)
+        .output_len(32)
+        .build()
+        .map_err(|e| Error::Internal(format!("Failed to build Argon2 params: {e}")))?;
+
+    Ok(Argon2::new(
+        argon2::Algorithm::Argon2id,
+        Version::V0x13,
+        params,
+    ))
+}
+
+static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
+    let salt = SaltString::encode_b64(b"synctv-dummy-salt")
+        .unwrap_or_else(|e| panic!("Failed to build dummy password salt: {e}"));
+    let argon2 =
+        build_argon2().unwrap_or_else(|e| panic!("Failed to build dummy Argon2 instance: {e}"));
+
+    argon2
+        .hash_password(b"synctv-dummy-password", &salt)
+        .unwrap_or_else(|e| panic!("Failed to hash dummy password: {e}"))
+        .to_string()
+});
+
+#[must_use]
+pub fn dummy_password_hash() -> &'static str {
+    DUMMY_PASSWORD_HASH.as_str()
+}
 
 /// Hash a password using Argon2id with recommended parameters
 ///
@@ -22,16 +56,7 @@ pub async fn hash_password(password: &str) -> Result<String> {
         // Generate a random salt
         let salt = SaltString::generate(&mut OsRng);
 
-        // Configure Argon2id parameters (PHC 2023 recommended)
-        let params = ParamsBuilder::new()
-            .m_cost(65536) // 64 MB
-            .t_cost(3) // 3 iterations
-            .p_cost(4) // 4 parallel threads
-            .output_len(32) // 32 bytes output
-            .build()
-            .map_err(|e| Error::Internal(format!("Failed to build Argon2 params: {e}")))?;
-
-        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
+        let argon2 = build_argon2()?;
 
         // Hash the password
         let password_hash = argon2
@@ -148,5 +173,12 @@ mod tests {
         let password = "P@ssw0rd!#$%^&*()_+-=[]{}|;':\",./<>?`~";
         let hash = hash_password(password).await.unwrap();
         assert!(verify_password(password, &hash).await.unwrap());
+    }
+
+    #[test]
+    fn test_dummy_password_hash_is_valid() {
+        let hash = dummy_password_hash();
+        assert!(hash.starts_with("$argon2id$"));
+        assert!(PasswordHash::new(hash).is_ok());
     }
 }

@@ -448,8 +448,7 @@ impl UserService {
         } else {
             // Dummy Argon2 verification to match timing of real verification.
             // This hash is pre-computed and never matches any real password.
-            let dummy_hash = "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+daw";
-            let _ = verify_password(&password, dummy_hash).await;
+            let _ = verify_password(&password, crate::service::auth::dummy_password_hash()).await;
             (false, None)
         };
 

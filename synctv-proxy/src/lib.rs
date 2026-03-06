@@ -661,7 +661,7 @@ pub async fn proxy_options_preflight_with_cors(
 // M3U8 rewriting helpers
 // ------------------------------------------------------------------
 
-/// Maximum number of URLs that can be rewritten in a single M3U8 playlist.
+/// Default maximum number of URLs that can be rewritten in a single M3U8 playlist.
 /// This prevents abuse via extremely large playlists that could cause memory
 /// exhaustion or excessive proxy traffic.
 pub const MAX_M3U8_URLS: usize = 1000;
@@ -669,7 +669,8 @@ pub const MAX_M3U8_URLS: usize = 1000;
 /// Rewrite URLs inside an M3U8 playlist so they proxy through the server.
 ///
 /// # Limits
-/// - Maximum 1000 URLs per playlist (prevents abuse)
+/// - Maximum 1000 URLs per playlist by default (prevents abuse)
+/// - Pass `max_urls` to override the default limit
 ///
 /// # Security
 /// - Returns an error if proxy_base contains line breaks (prevents response injection)
@@ -678,6 +679,25 @@ pub fn rewrite_m3u8(
     source_url: &str,
     proxy_base: &str,
 ) -> Result<String, anyhow::Error> {
+    rewrite_m3u8_with_limit(m3u8, source_url, proxy_base, None)
+}
+
+/// Rewrite URLs inside an M3U8 playlist with a custom URL limit.
+///
+/// # Arguments
+/// * `m3u8` - The M3U8 playlist content
+/// * `source_url` - The original URL of the playlist (for resolving relative URLs)
+/// * `proxy_base` - The base URL for proxying
+/// * `max_urls` - Optional maximum number of URLs to rewrite (defaults to MAX_M3U8_URLS)
+///
+/// # Security
+/// - Returns an error if proxy_base contains line breaks (prevents response injection)
+pub fn rewrite_m3u8_with_limit(
+    m3u8: &str,
+    source_url: &str,
+    proxy_base: &str,
+    max_urls: Option<usize>,
+) -> Result<String, anyhow::Error> {
     // Security: Reject proxy_base with line breaks to prevent response splitting/injection
     if proxy_base.contains('\n') || proxy_base.contains('\r') {
         return Err(anyhow::anyhow!(
@@ -685,6 +705,7 @@ pub fn rewrite_m3u8(
         ));
     }
 
+    let max_urls = max_urls.unwrap_or(MAX_M3U8_URLS);
     let base = url::Url::parse(source_url).ok();
     let mut output = String::with_capacity(m3u8.len());
     let mut url_count = 0usize;
@@ -706,11 +727,11 @@ pub fn rewrite_m3u8(
                 output.push_str(line);
             } else {
                 url_count += 1;
-                if url_count > MAX_M3U8_URLS {
+                if url_count > max_urls {
                     tracing::warn!(
                         source_url = %source_url,
                         url_count = url_count,
-                        max = MAX_M3U8_URLS,
+                        max = max_urls,
                         is_vod = is_vod,
                         "M3U8 playlist exceeded maximum URL limit, truncating"
                     );
@@ -730,7 +751,7 @@ pub fn rewrite_m3u8(
         output.push('\n');
     }
 
-    if url_count > MAX_M3U8_URLS / 2 {
+    if url_count > max_urls / 2 {
         tracing::info!(
             source_url = %source_url,
             url_count = url_count,

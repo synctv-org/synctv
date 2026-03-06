@@ -1574,6 +1574,35 @@ impl Config {
             }
         }
 
+        const ALLOWED_DISCOVERY_MODES: &[&str] = &["redis", "static", "k8s_dns"];
+        const ALLOWED_LEADER_ELECTION_MODES: &[&str] = &["redis", "k8s_lease"];
+
+        if !ALLOWED_DISCOVERY_MODES.contains(&self.cluster.discovery_mode.as_str()) {
+            errors.push(format!(
+                "cluster.discovery_mode '{}' is invalid. Allowed values: {}",
+                self.cluster.discovery_mode,
+                ALLOWED_DISCOVERY_MODES.join(", ")
+            ));
+        }
+
+        if !ALLOWED_LEADER_ELECTION_MODES
+            .contains(&self.cluster.leader_election_mode.as_str())
+        {
+            errors.push(format!(
+                "cluster.leader_election_mode '{}' is invalid. Allowed values: {}",
+                self.cluster.leader_election_mode,
+                ALLOWED_LEADER_ELECTION_MODES.join(", ")
+            ));
+        }
+
+        if self.livestream.hls_shared_storage && self.livestream.hls_storage_path.trim().is_empty() {
+            errors.push(
+                "livestream.hls_storage_path must be set when livestream.hls_shared_storage=true. \
+                 Configure a shared filesystem mount path accessible by every replica."
+                    .to_string(),
+            );
+        }
+
         // Validate: cluster mode requires Redis.
         // Redis is essential for cross-replica pub/sub, leader election, node registry,
         // distributed rate limiting, and brute-force protection. Running cluster mode
@@ -2286,6 +2315,7 @@ mod tests {
                 // Keep shared storage enabled so cluster-mode tests can opt in by
                 // toggling `cluster.enabled` without additional changes.
                 hls_shared_storage: true,
+                hls_storage_path: "/var/lib/synctv/hls".to_string(),
                 ..LivestreamConfig::default()
             },
             oauth2: OAuth2Config::default(),
@@ -2667,6 +2697,52 @@ mod tests {
         assert!(
             config.validate().is_ok(),
             "Expected Ok with cluster mode + cluster_secret set"
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_cluster_discovery_mode() {
+        let mut config = valid_prod_config();
+        config.cluster.discovery_mode = "mystery".to_string();
+
+        let errors = config.validate().unwrap_err();
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("cluster.discovery_mode") && e.contains("redis")),
+            "Expected discovery_mode validation error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_cluster_leader_election_mode() {
+        let mut config = valid_prod_config();
+        config.cluster.leader_election_mode = "mystery".to_string();
+
+        let errors = config.validate().unwrap_err();
+
+        assert!(
+            errors.iter().any(|e| {
+                e.contains("cluster.leader_election_mode") && e.contains("redis")
+            }),
+            "Expected leader_election_mode validation error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_shared_hls_storage_requires_storage_path() {
+        let mut config = valid_prod_config();
+        config.livestream.hls_shared_storage = true;
+        config.livestream.hls_storage_path = String::new();
+
+        let errors = config.validate().unwrap_err();
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("hls_storage_path") && e.contains("must be set")),
+            "Expected hls_storage_path validation error, got: {errors:?}"
         );
     }
 }

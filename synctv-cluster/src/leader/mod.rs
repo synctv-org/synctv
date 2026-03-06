@@ -156,11 +156,16 @@ impl AnyLeaderElector {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust,no_run
+    /// # async fn example(
+    /// #     elector: synctv_cluster::leader::AnyLeaderElector,
+    /// #     is_quarantined: bool,
+    /// # ) {
     /// // When entering quarantine due to epoch mismatch
     /// if is_quarantined && elector.is_leader() {
     ///     elector.resign().await;
     /// }
+    /// # }
     /// ```
     pub async fn resign(&self) {
         match self {

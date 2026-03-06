@@ -22,7 +22,7 @@ use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use synctv_xiu::rtmp::auth::AuthCallback;
-use synctv_xiu::storage::MemoryStorage;
+use synctv_xiu::storage::{FileStorage, HlsStorage, MemoryStorage};
 use synctv_xiu::streamhub::StreamsHub;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -51,6 +51,42 @@ pub struct LivestreamConfig {
     /// Maximum memory (in megabytes) for in-memory HLS segment storage.
     /// 0 means use the built-in default (512 MB).
     pub hls_memory_max_mb: u64,
+    /// Whether HLS segments should be written to a shared filesystem.
+    pub hls_shared_storage: bool,
+    /// Base path for shared HLS filesystem storage.
+    pub hls_storage_path: String,
+}
+
+fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStorage>> {
+    if config.hls_shared_storage {
+        let path = config.hls_storage_path.trim();
+        if path.is_empty() {
+            return Err(crate::error::StreamError::InvalidState(
+                "hls_shared_storage=true requires a non-empty hls_storage_path".to_string(),
+            ));
+        }
+
+        info!(hls_storage_path = %path, "HLS storage backend: shared filesystem");
+        return Ok(Arc::new(FileStorage::new(path)));
+    }
+
+    let storage: Arc<dyn HlsStorage> = if config.hls_memory_max_mb > 0 {
+        let max_bytes = config.hls_memory_max_mb as usize * 1024 * 1024;
+        info!("HLS memory storage max set to {} MB", config.hls_memory_max_mb,);
+        Arc::new(MemoryStorage::with_limits(max_bytes, 0))
+    } else {
+        Arc::new(MemoryStorage::new())
+    };
+
+    if config.cluster_secret.is_some() {
+        warn!(
+            "HLS storage is using in-memory backend in cluster mode. \
+             Each segment request will require gRPC proxy to the publisher node. \
+             Consider using OSS or shared filesystem storage for better performance."
+        );
+    }
+
+    Ok(storage)
 }
 
 /// Handle returned by [`LivestreamServer::start`].
@@ -608,28 +644,7 @@ impl LivestreamServer {
         });
 
         // 3. Start HLS remuxer (converts RTMP to HLS segments)
-        let hls_storage = if self.config.hls_memory_max_mb > 0 {
-            let max_bytes = self.config.hls_memory_max_mb as usize * 1024 * 1024;
-            info!(
-                "HLS memory storage max set to {} MB",
-                self.config.hls_memory_max_mb,
-            );
-            Arc::new(MemoryStorage::with_limits(max_bytes, 0))
-                as Arc<dyn synctv_xiu::storage::HlsStorage>
-        } else {
-            Arc::new(MemoryStorage::new()) as Arc<dyn synctv_xiu::storage::HlsStorage>
-        };
-
-        // Warn if using in-memory HLS storage in cluster mode (cluster_secret is set).
-        // In cluster mode, each HLS segment request for a remote publisher requires a
-        // gRPC proxy call to the publisher node, which is inefficient at scale.
-        if self.config.cluster_secret.is_some() {
-            warn!(
-                "HLS storage is using in-memory backend in cluster mode. \
-                 Each segment request will require gRPC proxy to the publisher node. \
-                 Consider using OSS or shared filesystem storage for better performance."
-            );
-        }
+        let hls_storage = build_hls_storage(&self.config)?;
 
         let segment_manager = Arc::new(SegmentManager::new(hls_storage, CleanupConfig::default()));
         let stream_registry: StreamRegistry = Arc::new(DashMap::new());
@@ -860,6 +875,8 @@ mod tests {
     use super::*;
     use crate::api::tracker::StreamTracker;
     use crate::relay::MockStreamRegistry;
+    use bytes::Bytes;
+    use tempfile::tempdir;
     use tokio::time::{timeout, Duration};
 
     /// Helper to create a minimal `LivestreamConfig` for testing
@@ -874,7 +891,47 @@ mod tests {
             gop_cache_max_memory_mb: 0,
             grpc_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
+            hls_shared_storage: false,
+            hls_storage_path: String::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn test_build_hls_storage_uses_memory_when_shared_storage_disabled() {
+        let dir = tempdir().expect("tempdir should be created");
+        let mut config = test_config();
+        config.hls_storage_path = dir.path().display().to_string();
+
+        let storage = build_hls_storage(&config).expect("storage should be built");
+        storage
+            .write("room1", "media1", "seg1", Bytes::from_static(b"segment"))
+            .await
+            .expect("segment write should succeed");
+
+        assert!(
+            !dir.path().join("room1").join("media1").join("seg1").exists(),
+            "memory storage should not create files on disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_hls_storage_uses_shared_filesystem_when_enabled() {
+        let dir = tempdir().expect("tempdir should be created");
+        let mut config = test_config();
+        config.cluster_secret = Some("cluster-secret".to_string());
+        config.hls_shared_storage = true;
+        config.hls_storage_path = dir.path().display().to_string();
+
+        let storage = build_hls_storage(&config).expect("storage should be built");
+        storage
+            .write("room1", "media1", "seg1", Bytes::from_static(b"segment"))
+            .await
+            .expect("segment write should succeed");
+
+        assert!(
+            dir.path().join("room1").join("media1").join("seg1").exists(),
+            "shared storage should persist HLS segments on disk"
+        );
     }
 
     /// Helper to create a `UserStreamTracker` for testing
@@ -1110,6 +1167,8 @@ mod tests {
             gop_cache_max_memory_mb: 0,
             grpc_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
+            hls_shared_storage: false,
+            hls_storage_path: String::new(),
         };
 
         let server =

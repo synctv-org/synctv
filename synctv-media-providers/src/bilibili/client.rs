@@ -1910,10 +1910,16 @@ impl BilibiliClient {
     /// * `config` - Reconnection configuration (max retries, delays, etc.)
     ///
     /// # Example
-    /// ```ignore
+    /// ```no_run
     /// use std::sync::Arc;
     /// use std::time::Duration;
+    /// use synctv_media_providers::BilibiliError;
+    /// use synctv_media_providers::bilibili::{
+    ///     BilibiliClient, ReconnectConfig, ReconnectResult,
+    /// };
     ///
+    /// # async fn demo() -> Result<(), BilibiliError> {
+    /// let room_id = 123_u64;
     /// let client = Arc::new(BilibiliClient::new());
     /// let config = ReconnectConfig {
     ///     max_retries: 5,
@@ -1922,7 +1928,9 @@ impl BilibiliClient {
     ///     backoff_multiplier: 2.0,
     /// };
     ///
-    /// let mut conn = client.connect_live_danmaku_with_reconnect(room_id, config).await?;
+    /// let mut conn = client
+    ///     .connect_live_danmaku_with_reconnect(room_id, config)
+    ///     .await?;
     ///
     /// loop {
     ///     match conn.recv().await {
@@ -1938,12 +1946,14 @@ impl BilibiliClient {
     ///             eprintln!("Failed after {} attempts: {}", attempts, error);
     ///             break;
     ///         }
-    ///         Err(e) => {
-    ///             eprintln!("Error: {}", e);
+    ///         Err(error) => {
+    ///             eprintln!("Error: {}", error);
     ///             break;
     ///         }
     ///     }
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn connect_live_danmaku_with_reconnect(
         self: &Arc<Self>,
@@ -2015,7 +2025,10 @@ impl ReconnectConfig {
     /// * `retry_count` - Zero-based retry attempt number (0 = first retry)
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// use std::time::Duration;
+    /// use synctv_media_providers::bilibili::ReconnectConfig;
+    ///
     /// let config = ReconnectConfig {
     ///     initial_delay: Duration::from_secs(1),
     ///     max_delay: Duration::from_secs(30),
@@ -2023,9 +2036,9 @@ impl ReconnectConfig {
     ///     ..Default::default()
     /// };
     ///
-    /// assert_eq!(config.delay_for_retry(0), Duration::from_secs(1));  // 1 * 2^0 = 1
-    /// assert_eq!(config.delay_for_retry(1), Duration::from_secs(2));  // 1 * 2^1 = 2
-    /// assert_eq!(config.delay_for_retry(2), Duration::from_secs(4));  // 1 * 2^2 = 4
+    /// assert_eq!(config.delay_for_retry(0), Duration::from_secs(1));
+    /// assert_eq!(config.delay_for_retry(1), Duration::from_secs(2));
+    /// assert_eq!(config.delay_for_retry(2), Duration::from_secs(4));
     /// ```
     pub fn delay_for_retry(&self, retry_count: u32) -> Duration {
         let delay_secs = self.initial_delay.as_secs_f64()
@@ -2140,23 +2153,30 @@ impl LiveDanmakuConnection {
     /// * `false` if a heartbeat loop was already running
     ///
     /// # Example
-    /// ```ignore
+    /// ```no_run
     /// use std::sync::Arc;
     /// use std::time::Duration;
+    /// use synctv_media_providers::BilibiliError;
+    /// use synctv_media_providers::bilibili::{BilibiliClient, HeartbeatConfig};
     ///
+    /// # async fn demo() -> Result<(), BilibiliError> {
+    /// let room_id = 123_u64;
+    /// let client = BilibiliClient::new();
     /// let conn = Arc::new(client.connect_live_danmaku(room_id).await?);
     /// let config = HeartbeatConfig {
     ///     interval: Duration::from_secs(30),
     /// };
     /// conn.start_heartbeat_loop_arc(Arc::clone(&conn), config).await;
     ///
-    /// // The connection will now automatically send heartbeats
     /// while let Ok(messages) = conn.recv().await {
     ///     for msg in messages {
-    ///         // handle messages
+    ///         let _ = msg;
     ///     }
     /// }
+    ///
     /// conn.stop_heartbeat_loop().await;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn start_heartbeat_loop_arc(
         self: &Arc<Self>,
@@ -2233,10 +2253,16 @@ pub enum ReconnectResult {
 /// reconnection attempts.
 ///
 /// # Example
-/// ```ignore
+/// ```no_run
 /// use std::sync::Arc;
 /// use std::time::Duration;
+/// use synctv_media_providers::BilibiliError;
+/// use synctv_media_providers::bilibili::{
+///     BilibiliClient, ReconnectConfig, ReconnectResult,
+/// };
 ///
+/// # async fn demo() -> Result<(), BilibiliError> {
+/// let room_id = 123_u64;
 /// let client = Arc::new(BilibiliClient::new());
 /// let reconnect_config = ReconnectConfig {
 ///     max_retries: 5,
@@ -2245,28 +2271,32 @@ pub enum ReconnectResult {
 ///     backoff_multiplier: 2.0,
 /// };
 ///
-/// let mut conn = client.connect_live_danmaku_with_reconnect(room_id, reconnect_config).await?;
+/// let mut conn = client
+///     .connect_live_danmaku_with_reconnect(room_id, reconnect_config)
+///     .await?;
 ///
 /// loop {
 ///     match conn.recv().await {
 ///         Ok(ReconnectResult::Messages(msgs)) => {
 ///             for msg in msgs {
-///                 // handle messages
+///                 println!("{:?}", msg);
 ///             }
 ///         }
 ///         Ok(ReconnectResult::Reconnected { attempts }) => {
-///             tracing::info!("Reconnected after {} attempts", attempts);
+///             println!("Reconnected after {} attempts", attempts);
 ///         }
 ///         Ok(ReconnectResult::Failed { attempts, error }) => {
-///             tracing::error!("Failed to reconnect after {} attempts: {}", attempts, error);
+///             eprintln!("Failed to reconnect after {} attempts: {}", attempts, error);
 ///             break;
 ///         }
-///         Err(e) => {
-///             tracing::error!("Error: {}", e);
+///         Err(error) => {
+///             eprintln!("Error: {}", error);
 ///             break;
 ///         }
 ///     }
 /// }
+/// # Ok(())
+/// # }
 /// ```
 pub struct ReconnectableLiveDanmakuConnection {
     /// Reference to the Bilibili client for reconnection

@@ -495,15 +495,9 @@ impl Application {
                          Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
                     ));
                 }
-                _ => {
+                "redis" => {
                     // Set metrics: Redis mode (1)
                     synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(1);
-                    if leader_mode != "redis" {
-                        warn!(
-                            leader_election_mode = %leader_mode,
-                            "Unknown leader election mode, falling back to 'redis'"
-                        );
-                    }
 
                     let plain_conn = redis_conn.read().await.clone();
                     let is_sentinel = matches!(
@@ -526,6 +520,9 @@ impl Application {
                         Some(handle),
                     )
                 }
+                _ => unreachable!(
+                    "cluster.leader_election_mode is validated before startup: {leader_mode}"
+                ),
             }
         };
 

@@ -220,43 +220,27 @@ pub async fn init_services(
     //
     // In standalone mode with Redis, use fallback mode for better availability.
     // In standalone mode without Redis, use in-memory tracker.
-    let brute_force = if let Some(ref rh) = redis_handles {
-        if cluster_mode {
-            let bf = crate::service::BruteForceProtection::with_redis_fail_closed(
-                rh.conn.clone(),
-                config.redis.key_prefix.clone(),
-            );
-            info!(
-                "Brute-force protection initialized (Redis-backed, fail-closed for cluster mode)"
-            );
-            bf
-        } else {
-            let bf = crate::service::BruteForceProtection::with_redis(
-                rh.conn.clone(),
-                config.redis.key_prefix.clone(),
-            );
-            info!("Brute-force protection initialized (Redis-backed with fallback)");
-            bf
-        }
+    let brute_force = if cluster_mode {
+        let redis_handles = redis_handles.as_ref().expect(
+            "cluster mode requires Redis handles; this invariant is validated before init_services",
+        );
+        let bf = crate::service::BruteForceProtection::with_redis_fail_closed(
+            redis_handles.conn.clone(),
+            config.redis.key_prefix.clone(),
+        );
+        info!(
+            "Brute-force protection initialized (Redis-backed, fail-closed for cluster mode)"
+        );
+        bf
+    } else if let Some(ref rh) = redis_handles {
+        let bf = crate::service::BruteForceProtection::with_redis(
+            rh.conn.clone(),
+            config.redis.key_prefix.clone(),
+        );
+        info!("Brute-force protection initialized (Redis-backed with fallback)");
+        bf
     } else {
-        // No Redis available
-        if cluster_mode {
-            // This should have been caught by config validation, but double-check
-            error!(
-                "CRITICAL: Cluster mode is enabled but Redis is not available. \
-                 Brute-force protection will use in-memory counters, which are NOT \
-                 shared across replicas. This is a security risk. Configure Redis \
-                 immediately."
-            );
-        }
         let bf = crate::service::BruteForceProtection::in_memory(config.redis.key_prefix.clone());
-        if cluster_mode {
-            warn!(
-                "Brute-force protection is using in-memory counters but cluster mode is active. \
-                 Login attempt counters will NOT be shared across replicas, reducing brute-force \
-                 protection effectiveness. Configure Redis to fix this."
-            );
-        }
         info!("Brute-force protection initialized (in-memory)");
         bf
     };
@@ -293,18 +277,21 @@ pub async fn init_services(
     // Upgrade refresh token rate limiter to Redis-backed when available.
     // This ensures the refresh rate limit is enforced globally across all replicas
     // in cluster mode, preventing N * limit bypass with N replicas.
-    if let Some(ref rh) = redis_handles {
+    if cluster_mode {
+        let redis_handles = redis_handles.as_ref().expect(
+            "cluster mode requires Redis handles; this invariant is validated before init_services",
+        );
+        user_service.set_refresh_rate_limiter_redis(
+            redis_handles.conn.clone(),
+            format!("{}refresh_rl:", config.redis.key_prefix),
+        );
+        info!("Refresh token rate limiter upgraded to Redis-backed (cross-replica)");
+    } else if let Some(ref rh) = redis_handles {
         user_service.set_refresh_rate_limiter_redis(
             rh.conn.clone(),
             format!("{}refresh_rl:", config.redis.key_prefix),
         );
         info!("Refresh token rate limiter upgraded to Redis-backed (cross-replica)");
-    } else if cluster_mode {
-        warn!(
-            "Refresh token rate limiter is using in-memory counters but cluster mode is active. \
-             With N replicas, an attacker can make N * rate_limit requests per window. \
-             Configure Redis to enforce global rate limits."
-        );
     }
     info!("UserService initialized");
 

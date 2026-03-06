@@ -67,49 +67,72 @@ fn get_local_ip_with_timeout(timeout_secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static POD_NAME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_pod_name_env<T>(value: Option<&str>, test: impl FnOnce() -> T) -> T {
+        let _guard = POD_NAME_ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let original = std::env::var("POD_NAME").ok();
+
+        match value {
+            Some(value) => std::env::set_var("POD_NAME", value),
+            None => std::env::remove_var("POD_NAME"),
+        }
+
+        let result = test();
+
+        match original {
+            Some(value) => std::env::set_var("POD_NAME", value),
+            None => std::env::remove_var("POD_NAME"),
+        }
+
+        result
+    }
 
     #[test]
     fn test_generate_node_id_format() {
-        let node_id = generate_node_id();
-        // Should contain hostname, IP (or 0.0.0.0), and a 6-char suffix
-        // Format: {hostname}_{local_ip}-{suffix}
-        assert!(
-            node_id.contains('_'),
-            "node_id should contain underscore: {node_id}"
-        );
-        assert!(
-            node_id.contains('-'),
-            "node_id should contain hyphen: {node_id}"
-        );
+        with_pod_name_env(None, || {
+            let node_id = generate_node_id();
+            // Should contain hostname, IP (or 0.0.0.0), and a 6-char suffix
+            // Format: {hostname}_{local_ip}-{suffix}
+            assert!(
+                node_id.contains('_'),
+                "node_id should contain underscore: {node_id}"
+            );
+            assert!(
+                node_id.contains('-'),
+                "node_id should contain hyphen: {node_id}"
+            );
+        });
     }
 
     #[test]
     fn test_generate_node_id_with_pod_name() {
-        // Set POD_NAME environment variable
-        std::env::set_var("POD_NAME", "test-pod-123");
-        let node_id = generate_node_id();
-        assert_eq!(node_id, "test-pod-123", "Should use POD_NAME when set");
-        std::env::remove_var("POD_NAME");
+        with_pod_name_env(Some("test-pod-123"), || {
+            let node_id = generate_node_id();
+            assert_eq!(node_id, "test-pod-123", "Should use POD_NAME when set");
+        });
     }
 
     #[test]
     fn test_generate_node_id_empty_pod_name() {
-        // Empty POD_NAME should fall back to hostname-based ID
-        std::env::set_var("POD_NAME", "");
-        let node_id = generate_node_id();
-        // Should not be empty string
-        assert!(!node_id.is_empty(), "node_id should not be empty");
-        assert!(node_id.contains('_'), "Should use hostname-based format");
-        std::env::remove_var("POD_NAME");
+        with_pod_name_env(Some(""), || {
+            let node_id = generate_node_id();
+            // Should not be empty string
+            assert!(!node_id.is_empty(), "node_id should not be empty");
+            assert!(node_id.contains('_'), "Should use hostname-based format");
+        });
     }
 
     #[test]
     fn test_generate_node_id_unique() {
-        std::env::remove_var("POD_NAME");
-        let id1 = generate_node_id();
-        let id2 = generate_node_id();
-        // Should have different suffixes
-        assert_ne!(id1, id2, "Each call should generate a unique ID");
+        with_pod_name_env(None, || {
+            let id1 = generate_node_id();
+            let id2 = generate_node_id();
+            // Should have different suffixes
+            assert_ne!(id1, id2, "Each call should generate a unique ID");
+        });
     }
 
     #[test]

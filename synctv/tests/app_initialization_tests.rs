@@ -532,6 +532,7 @@ mod config_initialization_tests {
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
         // Cluster mode requires shared HLS storage
         config.livestream.hls_shared_storage = true;
+        config.livestream.hls_storage_path = "/var/lib/synctv/hls".to_string();
 
         let result = config.validate();
         assert!(

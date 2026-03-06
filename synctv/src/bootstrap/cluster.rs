@@ -224,18 +224,13 @@ pub async fn init_cluster_discovery(
 
             Ok((Some(registry), Some(hm), Some(lb), Some(handle)))
         }
-        _ => {
-            // Default: Redis-based discovery
-            if discovery_mode != "redis" {
-                warn!(
-                    discovery_mode = %discovery_mode,
-                    "Unknown discovery mode, falling back to 'redis'"
-                );
-            }
-
+        "redis" => {
             let (registry, hm, lb) =
                 init_cluster_components(redis_handles, cm, config, connection_manager).await?;
             Ok((Some(registry), Some(hm), Some(lb), None))
         }
+        _ => unreachable!(
+            "cluster.discovery_mode is validated before startup: {discovery_mode}"
+        ),
     }
 }

@@ -80,6 +80,15 @@ pub struct SyncTvServer {
     http_handle: Option<JoinHandle<()>>,
 }
 
+fn build_ws_ticket_service(
+    redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    is_cluster_mode: bool,
+) -> anyhow::Result<Option<Arc<synctv_core::service::WsTicketService>>> {
+    let svc = synctv_core::service::WsTicketService::new(redis_conn, None, is_cluster_mode)
+        .map_err(|e| anyhow::anyhow!("Failed to initialize WebSocket ticket service: {e}"))?;
+    Ok(Some(Arc::new(svc)))
+}
+
 impl SyncTvServer {
     /// Create a new server instance
     pub const fn new(
@@ -452,24 +461,8 @@ impl SyncTvServer {
         let live_streaming_infrastructure = self.services.live_streaming_infrastructure.clone();
 
         let is_cluster_mode = self.config.cluster.enabled;
-        let ws_ticket_service = if let Some(ref redis_conn) = self.services.redis_conn {
-            match synctv_core::service::WsTicketService::new(
-                Some(redis_conn.clone()),
-                None,
-                is_cluster_mode,
-            ) {
-                Ok(svc) => Some(Arc::new(svc)),
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "Failed to initialize WebSocket ticket service: {e}"
-                    ));
-                }
-            }
-        } else {
-            Some(Arc::new(
-                synctv_core::service::WsTicketService::with_memory(None),
-            ))
-        };
+        let ws_ticket_service =
+            build_ws_ticket_service(self.services.redis_conn.clone(), is_cluster_mode)?;
 
         let http_router =
             synctv_api::http::create_router_from_config(synctv_api::http::RouterConfig {
@@ -604,6 +597,8 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
+    use super::build_ws_ticket_service;
+
 
     /// Test that invalid HTTP address format returns an error
     #[test]
@@ -674,6 +669,26 @@ mod tests {
         assert!(
             result.is_ok(),
             "Expected binding to port 0 (OS-assigned) to succeed"
+        );
+    }
+
+    #[test]
+    fn test_ws_ticket_service_uses_memory_in_standalone_without_redis() {
+        let service = build_ws_ticket_service(None, false)
+            .expect("standalone mode should allow memory-backed ws tickets")
+            .expect("ws ticket service should be configured");
+
+        assert_eq!(service.backend_name(), "memory");
+    }
+
+    #[test]
+    fn test_ws_ticket_service_rejects_memory_backend_in_cluster_mode() {
+        let error = build_ws_ticket_service(None, true)
+            .expect_err("cluster mode must not fall back to memory-backed ws tickets");
+
+        assert!(
+            error.to_string().contains("Redis is required"),
+            "Unexpected error: {error}"
         );
     }
 

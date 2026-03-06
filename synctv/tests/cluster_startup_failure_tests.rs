@@ -87,6 +87,7 @@ fn cluster_test_config() -> Config {
         logging: LoggingConfig::default(),
         livestream: LivestreamConfig {
             hls_shared_storage: true, // Required for cluster mode
+            hls_storage_path: "/var/lib/synctv/hls".to_string(),
             ..LivestreamConfig::default()
         },
         oauth2: OAuth2Config::default(),

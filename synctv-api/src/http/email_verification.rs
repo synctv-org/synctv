@@ -56,7 +56,8 @@ fn require_email_api(state: &AppState) -> Result<EmailApiImpl, AppError> {
 /// Check per-email rate limit. Returns an `AppError` with 429 and Retry-After
 /// if the limit is exceeded.
 async fn check_email_rate_limit(state: &AppState, email: &str) -> Result<(), AppError> {
-    let normalized = email.to_lowercase();
+    // Normalize email: lowercase and trim whitespace to prevent bypass
+    let normalized = email.to_lowercase().trim().to_string();
     let key = format!("email:addr:{normalized}");
     match state
         .rate_limiter

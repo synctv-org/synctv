@@ -13,8 +13,36 @@ pub struct WebRTCComponents {
 }
 
 /// Initialize WebRTC components: STUN server and TURN health checker.
+///
+/// Note: STUN and TURN are independent. STUN failure does not prevent TURN
+/// health checker from starting.
 pub async fn init_webrtc(config: &Config, cancel: CancellationToken) -> WebRTCComponents {
+    // TURN health checker (initialize first, independent of STUN)
+    // This ensures TURN monitoring is available even if STUN configuration is invalid
+    let turn_health_checker = if !config.webrtc.turn_shared_secret.is_empty()
+        && !config.webrtc.turn_server_urls.is_empty()
+    {
+        info!("Initializing TURN health checker...");
+
+        let checker = Arc::new(synctv_core::service::TurnHealthChecker::new());
+
+        // Start periodic health checks
+        checker
+            .clone()
+            .spawn_health_checks(config.webrtc.turn_server_urls.clone(), cancel.clone());
+
+        info!(
+            "TURN health checker started for {} servers",
+            config.webrtc.turn_server_urls.len()
+        );
+        Some(checker)
+    } else {
+        info!("TURN health checker disabled (no TURN servers configured)");
+        None
+    };
+
     // STUN server (if enabled, powered by turn-rs)
+    // STUN is independent of TURN - STUN failure should not affect TURN health checker
     let stun_server = if config.webrtc.enable_builtin_stun {
         info!("Starting built-in STUN server (turn-rs)...");
         let bind_addr = format!("{}:{}", config.webrtc.stun_host, config.webrtc.stun_port);
@@ -42,9 +70,10 @@ pub async fn init_webrtc(config: &Config, cancel: CancellationToken) -> WebRTCCo
                          Built-in STUN server will NOT start.",
                         advertise
                     );
+                    // Return with TURN health checker (already initialized above)
                     return WebRTCComponents {
                         stun_server: None,
-                        turn_health_checker: None,
+                        turn_health_checker,
                     };
                 }
             }
@@ -59,9 +88,10 @@ pub async fn init_webrtc(config: &Config, cancel: CancellationToken) -> WebRTCCo
                 "Built-in STUN server will NOT start. NAT traversal requires a valid \
                  public external address. Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a routable IP."
             );
+            // Return with TURN health checker (already initialized above)
             return WebRTCComponents {
                 stun_server: None,
-                turn_health_checker: None,
+                turn_health_checker,
             };
         }
 
@@ -82,29 +112,6 @@ pub async fn init_webrtc(config: &Config, cancel: CancellationToken) -> WebRTCCo
         }
     } else {
         info!("Built-in STUN server disabled");
-        None
-    };
-
-    // TURN health checker
-    let turn_health_checker = if !config.webrtc.turn_shared_secret.is_empty()
-        && !config.webrtc.turn_server_urls.is_empty()
-    {
-        info!("Initializing TURN health checker...");
-
-        let checker = Arc::new(synctv_core::service::TurnHealthChecker::new());
-
-        // Start periodic health checks
-        checker
-            .clone()
-            .spawn_health_checks(config.webrtc.turn_server_urls.clone(), cancel);
-
-        info!(
-            "TURN health checker started for {} servers",
-            config.webrtc.turn_server_urls.len()
-        );
-        Some(checker)
-    } else {
-        info!("TURN health checker disabled (no TURN servers configured)");
         None
     };
 

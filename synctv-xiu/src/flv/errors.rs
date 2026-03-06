@@ -119,6 +119,8 @@ pub enum MpegErrorValue {
     SPSNalunitTypeNotCorrect,
     #[error("not supported sampling frequency")]
     NotSupportedSamplingFrequency,
+    #[error("SPS/PPS count {count} exceeds maximum allowed {max}")]
+    SpsPpsCountExceeded { count: u8, max: u8 },
 }
 #[derive(Debug, thiserror::Error)]
 #[error("{value}")]

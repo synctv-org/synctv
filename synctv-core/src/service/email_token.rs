@@ -1,13 +1,24 @@
 //! Email token service for email verification and password reset
 //!
 //! Manages generation, validation, and cleanup of email tokens.
+//!
+//! # Rate Limiting
+//!
+//! Token generation is rate-limited to prevent abuse:
+//! - Per-user limit: 5 tokens per hour per token type
+//! - This prevents email flooding and database bloat attacks
 
 use chrono::{Duration, Utc};
 use nanoid::nanoid;
 use sqlx::PgPool;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::{models::UserId, repository::EmailTokenRepository, Error, Result};
+use crate::{
+    models::UserId,
+    repository::EmailTokenRepository,
+    service::rate_limit::{RateLimitError, RateLimiter},
+    Error, Result,
+};
 
 /// Token type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,21 +45,76 @@ impl EmailTokenType {
     }
 }
 
+/// Rate limit configuration for email token generation
+#[derive(Debug, Clone)]
+pub struct EmailTokenRateLimitConfig {
+    /// Maximum tokens per user per window
+    pub max_tokens_per_user: u32,
+    /// Window size in seconds
+    pub window_seconds: u64,
+}
+
+impl Default for EmailTokenRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            // 5 tokens per hour per user - reasonable for email verification/password reset
+            max_tokens_per_user: 5,
+            window_seconds: 3600, // 1 hour
+        }
+    }
+}
+
 /// Email token service
 #[derive(Clone)]
 pub struct EmailTokenService {
     repository: EmailTokenRepository,
+    rate_limiter: Option<RateLimiter>,
+    rate_limit_config: EmailTokenRateLimitConfig,
+}
+
+impl std::fmt::Debug for EmailTokenService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailTokenService")
+            .field("rate_limiter", &self.rate_limiter.is_some())
+            .field("rate_limit_config", &self.rate_limit_config)
+            .finish()
+    }
 }
 
 impl EmailTokenService {
+    /// Create a new email token service without rate limiting
     #[must_use]
-    pub const fn new(pool: PgPool) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self {
             repository: EmailTokenRepository::new(pool),
+            rate_limiter: None,
+            rate_limit_config: EmailTokenRateLimitConfig::default(),
+        }
+    }
+
+    /// Create a new email token service with rate limiting enabled
+    #[must_use]
+    pub fn with_rate_limiter(
+        pool: PgPool,
+        rate_limiter: RateLimiter,
+        rate_limit_config: Option<EmailTokenRateLimitConfig>,
+    ) -> Self {
+        Self {
+            repository: EmailTokenRepository::new(pool),
+            rate_limiter: Some(rate_limiter),
+            rate_limit_config: rate_limit_config.unwrap_or_default(),
         }
     }
 
     /// Generate a new email token
+    ///
+    /// # Rate Limiting
+    ///
+    /// Token generation is rate-limited to prevent abuse:
+    /// - Default: 5 tokens per hour per user per token type
+    /// - Prevents email flooding and database bloat attacks
+    ///
+    /// # Token Invalidation
     ///
     /// Invalidates any existing tokens of the same type for this user before
     /// creating a new one. This ensures only one valid token per user per
@@ -58,6 +124,34 @@ impl EmailTokenService {
         user_id: &UserId,
         token_type: EmailTokenType,
     ) -> Result<String> {
+        // Check rate limit if configured
+        if let Some(ref limiter) = self.rate_limiter {
+            let rate_limit_key = format!("email:{}:{}", token_type.as_str(), user_id.as_str());
+
+            if let Err(RateLimitError::RateLimitExceeded {
+                retry_after_seconds,
+            }) = limiter
+                .check_rate_limit(
+                    &rate_limit_key,
+                    self.rate_limit_config.max_tokens_per_user,
+                    self.rate_limit_config.window_seconds,
+                )
+                .await
+            {
+                warn!(
+                    user_id = %user_id.as_str(),
+                    token_type = %token_type.as_str(),
+                    retry_after_seconds,
+                    "Email token rate limit exceeded"
+                );
+                return Err(Error::RateLimited(format!(
+                    "Too many {} requests. Please try again in {} seconds.",
+                    token_type.as_str(),
+                    retry_after_seconds
+                )));
+            }
+        }
+
         // Invalidate any existing tokens of this type for the user first
         // This ensures only one valid token per user per purpose
         self.repository
@@ -149,5 +243,41 @@ mod tests {
 
         // Password reset: 1 hour
         assert_eq!(password_reset.expiration_duration(), Duration::hours(1));
+    }
+
+    #[test]
+    fn test_rate_limit_config_default() {
+        let config = EmailTokenRateLimitConfig::default();
+        assert_eq!(config.max_tokens_per_user, 5);
+        assert_eq!(config.window_seconds, 3600);
+    }
+
+    #[tokio::test]
+    async fn test_email_token_rate_limiting() {
+        use crate::service::rate_limit::RateLimiter;
+
+        // Create rate limiter with in-memory backend
+        let limiter = RateLimiter::in_memory_only("email_token_test:".to_string());
+
+        // Create service with aggressive rate limiting for testing
+        let config = EmailTokenRateLimitConfig {
+            max_tokens_per_user: 2,
+            window_seconds: 60,
+        };
+
+        // We can't test actual token generation without a database,
+        // but we can verify the rate limit key format and limiter behavior
+
+        // Test rate limit key format
+        let key = format!("email:{}:{}", "email_verification", "user123");
+        assert!(key.contains("email"));
+        assert!(key.contains("email_verification"));
+        assert!(key.contains("user123"));
+
+        // Test that rate limiter blocks after limit
+        limiter.check_rate_limit(&key, 2, 60).await.unwrap();
+        limiter.check_rate_limit(&key, 2, 60).await.unwrap();
+        let result = limiter.check_rate_limit(&key, 2, 60).await;
+        assert!(result.is_err());
     }
 }

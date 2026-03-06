@@ -173,6 +173,18 @@ impl Mpeg4AvcProcessor {
         /*number of SPS NALUs */
         self.mpeg4_avc.nb_sps = bytes_reader.read_u8()? & 0x1F;
 
+        // Validate SPS count: H.264 spec allows up to 31, but typical streams use 1-4
+        // Limiting to 16 prevents memory exhaustion while allowing reasonable flexibility
+        const MAX_SPS_COUNT: u8 = 16;
+        if self.mpeg4_avc.nb_sps > MAX_SPS_COUNT {
+            return Err(Mpeg4AvcHevcError {
+                value: MpegErrorValue::SpsPpsCountExceeded {
+                    count: self.mpeg4_avc.nb_sps,
+                    max: MAX_SPS_COUNT,
+                },
+            });
+        }
+
         if self.mpeg4_avc.nb_sps > 0 {
             self.clear_sps_data();
         }
@@ -214,6 +226,17 @@ impl Mpeg4AvcProcessor {
         }
         /*number of PPS NALUs*/
         self.mpeg4_avc.nb_pps = bytes_reader.read_u8()?;
+
+        // Validate PPS count: similar to SPS, limit to prevent memory exhaustion
+        const MAX_PPS_COUNT: u8 = 16;
+        if self.mpeg4_avc.nb_pps > MAX_PPS_COUNT {
+            return Err(Mpeg4AvcHevcError {
+                value: MpegErrorValue::SpsPpsCountExceeded {
+                    count: self.mpeg4_avc.nb_pps,
+                    max: MAX_PPS_COUNT,
+                },
+            });
+        }
 
         if self.mpeg4_avc.nb_pps > 0 {
             self.clear_pps_data();

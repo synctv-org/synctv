@@ -1,4 +1,4 @@
-use super::errors::H264Error;
+use super::errors::{H264Error, H264ErrorValue, MAX_EXP_GOLOMB_LEADING_ZEROS};
 use crate::bytesio::bits_reader::BitsReader;
 
 // ue(v) in 9.1 Parsing process for Exp-Golomb codes
@@ -17,6 +17,12 @@ pub fn read_uev(bit_reader: &mut BitsReader) -> Result<u32, H264Error> {
             break;
         }
         leading_zeros_bits += 1;
+        // Prevent DoS via malicious SPS data with excessive leading zeros
+        if leading_zeros_bits > MAX_EXP_GOLOMB_LEADING_ZEROS {
+            return Err(H264Error {
+                value: H264ErrorValue::ExpGolombOverflow(leading_zeros_bits),
+            });
+        }
     }
     let code_num = (1 << leading_zeros_bits) - 1 + bit_reader.read_n_bits(leading_zeros_bits)?;
     Ok(code_num as u32)
@@ -108,5 +114,23 @@ mod tests {
         let v9 = read_uev(&mut bits_reader).unwrap();
         println!("=={v9}==");
         assert!(v9 == 8);
+    }
+
+    #[test]
+    fn test_read_uev_excessive_leading_zeros() {
+        // Test that excessive leading zeros returns an error (DoS protection)
+        // Create a bit stream with 33 consecutive zeros (exceeds the 32 limit)
+        let mut bytes_reader = BytesReader::new(BytesMut::new());
+        // 33 bits of zeros followed by a 1 = 5 bytes: 0x00, 0x00, 0x00, 0x00, 0x80
+        bytes_reader
+            .extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x80])
+            .unwrap();
+        let mut bits_reader = BitsReader::new(bytes_reader);
+
+        let result = read_uev(&mut bits_reader);
+        assert!(
+            result.is_err(),
+            "Expected error for excessive leading zeros"
+        );
     }
 }

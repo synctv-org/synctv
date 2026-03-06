@@ -1,6 +1,10 @@
 use {
-    super::errors::H264Error, super::utils, crate::bytesio::bits_reader::BitsReader,
-    crate::bytesio::bytes_reader::BytesReader, bytes::BytesMut, std::vec::Vec,
+    super::errors::{H264Error, H264ErrorValue},
+    super::utils,
+    crate::bytesio::bits_reader::BitsReader,
+    crate::bytesio::bytes_reader::BytesReader,
+    bytes::BytesMut,
+    std::vec::Vec,
 };
 
 #[derive(Default, Debug)]
@@ -87,6 +91,12 @@ impl SpsParser {
         match self.sps.profile_idc {
             100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 => {
                 self.sps.chroma_format_idc = utils::read_uev(&mut self.bits_reader)?;
+                // Validate chroma_format_idc: valid values are 0, 1, 2, 3
+                if self.sps.chroma_format_idc > 3 {
+                    return Err(H264Error {
+                        value: H264ErrorValue::InvalidChromaFormatIdc(self.sps.chroma_format_idc),
+                    });
+                }
                 if self.sps.chroma_format_idc == 3 {
                     self.sps.separate_colour_plane_flag = self.bits_reader.read_bit()?;
                 }

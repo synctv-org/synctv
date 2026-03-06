@@ -1,1 +1,0 @@
--- Migration 7: provider_configs table removed (unused, superseded by user_media_provider_credentials in migration 12)

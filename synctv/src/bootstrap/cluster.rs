@@ -229,8 +229,6 @@ pub async fn init_cluster_discovery(
                 init_cluster_components(redis_handles, cm, config, connection_manager).await?;
             Ok((Some(registry), Some(hm), Some(lb), None))
         }
-        _ => unreachable!(
-            "cluster.discovery_mode is validated before startup: {discovery_mode}"
-        ),
+        _ => unreachable!("cluster.discovery_mode is validated before startup: {discovery_mode}"),
     }
 }

@@ -1585,9 +1585,7 @@ impl Config {
             ));
         }
 
-        if !ALLOWED_LEADER_ELECTION_MODES
-            .contains(&self.cluster.leader_election_mode.as_str())
-        {
+        if !ALLOWED_LEADER_ELECTION_MODES.contains(&self.cluster.leader_election_mode.as_str()) {
             errors.push(format!(
                 "cluster.leader_election_mode '{}' is invalid. Allowed values: {}",
                 self.cluster.leader_election_mode,
@@ -1595,7 +1593,8 @@ impl Config {
             ));
         }
 
-        if self.livestream.hls_shared_storage && self.livestream.hls_storage_path.trim().is_empty() {
+        if self.livestream.hls_shared_storage && self.livestream.hls_storage_path.trim().is_empty()
+        {
             errors.push(
                 "livestream.hls_storage_path must be set when livestream.hls_shared_storage=true. \
                  Configure a shared filesystem mount path accessible by every replica."
@@ -2723,9 +2722,9 @@ mod tests {
         let errors = config.validate().unwrap_err();
 
         assert!(
-            errors.iter().any(|e| {
-                e.contains("cluster.leader_election_mode") && e.contains("redis")
-            }),
+            errors
+                .iter()
+                .any(|e| { e.contains("cluster.leader_election_mode") && e.contains("redis") }),
             "Expected leader_election_mode validation error, got: {errors:?}"
         );
     }

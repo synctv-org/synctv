@@ -72,7 +72,10 @@ fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStora
 
     let storage: Arc<dyn HlsStorage> = if config.hls_memory_max_mb > 0 {
         let max_bytes = config.hls_memory_max_mb as usize * 1024 * 1024;
-        info!("HLS memory storage max set to {} MB", config.hls_memory_max_mb,);
+        info!(
+            "HLS memory storage max set to {} MB",
+            config.hls_memory_max_mb,
+        );
         Arc::new(MemoryStorage::with_limits(max_bytes, 0))
     } else {
         Arc::new(MemoryStorage::new())
@@ -909,7 +912,11 @@ mod tests {
             .expect("segment write should succeed");
 
         assert!(
-            !dir.path().join("room1").join("media1").join("seg1").exists(),
+            !dir.path()
+                .join("room1")
+                .join("media1")
+                .join("seg1")
+                .exists(),
             "memory storage should not create files on disk"
         );
     }
@@ -929,7 +936,11 @@ mod tests {
             .expect("segment write should succeed");
 
         assert!(
-            dir.path().join("room1").join("media1").join("seg1").exists(),
+            dir.path()
+                .join("room1")
+                .join("media1")
+                .join("seg1")
+                .exists(),
             "shared storage should persist HLS segments on disk"
         );
     }

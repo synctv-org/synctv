@@ -72,7 +72,9 @@ mod tests {
     static POD_NAME_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_pod_name_env<T>(value: Option<&str>, test: impl FnOnce() -> T) -> T {
-        let _guard = POD_NAME_ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = POD_NAME_ENV_LOCK
+            .lock()
+            .expect("env lock should not be poisoned");
         let original = std::env::var("POD_NAME").ok();
 
         match value {

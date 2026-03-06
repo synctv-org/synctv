@@ -599,7 +599,6 @@ async fn shutdown_signal() {
 mod tests {
     use super::build_ws_ticket_service;
 
-
     /// Test that invalid HTTP address format returns an error
     #[test]
     fn test_invalid_http_address_returns_error() {

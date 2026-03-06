@@ -228,9 +228,7 @@ pub async fn init_services(
             redis_handles.conn.clone(),
             config.redis.key_prefix.clone(),
         );
-        info!(
-            "Brute-force protection initialized (Redis-backed, fail-closed for cluster mode)"
-        );
+        info!("Brute-force protection initialized (Redis-backed, fail-closed for cluster mode)");
         bf
     } else if let Some(ref rh) = redis_handles {
         let bf = crate::service::BruteForceProtection::with_redis(

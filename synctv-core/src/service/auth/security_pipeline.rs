@@ -481,7 +481,6 @@ impl SecurityPipelineBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
 
     // ========================================================================
     // BlacklistEnforcement behavior tests
@@ -506,16 +505,4 @@ mod tests {
         assert!(!enforcement.require_blacklist);
     }
 
-    #[test]
-    fn has_blacklist_store_returns_false_by_default() {
-        // SecurityPipeline without blacklist store should return false
-        // Note: We can only test this without UserService since it requires many dependencies
-        let blacklist_store = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 7200));
-        let key_builder = KeyBuilder::new("test");
-
-        // Test that we can check if blacklist store is set via the builder
-        // This is a compile-time check that the types are correct
-        let _: Arc<dyn TokenBlacklistStore> = blacklist_store;
-        let _: KeyBuilder = key_builder;
-    }
 }

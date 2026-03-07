@@ -924,24 +924,6 @@ mod tests {
     // === RateLimitCategory Tests ===
 
     #[test]
-    fn test_rate_limit_category_debug() {
-        // Ensure all variants are Debug-printable (compile-time check mostly)
-        let categories = [
-            RateLimitCategory::Auth,
-            RateLimitCategory::Write,
-            RateLimitCategory::Read,
-            RateLimitCategory::Media,
-            RateLimitCategory::Admin,
-            RateLimitCategory::Streaming,
-            RateLimitCategory::WebSocket,
-        ];
-        for cat in categories {
-            let s = format!("{cat:?}");
-            assert!(!s.is_empty());
-        }
-    }
-
-    #[test]
     fn test_rate_limit_category_clone() {
         let cat = RateLimitCategory::Auth;
         let cloned = cat;
@@ -960,29 +942,6 @@ mod tests {
     //
     // Full integration tests require AppState with real services; the tests
     // below verify the structural aspects that can be tested in isolation.
-
-    #[test]
-    fn test_auth_user_requires_authorization_header() {
-        // AuthUser extraction requires an Authorization header.
-        // Without it, from_request_parts returns an error.
-        // This is tested indirectly -- the extractor reads from Parts.headers.
-        // We verify that the header name constant matches expectations.
-        assert_eq!(axum::http::header::AUTHORIZATION.as_str(), "authorization");
-    }
-
-    #[test]
-    fn test_security_headers_comprehensive() {
-        // Verify that the security headers middleware defines all required
-        // static header names (compiled lazily). Accessing them forces
-        // validation at test time.
-        let _ = X_FRAME_OPTIONS.clone();
-        let _ = X_CONTENT_TYPE_OPTIONS.clone();
-        let _ = X_XSS_PROTECTION.clone();
-        let _ = CONTENT_SECURITY_POLICY.clone();
-        let _ = REFERRER_POLICY.clone();
-        let _ = PERMISSIONS_POLICY.clone();
-        let _ = PRAGMA.clone();
-    }
 
     #[tokio::test]
     async fn test_security_headers_frame_ancestors_none() {

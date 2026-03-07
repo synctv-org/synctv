@@ -264,40 +264,6 @@ fn test_banned_member_cannot_reconnect_via_websocket() {
 // Admin Event Propagation Tests
 // ============================================================================
 
-#[test]
-fn test_admin_ban_propagates_via_cluster_event() {
-    // When admin bans a member:
-    // 1. AdminService calls MemberService.ban_member()
-    // 2. MemberService updates database
-    // 3. MemberService broadcasts KickUserFromRoom event via ClusterManager
-    // 4. All replicas receive the event and disconnect the user
-
-    // The event chain ensures cross-replica ban enforcement
-
-    // This test verifies the concept
-    assert!(
-        true,
-        "Admin ban propagates via ClusterEvent::KickUserFromRoom"
-    );
-}
-
-#[test]
-fn test_cross_replica_ban_disconnects_user() {
-    // Scenario:
-    // - User is connected to Replica A
-    // - Admin bans user via Replica B (different data center)
-    // - Replica B broadcasts KickUserFromRoom event
-    // - Replica A receives event and disconnects user
-
-    // The messaging layer monitors admin events and disconnects when targeted
-
-    // This is tested in the messaging module's integration tests
-    assert!(
-        true,
-        "Cross-replica ban disconnect is tested in messaging integration tests"
-    );
-}
-
 // ============================================================================
 // Membership Invalidation on Ban Tests
 // ============================================================================

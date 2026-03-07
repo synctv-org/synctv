@@ -257,15 +257,6 @@ mod integration_tests {
         assert_eq!(config2.available_permits(), 200);
     }
 
-    /// Test that the default config matches the original global constant.
-    #[test]
-    fn test_default_config_matches_original_constant() {
-        let config = MessageConcurrencyConfig::default();
-        // Should match DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING (1000)
-        assert_eq!(config.max_concurrent(), 1000);
-        assert_eq!(config.available_permits(), 1000);
-    }
-
     #[test]
     fn test_heartbeat_schedule_can_be_configured_for_tests() {
         let schedule =

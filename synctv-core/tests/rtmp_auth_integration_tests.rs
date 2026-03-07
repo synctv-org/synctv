@@ -34,88 +34,20 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, PublishKeyService, RoomService, UserService,
     },
 };
-use testcontainers::core::ImageExt;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::redis::Redis;
+use synctv_core_testing::{create_test_pool, start_redis, RedisContainer, TestContainer};
 
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
 
 async fn create_test_infra() -> (
-    ContainerAsync<Postgres>,
-    ContainerAsync<Redis>,
+    TestContainer,
+    RedisContainer,
     sqlx::PgPool,
     redis::aio::ConnectionManager,
 ) {
-    // Start PostgreSQL
-    let postgres = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Postgres::default()
-            .with_db_name("synctv_test")
-            .with_user("synctv")
-            .with_password("synctv_test")
-            .with_tag("16-alpine")
-            .start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Postgres container");
-
-    let pg_host = postgres.get_host().await.expect("Failed to get host");
-    let pg_port = postgres
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get port");
-
-    let database_url = format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
-
-    let pool = {
-        let mut retries = 0u32;
-        loop {
-            match sqlx::postgres::PgPoolOptions::new()
-                .max_connections(10)
-                .acquire_timeout(std::time::Duration::from_secs(2))
-                .connect(&database_url)
-                .await
-            {
-                Ok(p) => break p,
-                Err(_) if retries < 60 => {
-                    retries += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
-            }
-        }
-    };
-
-    // Run migrations
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    // Start Redis
-    use testcontainers::runners::AsyncRunner;
-    let redis = tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-        .await
-        .expect("Docker container startup timed out (is Docker running?)")
-        .expect("Failed to start Redis container");
-
-    let redis_host = redis.get_host().await.expect("Failed to get Redis host");
-    let redis_port = redis
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-
-    let redis_url = format!("redis://{redis_host}:{redis_port}");
-
-    let redis_client =
-        redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
-    let redis_conn = redis::aio::ConnectionManager::new(redis_client)
-        .await
-        .expect("Failed to create Redis ConnectionManager");
+    let (postgres, pool) = create_test_pool().await;
+    let (redis, redis_conn) = start_redis().await;
 
     (postgres, redis, pool, redis_conn)
 }

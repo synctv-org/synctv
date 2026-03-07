@@ -648,18 +648,6 @@ mod tests {
         assert_eq!(config.expired_token_retention_days, 0);
     }
 
-    /// Verify the `delete_expired_tokens` method exists and has the expected async signature.
-    /// The actual SQL execution requires a live `PgPool` (integration test territory).
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_delete_expired_tokens_method_exists() {
-        let _: fn(
-            &CleanupService,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + '_>> =
-            |svc| Box::pin(svc.delete_expired_tokens());
-    }
-
     // ========== Dynamic settings tests ==========
 
     /// Test that `room_ttl_seconds` falls back to config when no registry is set.

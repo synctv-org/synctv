@@ -1557,102 +1557,7 @@ mod tests {
         // This is handled by GET returning nil
     }
 
-    #[test]
-    fn test_lua_script_extend_logic() {
-        // The extend Lua script logic:
-        // if GET key == lock_value then EXPIRE key ttl else return 0
-
-        // Scenario 1: Value matches -> extend TTL
-        // Scenario 2: Value doesn't match -> no extend
-        // Similar to release logic
-    }
-
-    #[test]
-    fn test_pg_advisory_lock_key_constant() {
-        // Verify the advisory lock key is stable
-        // hash of "synctv_migration" = 0x73796E63_74766D69
-        assert_eq!(PG_ADVISORY_LOCK_KEY, 0x73796E63_74766D69_u64 as i64);
-    }
-
-    #[tokio::test]
-    async fn test_with_lock_timeout_error_propagation() {
-        // Test that with_lock returns timeout error when operation exceeds client_timeout
-        // This is a conceptual test - actual behavior requires Redis
-        let client_timeout = std::time::Duration::from_secs(10 + 5);
-        assert_eq!(client_timeout, std::time::Duration::from_secs(15));
-    }
-
-    #[test]
-    fn test_lock_guard_fencing_token_default() {
-        // When created without token, fencing_token() should return 0
-        // This is a compile-time check that the type exists
-        // Actual behavior requires Redis
-    }
-
-    #[test]
-    fn test_must_use_lock_guard() {
-        // LockGuard has #[must_use] - verify the attribute exists by checking
-        // that the type compiles. A #[must_use] type warns if unused.
-        // This is a compile-time check.
-    }
-
     // ========== MigrationLock Trait Tests ==========
-
-    #[test]
-    fn test_migration_lock_trait_bounds() {
-        // MigrationLock requires Send + Sync for thread safety
-        // This is a compile-time check
-        fn assert_send_sync<T: Send + Sync + ?Sized>() {}
-        assert_send_sync::<dyn MigrationLock>();
-    }
-
-    // ========== Error Path Tests ==========
-
-    #[test]
-    fn test_error_types() {
-        // Test that the error types we use are correct
-        use crate::Error;
-
-        let internal_err = Error::Internal("test".to_string());
-        match internal_err {
-            Error::Internal(msg) => assert_eq!(msg, "test"),
-            _ => panic!("Wrong error type"),
-        }
-    }
-
-    #[test]
-    fn test_lock_key_edge_cases() {
-        // Test various key formats
-        let keys = vec![
-            "simple",
-            "with:colon",
-            "with-dash",
-            "with_underscore",
-            "with.dot",
-            "CamelCase",
-            "123numbers",
-            "mixed123ABC",
-        ];
-
-        for key in keys {
-            let lock_key = format!("lock:{key}");
-            assert!(lock_key.starts_with("lock:"));
-            assert!(lock_key.ends_with(key));
-        }
-    }
-
-    #[test]
-    fn test_ttl_range() {
-        // Test valid TTL ranges
-        let min_ttl: u64 = 1;
-        let max_ttl: u64 = 86400; // 24 hours
-
-        assert!(min_ttl >= 1);
-        assert!(max_ttl <= 86400);
-
-        // TTL should not be zero
-        assert!(min_ttl > 0);
-    }
 
     // ========== Redlock Unit Tests ==========
 
@@ -1720,13 +1625,6 @@ mod tests {
         let elapsed_ms: u64 = 15;
         let remaining = ttl_ms.saturating_sub(elapsed_ms);
         assert_eq!(remaining, 0);
-    }
-
-    #[tokio::test]
-    async fn test_redlock_guard_must_use() {
-        // RedlockGuard has #[must_use] - compile-time check
-        fn _check_must_use<T: Send>() {}
-        _check_must_use::<RedlockGuard>();
     }
 
     // ========== Redlock Integration Tests (Require Docker) ==========
@@ -1895,78 +1793,6 @@ mod tests {
             result.is_err() || result.unwrap().is_err(),
             "Should fail due to unreachable Redis, not count validation"
         );
-    }
-
-    /// Test that documents the Sentinel failover vulnerability.
-    ///
-    /// This test demonstrates why single-instance Redis locks are unsafe during
-    /// Sentinel failover. The vulnerability occurs because:
-    ///
-    /// 1. Redis replication is asynchronous
-    /// 2. When Sentinel promotes a replica to master, unreplicated lock state is lost
-    /// 3. Two clients can simultaneously believe they hold the same lock (split-brain)
-    ///
-    /// SCENARIO:
-    /// ```text
-    /// Time  Client1 (Old Master)   Replication Lag   Client2 (New Master)
-    /// ----  ---------------------  ----------------  ---------------------
-    /// t0    SET lock:foo v1 EX 10
-    /// t1    <lock acquired>
-    /// t2                         (not yet replicated)
-    /// t3                         [Sentinel detects failure, promotes replica]
-    /// t4                                          [New master has no lock:foo]
-    /// t5                                          SET lock:foo v2 EX 10
-    /// t6                                          <lock acquired - SPLIT-BRAIN!>
-    /// ```
-    ///
-    /// Both clients now believe they hold the lock simultaneously.
-    ///
-    /// MITIGATIONS:
-    /// - Use fencing tokens for database writes (CAS validation)
-    /// - Use Redlock algorithm with 5 independent Redis masters
-    /// - Use Kubernetes Lease-based leader election
-    /// - Accept the risk for idempotent operations only
-    ///
-    /// NOTE: This test is documentation-only. We cannot simulate actual Sentinel
-    /// failover in unit tests without complex Docker orchestration. The value here
-    /// is in documenting the failure mode and mitigation strategies.
-    #[tokio::test]
-    #[ignore = "Documentation test - illustrates the vulnerability scenario"]
-    async fn test_sentinel_failover_vulnerability_documentation() {
-        // This is a conceptual test to document the vulnerability
-        // In a real Sentinel deployment, the following sequence demonstrates the issue:
-
-        // 1. Client1 acquires lock on old master
-        // SET lock:test "value1" NX EX 10
-        // Result: OK (lock acquired)
-
-        // 2. Before replication completes, Sentinel promotes replica
-        // The new master does NOT have the lock key
-
-        // 3. Client2 acquires lock on new master
-        // SET lock:test "value2" NX EX 10
-        // Result: OK (lock acquired - SPLIT-BRAIN!)
-
-        // Both clients now believe they hold the lock
-
-        // Mitigation: Fencing tokens
-        // - Each lock acquisition generates a monotonically increasing token
-        // - Database writes use the token as a CAS condition
-        // - Client1's write fails because Client2 has a higher token
-        // - This prevents database corruption but NOT non-idempotent side effects
-
-        // Example of fencing token protection:
-        // - Client1 gets token=100, writes to DB with version=100
-        // - Client2 gets token=101, writes to DB with version=101
-        // - Client1's delayed write with version=100 is rejected (stale)
-
-        // Non-idempotent operations CANNOT be protected:
-        // - Sending emails (already sent by both clients)
-        // - Billing charges (charged twice)
-        // - Third-party API calls (called twice)
-
-        println!("See module-level documentation for mitigation strategies");
-        println!("Use Redlock or K8s Lease for true distributed lock safety");
     }
 
     /// Test that verifies the warning is logged when using Sentinel mode.

@@ -213,24 +213,3 @@ fn test_catchup_start_id_large_window_no_underflow() {
     // Due to saturating_sub, if window > now, we get 0
     // This is acceptable - it means reading from the beginning
 }
-
-/// Test that stream ID comparison works correctly for typical reconnection scenarios.
-#[test]
-fn test_stream_id_comparison_for_reconnect() {
-    // Simulate a previous cursor (e.g., from before disconnect)
-    let old_cursor = "1700000000000-0"; // Some past timestamp
-
-    // Generate a new catchup start ID
-    let catchup_id = catchup_start_id(300_000);
-
-    // The catchup_id should be after the old_cursor if the disconnect was short
-    // or before if the disconnect was longer than the window.
-    // For this test, we just verify the format allows correct comparison.
-    let (old_ts, _) = parse_stream_id(old_cursor).expect("Valid old cursor");
-    let (new_ts, _) = parse_stream_id(&catchup_id).expect("Valid catchup ID");
-
-    // Both timestamps should be valid (parsed successfully above).
-    // The comparison should work numerically, not lexicographically
-    // (Redis Stream IDs are {timestamp}-{sequence}, not simple strings).
-    let _ = old_ts.cmp(&new_ts); // Verify Ord comparison compiles
-}

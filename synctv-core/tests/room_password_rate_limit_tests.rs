@@ -26,7 +26,6 @@ use synctv_core::{
     models::{User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        audit::AuditService,
         auth::{BruteForceProtection, JwtService},
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
@@ -387,82 +386,6 @@ async fn test_room_password_rate_limit_without_ip() {
             assert!(result.is_err(), "Attempt {}: should be rate limited", i + 1);
         }
     }
-}
-
-/// Test 6: Reset failure is logged to audit log
-///
-/// When a successful password verification cannot reset the rate limit counter
-/// (e.g., Redis unavailable), the failure should be logged to the audit log
-/// for security monitoring. This ensures that security teams can detect
-/// potential brute-force attack patterns even when infrastructure is degraded.
-///
-/// Note: This test verifies that the audit log entry is created. The actual
-/// Redis failure simulation would require a mock `BruteForceProtection` service.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_password_verification_reset_failure_logged_to_audit() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-
-    // Create audit service
-    let audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
-
-    // Create room service with audit service
-    let user_service = make_user_service(pool.clone());
-    let mut room_service = RoomService::new(pool.clone(), user_service);
-    let brute_force = BruteForceProtection::in_memory("test_room_password_audit".to_string());
-    room_service.set_brute_force_service(brute_force);
-    room_service.set_audit_service(audit_service.clone());
-
-    // Create room owner and a password-protected room
-    let owner = user_repo.create(&make_user("audit_owner")).await.unwrap();
-    let (room, _) = room_service
-        .create_room(
-            "Audit Test Room".to_string(),
-            "Testing audit log on reset failure".to_string(),
-            owner.id.clone(),
-            Some("CorrectPassword123".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 77));
-
-    // Make a failed attempt to increment counter
-    let result = room_service
-        .check_room_password_with_rate_limit(&room.id, "WrongPassword", Some(client_ip))
-        .await;
-    assert!(
-        result.is_ok() && !result.unwrap(),
-        "Wrong password should return false"
-    );
-
-    // Now provide correct password - this should succeed and reset counter
-    // In-memory brute force protection always succeeds, so we can't test the failure path here
-    // The test documents the expected behavior: audit log entry on reset failure
-    let result = room_service
-        .check_room_password_with_rate_limit(&room.id, "CorrectPassword123", Some(client_ip))
-        .await;
-    assert!(result.is_ok(), "Correct password should not error");
-    assert!(result.unwrap(), "Correct password should return true");
-
-    // Verify the audit log behavior:
-    // 1. When reset succeeds (in-memory case), no audit entry should be created
-    // 2. When reset fails (Redis unavailable), audit entry with RateLimitResetFailed should be created
-    //
-    // To fully test this scenario, we would need to:
-    // - Create a mock BruteForceProtection that always fails on reset
-    // - Verify the audit log entry is created with correct fields:
-    //   - action: RateLimitResetFailed
-    //   - target_type: Room
-    //   - target_id: room_id
-    //   - details.error: the error message
-    //   - details.context: "password_verification_succeeded"
-    //   - ip_address: the client IP
-    //
-    // This test documents the expected behavior for future integration testing
-    // with Redis failure simulation.
 }
 
 /// Test 7: Verification succeeds even when reset fails (fallback mode)

@@ -122,20 +122,6 @@ fn test_remove_media_owner_vs_non_owner_permission() {
 }
 
 #[test]
-fn test_edit_media_optimistic_lock_retry() {
-    // Verify the retry constant is configured correctly
-    // MediaService::EDIT_MAX_RETRIES is 3
-    // This tests that the edit request can carry both name and position updates
-    let request = EditMediaRequest {
-        media_id: MediaId::new(),
-        name: Some("Updated Name".to_string()),
-        position: Some(5),
-    };
-    assert_eq!(request.name.as_deref(), Some("Updated Name"));
-    assert_eq!(request.position, Some(5));
-}
-
-#[test]
 fn test_remove_batch_mixed_permissions() {
     let user_a = UserId::from_string("user_a".to_string());
     let user_b = UserId::from_string("user_b".to_string());

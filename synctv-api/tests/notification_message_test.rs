@@ -76,23 +76,6 @@ fn test_notification_is_not_error() {
     }
 }
 
-/// Test that notification variant exists in proto
-#[test]
-fn test_notification_variant_exists() {
-    // This test verifies that the Notification variant is available
-    // in the server_message::Message enum
-
-    // If this compiles, the Notification variant exists
-    let _notification = Message::Notification(synctv_api::proto::client::UserNotification {
-        notification_id: String::new(),
-        notification_type: String::new(),
-        title: String::new(),
-        content: String::new(),
-        data: String::new(),
-        timestamp: 0,
-    });
-}
-
 /// Test backward compatibility - error messages still work
 #[test]
 fn test_error_messages_still_work() {

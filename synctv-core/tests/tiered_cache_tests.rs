@@ -9,29 +9,7 @@
 use std::sync::Arc;
 use synctv_core::cache::{l2_backend::RedisCacheL2, user_cache::CachedUser, UserCache};
 use synctv_core::models::{UserId, UserRole, UserStatus};
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
-
-async fn start_redis() -> (
-    testcontainers::ContainerAsync<Redis>,
-    redis::aio::ConnectionManager,
-) {
-    let container =
-        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{port}");
-    let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-    let conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("Failed to create connection manager");
-    (container, conn)
-}
+use synctv_core_testing::start_redis as start_test_redis;
 
 fn make_cached_user(id: &str, username: &str) -> CachedUser {
     CachedUser::with_updated_at(
@@ -49,7 +27,7 @@ fn make_cached_user(id: &str, username: &str) -> CachedUser {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_tiered_cache_l2_set_and_get() {
-    let (_container, conn) = start_redis().await;
+    let (_container, conn) = start_test_redis().await;
     let l2 = Arc::new(RedisCacheL2::new(conn));
 
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:".to_string())
@@ -77,7 +55,7 @@ async fn test_tiered_cache_l2_set_and_get() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
-    let (_container, conn) = start_redis().await;
+    let (_container, conn) = start_test_redis().await;
     let l2 = Arc::new(RedisCacheL2::new(conn));
 
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:inv:".to_string())
@@ -108,7 +86,7 @@ async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_tiered_cache_clear_removes_all() {
-    let (_container, conn) = start_redis().await;
+    let (_container, conn) = start_test_redis().await;
     let l2 = Arc::new(RedisCacheL2::new(conn));
 
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:clr:".to_string())

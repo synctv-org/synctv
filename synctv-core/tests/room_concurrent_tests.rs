@@ -20,6 +20,7 @@
 use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
+use synctv_core_testing::postgres::docker_startup_timeout;
 use synctv_core::{
     models::{
         room_settings::MaxMembers, PermissionBits, Room, RoomId, RoomMember, RoomRole,
@@ -49,7 +50,7 @@ pub struct TestPostgres {
 
 async fn create_test_pool() -> TestPostgres {
     let container = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        docker_startup_timeout(),
         Postgres::default()
             .with_db_name("synctv_test")
             .with_user("synctv")

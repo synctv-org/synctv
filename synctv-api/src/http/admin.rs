@@ -1623,24 +1623,6 @@ mod tests {
 
     // ========== Admin Auth Blacklist Integration Tests ==========
     //
-    // H1: Admin auth must use SecurityPipeline (which checks the access token
-    // blacklist) instead of directly calling validate_admin_auth. This test
-    // verifies that the AppState correctly exposes the security_pipeline field
-    // and that the pipeline has blacklist checking capability. The actual
-    // integration test with a blacklisted token requires a running database,
-    // but these structural tests verify the fix is wired correctly.
-
-    #[test]
-    fn test_app_state_has_security_pipeline() {
-        // Verify AppState exposes security_pipeline field (used by validate_auth_user)
-        // This is a compile-time check that the field exists and is the correct type
-        fn _assert_pipeline_field(
-            state: &super::AppState,
-        ) -> &Arc<synctv_core::service::SecurityPipeline> {
-            &state.security_pipeline
-        }
-    }
-
     #[test]
     fn test_kick_stream_request_uses_body_fields() {
         // L15: kick_stream uses room_id and media_id from body (not path).

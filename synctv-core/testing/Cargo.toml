@@ -12,6 +12,7 @@ testcontainers-modules = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 chrono = { workspace = true }
 nanoid = { workspace = true }
+redis = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

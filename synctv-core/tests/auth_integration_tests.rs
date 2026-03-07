@@ -20,6 +20,7 @@
 use std::sync::Arc;
 
 use sqlx::PgPool;
+use tokio::sync::OnceCell;
 use synctv_core::{
     cache::{self, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -31,86 +32,43 @@ use synctv_core::{
     },
     Error, KeyBuilder,
 };
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::redis::Redis;
-
-const POSTGRES_VERSION: &str = "16-alpine";
+use synctv_core_testing::{create_test_pool, start_redis_url, RedisContainer, TestContainer};
 
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
 
 async fn create_test_infra() -> (
-    ContainerAsync<Postgres>,
-    ContainerAsync<Redis>,
+    TestContainer,
+    RedisContainer,
     PgPool,
     String,
 ) {
-    use testcontainers::core::ImageExt;
-
-    // Start PostgreSQL
-    let postgres = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Postgres::default()
-            .with_db_name("synctv_test")
-            .with_user("synctv")
-            .with_password("synctv_test")
-            .with_tag(POSTGRES_VERSION)
-            .start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Postgres container");
-
-    let pg_host = postgres.get_host().await.expect("Failed to get host");
-    let pg_port = postgres
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get port");
-
-    let database_url = format!("postgres://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
-
-    // Retry connection until PG is fully ready
-    let pool = {
-        let mut retries = 0u32;
-        loop {
-            match sqlx::postgres::PgPoolOptions::new()
-                .max_connections(10)
-                .acquire_timeout(std::time::Duration::from_secs(2))
-                .connect(&database_url)
-                .await
-            {
-                Ok(p) => break p,
-                Err(_) if retries < 60 => {
-                    retries += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
-            }
-        }
-    };
-
-    // Run migrations
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    // Start Redis
-    let redis = tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-        .await
-        .expect("Docker container startup timed out (is Docker running?)")
-        .expect("Failed to start Redis container");
-
-    let redis_port = redis
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{redis_port}");
+    let (postgres, pool) = create_test_pool().await;
+    let (redis, redis_url) = start_redis_url().await;
 
     (postgres, redis, pool, redis_url)
+}
+
+struct SharedTestInfra {
+    _postgres: TestContainer,
+    _redis: RedisContainer,
+    pool: PgPool,
+}
+
+static TEST_INFRA: OnceCell<SharedTestInfra> = OnceCell::const_new();
+
+async fn shared_test_infra() -> &'static SharedTestInfra {
+    TEST_INFRA
+        .get_or_init(|| async {
+            let (postgres, redis, pool, _redis_url) = create_test_infra().await;
+            SharedTestInfra {
+                _postgres: postgres,
+                _redis: redis,
+                pool,
+            }
+        })
+        .await
 }
 
 fn create_jwt_service() -> JwtService {
@@ -141,12 +99,9 @@ fn create_user_service(pool: PgPool) -> UserService {
 // Test 1: Password Change Invalidates Old Tokens
 // ============================================================================
 
-/// Test that changing password invalidates old tokens.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_password_change_invalidates_old_tokens() {
-    let (_postgres, _redis, pool, _redis_url) = create_test_infra().await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+async fn scenario_password_change_invalidates_old_tokens() {
+    let infra = shared_test_infra().await;
+    let user_service = Arc::new(create_user_service(infra.pool.clone()));
     let jwt_service = create_jwt_service();
 
     // 1. Register user
@@ -228,12 +183,9 @@ async fn test_password_change_invalidates_old_tokens() {
 // Test 2: User Ban Invalidates Tokens
 // ============================================================================
 
-/// Test that banning a user invalidates their tokens.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_ban_user_invalidates_tokens() {
-    let (_postgres, _redis, pool, _redis_url) = create_test_infra().await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+async fn scenario_ban_user_invalidates_tokens() {
+    let infra = shared_test_infra().await;
+    let user_service = Arc::new(create_user_service(infra.pool.clone()));
     let jwt_service = create_jwt_service();
 
     // 1. Register and login user
@@ -264,7 +216,7 @@ async fn test_ban_user_invalidates_tokens() {
     assert!(auth_result.is_ok(), "Token should work before ban");
 
     // 3. Admin bans user (simulate via DB update)
-    let user_repo = UserRepository::new(pool);
+    let user_repo = UserRepository::new(infra.pool.clone());
     let user = user_repo
         .get_by_username(&username)
         .await
@@ -290,12 +242,9 @@ async fn test_ban_user_invalidates_tokens() {
 // Test 3: Access Token Blacklist
 // ============================================================================
 
-/// Test that blacklisted access tokens are rejected.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_blacklisted_access_token_rejected() {
-    let (_postgres, _redis, pool, _redis_url) = create_test_infra().await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+async fn scenario_blacklisted_access_token_rejected() {
+    let infra = shared_test_infra().await;
+    let user_service = Arc::new(create_user_service(infra.pool.clone()));
     let jwt_service = create_jwt_service();
 
     // 1. Register and login user
@@ -343,12 +292,9 @@ async fn test_blacklisted_access_token_rejected() {
     );
 }
 
-/// Test that refresh token validation works.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_refresh_token_validation() {
-    let (_postgres, _redis, pool, _redis_url) = create_test_infra().await;
-    let user_service = Arc::new(create_user_service(pool));
+async fn scenario_refresh_token_validation() {
+    let infra = shared_test_infra().await;
+    let user_service = Arc::new(create_user_service(infra.pool.clone()));
 
     // Register and login user
     let username = format!("refresh_user_{}", nanoid::nanoid!(8));
@@ -382,12 +328,9 @@ async fn test_refresh_token_validation() {
 // Test 4: Complete Authentication Flow
 // ============================================================================
 
-/// Test the complete authentication flow from registration to token refresh.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_complete_authentication_flow() {
-    let (_postgres, _redis, pool, _redis_url) = create_test_infra().await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+async fn scenario_complete_authentication_flow() {
+    let infra = shared_test_infra().await;
+    let user_service = Arc::new(create_user_service(infra.pool.clone()));
     let jwt_service = create_jwt_service();
 
     // Step 1: Register new user
@@ -450,12 +393,9 @@ async fn test_complete_authentication_flow() {
     assert_eq!(auth_result.user_id, user.id);
 }
 
-/// Test login with wrong password fails.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_login_wrong_password_fails() {
-    let (_postgres, _redis, pool, _redis_url) = create_test_infra().await;
-    let user_service = Arc::new(create_user_service(pool));
+async fn scenario_login_wrong_password_fails() {
+    let infra = shared_test_infra().await;
+    let user_service = Arc::new(create_user_service(infra.pool.clone()));
 
     // Register user
     let username = format!("wrong_pwd_user_{}", nanoid::nanoid!(8));
@@ -477,12 +417,9 @@ async fn test_login_wrong_password_fails() {
     );
 }
 
-/// Test that deleted user cannot authenticate.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_deleted_user_cannot_authenticate() {
-    let (_postgres, _redis, pool, _redis_url) = create_test_infra().await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+async fn scenario_deleted_user_cannot_authenticate() {
+    let infra = shared_test_infra().await;
+    let user_service = Arc::new(create_user_service(infra.pool.clone()));
     let jwt_service = create_jwt_service();
 
     // Register and login user
@@ -504,7 +441,7 @@ async fn test_deleted_user_cannot_authenticate() {
         .expect("Failed to verify token");
 
     // Delete user
-    let user_repo = UserRepository::new(pool);
+    let user_repo = UserRepository::new(infra.pool.clone());
     user_repo
         .delete(&user.id)
         .await
@@ -522,4 +459,16 @@ async fn test_deleted_user_cannot_authenticate() {
         auth_result.is_err(),
         "Deleted user token should be rejected"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_auth_integration_scenarios() {
+    scenario_password_change_invalidates_old_tokens().await;
+    scenario_ban_user_invalidates_tokens().await;
+    scenario_blacklisted_access_token_rejected().await;
+    scenario_refresh_token_validation().await;
+    scenario_complete_authentication_flow().await;
+    scenario_login_wrong_password_fails().await;
+    scenario_deleted_user_cannot_authenticate().await;
 }

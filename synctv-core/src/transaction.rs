@@ -571,17 +571,4 @@ mod tests {
         );
     }
 
-    // ========== Integration test placeholders ==========
-
-    #[tokio::test]
-    async fn test_transaction_commit() {
-        // Integration test placeholder for transaction commit
-        // Would require TestInfra with PostgreSQL
-    }
-
-    #[tokio::test]
-    async fn test_transaction_rollback() {
-        // Integration test placeholder for transaction rollback
-        // Would require TestInfra with PostgreSQL
-    }
 }

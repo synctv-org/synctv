@@ -411,41 +411,6 @@ async fn test_logout_with_expired_token_succeeds() {
 // Test 10: Verify the fix - logout function must propagate blacklist errors
 // ============================================================================
 
-/// This test documents the expected behavior after the fix.
-///
-/// The logout function in synctv-api/src/impls/client/auth.rs should:
-/// 1. Verify the token
-/// 2. Extract JTI and TTL
-/// 3. Attempt to blacklist
-/// 4. IF blacklist fails: RETURN THE ERROR (not swallow it)
-///
-/// The current implementation at line 90-101 catches the error and only logs a warning.
-/// This test verifies the CORRECT behavior.
-#[test]
-fn test_logout_must_propagate_blacklist_errors() {
-    // This is a documentation test - the actual fix needs to be in the code.
-
-    // The current buggy code:
-    // ```
-    // if let Err(e) = self.user_service.blacklist_access_token(&claims.jti, remaining_ttl).await {
-    //     // BUG: Only logs warning, still returns Ok(())
-    //     tracing::warn!(error = %e, jti = %claims.jti, "Failed to blacklist...");
-    // }
-    // ```
-    //
-    // The correct code should be:
-    // ```
-    // self.user_service.blacklist_access_token(&claims.jti, remaining_ttl).await?;
-    // // If we reach here, blacklist succeeded
-    // ```
-
-    // This test documents that the fix is required
-    assert!(
-        true,
-        "Logout must propagate blacklist errors. See test documentation for details."
-    );
-}
-
 #[test]
 fn test_logout_internal_error_maps_to_http_500() {
     let app_error =

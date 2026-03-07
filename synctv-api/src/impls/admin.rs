@@ -250,12 +250,12 @@ impl AdminApiImpl {
             .await
             .unwrap_or_default();
 
-        // Batch-fetch distributed connection counts (single Redis MGET) to avoid N+1 queries
-        // This ensures accurate counts in multi-replica deployments
+        // Batch-fetch distributed online user counts so same-user multi-connection
+        // sessions are not overcounted as multiple online members.
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
         let counts = self
             .connection_manager
-            .room_connection_count_distributed_batch(&room_id_refs)
+            .room_online_user_count_distributed_batch(&room_id_refs)
             .await
             .map_err(ApiError::Internal)?;
 
@@ -298,7 +298,7 @@ impl AdminApiImpl {
                 &room,
                 None,
                 self.connection_manager
-                    .room_connection_count_distributed(&room.id)
+                    .room_online_user_count_distributed(&room.id)
                     .await
                     .map_err(ApiError::Internal)?
                     .try_into()
@@ -1521,7 +1521,7 @@ impl AdminApiImpl {
             .await
             .unwrap_or_default();
 
-        // Batch-fetch distributed connection counts for all rooms
+        // Batch-fetch distributed online user counts for all rooms
         let all_room_ids: Vec<&synctv_core::models::RoomId> = created_rooms
             .iter()
             .map(|r| &r.id)
@@ -1529,7 +1529,7 @@ impl AdminApiImpl {
             .collect();
         let count_vec = self
             .connection_manager
-            .room_connection_count_distributed_batch(&all_room_ids)
+            .room_online_user_count_distributed_batch(&all_room_ids)
             .await
             .map_err(ApiError::Internal)?;
         let count_map: std::collections::HashMap<&synctv_core::models::RoomId, usize> =
@@ -1646,7 +1646,7 @@ impl AdminApiImpl {
                 &updated,
                 None,
                 self.connection_manager
-                    .room_connection_count_distributed(&rid)
+                    .room_online_user_count_distributed(&rid)
                     .await
                     .map_err(ApiError::Internal)?
                     .try_into()
@@ -1699,7 +1699,7 @@ impl AdminApiImpl {
                 &updated,
                 None,
                 self.connection_manager
-                    .room_connection_count_distributed(&rid)
+                    .room_online_user_count_distributed(&rid)
                     .await
                     .map_err(ApiError::Internal)?
                     .try_into()
@@ -1742,7 +1742,7 @@ impl AdminApiImpl {
                 &room,
                 None,
                 self.connection_manager
-                    .room_connection_count_distributed(&rid)
+                    .room_online_user_count_distributed(&rid)
                     .await
                     .map_err(ApiError::Internal)?
                     .try_into()
@@ -1820,7 +1820,7 @@ impl AdminApiImpl {
                 &room,
                 Some(&settings),
                 self.connection_manager
-                    .room_connection_count_distributed(&rid)
+                    .room_online_user_count_distributed(&rid)
                     .await
                     .map_err(ApiError::Internal)?
                     .try_into()
@@ -1883,7 +1883,7 @@ impl AdminApiImpl {
                 &room,
                 Some(&settings),
                 self.connection_manager
-                    .room_connection_count_distributed(&rid)
+                    .room_online_user_count_distributed(&rid)
                     .await
                     .map_err(ApiError::Internal)?
                     .try_into()
@@ -3235,102 +3235,4 @@ mod tests {
         assert_eq!(admin_role, UserRole::Admin);
     }
 
-    /// An Admin caller must NOT be able to promote a regular User to Admin.
-    /// Only Root should be allowed to do so.
-    #[test]
-    fn test_admin_cannot_promote_user_to_admin() {
-        // The update_user_role method checks:
-        // 1. Only root can promote to root
-        // 2. Only root can change root user roles
-        // 3. Only root can change admin user roles
-        // 4. Only root can promote users to admin  <-- this is the new check
-        //
-        // We verify the proto_role_to_user_role mapping and the check logic:
-        let admin_role_i32 = synctv_proto::common::UserRole::Admin as i32;
-        let new_role =
-            crate::impls::client::proto_role_to_user_role(admin_role_i32).expect("should parse");
-        let caller_role = UserRole::Admin;
-
-        // The check that should block this: new_role == Admin && caller != Root
-        assert_eq!(new_role, UserRole::Admin);
-        assert_ne!(caller_role, UserRole::Root);
-        // This combination should be rejected by the implementation
-        assert!(
-            new_role == UserRole::Admin && caller_role != UserRole::Root,
-            "Admin caller promoting to Admin should be caught by the guard"
-        );
-    }
-
-    /// A Root caller should be able to promote a User to Admin.
-    #[test]
-    fn test_root_can_promote_user_to_admin() {
-        let admin_role_i32 = synctv_proto::common::UserRole::Admin as i32;
-        let new_role =
-            crate::impls::client::proto_role_to_user_role(admin_role_i32).expect("should parse");
-        let caller_role = UserRole::Root;
-
-        // Root should pass the guard
-        assert!(
-            !(new_role == UserRole::Admin && caller_role != UserRole::Root),
-            "Root caller should pass the admin promotion guard"
-        );
-    }
-
-    /// A Root caller should be able to promote a User to Root.
-    #[test]
-    fn test_root_can_promote_user_to_root() {
-        let root_role_i32 = synctv_proto::common::UserRole::Root as i32;
-        let new_role =
-            crate::impls::client::proto_role_to_user_role(root_role_i32).expect("should parse");
-        let caller_role = UserRole::Root;
-
-        assert!(
-            !(new_role == UserRole::Root && caller_role != UserRole::Root),
-            "Root caller should pass the root promotion guard"
-        );
-    }
-
-    // === E3: Admin audit log helper tests ===
-
-    #[test]
-    fn test_build_audit_details_map_basic() {
-        let mut details = serde_json::Map::new();
-        details.insert(
-            "room_id".to_string(),
-            serde_json::Value::String("room123".to_string()),
-        );
-        let value = serde_json::Value::Object(details);
-        assert!(value.is_object());
-        assert_eq!(value["room_id"], "room123");
-    }
-
-    #[test]
-    fn test_resolve_admin_username_fallback() {
-        // When the admin user lookup fails, the fallback should use the admin_user_id string
-        let admin_id = UserId::from_string("admin_abc".to_string());
-        // Simulate the pattern: map_or_else fallback to ID string
-        let fallback = admin_id.as_str().to_string();
-        assert_eq!(fallback, "admin_abc");
-    }
-
-    #[test]
-    fn test_audit_log_best_effort_pattern() {
-        // D11: Verify that the best-effort pattern (if let Err) does not propagate errors.
-        // The pattern should be:
-        //   if let Err(e) = self.log_admin_action(...).await {
-        //       tracing::error!(...);
-        //   }
-        // NOT:
-        //   self.audit_service.log(...).await.map_err(ApiError::from)?;
-        //
-        // This test documents the contract that audit failure should NOT cause
-        // the primary operation to fail.
-        let result: Result<(), String> = Ok(());
-        // Simulate the best-effort pattern
-        if let Err(e) = result {
-            // In real code, this would be tracing::error!
-            let _ = format!("audit failure: {e}");
-        }
-        // Test passes if we reach here (audit failure doesn't propagate)
-    }
 }

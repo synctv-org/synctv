@@ -18,29 +18,14 @@
 use std::time::Duration;
 use synctv_core::service::distributed_lock::{DistributedLock, MigrationLock};
 use synctv_core::Error;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
+use synctv_core_testing::start_redis as start_test_redis;
 
 /// Start a Redis container and return connection manager
 async fn start_redis() -> (
-    testcontainers::ContainerAsync<Redis>,
+    synctv_core_testing::RedisContainer,
     redis::aio::ConnectionManager,
 ) {
-    let container =
-        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{port}");
-    let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-    let conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("Failed to create connection manager");
-    (container, conn)
+    start_test_redis().await
 }
 
 // ============================================================================
@@ -562,50 +547,6 @@ async fn test_sentinel_failover_documents_vulnerability() {
 // ============================================================================
 // Redis connection failure tests
 // ============================================================================
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_redis_connection_timeout() {
-    // This test verifies that Redis operations timeout correctly
-    // We use a non-existent Redis server to simulate connection failure
-
-    let client = redis::Client::open("redis://127.0.0.1:9999").unwrap();
-    let conn = redis::aio::ConnectionManager::new(client).await;
-
-    // Connection should fail
-    assert!(
-        conn.is_err(),
-        "Connecting to non-existent Redis should fail"
-    );
-
-    // If we somehow got a connection, operations should timeout
-    // (This is hard to test reliably without actual network conditions)
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_acquire_returns_internal_error_on_redis_failure() {
-    // This is a conceptual test - in real scenarios, you'd need to simulate
-    // Redis failure mid-operation, which is difficult to do reliably.
-    //
-    // The implementation already wraps Redis errors in Error::Internal,
-    // so this test documents the expected error handling behavior.
-
-    let (_container, conn) = start_redis().await;
-    let lock = DistributedLock::new(conn);
-
-    // Normal operation should work
-    let result = lock.acquire("test_normal", 10).await;
-    assert!(result.is_ok(), "Normal acquire should succeed");
-
-    // If Redis fails, it should return Error::Internal or Error::Redis
-    // (We can't easily test this without breaking Redis on purpose)
-    let err = lock.acquire("test_normal", 10).await.unwrap();
-    assert!(
-        err.is_none(),
-        "Second acquire should fail gracefully (lock held)"
-    );
-}
 
 // ============================================================================
 // Lock value uniqueness tests

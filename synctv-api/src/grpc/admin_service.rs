@@ -1001,13 +1001,6 @@ mod tests {
     // ==================== Batch Size Limit Validation ====================
 
     #[test]
-    fn test_batch_size_limit_validation() {
-        // Verify the constant is defined correctly
-        const MAX_BATCH_SIZE: usize = 100;
-        assert_eq!(MAX_BATCH_SIZE, 100);
-    }
-
-    #[test]
     fn test_batch_ban_users_request_size_limit() {
         // Create request with 101 user IDs (exceeds limit)
         let user_ids: Vec<String> = (0..101).map(|i| format!("user_{i}")).collect();

@@ -24,14 +24,28 @@ async fn redis_connection(redis_url: &str) -> redis::aio::ConnectionManager {
     let client = redis::Client::open(redis_url).expect("Failed to open Redis client");
     let config = ConnectionManagerConfig::new()
         .set_number_of_retries(1)
-        .set_connection_timeout(Some(Duration::from_millis(200)))
-        .set_response_timeout(Some(Duration::from_millis(200)))
+        .set_connection_timeout(Some(Duration::from_secs(2)))
+        .set_response_timeout(Some(Duration::from_secs(2)))
         .set_min_delay(Duration::from_millis(50))
         .set_max_delay(Duration::from_millis(50));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut last_error = None;
 
-    RedisConnectionManager::new_with_config(client, config)
-        .await
-        .expect("Failed to create Redis ConnectionManager")
+    loop {
+        match RedisConnectionManager::new_with_config(client.clone(), config.clone()).await {
+            Ok(conn) => return conn,
+            Err(error) if tokio::time::Instant::now() < deadline => {
+                last_error = Some(error);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => {
+                panic!(
+                    "Failed to create Redis ConnectionManager after readiness wait: {}",
+                    last_error.unwrap_or(error)
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]

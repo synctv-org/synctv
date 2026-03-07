@@ -14,6 +14,19 @@ use testcontainers_modules::redis::Redis;
 #[allow(dead_code)]
 pub const REDIS_VERSION: &str = "7-alpine";
 
+const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;
+const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
+const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
+
+fn docker_startup_timeout() -> Duration {
+    std::env::var(DOCKER_STARTUP_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS))
+}
+
 /// Redis test infrastructure that manages a single Redis container.
 /// The container is automatically stopped when this struct is dropped.
 pub struct TestRedis {
@@ -24,11 +37,11 @@ pub struct TestRedis {
 impl TestRedis {
     /// Start a new Redis container for testing.
     /// Waits until Redis is actually accepting connections before returning.
-    /// Applies a 30-second timeout to container startup to fail fast when Docker
-    /// is unavailable (instead of hanging indefinitely).
+    /// Applies a bounded startup timeout so tests fail deterministically when
+    /// Docker is unavailable, while still tolerating slower CI/container hosts.
     pub async fn start() -> Self {
         let redis_container =
-            tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
+            tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
                 .await
                 .expect("Docker container startup timed out (is Docker running?)")
                 .expect("Failed to start Redis container");
@@ -44,32 +57,55 @@ impl TestRedis {
 
         let redis_url = format!("redis://{redis_host}:{redis_port}");
 
-        // Wait for Redis to be ready (generous timeout for parallel testcontainer startup)
-        let client = redis::Client::open(redis_url.as_str())
-            .expect("Failed to create Redis client for readiness check");
-        let mut retries = 0;
-        loop {
-            match redis::aio::ConnectionManager::new(client.clone()).await {
-                Ok(mut conn) => {
-                    // Verify with PING
-                    if redis::cmd("PING")
-                        .query_async::<()>(&mut conn)
-                        .await
-                        .is_ok()
-                    {
-                        break;
-                    }
-                }
-                Err(_) if retries < 60 => {}
-                Err(e) => panic!("Redis not ready after {retries} retries: {e}"),
-            }
-            retries += 1;
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
+        Self::wait_until_ready(&redis_url).await;
 
         Self {
             redis_url,
             _redis: redis_container,
+        }
+    }
+
+    /// Wait until both Redis connection paths used by production code are ready:
+    /// `ConnectionManager` and `MultiplexedConnection`.
+    ///
+    /// `NodeRegistry` uses `get_multiplexed_async_connection()`, so checking only
+    /// `ConnectionManager` can still let tests proceed into a transient startup
+    /// window where `register()` times out even though the container process has
+    /// already started.
+    pub async fn wait_until_ready(redis_url: &str) {
+        let client = redis::Client::open(redis_url)
+            .expect("Failed to create Redis client for readiness check");
+        let mut retries = 0;
+
+        loop {
+            let manager_ready = match redis::aio::ConnectionManager::new(client.clone()).await {
+                Ok(mut conn) => redis::cmd("PING")
+                    .query_async::<()>(&mut conn)
+                    .await
+                    .is_ok(),
+                Err(_) => false,
+            };
+
+            let multiplexed_ready = match client.get_multiplexed_async_connection().await {
+                Ok(mut conn) => redis::cmd("PING")
+                    .query_async::<()>(&mut conn)
+                    .await
+                    .is_ok(),
+                Err(_) => false,
+            };
+
+            if manager_ready && multiplexed_ready {
+                return;
+            }
+
+            if retries >= 60 {
+                panic!(
+                    "Redis not ready after {retries} retries: manager_ready={manager_ready}, multiplexed_ready={multiplexed_ready}"
+                );
+            }
+
+            retries += 1;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 }

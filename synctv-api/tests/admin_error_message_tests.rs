@@ -86,62 +86,6 @@ fn get_authentication_error_message(
 // Unit tests (no Docker required)
 // ============================================================================
 
-/// Test 1: Verify our expected message constant is correct
-#[test]
-fn test_unified_error_message_constant() {
-    assert_eq!(
-        UNIFIED_AUTH_ERROR_MESSAGE, "Authentication failed",
-        "The unified error message constant should match expected value"
-    );
-}
-
-/// Test 2: Verify that the forbidden message differs from the expected one
-#[test]
-fn test_forbidden_message_differs_from_expected() {
-    let forbidden_message = "Failed to verify user";
-
-    assert_ne!(
-        forbidden_message, UNIFIED_AUTH_ERROR_MESSAGE,
-        "The forbidden message must differ from the expected message"
-    );
-}
-
-/// Test 3: Verify password change error is intentionally different
-#[test]
-fn test_password_change_error_is_intentionally_different() {
-    let password_change_message = "Token invalidated due to password change. Please log in again.";
-
-    assert_ne!(
-        password_change_message, UNIFIED_AUTH_ERROR_MESSAGE,
-        "Password change error should be different to guide user to re-login"
-    );
-}
-
-/// Test 4: Verify the fix - all auth failures now use consistent messages
-#[test]
-fn test_fixed_implementation_has_consistent_messages() {
-    // AFTER FIX: Line 49 now returns "Authentication failed" (same as line 54)
-    // This test verifies the fix is in place.
-
-    let user_not_found_message = "Authentication failed";
-    let status_denied_message = "Authentication failed";
-
-    // After fix, these should be IDENTICAL
-    assert_eq!(
-        user_not_found_message, status_denied_message,
-        "After fix, both user-not-found and status-denied should return 'Authentication failed'"
-    );
-}
-
-/// Test 5: Verify UserStatus enum covers all failure cases
-#[test]
-fn test_user_status_variants() {
-    // All these statuses should fail admin auth (if not deleted)
-    assert!(matches!(UserStatus::Banned, UserStatus::Banned));
-    assert!(matches!(UserStatus::Pending, UserStatus::Pending));
-    assert!(matches!(UserStatus::Active, UserStatus::Active));
-}
-
 // ============================================================================
 // Integration tests (require Docker)
 // ============================================================================

@@ -8,30 +8,14 @@
 
 use std::sync::Arc;
 use synctv_core::service::{OAuth2State, OAuthStateStore, RedisOAuthStateStore};
-use testcontainers_modules::redis::Redis;
+use synctv_core_testing::start_redis as start_test_redis;
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (
-    testcontainers::ContainerAsync<Redis>,
+    synctv_core_testing::RedisContainer,
     redis::aio::ConnectionManager,
 ) {
-    use testcontainers::runners::AsyncRunner;
-
-    let container =
-        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{port}");
-    let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-    let conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("Failed to create connection manager");
-    (container, conn)
+    start_test_redis().await
 }
 
 fn make_state(instance_name: &str) -> OAuth2State {

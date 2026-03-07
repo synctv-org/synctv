@@ -9,44 +9,13 @@
 use std::sync::Arc;
 use synctv_core::service::email::VerificationCode;
 use synctv_core::service::{EmailService, RedisVerificationCodeStore, VerificationCodeStore};
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
+use synctv_core_testing::start_redis_shared as start_test_redis_shared;
 
 async fn start_redis() -> (
-    testcontainers::ContainerAsync<Redis>,
+    synctv_core_testing::RedisContainer,
     Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
 ) {
-    let container =
-        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis");
-    let host = container.get_host().await.expect("Failed to get host");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://{host}:{port}");
-    let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-
-    // Wait for Redis to be ready to accept connections (container port mapping
-    // may be available before Redis is actually listening).
-    for _ in 0..50 {
-        if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
-            if redis::cmd("PING")
-                .query_async::<String>(&mut conn)
-                .await
-                .is_ok()
-            {
-                let manager = redis::aio::ConnectionManager::new(client.clone())
-                    .await
-                    .expect("Failed to create Redis connection manager");
-                return (container, Arc::new(tokio::sync::RwLock::new(manager)));
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    panic!("Redis container did not become ready in time");
+    start_test_redis_shared().await
 }
 
 #[tokio::test]

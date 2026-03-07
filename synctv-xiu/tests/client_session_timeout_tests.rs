@@ -124,64 +124,6 @@ async fn test_bytesio_timeout_mechanism() {
     );
 }
 
-/// Test that the handshake timeout mechanism matches ServerSession's 10-second timeout
-#[test]
-fn test_client_handshake_timeout_matches_server_timeout() {
-    // Both ClientSession and ServerSession should use 10-second handshake timeout
-    // This is a constant verification test
-
-    // The handshake timeout should be 10 seconds to match ServerSession
-    // as defined in server_session.rs:144
-    const EXPECTED_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
-
-    // Verify the timeout constant is correct
-    assert_eq!(
-        EXPECTED_HANDSHAKE_TIMEOUT_SECS, 10,
-        "ClientSession handshake timeout should be 10 seconds to match ServerSession"
-    );
-}
-
-/// Test handshake buffer limit constant
-///
-/// Scenario: Server sends more data than expected during handshake
-/// Expected: Connection should be rejected to prevent memory exhaustion
-#[test]
-fn test_client_handshake_buffer_limit_constant() {
-    // RTMP handshake is 1536 bytes per packet
-    // S0 (1 byte) + S1 (1536 bytes) + S2 (1536 bytes) = 3073 bytes
-    // MAX_HANDSHAKE_BUFFER should be larger than this but not too large
-    // ServerSession uses 8192 bytes as the limit (server_session.rs:147)
-
-    const RTMP_HANDSHAKE_SIZE: usize = 1536;
-    const EXPECTED_MAX_BUFFER: usize = 8192;
-
-    // Verify the buffer allows normal handshake (3073 bytes)
-    let normal_handshake_size = 1 + RTMP_HANDSHAKE_SIZE * 2;
-    assert!(
-        normal_handshake_size < EXPECTED_MAX_BUFFER,
-        "MAX_HANDSHAKE_BUFFER ({EXPECTED_MAX_BUFFER}) should allow normal handshake ({normal_handshake_size} bytes)"
-    );
-
-    // Verify the buffer isn't too large (should be reasonable limit)
-    assert!(
-        EXPECTED_MAX_BUFFER <= 16384,
-        "MAX_HANDSHAKE_BUFFER should be reasonable (<= 16KB)"
-    );
-}
-
-/// Integration test: Verify SessionErrorValue::Timeout exists and is correct
-#[test]
-fn test_session_error_timeout_variant_exists() {
-    use synctv_xiu::rtmp::session::errors::SessionErrorValue;
-
-    let timeout_error = SessionErrorValue::Timeout;
-    let error_string = timeout_error.to_string();
-    assert!(
-        error_string.contains("timeout"),
-        "Timeout error should mention timeout: {error_string}"
-    );
-}
-
 /// Test that the handshake code path correctly uses timeouts
 ///
 /// This test verifies that:

@@ -186,20 +186,6 @@ async fn test_single_retry_only() {
 // Integration test for retry behavior (requires network/public IP)
 // ==================================================================
 
-/// Document that testing retry behavior with wiremock is affected by SSRF protection.
-/// Wiremock runs on localhost (127.0.0.1) which may be handled differently by
-/// the SSRF DNS resolver depending on port and configuration.
-///
-/// The dedicated SSRF tests in proxy_integration_tests.rs verify the
-/// blocking behavior with hardcoded URLs.
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_retry_integration_ssrf_documentation() {
-    // This test documents the SSRF protection behavior.
-    // Actual SSRF blocking is verified in:
-    // - test_ssrf_blocks_loopback
-    // - test_ssrf_blocks_private_ranges
-}
-
 // ==================================================================
 // Tests for the is_retryable_status function
 // ==================================================================

@@ -507,14 +507,6 @@ mod tests {
     // Integration tests with actual database should be in tests/ directory.
 
     #[tokio::test]
-    async fn test_repository_creation() {
-        // This test just ensures the types compile correctly
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let _instance_repo = ProviderInstanceRepository::new(pool.clone());
-        let _credential_repo = UserProviderCredentialRepository::new(pool);
-    }
-
-    #[tokio::test]
     async fn test_provider_instance_repo_rejects_plaintext_sensitive_fields_when_encryption_enabled(
     ) {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();

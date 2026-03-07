@@ -198,8 +198,6 @@ mod simple_handshake_server_tests {
         let mut server = SimpleHandshakeServer::new(io);
         let data = vec![1, 2, 3, 4, 5];
         server.extend_data(&data).unwrap();
-        // Should be able to extend data without error
-        assert!(true);
     }
 
     #[test]

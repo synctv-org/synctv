@@ -67,8 +67,14 @@ workspace = true
 tonic-prost-build.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 mockall.workspace = true
+synctv-core-testing = { path = "../synctv-core/testing" }
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+[[bench]]
+name = "connection_manager_ttl_refresh"
+harness = false

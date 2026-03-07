@@ -96,6 +96,20 @@ pub(super) fn room_to_proto_basic(
 }
 
 #[must_use]
+pub(super) fn hot_room_to_proto(
+    room: &synctv_core::models::Room,
+    settings: Option<&synctv_core::models::RoomSettings>,
+    online_count: i32,
+    total_members: i32,
+) -> crate::proto::client::RoomWithStats {
+    crate::proto::client::RoomWithStats {
+        room: Some(room_to_proto_basic(room, settings, Some(online_count))),
+        online_count,
+        total_members,
+    }
+}
+
+#[must_use]
 pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::client::Media {
     // Extract metadata from source_config if present (any provider may store it)
     let metadata_bytes = media

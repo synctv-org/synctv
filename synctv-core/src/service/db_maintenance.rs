@@ -244,31 +244,6 @@ impl DatabaseMaintenanceService {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_service_creation() {
-        // Verify the service can be constructed (no pool needed for unit test)
-        // This is a compile-time check that the struct and constructor are correct.
-        let _: fn(PgPool, Arc<dyn LeaderCheck>) -> DatabaseMaintenanceService =
-            DatabaseMaintenanceService::new;
-    }
-
-    /// Verify that `run_all_maintenance` calls the email token cleanup step.
-    ///
-    /// This is a compile-time structural test ensuring the email token cleanup
-    /// method exists and is referenced from the maintenance orchestrator.
-    /// The actual SQL (`SELECT cleanup_expired_email_tokens()`) requires a
-    /// live database, so integration testing is done via the migration test suite.
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_email_token_cleanup_method_exists() {
-        // Verify the cleanup method has the expected signature
-        let _: fn(
-            &DatabaseMaintenanceService,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + '_>,
-        > = |svc| Box::pin(svc.run_cleanup_email_tokens());
-    }
-
     /// M16: Verify that the default retention is 90 days when no settings registry is set.
     #[tokio::test]
     async fn test_default_retention_days() {

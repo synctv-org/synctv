@@ -822,23 +822,6 @@ mod tests {
         assert!(Arc::ptr_eq(&local_client, &resolved_client));
     }
 
-    /// Test that `create_remote_xxx_client` functions work
-    #[test]
-    fn test_create_remote_client_functions() {
-        // Note: We can't actually test with a real channel here, but we can
-        // verify the function signatures compile correctly
-        fn _test_alist(channel: tonic::transport::Channel) -> AlistClientArc {
-            create_remote_alist_client(channel)
-        }
-        fn _test_bilibili(channel: tonic::transport::Channel) -> BilibiliClientArc {
-            create_remote_bilibili_client(channel)
-        }
-        fn _test_emby(channel: tonic::transport::Channel) -> EmbyClientArc {
-            create_remote_emby_client(channel)
-        }
-        // The above functions verify these client constructors compile.
-    }
-
     /// Test that `ProviderClientManager::with_custom_clients` allows mock injection
     #[test]
     fn test_custom_clients_injection() {

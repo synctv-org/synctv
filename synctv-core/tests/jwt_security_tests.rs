@@ -794,36 +794,6 @@ async fn test_tampered_subject_rejected() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_token_family_revocation_integration() {
-    // This test would verify the full token family revocation flow
-    // using UserService::refresh_token with TokenBlacklistStore
-    //
-    // The actual implementation is in user_auth_service_tests.rs:
-    // - test_refresh_token_replay_same_jti_triggers_family_revocation
-    // - test_refresh_token_family_revocation_timestamp_blocks_older_tokens
-    //
-    // This is a placeholder to document that full integration testing
-    // requires the complete auth stack (UserService, TokenBlacklistStore, etc.)
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_refresh_token_rotation_integration() {
-    // This test would verify the complete refresh token rotation flow:
-    // 1. User logs in -> gets access + refresh tokens
-    // 2. Access token expires
-    // 3. User uses refresh token to get new access + refresh tokens
-    // 4. Old refresh token is blacklisted
-    // 5. Attempting to reuse old refresh token triggers family revocation
-    //
-    // The actual implementation is in user_auth_service_tests.rs:
-    // - test_refresh_token_concurrent_refresh_family_revocation
-    //
-    // This placeholder documents the integration test location.
-}
-
-#[tokio::test]
 async fn test_expired_refresh_token_rejected() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();

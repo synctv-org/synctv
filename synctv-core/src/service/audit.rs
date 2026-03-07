@@ -1365,26 +1365,6 @@ mod tests {
         assert_eq!(json, "\"stream\"");
     }
 
-    // ========== Integration Tests (Require DB) ==========
-
-    #[tokio::test]
-    async fn test_log_audit_event() {
-        // Integration test placeholder for AuditService::log_event
-        // Would require TestInfra with PostgreSQL
-    }
-
-    #[tokio::test]
-    async fn test_log_with_params() {
-        // Integration test placeholder for AuditService::log_with_params
-        // Would require TestInfra with PostgreSQL
-    }
-
-    #[tokio::test]
-    async fn test_log_stream_kicked() {
-        // Integration test placeholder for AuditService::log_stream_kicked
-        // Would require TestInfra with PostgreSQL
-    }
-
     // ========== log_stream_kicked Parameter Tests ==========
 
     #[test]

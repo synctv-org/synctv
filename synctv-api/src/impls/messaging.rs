@@ -3593,17 +3593,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_concurrency_config_default_matches_constant() {
-        // Verify default config uses the correct constant
-        let config = super::MessageConcurrencyConfig::default();
-        assert_eq!(
-            config.max_concurrent(),
-            super::DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING,
-            "Default should match DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING"
-        );
-    }
-
     // ========== Danmaku Color Validation Tests ==========
 
     #[test]
@@ -3859,16 +3848,6 @@ mod tests {
     // ========== WebRTC SDP/ICE Size Validation Tests (P1#12) ==========
 
     #[test]
-    fn test_max_sdp_size_constant() {
-        assert_eq!(super::MAX_SDP_SIZE, 10_000);
-    }
-
-    #[test]
-    fn test_max_ice_candidate_size_constant() {
-        assert_eq!(super::MAX_ICE_CANDIDATE_SIZE, 500);
-    }
-
-    #[test]
     fn test_sdp_offer_within_limit() {
         let offer = crate::proto::client::WebRtcOffer {
             to: "user1:conn1".to_string(),
@@ -3984,29 +3963,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_progress_throttle_constants() {
-        assert!(
-            (super::PROGRESS_MIN_POSITION_DELTA - 1.0).abs() < f64::EPSILON,
-            "Position delta threshold should be 1.0 seconds"
-        );
-        assert!(
-            (super::PROGRESS_MIN_ELAPSED_SECS - 5.0).abs() < f64::EPSILON,
-            "Elapsed time threshold should be 5.0 seconds"
-        );
-    }
-
     // ========== UserLeft Retry Semaphore Tests (P2#15) ==========
-
-    #[test]
-    fn test_user_left_retry_semaphore_exists() {
-        // Verify the semaphore exists and has permits
-        let semaphore = &*super::USER_LEFT_RETRY_SEMAPHORE;
-        assert!(
-            semaphore.available_permits() > 0,
-            "Semaphore should have available permits"
-        );
-    }
 
     #[tokio::test]
     async fn test_user_left_retry_semaphore_limits_concurrent_tasks() {

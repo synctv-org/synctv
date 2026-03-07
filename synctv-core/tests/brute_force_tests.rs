@@ -22,6 +22,7 @@ use synctv_core::service::{
     AttemptTracker, BruteForceProtection, InMemoryAttemptTracker, RedisAttemptTracker,
 };
 use synctv_core_testing::constants::{brute_force, network};
+use synctv_core_testing::start_redis;
 use tokio::sync::RwLock;
 
 // ============================================================================
@@ -181,30 +182,6 @@ async fn test_brute_force_reset_unlocks() {
 // ============================================================================
 // RedisAttemptTracker tests (require testcontainers)
 // ============================================================================
-
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
-
-async fn start_redis() -> (
-    testcontainers::ContainerAsync<Redis>,
-    redis::aio::ConnectionManager,
-) {
-    let container =
-        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{port}");
-    let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-    let conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("Failed to create connection manager");
-    (container, conn)
-}
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

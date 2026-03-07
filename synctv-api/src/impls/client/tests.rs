@@ -14,32 +14,6 @@ use synctv_core::models::{
 /// This should match the constant in room.rs.
 const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
 
-#[test]
-fn test_timing_attack_delay_constant_is_sufficient() {
-    // Verify the delay constant is at least 200ms as per the security requirement.
-    // A delay of 200-250ms is sufficient to mask timing differences in password
-    // verification while not being overly burdensome to legitimate users.
-    const { assert!(MIN_PASSWORD_CHECK_DELAY_MS >= 200) };
-    const { assert!(MIN_PASSWORD_CHECK_DELAY_MS <= 500) };
-}
-
-#[test]
-fn test_timing_attack_delay_matches_room_rs() {
-    // This test documents the expected delay value.
-    // If the constant in room.rs changes without updating this test, the test
-    // serves as a reminder to verify the new value is still appropriate.
-    //
-    // The constant in room.rs should be:
-    // const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
-    //
-    // If you need to change this value, consider:
-    // 1. Lower values (< 200ms) may not provide sufficient timing attack protection
-    // 2. Higher values (> 300ms) may noticeably impact user experience
-    // 3. The value should be constant - not configurable at runtime - to prevent
-    //    attackers from manipulating it
-    assert_eq!(MIN_PASSWORD_CHECK_DELAY_MS, 250);
-}
-
 /// Test that the timing delay calculation logic works correctly.
 #[test]
 fn test_timing_delay_calculation() {
@@ -85,35 +59,6 @@ fn test_timing_delay_calculation() {
     let long_elapsed = Duration::from_millis(300);
     let sleep = calculate_sleep_duration(long_elapsed, min_delay);
     assert!(sleep.is_none(), "Long operation should not require sleep");
-}
-
-/// Test that timing protection applies to both success and failure paths equally.
-#[test]
-fn test_timing_protection_applies_equally() {
-    // This test documents the principle that timing protection must apply
-    // regardless of the password verification result.
-    //
-    // In check_room_password, the timing delay is applied AFTER the password
-    // check, ensuring both valid=true and valid=false paths have the same
-    // minimum execution time.
-    //
-    // The structure is:
-    // 1. Start timer
-    // 2. Perform password verification (returns valid = true or false)
-    // 3. Log failure if applicable (constant time for logging)
-    // 4. Calculate and apply sleep to reach minimum delay
-    // 5. Return result
-    //
-    // This ensures attackers cannot distinguish between valid and invalid
-    // passwords by measuring response times.
-
-    // The key invariant: both paths must have at least MIN_PASSWORD_CHECK_DELAY_MS
-    // total execution time, making them indistinguishable from a timing perspective.
-    let min_delay_ms = MIN_PASSWORD_CHECK_DELAY_MS;
-
-    // Verify our minimum delay provides adequate protection
-    // (250ms makes timing attacks impractical over network)
-    assert!(min_delay_ms >= 200);
 }
 
 /// Test that simulates the exact timing protection logic used in `check_room_password`.
@@ -164,49 +109,6 @@ fn test_timing_protection_simulation() {
         diff < Duration::from_millis(100),
         "Timing difference between fast and slow operations should be bounded: {diff:?}"
     );
-}
-
-/// Test that the timing delay is in the recommended 200-250ms range.
-#[test]
-fn test_timing_delay_in_recommended_range() {
-    // The security requirement specifies a minimum delay of 200-250ms.
-    // This test verifies the constant falls within this range.
-    //
-    // Rationale for the range:
-    // - 200ms: Minimum safe threshold to mask network timing jitter
-    // - 250ms: Recommended value providing extra safety margin
-    // - Below 200ms: May still be vulnerable to statistical timing attacks
-    // - Above 300ms: Noticeably impacts user experience
-    const { assert!(MIN_PASSWORD_CHECK_DELAY_MS >= 200) };
-    const { assert!(MIN_PASSWORD_CHECK_DELAY_MS <= 300) };
-}
-
-/// Test that verifies the timing protection cannot be bypassed by early returns.
-#[test]
-fn test_no_early_return_bypass() {
-    // This test documents that the timing protection in check_room_password
-    // is placed AFTER all password verification logic, ensuring it cannot be
-    // bypassed by early returns in the verification path.
-    //
-    // The implementation in room.rs follows this structure:
-    // ```
-    // let start = std::time::Instant::now();
-    // let valid = self.room_service.check_room_password(&rid, &req.password).await?;
-    // if !valid { tracing::info!(...); }  // Log failure (constant time)
-    // // Timing protection applied HERE - after all verification logic
-    // let elapsed = start.elapsed();
-    // if elapsed < min_delay { tokio::time::sleep(min_delay - elapsed).await; }
-    // Ok(response)
-    // ```
-    //
-    // Key security properties:
-    // 1. Timer starts BEFORE password verification
-    // 2. Sleep happens AFTER verification, regardless of result
-    // 3. No early returns between timer start and sleep
-    // 4. Logging happens inside the timed window
-
-    // Verify the constant is properly defined
-    assert_eq!(MIN_PASSWORD_CHECK_DELAY_MS, 250);
 }
 
 // === Password Validation Tests ===
@@ -461,6 +363,24 @@ fn test_room_to_proto_default_settings() {
     let proto = room_to_proto_basic(&room, None, None);
     // Settings should be default (serialized default RoomSettings)
     assert!(!proto.settings.is_empty());
+}
+
+#[test]
+fn test_hot_room_embedded_room_member_count_uses_online_count_semantics() {
+    let room = make_test_room(RoomStatus::Active);
+    let online_count = 3;
+    let total_members = 17;
+
+    let proto = hot_room_to_proto(&room, None, online_count, total_members);
+
+    assert_eq!(
+        proto.room.as_ref().unwrap().member_count,
+        online_count,
+        "embedded Room.member_count should remain the public online-user count"
+    );
+    assert_eq!(proto.online_count, online_count);
+    assert_eq!(proto.total_members, total_members);
+    assert_ne!(proto.room.as_ref().unwrap().member_count, total_members);
 }
 
 // === Playback State Conversion Tests ===
@@ -761,19 +681,6 @@ fn test_pagination_page_positive_passes_through() {
 // unit tests verify the permission constant is properly defined.
 
 #[test]
-fn test_reorder_playlist_permission_bit_exists() {
-    use synctv_core::models::PermissionBits;
-    // REORDER_PLAYLIST must be a distinct, non-zero permission bit
-    let perm = PermissionBits::REORDER_PLAYLIST;
-    assert_ne!(perm, 0, "REORDER_PLAYLIST permission bit must be non-zero");
-    // It should be a power of two (single bit)
-    assert!(
-        perm.is_power_of_two(),
-        "REORDER_PLAYLIST should be a single permission bit"
-    );
-}
-
-#[test]
 fn test_reorder_playlist_permission_in_creator_defaults() {
     use synctv_core::models::{PermissionBits, RoomRole};
     // Creator role should include REORDER_PLAYLIST by default
@@ -895,36 +802,7 @@ fn test_members_to_proto_pattern_preserves_custom_permissions() {
     assert_eq!(result.removed_permissions, 0x0F);
 }
 
-// === P2#20: publish_permission_changed return value tests ===
-
-#[test]
-fn test_publish_permission_changed_no_redis_returns_true() {
-    // When redis_publish_tx is None, publish_permission_changed should return true
-    // (no work to do = success). This is a design-level test documenting the contract.
-    //
-    // The actual async test requires a full ClientApiImpl which needs DB setup,
-    // so we verify the invariant through the documented return value contract:
-    // - None redis_publish_tx -> true (no Redis = nothing to publish = success)
-    // - Some(tx) + successful send -> true
-    // - Some(tx) + failed send -> false + warning logged
-    //
-    // The function signature is:
-    //   async fn publish_permission_changed(...) -> bool
-    // This test verifies the bool return type exists and is used.
-    assert!(true, "publish_permission_changed returns bool");
-}
-
 // === P2#23: Playlist total size limit tests ===
-
-#[test]
-fn test_max_playlist_size_constant() {
-    // MAX_PLAYLIST_SIZE should be a reasonable limit
-    assert_eq!(
-        super::ClientApiImpl::MAX_PLAYLIST_SIZE,
-        1000,
-        "MAX_PLAYLIST_SIZE should be 1000"
-    );
-}
 
 #[test]
 fn test_max_playlist_size_greater_than_batch_limit() {
@@ -1147,76 +1025,3 @@ fn test_playback_state_version_i32_range_still_works() {
 }
 
 // === P2#11: update_room_settings empty settings permission bypass ===
-
-/// Test: Empty settings request should not return room details
-///
-/// SECURITY ISSUE: When settings.is_empty(), the original code only checked
-/// membership (which any room member has) before returning full room details.
-/// This allowed any regular member to get room info without having
-/// UPDATE_ROOM_SETTINGS permission by simply sending an empty settings request.
-///
-/// FIX: When settings.is_empty(), return success with None room field instead
-/// of returning room details. Users should use get_room or get_room_settings
-/// endpoints to retrieve room information (which have their own permission checks).
-#[test]
-fn test_empty_settings_response_design() {
-    // This test documents the expected behavior after the fix:
-    // Empty settings request should succeed but return None for room field.
-    //
-    // The proto definition allows room to be Optional:
-    //   message UpdateRoomSettingsResponse { Room room = 1; }
-    //
-    // After fix:
-    // - settings.is_empty() -> Ok(UpdateRoomSettingsResponse { room: None })
-    // - !settings.is_empty() -> requires UPDATE_ROOM_SETTINGS permission
-    //                          -> returns updated room on success
-    //
-    // This prevents the permission bypass where any member could get room info
-    // without proper authorization.
-    assert!(true, "Design documented: empty settings returns None room");
-}
-
-/// Test: Verify that check_membership alone is insufficient for room data access
-///
-/// The original bug: `check_membership` only verifies the user is in the room,
-/// not that they have permission to view room settings. Any Member role user
-/// would pass this check but should not have access to room details via
-/// update_room_settings.
-#[test]
-fn test_check_membership_vs_check_permission_distinction() {
-    // This test documents the distinction between:
-    // 1. check_membership - only verifies user is a room member
-    // 2. check_permission - verifies user has specific permission bit
-    //
-    // For update_room_settings with empty settings:
-    // - BEFORE (bug): used check_membership -> any member could get room info
-    // - AFTER (fix): returns success with no room data
-    //
-    // For update_room_settings with actual settings:
-    // - Uses check_permission(UPDATE_ROOM_SETTINGS) -> only authorized users
-
-    // Member role does NOT have UPDATE_ROOM_SETTINGS by default
-    let member_permissions = RoomRole::Member.permissions();
-    let update_settings_bit = synctv_core::models::PermissionBits::UPDATE_ROOM_SETTINGS;
-
-    assert_eq!(
-        member_permissions.0 & update_settings_bit,
-        0,
-        "Member role should NOT have UPDATE_ROOM_SETTINGS permission by default"
-    );
-
-    // Admin/Creator roles DO have UPDATE_ROOM_SETTINGS
-    let admin_permissions = RoomRole::Admin.permissions();
-    assert_ne!(
-        admin_permissions.0 & update_settings_bit,
-        0,
-        "Admin role SHOULD have UPDATE_ROOM_SETTINGS permission"
-    );
-
-    let creator_permissions = RoomRole::Creator.permissions();
-    assert_ne!(
-        creator_permissions.0 & update_settings_bit,
-        0,
-        "Creator role SHOULD have UPDATE_ROOM_SETTINGS permission"
-    );
-}

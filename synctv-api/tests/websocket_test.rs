@@ -10,6 +10,20 @@
 #![allow(clippy::unwrap_used)]
 use synctv_api::http::websocket::{AuthMethod, WsQuery};
 
+async fn wait_for_condition<F>(timeout: std::time::Duration, mut check: F)
+where
+    F: FnMut() -> bool,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if check() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(check(), "condition was not satisfied within {timeout:?}");
+}
+
 // ============================================================================
 // Module: WsQuery deserialization
 // ============================================================================
@@ -3350,6 +3364,7 @@ mod websocket_e2e {
 
 #[cfg(test)]
 mod websocket_connection_limit_timing {
+    use super::wait_for_condition;
     use std::sync::Arc;
 
     use tokio::net::TcpListener;
@@ -3837,11 +3852,10 @@ mod websocket_connection_limit_timing {
             "First connection should get HTTP 101 Switching Protocols"
         );
 
-        // Wait a bit for the first connection to register
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        // Verify user has 1 connection
-        assert_eq!(server.connection_manager.user_connection_count(&user_id), 1);
+        wait_for_condition(std::time::Duration::from_secs(2), || {
+            server.connection_manager.user_connection_count(&user_id) == 1
+        })
+        .await;
 
         // Second connection (same user) should fail with HTTP 429
         // This is the KEY assertion - the limit check must happen BEFORE upgrade
@@ -3905,11 +3919,10 @@ mod websocket_connection_limit_timing {
             "Connection within limits should get HTTP 101"
         );
 
-        // Wait for registration
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        // Verify connection is tracked
-        assert_eq!(server.connection_manager.user_connection_count(&user_id), 1);
+        wait_for_condition(std::time::Duration::from_secs(2), || {
+            server.connection_manager.user_connection_count(&user_id) == 1
+        })
+        .await;
     }
 
     // ========================================================================
@@ -3962,18 +3975,11 @@ mod websocket_connection_limit_timing {
             "User2 should get HTTP 101"
         );
 
-        // Wait for registration
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        // Verify both connections are tracked
-        assert_eq!(
-            server.connection_manager.user_connection_count(&user1_id),
-            1
-        );
-        assert_eq!(
-            server.connection_manager.user_connection_count(&user2_id),
-            1
-        );
+        wait_for_condition(std::time::Duration::from_secs(2), || {
+            server.connection_manager.user_connection_count(&user1_id) == 1
+                && server.connection_manager.user_connection_count(&user2_id) == 1
+        })
+        .await;
     }
 
     // ========================================================================
@@ -4002,16 +4008,18 @@ mod websocket_connection_limit_timing {
             tungstenite::http::StatusCode::SWITCHING_PROTOCOLS
         );
 
-        // Wait for registration
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert_eq!(server.connection_manager.user_connection_count(&user_id), 1);
+        wait_for_condition(std::time::Duration::from_secs(2), || {
+            server.connection_manager.user_connection_count(&user_id) == 1
+        })
+        .await;
 
         // Disconnect
         drop(ws1);
 
-        // Wait for cleanup
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        assert_eq!(server.connection_manager.user_connection_count(&user_id), 0);
+        wait_for_condition(std::time::Duration::from_secs(2), || {
+            server.connection_manager.user_connection_count(&user_id) == 0
+        })
+        .await;
 
         // Should be able to reconnect (HTTP 101)
         let (ws2, response2) =
@@ -4025,9 +4033,10 @@ mod websocket_connection_limit_timing {
             "Reconnection after disconnect should get HTTP 101"
         );
 
-        // Wait for registration
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert_eq!(server.connection_manager.user_connection_count(&user_id), 1);
+        wait_for_condition(std::time::Duration::from_secs(2), || {
+            server.connection_manager.user_connection_count(&user_id) == 1
+        })
+        .await;
 
         drop(ws2);
     }
@@ -4043,16 +4052,6 @@ mod websocket_connection_limit_timing {
 // exceeded, the client is disconnected.
 
 mod slow_client_disconnect_tests {
-
-    /// Test that `SLOW_CLIENT_DROP_THRESHOLD` constant has expected value.
-    /// This threshold determines how many consecutive message drops trigger disconnect.
-    #[test]
-    fn test_slow_client_drop_threshold_value() {
-        // The threshold should be 10 consecutive drops before disconnect
-        // This is defined in synctv-api/src/http/websocket.rs
-        const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
-        assert_eq!(SLOW_CLIENT_DROP_THRESHOLD, 10);
-    }
 
     /// Test that consecutive drop counter logic works correctly.
     /// This simulates the counter behavior without actual WebSocket.
@@ -4297,140 +4296,5 @@ mod membership_cache_ttl_tests {
     }
 }
 
-// ============================================================================
-// Module: Danmu SSE Tests (Task #56)
-// ============================================================================
-//
-// These tests document the current Danmu SSE behavior and the expected
-// future enhancement for continuous danmaku streaming.
-//
-// Current behavior: SSE endpoint provides connection info for clients to
-// connect directly to Bilibili's WebSocket danmu servers.
-//
-// Future enhancement: Server could act as a danmaku proxy, forwarding
-// messages from Bilibili's servers to SSE clients.
-
 mod danmu_sse_tests {
-
-    /// Test that documents current Danmu SSE behavior.
-    ///
-    /// Current implementation:
-    /// 1. Client requests /`proxy/:room_id/:media_id/danmu`
-    /// 2. Server returns `danmu_info` event with token and `host_list`
-    /// 3. Client uses this info to connect directly to Bilibili's WebSocket
-    /// 4. Keep-alive messages are sent to maintain SSE connection
-    #[test]
-    fn test_danmu_sse_current_behavior() {
-        // The SSE endpoint returns connection info, not actual danmaku
-        // Event type: "danmu_info"
-        // Event data: {"token": "...", "host_list": [{"host": "...", "port": ...}]}
-
-        // This design allows clients to connect directly to Bilibili's servers
-        // which avoids the server being a proxy for all danmaku traffic.
-
-        // Keep-alive interval
-        const KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
-        const { assert!(KEEP_ALIVE_INTERVAL_SECS > 0) };
-    }
-
-    /// Test that documents expected SSE event structure.
-    ///
-    /// The `danmu_info` event contains:
-    /// - token: Authentication token for WebSocket connection
-    /// - `host_list`: Array of WebSocket server hosts with ports
-    #[test]
-    fn test_danmu_info_event_structure() {
-        use serde_json::json;
-
-        // Expected event data structure
-        let event_data = json!({
-            "token": "test_token_123",
-            "host_list": [
-                {
-                    "host": "broadcastlv.chat.bilibili.com",
-                    "port": 2243,
-                    "wss_port": 443,
-                    "ws_port": 2244
-                }
-            ]
-        });
-
-        // Verify structure
-        assert!(event_data.get("token").is_some());
-        assert!(event_data
-            .get("host_list")
-            .is_some_and(serde_json::Value::is_array));
-    }
-
-    /// Test that documents the future enhancement for continuous streaming.
-    ///
-    /// Future implementation would:
-    /// 1. Server connects to Bilibili's WebSocket danmu servers
-    /// 2. Receives danmaku messages from the stream
-    /// 3. Forwards each message as an SSE `danmu` event to clients
-    ///
-    /// This would require:
-    /// - WebSocket client implementation for Bilibili protocol
-    /// - Connection pooling and management
-    /// - Proper cleanup on client disconnect
-    #[test]
-    #[ignore = "Future enhancement - continuous danmaku streaming"]
-    fn test_danmu_sse_continuous_stream_future() {
-        // Future implementation would emit continuous `danmu` events:
-        //
-        // Event: danmu
-        // Data: {"text": "Hello!", "user": "viewer123", "color": "#FFFFFF", "time": 12345}
-        //
-        // Event: danmu
-        // Data: {"text": "Nice stream!", "user": "viewer456", "color": "#00FF00", ...}
-        //
-        // This would require a WebSocket client that:
-        // 1. Connects to Bilibili's server using the token and host
-        // 2. Subscribes to the danmaku stream for the room
-        // 3. Parses incoming packets and extracts danmaku
-        // 4. Forwards to all connected SSE clients
-
-        const EXPECTED_DANMU_EVENT_TYPES: &[&str] = &[
-            "danmu_info", // Initial connection info (current behavior)
-            "danmu",      // Individual danmaku messages (future)
-            "gift",       // Gift notifications (future)
-            "error",      // Error messages (current)
-        ];
-
-        assert!(EXPECTED_DANMU_EVENT_TYPES.contains(&"danmu_info"));
-        assert!(EXPECTED_DANMU_EVENT_TYPES.contains(&"danmu"));
-    }
-
-    /// Test that documents error handling for non-live media.
-    ///
-    /// If the media is not a Bilibili live stream, an error event
-    /// should be sent instead of `danmu_info`.
-    #[test]
-    fn test_danmu_sse_error_for_non_live() {
-        use serde_json::json;
-
-        // Error event for non-live media
-        let error_event = json!({
-            "error": "Danmaku is only available for Bilibili live streams"
-        });
-
-        assert!(error_event.get("error").is_some());
-    }
-
-    /// Test that documents the keep-alive mechanism.
-    ///
-    /// The SSE connection is kept alive with periodic keep-alive
-    /// messages to prevent connection timeout.
-    #[test]
-    fn test_danmu_sse_keep_alive() {
-        // Keep-alive configuration
-        const KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
-        const KEEP_ALIVE_TEXT: &str = "keep-alive";
-
-        // This ensures the connection stays active even when
-        // no danmaku is being received
-        const { assert!(KEEP_ALIVE_INTERVAL_SECS >= 10) };
-        const { assert!(KEEP_ALIVE_INTERVAL_SECS <= 30) };
-        const { assert!(!KEEP_ALIVE_TEXT.is_empty()) };
-    }
 }

@@ -318,19 +318,6 @@ mod tests {
 
     // ========== Unit Tests (No Database Required) ==========
 
-    /// Test that NotificationRepository::new() creates a repository instance
-    #[test]
-    fn test_repository_new_creates_instance() {
-        // We can't test with a real pool without database, but we can verify
-        // the new() function signature and const behavior compile correctly
-        // by checking it exists and has the right signature
-        fn _assert_new_exists(pool: PgPool) -> NotificationRepository {
-            NotificationRepository::new(pool)
-        }
-        // This test validates the function signature at compile time
-        assert!(true);
-    }
-
     /// Test CreateNotificationRequest struct creation with minimal fields
     #[test]
     fn test_create_notification_request_minimal() {

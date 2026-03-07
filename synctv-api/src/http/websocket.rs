@@ -74,7 +74,6 @@ impl MetricsGuard {
         synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_TOTAL
             .with_label_values(&["success"])
             .inc();
-        synctv_core::metrics::http::USERS_ONLINE.inc();
 
         Self { decremented: false }
     }
@@ -90,7 +89,6 @@ impl Drop for MetricsGuard {
     fn drop(&mut self) {
         if !self.decremented {
             synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_ACTIVE.dec();
-            synctv_core::metrics::http::USERS_ONLINE.dec();
         }
     }
 }

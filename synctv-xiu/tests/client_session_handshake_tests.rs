@@ -249,26 +249,6 @@ async fn test_client_session_handles_invalid_s0_version() {
     server_handle.await.unwrap();
 }
 
-// === Test 4: Timeout mechanism in ClientSession ===
-
-#[tokio::test]
-async fn test_client_session_handshake_timeout_constant() {
-    // Verify that the handshake timeout is set to 10 seconds as per the fix
-    // This is a compile-time check via the constant
-
-    // The handshake_timeout should be Duration::from_secs(10)
-    // This is tested indirectly through the timeout behavior tests above
-    // but we can also test the error type directly
-
-    // Verify the Timeout error variant exists
-    let timeout_error = SessionErrorValue::Timeout;
-    let error_string = timeout_error.to_string();
-    assert!(
-        error_string.contains("timeout"),
-        "Timeout error should contain 'timeout': {error_string}"
-    );
-}
-
 // === Test 5: Timeout error propagation ===
 // This test verifies the timeout error type exists and has correct message
 // (actual timeout behavior is tested in test_client_session_handshake_timeout_on_no_response)

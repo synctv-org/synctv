@@ -5487,6 +5487,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "criterion",
  "dashmap",
  "failsafe",
  "futures",
@@ -5504,6 +5505,7 @@ dependencies = [
  "serde_json",
  "subtle",
  "synctv-core",
+ "synctv-core-testing",
  "tempfile",
  "testcontainers",
  "testcontainers-modules",
@@ -5609,6 +5611,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "nanoid",
+ "redis",
  "sqlx",
  "synctv-core",
  "testcontainers",

@@ -12,24 +12,15 @@ use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
     models::{RoomId, UserId},
 };
+use synctv_core_testing::postgres::docker_startup_timeout;
+use synctv_core_testing::start_redis_url as start_test_redis_url;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::redis::Redis;
 use tokio::sync::RwLock;
 
-async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
-    let container =
-        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{port}");
-    (container, redis_url)
+async fn start_redis() -> (synctv_core_testing::RedisContainer, String) {
+    start_test_redis_url().await
 }
 
 #[tokio::test]
@@ -430,7 +421,7 @@ async fn test_cache_invalidation_before_commit() {
     };
     // Start PostgreSQL
     let postgres = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        docker_startup_timeout(),
         Postgres::default()
             .with_db_name("synctv_test")
             .with_user("synctv")

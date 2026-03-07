@@ -20,21 +20,6 @@ use synctv_proxy::{
 // Response Size Validation Tests
 // ==================================================================
 
-/// Test that `MAX_PROXY_BODY_SIZE` constant is reasonable (256 MB)
-#[test]
-fn test_max_proxy_body_size_is_256mb() {
-    // This test documents the expected limit
-    const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;
-    assert_eq!(MAX_PROXY_BODY_SIZE, 268_435_456);
-}
-
-/// Test that `MAX_MANIFEST_SIZE` constant is reasonable (10 MB)
-#[test]
-fn test_max_manifest_size_is_10mb() {
-    const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
-    assert_eq!(MAX_MANIFEST_SIZE, 10_485_760);
-}
-
 /// Test that oversized responses are blocked (via SSRF ACL on private IP)
 #[test]
 fn test_oversized_response_blocked() {
@@ -64,13 +49,6 @@ async fn test_content_length_validation_blocks_oversized() {
 // ==================================================================
 // Redirect Loop Detection Tests
 // ==================================================================
-
-/// Test that `MAX_REDIRECTS` constant is reasonable (10)
-#[test]
-fn test_max_redirects_is_10() {
-    const MAX_REDIRECTS: usize = 10;
-    assert_eq!(MAX_REDIRECTS, 10);
-}
 
 /// Test that public URLs are allowed by the SSRF ACL
 #[test]

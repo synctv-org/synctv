@@ -16,9 +16,18 @@ use synctv_cluster::HeartbeatResult;
 #[allow(dead_code)]
 const REDIS_VERSION: &str = "7-alpine";
 
+fn docker_startup_timeout() -> Duration {
+    std::env::var("SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|secs| secs.max(30))
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(120))
+}
+
 /// Helper to create a Redis container and client.
 async fn setup_redis() -> (testcontainers::ContainerAsync<Redis>, redis::Client, String) {
-    let redis_container = tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
+    let redis_container = tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
         .await
         .expect("Docker container startup timed out (is Docker running?)")
         .expect("Failed to start Redis container");

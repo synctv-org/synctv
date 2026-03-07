@@ -936,11 +936,13 @@ impl ConnectionManager {
         }
 
         // Add the connection to the local user index (used for routing and cleanup).
-        {
+        let is_first_connection_for_user = {
             let mut user_entry = self.user_connections.entry(user_id.clone()).or_default();
+            let is_first = user_entry.is_empty();
             user_entry.push(connection_id.clone());
             // Drop the shard lock before inserting into another DashMap
-        }
+            is_first
+        };
 
         // Create and register connection info
         let conn_info = ConnectionInfo::new(connection_id.clone(), user_id.clone());
@@ -991,6 +993,9 @@ impl ConnectionManager {
         // Update metrics
         self.total_connections_ever.fetch_add(1, Ordering::Relaxed);
         synctv_core::metrics::ACTIVE_CONNECTIONS.inc();
+        if is_first_connection_for_user {
+            synctv_core::metrics::http::USERS_ONLINE.inc();
+        }
         synctv_core::metrics::cluster::CLUSTER_CONNECTIONS
             .set(self.total_connections.load(Ordering::Relaxed) as i64);
 
@@ -1196,11 +1201,13 @@ impl ConnectionManager {
         if let Some((_, conn_info)) = self.connections.remove(connection_id) {
             // Decrement the atomic total connection count
             self.total_connections.fetch_sub(1, Ordering::AcqRel);
+            let mut user_went_offline = false;
 
             // Remove from user connections
             if let Some(mut user_conns) = self.user_connections.get_mut(&conn_info.user_id) {
                 user_conns.retain(|id| id != connection_id);
                 if user_conns.is_empty() {
+                    user_went_offline = true;
                     drop(user_conns);
                     self.user_connections.remove(&conn_info.user_id);
                 }
@@ -1290,6 +1297,9 @@ impl ConnectionManager {
             }
 
             synctv_core::metrics::ACTIVE_CONNECTIONS.dec();
+            if user_went_offline {
+                synctv_core::metrics::http::USERS_ONLINE.dec();
+            }
             synctv_core::metrics::cluster::CLUSTER_CONNECTIONS
                 .set(self.total_connections.load(Ordering::Relaxed) as i64);
             synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS
@@ -1498,6 +1508,89 @@ impl ConnectionManager {
         Ok(room_ids
             .iter()
             .map(|rid| self.room_connection_count(rid))
+            .collect())
+    }
+
+    /// Get the number of distinct online users in a room on the local node.
+    #[must_use]
+    pub fn room_online_user_count(&self, room_id: &RoomId) -> usize {
+        use std::collections::HashSet;
+
+        self.get_room_connections(room_id)
+            .into_iter()
+            .map(|conn| conn.user_id)
+            .collect::<HashSet<_>>()
+            .len()
+    }
+
+    /// Get the number of distinct online users in a room across all replicas.
+    pub async fn room_online_user_count_distributed(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<usize, String> {
+        let counts = self
+            .room_online_user_count_distributed_batch(&[room_id])
+            .await?;
+        Ok(counts.into_iter().next().unwrap_or(0))
+    }
+
+    /// Get distinct online user counts for multiple rooms across all replicas.
+    pub async fn room_online_user_count_distributed_batch(
+        &self,
+        room_ids: &[&RoomId],
+    ) -> Result<Vec<usize>, String> {
+        if room_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if self.redis_conn.is_some() {
+            use std::collections::{HashMap, HashSet};
+
+            let mut room_to_users: HashMap<&str, HashSet<String>> = room_ids
+                .iter()
+                .map(|room_id| (room_id.as_str(), HashSet::new()))
+                .collect();
+
+            for room_id in room_ids {
+                let connection_ids = self.get_room_connections_distributed(room_id).await?;
+                for connection_id in connection_ids {
+                    let conn_key = format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix);
+                    let mut conn_clone = self
+                        .redis_conn
+                        .as_ref()
+                        .expect("checked is_some above")
+                        .clone();
+
+                    let metadata: Option<String> = conn_clone
+                        .get(&conn_key)
+                        .await
+                        .map_err(|e| format!("Failed to fetch distributed connection metadata: {e}"))?;
+
+                    let Some(metadata) = metadata else {
+                        continue;
+                    };
+
+                    let info: ConnectionInfoPersistent = serde_json::from_str(&metadata)
+                        .map_err(|e| format!("Failed to deserialize distributed connection metadata: {e}"))?;
+
+                    if info.room_id.as_deref() == Some(room_id.as_str()) {
+                        room_to_users
+                            .entry(room_id.as_str())
+                            .or_default()
+                            .insert(info.user_id);
+                    }
+                }
+            }
+
+            return Ok(room_ids
+                .iter()
+                .map(|room_id| room_to_users.get(room_id.as_str()).map_or(0, HashSet::len))
+                .collect());
+        }
+
+        Ok(room_ids
+            .iter()
+            .map(|room_id| self.room_online_user_count(room_id))
             .collect())
     }
 
@@ -2423,6 +2516,14 @@ impl ConnectionManager {
             .collect())
     }
 
+    /// Get the total number of active connections for a user across all replicas.
+    ///
+    /// In standalone mode this uses local in-memory state. In cluster mode it
+    /// derives the count from the Redis-backed distributed connection index.
+    pub async fn user_connection_count_distributed(&self, user_id: &UserId) -> Result<usize, String> {
+        Ok(self.get_user_connections_distributed(user_id).await?.len())
+    }
+
     /// Get all connections in a room across all replicas (from Redis).
     ///
     /// Returns connection IDs from Redis, which includes connections from
@@ -2459,6 +2560,50 @@ impl ConnectionManager {
             .into_iter()
             .map(|c| c.connection_id)
             .collect())
+    }
+
+    /// Get the number of active client connections for a user in a room across all replicas.
+    ///
+    /// This differs from `room_online_user_count_distributed`: it counts every
+    /// client connection for the specific user, not distinct users.
+    pub async fn user_connection_count_in_room_distributed(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+    ) -> Result<usize, String> {
+        if let Some(ref conn) = self.redis_conn {
+            let conn_ids = self.get_user_connections_distributed(user_id).await?;
+            if conn_ids.is_empty() {
+                return Ok(0);
+            }
+
+            let metadata_keys: Vec<String> = conn_ids
+                .iter()
+                .map(|conn_id| format!("{}conn_mgr:conn:{conn_id}", self.redis_key_prefix))
+                .collect();
+
+            let mut conn_clone = conn.clone();
+            let metadata: Vec<Option<String>> = conn_clone
+                .mget(metadata_keys)
+                .await
+                .map_err(|e| format!("Failed to fetch distributed connection metadata: {e}"))?;
+
+            let mut count = 0usize;
+            for entry in metadata.into_iter().flatten() {
+                let info: ConnectionInfoPersistent = serde_json::from_str(&entry)
+                    .map_err(|e| format!("Failed to deserialize distributed connection metadata: {e}"))?;
+                if info.user_id == user_id.as_str() && info.room_id.as_deref() == Some(room_id.as_str()) {
+                    count += 1;
+                }
+            }
+            return Ok(count);
+        }
+
+        Ok(self
+            .get_user_connections(user_id)
+            .into_iter()
+            .filter(|conn| conn.room_id.as_ref() == Some(room_id))
+            .count())
     }
 
     /// Returns true if the user still has another active connection in the same room,
@@ -2839,6 +2984,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_user_connection_count_distributed_without_redis_uses_local_state() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("user-count".to_string());
+
+        manager
+            .register("user-count-1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .register("user-count-2".to_string(), user_id.clone())
+            .await
+            .unwrap();
+
+        let count = manager
+            .user_connection_count_distributed(&user_id)
+            .await
+            .expect("standalone mode should use local user connection count");
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
     async fn test_room_connection_count_distributed_without_redis_uses_local_state() {
         let manager = ConnectionManager::default();
         let user_id = UserId::from_string("user1".to_string());
@@ -2864,6 +3030,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_room_online_user_count_deduplicates_same_user_connections() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("user1".to_string());
+        let room_id = RoomId::from_string("room1".to_string());
+
+        manager
+            .register("conn1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .register("conn2".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager.join_room("conn1", room_id.clone()).await.unwrap();
+        manager.join_room("conn2", room_id.clone()).await.unwrap();
+
+        assert_eq!(manager.room_connection_count(&room_id), 2);
+        assert_eq!(manager.room_online_user_count(&room_id), 1);
+
+        let distributed = manager
+            .room_online_user_count_distributed(&room_id)
+            .await
+            .expect("standalone mode should use local distinct user count");
+        assert_eq!(distributed, 1);
+
+        let batch = manager
+            .room_online_user_count_distributed_batch(&[&room_id])
+            .await
+            .expect("standalone mode should use local batch distinct user counts");
+        assert_eq!(batch, vec![1]);
+    }
+
+    #[tokio::test]
+    async fn test_user_connection_count_in_room_distributed_counts_all_connections() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("user-room-count".to_string());
+        let room_id = RoomId::from_string("room-conn-count".to_string());
+        let other_room_id = RoomId::from_string("other-room".to_string());
+
+        manager
+            .register("room-count-1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .register("room-count-2".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .register("room-count-3".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .join_room("room-count-1", room_id.clone())
+            .await
+            .unwrap();
+        manager
+            .join_room("room-count-2", room_id.clone())
+            .await
+            .unwrap();
+        manager
+            .join_room("room-count-3", other_room_id.clone())
+            .await
+            .unwrap();
+
+        let count = manager
+            .user_connection_count_in_room_distributed(&user_id, &room_id)
+            .await
+            .expect("standalone mode should use local per-room connection count");
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
     async fn test_unregister() {
         let manager = ConnectionManager::default();
         let user_id = UserId::from_string("user1".to_string());
@@ -2884,6 +3122,67 @@ mod tests {
         assert_eq!(manager.connection_count(), 0);
         assert_eq!(manager.user_connection_count(&user_id), 0);
         assert_eq!(manager.room_connection_count(&room_id), 0);
+    }
+
+    #[tokio::test]
+    async fn test_users_online_metric_deduplicates_multiple_connections_per_user() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("metric_user".to_string());
+        let baseline = synctv_core::metrics::http::USERS_ONLINE.get();
+
+        manager
+            .register("metric-conn-1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            synctv_core::metrics::http::USERS_ONLINE.get(),
+            baseline + 1,
+            "first connection for a user should increase online user count"
+        );
+
+        manager
+            .register("metric-conn-2".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            synctv_core::metrics::http::USERS_ONLINE.get(),
+            baseline + 1,
+            "second connection for the same user must not double-count online users"
+        );
+
+        manager.unregister("metric-conn-1").await;
+        manager.unregister("metric-conn-2").await;
+        assert_eq!(synctv_core::metrics::http::USERS_ONLINE.get(), baseline);
+    }
+
+    #[tokio::test]
+    async fn test_users_online_metric_decrements_only_after_last_connection_leaves() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("metric_user_last".to_string());
+        let baseline = synctv_core::metrics::http::USERS_ONLINE.get();
+
+        manager
+            .register("metric-last-1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .register("metric-last-2".to_string(), user_id.clone())
+            .await
+            .unwrap();
+
+        manager.unregister("metric-last-1").await;
+        assert_eq!(
+            synctv_core::metrics::http::USERS_ONLINE.get(),
+            baseline + 1,
+            "user should remain online while another connection is still active"
+        );
+
+        manager.unregister("metric-last-2").await;
+        assert_eq!(
+            synctv_core::metrics::http::USERS_ONLINE.get(),
+            baseline,
+            "online user count should drop only after the final connection closes"
+        );
     }
 
     #[tokio::test]

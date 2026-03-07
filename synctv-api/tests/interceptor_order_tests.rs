@@ -37,14 +37,6 @@ fn test_grpc_interceptor_order_documentation() {
     // 3. AuthInterceptor (tonic interceptor) - sync JWT extraction
     //    - Extract and validate JWT
     //    - Inject UserContext into request extensions
-    //
-    // 4. Service method - business logic
-    //
-    // This order is CRITICAL for security. The test verifies the concept.
-    assert!(
-        true,
-        "Interceptor order is documented: BlacklistCheckLayer -> RateLimitLayer -> AuthInterceptor -> Service"
-    );
 }
 
 // ============================================================================
@@ -123,57 +115,9 @@ fn test_refresh_token_rejected_as_access_token() {
 // Security Pipeline Tests (BlacklistCheckLayer responsibility)
 // ============================================================================
 
-#[test]
-fn test_security_pipeline_checks_after_jwt_verification() {
-    // After JWT verification, SecurityPipeline checks:
-    // 1. Password version matches (password not changed since token issued)
-    // 2. User is not banned
-    // 3. User is not deleted
-    //
-    // These checks require database access (async), hence in BlacklistCheckLayer
-    // not in the synchronous AuthInterceptor.
-
-    // The SecurityPipeline.check() method performs these checks.
-    // This test verifies the concept that these checks happen after JWT verification.
-
-    let jwt_service = JwtService::new(TEST_SECRET).expect("Should create JwtService");
-    let user_id = UserId::new();
-    let token = jwt_service
-        .sign_token(&user_id, TokenType::Access, 0)
-        .expect("Should sign");
-    let _claims = jwt_service
-        .verify_access_token(&token)
-        .expect("Should verify");
-
-    // SecurityPipeline would then check:
-    // - claims.pv (password version) against DB
-    // - User status in DB
-
-    assert!(
-        true,
-        "SecurityPipeline checks happen after JWT verification"
-    );
-}
-
 // ============================================================================
 // AuthInterceptor Tests
 // ============================================================================
-
-#[test]
-fn test_auth_interceptor_requires_prior_security_checks() {
-    // AuthInterceptor injects UserContext but assumes security checks already done.
-    // The SAFETY INVARIANT in interceptors.rs states:
-    //
-    // "SAFETY INVARIANT: BlacklistCheckLayer MUST run before this interceptor.
-    //  The layer performs async security checks that cannot be done in a
-    //  synchronous interceptor."
-
-    // This test verifies the pattern is documented and enforced.
-    assert!(
-        true,
-        "AuthInterceptor assumes BlacklistCheckLayer already validated the token"
-    );
-}
 
 #[test]
 fn test_auth_interceptor_injects_user_context() {
@@ -375,24 +319,3 @@ fn test_missing_auth_header_with_security_marker_fails_unauthenticated() {
 // ============================================================================
 // Integration Test Concept
 // ============================================================================
-
-#[test]
-fn test_full_interceptor_stack_flow() {
-    // Full request flow through the interceptor stack:
-    //
-    // 1. Request arrives at gRPC server
-    // 2. BlacklistCheckLayer: extract bearer token
-    //    - No token? Skip checks (public endpoint path)
-    //    - Has token? Verify JWT + SecurityPipeline
-    // 3. RateLimitLayer: check rate limits
-    // 4. AuthInterceptor: inject UserContext
-    //    - No token? Fail with UNAUTHENTICATED (for protected endpoints)
-    //    - Has token? Inject UserContext
-    // 5. Service method: business logic with UserContext available
-
-    // This test documents the complete flow
-    assert!(
-        true,
-        "Full stack flow: BlacklistCheckLayer -> RateLimitLayer -> AuthInterceptor -> Service"
-    );
-}

@@ -12,45 +12,8 @@ use std::time::Duration;
 
 use synctv_cluster::sync::room_hub::{RoomLifecycleEvent, RoomMessageHub};
 use synctv_core::models::id::{RoomId, UserId};
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::redis::Redis;
-
-/// Default Redis version for test containers
-#[allow(dead_code)]
-const REDIS_VERSION: &str = "7-alpine";
-
-/// Redis test infrastructure (shared with `integration_test.rs` pattern).
-struct TestRedis {
-    redis_url: String,
-    _redis: ContainerAsync<Redis>,
-}
-
-impl TestRedis {
-    async fn start() -> Self {
-        let redis_container =
-            tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
-                .await
-                .expect("Docker container startup timed out (is Docker running?)")
-                .expect("Failed to start Redis container");
-
-        let redis_host = redis_container
-            .get_host()
-            .await
-            .expect("Failed to get Redis host");
-        let redis_port = redis_container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get Redis port");
-
-        let redis_url = format!("redis://{redis_host}:{redis_port}");
-
-        Self {
-            redis_url,
-            _redis: redis_container,
-        }
-    }
-}
+mod integration_test_helpers;
+use integration_test_helpers::TestRedis;
 
 /// Helper: create a `RoomMessageHub` with Redis backing using the given prefix.
 async fn create_hub(redis_url: &str, key_prefix: &str) -> RoomMessageHub {

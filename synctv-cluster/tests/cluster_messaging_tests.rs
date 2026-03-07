@@ -16,6 +16,15 @@ use synctv_core::models::id::{MediaId, RoomId, UserId};
 #[allow(dead_code)]
 const REDIS_VERSION: &str = "7-alpine";
 
+fn docker_startup_timeout() -> Duration {
+    std::env::var("SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|secs| secs.max(30))
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(120))
+}
+
 fn uid(s: &str) -> UserId {
     UserId::from_string(s.to_string())
 }
@@ -34,7 +43,7 @@ async fn setup_redis() -> (
     redis::Client,
     redis::aio::ConnectionManager,
 ) {
-    let redis_container = tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
+    let redis_container = tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
         .await
         .expect("Docker container startup timed out (is Docker running?)")
         .expect("Failed to start Redis container");

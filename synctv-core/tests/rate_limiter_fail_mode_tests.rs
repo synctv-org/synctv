@@ -98,25 +98,6 @@ async fn test_fail_closed_denies_requests_without_redis() {
     );
 }
 
-/// Verifies that fail-closed mode logs appropriate error messages.
-///
-/// When failing closed, the system should log an error explaining why.
-#[tokio::test]
-async fn test_fail_closed_logs_appropriate_error() {
-    // The actual logging is verified by the implementation at:
-    // synctv-core/src/service/rate_limit.rs:365-371 (RedisRateLimitBackend::check_strict)
-    // synctv-core/src/service/rate_limit.rs:488-500 (InMemoryRateLimitBackend::check_strict)
-    //
-    // Expected log messages:
-    // - RedisRateLimitBackend: "Redis unreachable during distributed rate limit check, denying request (fail closed): {error}"
-    // - InMemoryRateLimitBackend: "Distributed rate limit check failed: Redis not configured. Denying request (fail closed)."
-
-    // This test documents the expected logging behavior
-    let limiter = RateLimiter::in_memory_only("fail_closed_log:".to_string());
-    let _ = limiter.check_rate_limit_distributed("key", 10, 1).await;
-    // In a real test environment, we could capture logs and verify
-}
-
 // ============================================================================
 // Test 3: Verify which endpoints should use which mode
 // ============================================================================
@@ -137,32 +118,6 @@ async fn test_fail_closed_logs_appropriate_error() {
 /// - Email verification (prevents abuse)
 /// - Admin operations (strict audit requirements)
 /// - Any operation where exceeding global limits is unacceptable
-#[test]
-fn test_endpoint_mode_recommendations() {
-    // This test documents the recommendations for endpoint mode selection
-
-    let fail_open_endpoints = [
-        "chat",
-        "danmaku",
-        "media_playback",
-        "playlist_operations",
-        "room_join", // Non-password operations
-    ];
-
-    let fail_closed_endpoints = [
-        "auth_login",
-        "auth_token_refresh",
-        "room_password_check",
-        "email_verification",
-        "email_password_reset",
-        "admin_operations",
-    ];
-
-    // These are recommendations documented for developers
-    assert!(!fail_open_endpoints.is_empty());
-    assert!(!fail_closed_endpoints.is_empty());
-}
-
 // ============================================================================
 // Test 4: Verify behavior with simulated Redis failure
 // ============================================================================
@@ -226,60 +181,9 @@ async fn test_health_check_detects_redis_unavailable() {
 /// 2. **Reduce limits proportionally**: Set `limit = desired_limit / replica_count`
 /// 3. **Redis HA**: Use Redis Sentinel or Cluster
 /// 4. **Monitor fallback metric**: Alert when `rate_limit_redis_fallbacks_total` increases
-#[test]
-fn test_multi_replica_implications_documentation() {
-    let replica_count = 3;
-    let per_replica_limit = 10;
-    let desired_global_limit = 10;
-
-    // During normal operation with Redis:
-    let effective_with_redis = per_replica_limit; // Shared counter
-
-    // During fail-open without Redis:
-    let effective_without_redis = per_replica_limit * replica_count;
-
-    assert_eq!(effective_with_redis, desired_global_limit);
-    assert_eq!(effective_without_redis, 30); // 3x the desired limit
-
-    // Mitigation: divide limits by replica count
-    let mitigated_per_replica = desired_global_limit / replica_count;
-    let mitigated_total = mitigated_per_replica * replica_count;
-    assert_eq!(mitigated_total, 9); // Close to desired (integer division)
-}
-
 // ============================================================================
 // Test 6: Configuration options for fail mode (future enhancement)
 // ============================================================================
-
-/// Documents potential configuration options for fail mode behavior.
-///
-/// # Configuration Options (Suggested)
-///
-/// ```toml
-/// [rate_limit]
-/// # Default fail mode: "open" or "closed"
-/// default_fail_mode = "open"
-///
-/// # Per-endpoint fail mode overrides
-/// [rate_limit.endpoints]
-/// auth_login = "closed"
-/// room_password = "closed"
-/// chat = "open"
-/// ```
-///
-/// This allows operators to choose the trade-off between availability
-/// and strictness per endpoint.
-#[test]
-fn test_fail_mode_configuration_options_documentation() {
-    // This test documents the proposed configuration options
-    // Implementation would require adding configuration parsing
-
-    let default_fail_mode = "open";
-    let auth_fail_mode = "closed";
-
-    assert_eq!(default_fail_mode, "open");
-    assert_eq!(auth_fail_mode, "closed");
-}
 
 // ============================================================================
 // Test 7: Verify the fallback does not leak Redis errors to callers

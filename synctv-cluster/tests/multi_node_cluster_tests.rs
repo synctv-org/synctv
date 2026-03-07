@@ -239,6 +239,27 @@ async fn test_node_epoch_fencing() {
 
 #[tokio::test]
 #[ignore = "requires Docker"]
+async fn test_testredis_wait_until_ready_supports_multiplexed_connections() {
+    let redis = TestRedis::start().await;
+
+    TestRedis::wait_until_ready(&redis.redis_url).await;
+
+    let client =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client");
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Multiplexed connection should be ready after helper returns");
+
+    let pong: String = redis::cmd("PING")
+        .query_async(&mut conn)
+        .await
+        .expect("PING should succeed on multiplexed connection");
+    assert_eq!(pong, "PONG");
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_leader_election_single_leader() {
     use synctv_cluster::leader::{LeaderElector, LeaderElectorConfig};
     use tokio_util::sync::CancellationToken;

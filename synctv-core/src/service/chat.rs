@@ -507,13 +507,6 @@ impl ChatService {
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn test_validate_content() {
-        // Test placeholder
-        assert!("hello".len() < 500);
-    }
-
     /// Test color validation logic extracted from `send_danmaku`.
     ///
     /// Uses `chars().count()` instead of `.len()` to correctly reject

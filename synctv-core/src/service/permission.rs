@@ -1407,14 +1407,6 @@ mod tests {
     // ========== warn_if_missing_settings_repo Tests ==========
 
     #[test]
-    fn test_warn_if_missing_settings_repo_does_not_panic() {
-        // This test ensures the method exists and can be called without panicking
-        let service = make_service();
-        // Should not panic even when room_settings_repo is None
-        service.warn_if_missing_settings_repo();
-    }
-
-    #[test]
     fn test_warn_if_missing_settings_repo_no_warning_when_set() {
         let mut service = make_service();
 

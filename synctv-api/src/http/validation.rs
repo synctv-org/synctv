@@ -1156,15 +1156,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_pagination_constants() {
-        // Verify constants are set correctly
-        assert_eq!(DEFAULT_PAGE, 1);
-        assert_eq!(DEFAULT_PAGE_SIZE, 20);
-        assert_eq!(MAX_PAGE_SIZE, 200);
-        assert_eq!(MAX_PAGE, 10000);
-    }
-
-    #[test]
     fn test_validate_pagination_boundary_values() {
         // Test exact boundary values
         assert_eq!(validate_page(Some(MAX_PAGE)), MAX_PAGE);

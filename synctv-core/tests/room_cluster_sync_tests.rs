@@ -30,6 +30,8 @@ use synctv_core::{
 use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
+use synctv_core_testing::postgres::docker_startup_timeout;
+use synctv_core_testing::start_redis_url as start_test_redis_url;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
@@ -50,7 +52,7 @@ pub struct TestInfra {
 async fn create_test_infra() -> TestInfra {
     // Start PostgreSQL
     let postgres = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        docker_startup_timeout(),
         Postgres::default()
             .with_db_name("synctv_test")
             .with_user("synctv")
@@ -96,16 +98,7 @@ async fn create_test_infra() -> TestInfra {
         .expect("Failed to run migrations");
 
     // Start Redis
-    let redis = tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-        .await
-        .expect("Docker container startup timed out (is Docker running?)")
-        .expect("Failed to start Redis container");
-
-    let redis_port = redis
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{redis_port}");
+    let (redis, redis_url) = start_test_redis_url().await;
 
     TestInfra {
         pool,
@@ -933,15 +926,5 @@ async fn test_ban_visible_across_replicas() {
 // ============================================================================
 
 async fn start_redis() -> (ContainerAsync<Redis>, String) {
-    let container =
-        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{port}");
-    (container, redis_url)
+    start_test_redis_url().await
 }

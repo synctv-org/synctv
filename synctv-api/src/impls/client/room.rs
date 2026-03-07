@@ -4,8 +4,8 @@ use crate::impls::ApiError;
 use synctv_core::models::{RoomId, UserId};
 
 use super::convert::{
-    media_to_proto, members_to_proto, playback_state_to_proto, room_role_to_proto,
-    room_to_proto_basic,
+    hot_room_to_proto, media_to_proto, members_to_proto, playback_state_to_proto,
+    room_role_to_proto, room_to_proto_basic,
 };
 use super::ClientApiImpl;
 use super::{validate_password_for_set, validate_password_for_verify};
@@ -62,11 +62,11 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Batch-fetch distributed connection counts (single Redis MGET) to avoid N+1 queries
+        // Batch-fetch distributed online user counts (single Redis-backed lookup) to avoid N+1 queries
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
         let counts = self
             .connection_manager
-            .room_connection_count_distributed_batch(&room_id_refs)
+            .room_online_user_count_distributed_batch(&room_id_refs)
             .await
             .map_err(ApiError::Internal)?;
 
@@ -99,12 +99,12 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Batch-fetch distributed connection counts (single Redis MGET) to avoid N+1 queries
+        // Batch-fetch distributed online user counts to avoid N+1 queries
         let room_id_refs: Vec<&synctv_core::models::RoomId> =
             rooms.iter().map(|(r, _, _, _)| &r.id).collect();
         let counts = self
             .connection_manager
-            .room_connection_count_distributed_batch(&room_id_refs)
+            .room_online_user_count_distributed_batch(&room_id_refs)
             .await
             .map_err(ApiError::Internal)?;
 
@@ -200,7 +200,7 @@ impl ClientApiImpl {
 
         let member_count = self
             .connection_manager
-            .room_connection_count_distributed(&room.id)
+            .room_online_user_count_distributed(&room.id)
             .await
             .map_err(ApiError::Internal)?
             .try_into()
@@ -243,7 +243,7 @@ impl ClientApiImpl {
 
         let member_count = self
             .connection_manager
-            .room_connection_count_distributed(&rid)
+            .room_online_user_count_distributed(&rid)
             .await
             .map_err(ApiError::Internal)?
             .try_into()
@@ -306,7 +306,7 @@ impl ClientApiImpl {
 
         let member_count = self
             .connection_manager
-            .room_connection_count_distributed(&rid)
+            .room_online_user_count_distributed(&rid)
             .await
             .map_err(ApiError::Internal)?
             .try_into()
@@ -468,7 +468,7 @@ impl ClientApiImpl {
 
         let member_count = self
             .connection_manager
-            .room_connection_count_distributed(&rid)
+            .room_online_user_count_distributed(&rid)
             .await
             .map_err(ApiError::Internal)?
             .try_into()
@@ -822,7 +822,7 @@ impl ClientApiImpl {
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
         let distributed_counts = self
             .connection_manager
-            .room_connection_count_distributed_batch(&room_id_refs)
+            .room_online_user_count_distributed_batch(&room_id_refs)
             .await
             .map_err(ApiError::Internal)?;
 
@@ -854,16 +854,10 @@ impl ClientApiImpl {
         let hot_rooms: Vec<crate::proto::client::RoomWithStats> = top_rooms
             .into_iter()
             .map(|(room, online_count)| {
-                let member_count = member_counts.get(room.id.as_str()).copied().unwrap_or(0);
+                let total_members = member_counts.get(room.id.as_str()).copied().unwrap_or(0);
                 let settings = settings_map.get(room.id.as_str());
 
-                let room_proto = room_to_proto_basic(&room, settings, Some(member_count));
-
-                crate::proto::client::RoomWithStats {
-                    room: Some(room_proto),
-                    online_count,
-                    total_members: member_count,
-                }
+                hot_room_to_proto(&room, settings, online_count, total_members)
             })
             .collect();
 

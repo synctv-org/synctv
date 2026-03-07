@@ -13,6 +13,9 @@
 // Shared error types
 pub mod error;
 
+// Shared circuit breaker primitives for provider gRPC serving.
+pub mod circuit_breaker;
+
 // SSRF protection primitives (shared with synctv-core)
 pub mod ssrf;
 

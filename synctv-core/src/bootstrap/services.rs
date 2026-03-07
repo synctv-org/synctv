@@ -322,7 +322,11 @@ pub async fn init_services(
         redis_handles.as_ref().map(|h| h.conn.clone()),
         config.redis.key_prefix.clone(),
     );
-    let rate_limit_config = RateLimitConfig::default();
+    let rate_limit_config = RateLimitConfig {
+        chat_per_second: config.messaging_rate_limits.chat_per_second,
+        danmaku_per_second: config.messaging_rate_limits.danmaku_per_second,
+        window_seconds: config.messaging_rate_limits.window_seconds,
+    };
     info!(
         "Rate limiter initialized (chat: {}/s, danmaku: {}/s)",
         rate_limit_config.chat_per_second, rate_limit_config.danmaku_per_second
@@ -553,15 +557,29 @@ async fn init_oauth2_service(
         return Ok(None);
     }
 
-    // 2. Create OAuth2 provider repository and service
-    //    Use Redis state store when available, in-memory otherwise.
+    // 2. Create OAuth2 provider repository and service.
+    // Cluster mode must fail before wiring if Redis is missing; only standalone
+    // mode may use an in-memory state store.
     let oauth2_repo = UserOAuthProviderRepository::new(pool.clone());
-    let state_store: Arc<dyn crate::service::OAuthStateStore> = if let Some(conn) = redis_conn {
-        info!("OAuth2 state store: Redis");
-        Arc::new(crate::service::RedisOAuthStateStore::new(conn))
-    } else {
-        info!("OAuth2 state store: in-memory (standalone mode)");
-        Arc::new(crate::service::InMemoryOAuthStateStore::new())
+    let state_store: Arc<dyn crate::service::OAuthStateStore> = match (cluster_mode, redis_conn) {
+        (true, Some(conn)) => {
+            info!("OAuth2 state store: Redis (cluster mode)");
+            Arc::new(crate::service::RedisOAuthStateStore::new(conn))
+        }
+        (true, None) => {
+            return Err(anyhow::anyhow!(
+                "Redis is required for OAuth2 state storage in cluster mode. \
+                 Refusing to fall back to in-memory state because OAuth2 callbacks may land on a different replica."
+            ));
+        }
+        (false, Some(conn)) => {
+            info!("OAuth2 state store: Redis");
+            Arc::new(crate::service::RedisOAuthStateStore::new(conn))
+        }
+        (false, None) => {
+            info!("OAuth2 state store: in-memory (standalone mode)");
+            Arc::new(crate::service::InMemoryOAuthStateStore::new())
+        }
     };
     let oauth2_service = OAuth2Service::new(oauth2_repo, state_store, cluster_mode)
         .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?;
@@ -943,5 +961,49 @@ mod tests {
                 .any(|e| e.contains("cluster mode requires Redis")),
             "cluster=false should not be rejected by cluster/Redis rule: {errors:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_init_oauth2_service_rejects_cluster_mode_without_redis_at_bootstrap_layer() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let mut config = Config::default();
+        config.cluster.enabled = true;
+        config.server.cluster_secret = "cluster-secret".to_string();
+        config.oauth2.providers = serde_json::json!({
+            "github": {
+                "type": "github",
+                "client_id": "test-client-id",
+                "client_secret": "test-client-secret"
+            }
+        });
+
+        let error = init_oauth2_service(pool, &config, None, true)
+            .await
+            .expect_err("cluster bootstrap must not fall back to in-memory OAuth2 state store");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Redis is required for OAuth2 state storage in cluster mode"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_init_services_uses_configured_messaging_rate_limits() {
+        let mut config = Config::default();
+        config.messaging_rate_limits.chat_per_second = 21;
+        config.messaging_rate_limits.danmaku_per_second = 8;
+        config.messaging_rate_limits.window_seconds = 5;
+
+        let rate_limit_config = RateLimitConfig {
+            chat_per_second: config.messaging_rate_limits.chat_per_second,
+            danmaku_per_second: config.messaging_rate_limits.danmaku_per_second,
+            window_seconds: config.messaging_rate_limits.window_seconds,
+        };
+
+        assert_eq!(rate_limit_config.chat_per_second, 21);
+        assert_eq!(rate_limit_config.danmaku_per_second, 8);
+        assert_eq!(rate_limit_config.window_seconds, 5);
     }
 }

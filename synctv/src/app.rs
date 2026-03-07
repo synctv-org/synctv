@@ -130,12 +130,20 @@ fn require_cluster_redis_handles<'a>(
     })
 }
 
+fn validate_startup_config(config: &Config) -> Result<()> {
+    config
+        .validate()
+        .map_err(|errors| anyhow::anyhow!(errors.join("; ")))
+}
+
 impl Application {
     /// Build the application through phased initialization.
     ///
     /// If any phase fails, all resources created in earlier phases are cleaned up
     /// via the `ShutdownCoordinator` before returning the error.
     pub async fn build(config: Config) -> Result<Self> {
+        validate_startup_config(&config)?;
+
         let shutdown_budget =
             std::time::Duration::from_secs(config.server.shutdown_drain_timeout_seconds);
         let mut shutdown = ShutdownCoordinator::new(shutdown_budget);
@@ -264,6 +272,7 @@ impl Application {
             &infra.pool,
             migration_lock.as_ref(),
             &infra.config.redis.key_prefix,
+            infra.config.cluster_runtime_enabled(),
         )
         .await?;
 
@@ -802,6 +811,67 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core::config::{
+        BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
+        ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
+        HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig,
+        MediaProvidersConfig, OAuth2Config, PasswordComplexityConfig, RedisConfig,
+        ServerConfig, WebRTCConfig,
+    };
+
+    fn minimal_valid_startup_config() -> Config {
+        Config {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                grpc_port: 50051,
+                http_port: 8080,
+                enable_reflection: false,
+                metrics_enabled: false,
+                metrics_bearer_token: String::new(),
+                grpc_max_message_size_bytes: 16 * 1024 * 1024,
+                trusted_proxies: Vec::new(),
+                cors_allowed_origins: Vec::new(),
+                cluster_secret: String::new(),
+                advertise_host: String::new(),
+                shutdown_drain_timeout_seconds: 30,
+            },
+            database: DatabaseConfig::default(),
+            redis: RedisConfig {
+                url: "redis://127.0.0.1:6379".to_string(),
+                ..RedisConfig::default()
+            },
+            jwt: JwtConfig {
+                secret: "test-jwt-secret-key-for-testing-minimum-length".to_string(),
+                ..JwtConfig::default()
+            },
+            logging: LoggingConfig::default(),
+            livestream: LivestreamConfig {
+                hls_shared_storage: true,
+                hls_storage_path: "/var/lib/synctv/hls".to_string(),
+                ..LivestreamConfig::default()
+            },
+            oauth2: OAuth2Config::default(),
+            email: EmailConfig::default(),
+            media_providers: MediaProvidersConfig::default(),
+            webrtc: WebRTCConfig {
+                stun_external_addr: "203.0.113.1:3478".to_string(),
+                ..WebRTCConfig::default()
+            },
+            connection_limits: ConnectionLimitsConfig::default(),
+            bootstrap: BootstrapConfig {
+                create_root_user: false,
+                root_username: String::new(),
+                root_password: String::new(),
+            },
+            cluster: ClusterChannelConfig::default(),
+            password_complexity: PasswordComplexityConfig::default(),
+            buffer_sizes: BufferSizesConfig::default(),
+            cache: CacheConfig::default(),
+            messaging_rate_limits: synctv_core::config::MessagingRateLimitConfig::default(),
+            http_rate_limits: HttpRateLimitConfig::default(),
+            grpc_rate_limits: GrpcRateLimitConfig::default(),
+        }
+    }
 
     #[test]
     fn test_cluster_runtime_enabled_depends_only_on_cluster_flag() {
@@ -845,6 +915,24 @@ mod tests {
         assert!(
             !should_run_startup_partition_initialization(&config),
             "cluster mode must defer startup partition initialization to leader-gated tasks"
+        );
+    }
+
+    #[test]
+    fn test_validate_startup_config_rejects_cluster_mode_without_redis_before_bootstrap() {
+        let mut config = minimal_valid_startup_config();
+        config.cluster.enabled = true;
+        config.server.cluster_secret = "test-cluster-secret-key-1234567890".to_string();
+        config.redis.url.clear();
+
+        let error = validate_startup_config(&config)
+            .expect_err("startup preflight must reject cluster mode without Redis");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster mode requires Redis to be configured"),
+            "unexpected error: {error}"
         );
     }
 

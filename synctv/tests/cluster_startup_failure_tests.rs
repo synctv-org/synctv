@@ -9,9 +9,10 @@
 #![allow(clippy::unwrap_used)]
 use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig, Config,
-    ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig, HttpRateLimitConfig,
-    JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig, OAuth2Config,
-    PasswordComplexityConfig, RedisConfig, ServerConfig, WebRTCConfig,
+    ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
+    HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
+    MessagingRateLimitConfig, OAuth2Config, PasswordComplexityConfig, RedisConfig,
+    ServerConfig, WebRTCConfig,
 };
 
 /// Create a minimal standalone config for testing (no Redis, no cluster mode)
@@ -53,6 +54,7 @@ fn standalone_test_config() -> Config {
         password_complexity: PasswordComplexityConfig::default(),
         buffer_sizes: BufferSizesConfig::default(),
         cache: CacheConfig::default(),
+        messaging_rate_limits: MessagingRateLimitConfig::default(),
         http_rate_limits: HttpRateLimitConfig::default(),
         grpc_rate_limits: GrpcRateLimitConfig::default(),
     }
@@ -110,6 +112,7 @@ fn cluster_test_config() -> Config {
         password_complexity: PasswordComplexityConfig::default(),
         buffer_sizes: BufferSizesConfig::default(),
         cache: CacheConfig::default(),
+        messaging_rate_limits: MessagingRateLimitConfig::default(),
         http_rate_limits: HttpRateLimitConfig::default(),
         grpc_rate_limits: GrpcRateLimitConfig::default(),
     }

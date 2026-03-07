@@ -91,6 +91,12 @@ data:
       max_total: {{ .Values.config.connectionLimits.maxTotal | default 10000 }}
       idle_timeout_seconds: {{ .Values.config.connectionLimits.idleTimeoutSeconds | default 300 }}
       max_duration_seconds: {{ .Values.config.connectionLimits.maxDurationSeconds | default 86400 }}
+      ws_message_rate_limit_per_second: {{ .Values.config.connectionLimits.wsMessageRateLimitPerSecond | default 50 }}
+
+    messaging_rate_limits:
+      chat_per_second: {{ .Values.config.messagingRateLimits.chatPerSecond | default 10 }}
+      danmaku_per_second: {{ .Values.config.messagingRateLimits.danmakuPerSecond | default 3 }}
+      window_seconds: {{ .Values.config.messagingRateLimits.windowSeconds | default 1 }}
 
     bootstrap:
       create_root_user: {{ .Values.config.bootstrap.createRootUser | default false }}

@@ -3,9 +3,7 @@
 //! Adapter that calls `BilibiliClient` to implement `MediaProvider` trait
 
 use super::{
-    provider_client::{
-        create_remote_bilibili_client, load_local_bilibili_client, BilibiliClientArc,
-    },
+    provider_client::{create_remote_bilibili_client, BilibiliClientArc, ProviderClientManager},
     store::{ProviderStoreExt, VersionedPlayback},
     MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
@@ -24,6 +22,7 @@ use crate::service::RemoteProviderManager;
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct BilibiliProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
+    client_manager: Arc<ProviderClientManager>,
     /// Optional timeout for API requests (in seconds)
     timeout_seconds: Option<u64>,
 }
@@ -53,21 +52,35 @@ impl BilibiliProvider {
 
     /// Create a new `BilibiliProvider` with `RemoteProviderManager`
     #[must_use]
-    pub const fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
+    pub fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
         Self {
             provider_instance_manager,
+            client_manager: Arc::new(ProviderClientManager::new()),
+            timeout_seconds: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_client_manager(
+        provider_instance_manager: Arc<RemoteProviderManager>,
+        client_manager: Arc<ProviderClientManager>,
+    ) -> Self {
+        Self {
+            provider_instance_manager,
+            client_manager,
             timeout_seconds: None,
         }
     }
 
     /// Create a new `BilibiliProvider` with custom timeout configuration
     #[must_use]
-    pub const fn with_timeout(
+    pub fn with_timeout(
         provider_instance_manager: Arc<RemoteProviderManager>,
         timeout_seconds: u64,
     ) -> Self {
         Self {
             provider_instance_manager,
+            client_manager: Arc::new(ProviderClientManager::new()),
             timeout_seconds: Some(timeout_seconds),
         }
     }
@@ -79,12 +92,12 @@ impl BilibiliProvider {
     }
 
     /// Get Bilibili client for the given instance name (remote if available, local fallback)
-    async fn get_client(&self, instance_name: Option<&str>) -> BilibiliClientArc {
+    async fn get_client(&self, instance_name: Option<&str>) -> Result<BilibiliClientArc, ProviderError> {
         self.provider_instance_manager
-            .resolve_client(
+            .resolve_client_required(
                 instance_name,
                 create_remote_bilibili_client,
-                load_local_bilibili_client,
+                || self.client_manager.local_bilibili_client(),
             )
             .await
     }
@@ -97,7 +110,7 @@ impl BilibiliProvider {
         url: String,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::MatchResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         let req = synctv_media_providers::grpc::bilibili::MatchReq { url };
         client.r#match(req).await.map_err(std::convert::Into::into)
     }
@@ -108,7 +121,7 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::ParseVideoPageReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client
             .parse_video_page(req)
             .await
@@ -121,7 +134,7 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::ParsePgcPageReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client
             .parse_pgc_page(req)
             .await
@@ -134,7 +147,7 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::ParseLivePageReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client
             .parse_live_page(req)
             .await
@@ -146,7 +159,7 @@ impl BilibiliProvider {
         &self,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::NewQrCodeResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client
             .new_qr_code(synctv_media_providers::grpc::bilibili::Empty {})
             .await
@@ -159,7 +172,7 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithQrCodeResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client
             .login_with_qr_code(req)
             .await
@@ -171,7 +184,7 @@ impl BilibiliProvider {
         &self,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::NewCaptchaResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client
             .new_captcha(synctv_media_providers::grpc::bilibili::Empty {})
             .await
@@ -184,7 +197,7 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::NewSmsReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::NewSmsResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client.new_sms(req).await.map_err(std::convert::Into::into)
     }
 
@@ -194,7 +207,7 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::LoginWithSmsReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithSmsResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client
             .login_with_sms(req)
             .await
@@ -207,7 +220,7 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::UserInfoReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::UserInfoResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client
             .user_info(req)
             .await
@@ -221,7 +234,7 @@ impl BilibiliProvider {
         cookies: HashMap<String, String>,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         let req = synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoReq { cookies, room_id };
         client
             .get_live_danmu_info(req)
@@ -716,7 +729,7 @@ impl BilibiliProvider {
         cookies: &HashMap<String, String>,
     ) -> Result<PlaybackResult, ProviderError> {
         let sanitized_cookies = cookies.clone();
-        let client = self.get_client(config.provider_instance_name()).await;
+        let client = self.get_client(config.provider_instance_name()).await?;
 
         match config {
             BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {

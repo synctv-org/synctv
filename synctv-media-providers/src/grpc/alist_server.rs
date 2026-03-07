@@ -26,7 +26,7 @@ pub struct AlistService {
 
 impl AlistService {
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             service: AlistServiceImpl::new(),
         }

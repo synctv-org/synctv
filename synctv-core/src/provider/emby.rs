@@ -3,7 +3,7 @@
 //! Adapter that calls `EmbyClient` to implement `MediaProvider` trait
 
 use super::{
-    provider_client::{create_remote_emby_client, load_local_emby_client, EmbyClientArc},
+    provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
     store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicFolder, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
     PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
@@ -25,6 +25,7 @@ use urlencoding;
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct EmbyProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
+    client_manager: Arc<ProviderClientManager>,
     /// Optional timeout for API requests (in seconds)
     timeout_seconds: Option<u64>,
 }
@@ -35,21 +36,35 @@ impl EmbyProvider {
 
     /// Create a new `EmbyProvider` with `RemoteProviderManager`
     #[must_use]
-    pub const fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
+    pub fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
         Self {
             provider_instance_manager,
+            client_manager: Arc::new(ProviderClientManager::new()),
+            timeout_seconds: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_client_manager(
+        provider_instance_manager: Arc<RemoteProviderManager>,
+        client_manager: Arc<ProviderClientManager>,
+    ) -> Self {
+        Self {
+            provider_instance_manager,
+            client_manager,
             timeout_seconds: None,
         }
     }
 
     /// Create a new `EmbyProvider` with custom timeout configuration
     #[must_use]
-    pub const fn with_timeout(
+    pub fn with_timeout(
         provider_instance_manager: Arc<RemoteProviderManager>,
         timeout_seconds: u64,
     ) -> Self {
         Self {
             provider_instance_manager,
+            client_manager: Arc::new(ProviderClientManager::new()),
             timeout_seconds: Some(timeout_seconds),
         }
     }
@@ -61,12 +76,12 @@ impl EmbyProvider {
     }
 
     /// Get Emby client for the given instance name (remote if available, local fallback)
-    async fn get_client(&self, instance_name: Option<&str>) -> EmbyClientArc {
+    async fn get_client(&self, instance_name: Option<&str>) -> Result<EmbyClientArc, ProviderError> {
         self.provider_instance_manager
-            .resolve_client(
+            .resolve_client_required(
                 instance_name,
                 create_remote_emby_client,
-                load_local_emby_client,
+                || self.client_manager.local_emby_client(),
             )
             .await
     }
@@ -129,7 +144,7 @@ impl EmbyProvider {
         api_key: String,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::emby::MeResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
 
         let me_req = synctv_media_providers::grpc::emby::MeReq {
             host,
@@ -146,7 +161,7 @@ impl EmbyProvider {
         req: synctv_media_providers::grpc::emby::FsListReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::emby::FsListResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client.fs_list(req).await.map_err(std::convert::Into::into)
     }
 
@@ -156,7 +171,7 @@ impl EmbyProvider {
         req: synctv_media_providers::grpc::emby::MeReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::emby::MeResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client.me(req).await.map_err(std::convert::Into::into)
     }
 
@@ -203,7 +218,7 @@ impl EmbyProvider {
         // Get appropriate client based on instance_name from config
         let client = self
             .get_client(config.provider_instance_name.as_deref())
-            .await;
+            .await?;
 
         // Get item details first
         let item_request = synctv_media_providers::grpc::emby::GetItemReq {
@@ -613,7 +628,7 @@ impl MediaProvider for EmbyProvider {
         };
         let client = self
             .get_client(config.provider_instance_name.as_deref())
-            .await;
+            .await?;
 
         let item_id = config.item_id.clone();
         let req = synctv_media_providers::grpc::emby::ReportPlaybackStartReq {
@@ -657,7 +672,7 @@ impl MediaProvider for EmbyProvider {
         };
         let client = self
             .get_client(config.provider_instance_name.as_deref())
-            .await;
+            .await?;
 
         // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
         let position_ticks = (position * 10_000_000.0) as i64;
@@ -723,7 +738,7 @@ impl MediaProvider for EmbyProvider {
         };
         let client = self
             .get_client(config.provider_instance_name.as_deref())
-            .await;
+            .await?;
 
         // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
         let position_ticks = (position * 10_000_000.0) as i64;
@@ -881,7 +896,7 @@ impl DynamicFolder for EmbyProvider {
         // Call fs_list to get items
         let client = self
             .get_client(resolved.provider_instance_name.as_deref())
-            .await;
+            .await?;
 
         let list_req = synctv_media_providers::grpc::emby::FsListReq {
             host: resolved.host.clone(),

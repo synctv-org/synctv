@@ -40,6 +40,8 @@ pub struct LivestreamConfig {
     pub node_id: String,
     pub cleanup_check_interval_seconds: u64,
     pub stream_timeout_seconds: u64,
+    /// Whether multi-replica cluster runtime is enabled.
+    pub cluster_enabled: bool,
     /// Cluster secret for authenticating gRPC HLS proxy calls
     pub cluster_secret: Option<String>,
     /// Maximum memory (in megabytes) for the GOP cache per stream.
@@ -81,7 +83,7 @@ fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStora
         Arc::new(MemoryStorage::new())
     };
 
-    if config.cluster_secret.is_some() {
+    if config.cluster_enabled {
         warn!(
             "HLS storage is using in-memory backend in cluster mode. \
              Each segment request will require gRPC proxy to the publisher node. \
@@ -890,6 +892,7 @@ mod tests {
             node_id: "test-node".to_string(),
             cleanup_check_interval_seconds: 1,
             stream_timeout_seconds: 5,
+            cluster_enabled: false,
             cluster_secret: None,
             gop_cache_max_memory_mb: 0,
             grpc_address: "127.0.0.1:0".to_string(),
@@ -925,6 +928,7 @@ mod tests {
     async fn test_build_hls_storage_uses_shared_filesystem_when_enabled() {
         let dir = tempdir().expect("tempdir should be created");
         let mut config = test_config();
+        config.cluster_enabled = true;
         config.cluster_secret = Some("cluster-secret".to_string());
         config.hls_shared_storage = true;
         config.hls_storage_path = dir.path().display().to_string();
@@ -942,6 +946,29 @@ mod tests {
                 .join("seg1")
                 .exists(),
             "shared storage should persist HLS segments on disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cluster_secret_alone_does_not_enable_cluster_hls_semantics() {
+        let dir = tempdir().expect("tempdir should be created");
+        let mut config = test_config();
+        config.cluster_secret = Some("cluster-secret".to_string());
+        config.hls_storage_path = dir.path().display().to_string();
+
+        let storage = build_hls_storage(&config).expect("storage should be built");
+        storage
+            .write("room1", "media1", "seg1", Bytes::from_static(b"segment"))
+            .await
+            .expect("segment write should succeed");
+
+        assert!(
+            !dir.path()
+                .join("room1")
+                .join("media1")
+                .join("seg1")
+                .exists(),
+            "cluster_secret without cluster_enabled must remain standalone memory storage"
         );
     }
 
@@ -1174,6 +1201,7 @@ mod tests {
             node_id: "test-node".to_string(),
             cleanup_check_interval_seconds: 1,
             stream_timeout_seconds: 5,
+            cluster_enabled: false,
             cluster_secret: None,
             gop_cache_max_memory_mb: 0,
             grpc_address: "127.0.0.1:0".to_string(),

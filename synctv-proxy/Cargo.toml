@@ -15,6 +15,7 @@ futures.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 synctv-proto.workspace = true

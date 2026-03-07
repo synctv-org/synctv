@@ -5,8 +5,8 @@
 
 use super::{
     provider_client::{
-        create_remote_alist_client, load_local_alist_client, AlistClientArc, AlistClientExt,
-        AlistFileInfo,
+        create_remote_alist_client, AlistClientArc, AlistClientExt, AlistFileInfo,
+        ProviderClientManager,
     },
     store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicFolder, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
@@ -27,6 +27,7 @@ use std::time::Duration;
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct AlistProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
+    client_manager: Arc<ProviderClientManager>,
     /// Optional timeout for API requests (in seconds)
     timeout_seconds: Option<u64>,
 }
@@ -37,21 +38,35 @@ impl AlistProvider {
 
     /// Create a new `AlistProvider` with `RemoteProviderManager`
     #[must_use]
-    pub const fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
+    pub fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
         Self {
             provider_instance_manager,
+            client_manager: Arc::new(ProviderClientManager::new()),
+            timeout_seconds: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_client_manager(
+        provider_instance_manager: Arc<RemoteProviderManager>,
+        client_manager: Arc<ProviderClientManager>,
+    ) -> Self {
+        Self {
+            provider_instance_manager,
+            client_manager,
             timeout_seconds: None,
         }
     }
 
     /// Create a new `AlistProvider` with custom timeout configuration
     #[must_use]
-    pub const fn with_timeout(
+    pub fn with_timeout(
         provider_instance_manager: Arc<RemoteProviderManager>,
         timeout_seconds: u64,
     ) -> Self {
         Self {
             provider_instance_manager,
+            client_manager: Arc::new(ProviderClientManager::new()),
             timeout_seconds: Some(timeout_seconds),
         }
     }
@@ -63,12 +78,12 @@ impl AlistProvider {
     }
 
     /// Get Alist client for the given instance name (remote if available, local fallback)
-    async fn get_client(&self, instance_name: Option<&str>) -> AlistClientArc {
+    async fn get_client(&self, instance_name: Option<&str>) -> Result<AlistClientArc, ProviderError> {
         self.provider_instance_manager
-            .resolve_client(
+            .resolve_client_required(
                 instance_name,
                 create_remote_alist_client,
-                load_local_alist_client,
+                || self.client_manager.local_alist_client(),
             )
             .await
     }
@@ -98,7 +113,7 @@ impl AlistProvider {
         req: synctv_media_providers::grpc::alist::LoginReq,
         instance_name: Option<&str>,
     ) -> Result<String, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client.login(req).await.map_err(std::convert::Into::into)
     }
 
@@ -110,7 +125,7 @@ impl AlistProvider {
         req: synctv_media_providers::grpc::alist::FsListReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::alist::FsListResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client.fs_list(req).await.map_err(std::convert::Into::into)
     }
 
@@ -122,7 +137,7 @@ impl AlistProvider {
         req: synctv_media_providers::grpc::alist::MeReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::alist::MeResp, ProviderError> {
-        let client = self.get_client(instance_name).await;
+        let client = self.get_client(instance_name).await?;
         client.me(req).await.map_err(std::convert::Into::into)
     }
 }
@@ -226,7 +241,7 @@ impl AlistProvider {
         // Get appropriate client based on instance_name from config
         let client = self
             .get_client(config.provider_instance_name.as_deref())
-            .await;
+            .await?;
 
         // Build proto request
         let request = synctv_media_providers::grpc::alist::FsGetReq {
@@ -610,7 +625,7 @@ impl DynamicFolder for AlistProvider {
         // Get appropriate client
         let client = self
             .get_client(resolved.provider_instance_name.as_deref())
-            .await;
+            .await?;
 
         // Build list request
         let list_req = synctv_media_providers::grpc::alist::FsListReq {

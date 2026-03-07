@@ -28,7 +28,7 @@ pub struct EmbyService {
 
 impl EmbyService {
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             service: EmbyServiceImpl::new(),
         }

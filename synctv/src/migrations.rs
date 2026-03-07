@@ -34,10 +34,20 @@ pub async fn run_migrations(
     pool: &PgPool,
     lock: &dyn MigrationLock,
     key_prefix: &str,
+    cluster_mode: bool,
+) -> Result<()> {
+    run_migrations_with_mode(pool, lock, key_prefix, cluster_mode).await
+}
+
+async fn run_migrations_with_mode(
+    pool: &PgPool,
+    lock: &dyn MigrationLock,
+    key_prefix: &str,
+    cluster_mode: bool,
 ) -> Result<()> {
     info!("Running database migrations...");
 
-    run_migrations_with_lock(pool, lock, key_prefix).await?;
+    run_migrations_with_lock(pool, lock, key_prefix, cluster_mode).await?;
 
     info!("Migrations completed");
     Ok(())
@@ -83,6 +93,7 @@ async fn run_migrations_with_lock(
     pool: &PgPool,
     lock: &dyn MigrationLock,
     key_prefix: &str,
+    cluster_mode: bool,
 ) -> Result<()> {
     let migration_lock_key = format!("{key_prefix}migration");
 
@@ -93,8 +104,13 @@ async fn run_migrations_with_lock(
             release_lock(lock, &migration_lock_key, &lock_value).await;
             result
         }
-        Ok(None) => wait_for_lock_and_migrate(pool, lock, &migration_lock_key).await,
+        Ok(None) => wait_for_lock_and_migrate(pool, lock, &migration_lock_key, cluster_mode).await,
         Err(e) => {
+            if cluster_mode {
+                return Err(anyhow::anyhow!(
+                    "cluster.enabled=true requires Redis migration locking; refusing PostgreSQL advisory lock fallback after Redis lock failure: {e}"
+                ));
+            }
             warn!(
                 "Failed to acquire migration lock (Redis error): {}. \
                  Falling back to PostgreSQL advisory lock to prevent concurrent migrations.",
@@ -198,6 +214,7 @@ async fn wait_for_lock_and_migrate(
     pool: &PgPool,
     lock: &dyn MigrationLock,
     lock_key: &str,
+    cluster_mode: bool,
 ) -> Result<()> {
     info!("Another node is running migrations, waiting...");
 
@@ -231,6 +248,11 @@ async fn wait_for_lock_and_migrate(
                 ));
             }
             Err(e) => {
+                if cluster_mode {
+                    return Err(anyhow::anyhow!(
+                        "cluster.enabled=true requires Redis migration locking; refusing PostgreSQL advisory lock fallback while waiting for Redis migration lock: {e}"
+                    ));
+                }
                 warn!(
                     "Redis error while waiting for migration lock: {}. \
                      Falling back to PostgreSQL advisory lock.",
@@ -247,5 +269,50 @@ async fn wait_for_lock_and_migrate(
 async fn release_lock(lock: &dyn MigrationLock, lock_key: &str, lock_value: &str) {
     if let Err(e) = lock.release(lock_key, lock_value).await {
         warn!("Failed to release migration lock: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_migrations_with_mode;
+    use anyhow::anyhow;
+    use sqlx::postgres::PgPoolOptions;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct FailingMigrationLock {
+        acquire_called: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl synctv_core::service::MigrationLock for FailingMigrationLock {
+        async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
+            self.acquire_called.store(true, Ordering::SeqCst);
+            Err(anyhow!("redis unavailable"))
+        }
+
+        async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn cluster_mode_rejects_pg_advisory_fallback_after_redis_lock_error() {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
+            .expect("connect_lazy should succeed");
+        let lock = FailingMigrationLock {
+            acquire_called: AtomicBool::new(false),
+        };
+
+        let err = run_migrations_with_mode(&pool, &lock, "test:", true)
+            .await
+            .expect_err("cluster mode must refuse PG advisory fallback");
+
+        assert!(lock.acquire_called.load(Ordering::SeqCst));
+        assert!(
+            err.to_string().contains("cluster.enabled=true requires Redis migration locking"),
+            "unexpected error: {err}"
+        );
     }
 }

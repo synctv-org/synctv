@@ -19,12 +19,12 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use synctv_media_providers::circuit_breaker::CircuitBreaker;
 use synctv_media_providers::grpc::{
     alist::alist_server::AlistServer, alist_server::AlistService as AlistGrpcService,
     bilibili::bilibili_server::BilibiliServer, bilibili_server::BilibiliService,
@@ -34,79 +34,7 @@ use tonic::service::LayerExt as _;
 use tonic::transport::Server;
 use tonic::{Request, Status};
 use tower::{Layer, Service};
-use tracing::{error, info, warn, Level};
-
-/// Number of consecutive failures before the circuit opens.
-const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
-
-/// Seconds the circuit stays open before transitioning to half-open.
-const CIRCUIT_BREAKER_TIMEOUT_SECS: i64 = 30;
-
-/// Circuit breaker state per provider service.
-///
-/// States:
-///   - `consecutive_failures < THRESHOLD` → **Closed** (requests pass through)
-///   - `consecutive_failures >= THRESHOLD` and within timeout → **Open** (requests rejected)
-///   - After timeout → **Half-open** (next request allowed as a probe; resets or re-opens)
-#[derive(Default)]
-struct CircuitBreaker {
-    /// Number of consecutive failures (reset to 0 on success)
-    consecutive_failures: AtomicU32,
-    /// Unix timestamp (seconds) when the circuit was opened. -1 = never opened.
-    opened_at: AtomicI64,
-}
-
-impl CircuitBreaker {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            consecutive_failures: AtomicU32::new(0),
-            opened_at: AtomicI64::new(-1),
-        })
-    }
-
-    /// Check whether a request should be allowed through.
-    fn allow_request(&self) -> bool {
-        let failures = self.consecutive_failures.load(Ordering::SeqCst);
-        if failures < CIRCUIT_BREAKER_THRESHOLD {
-            return true; // Closed
-        }
-        // Circuit is open — check if the half-open timeout has elapsed
-        let opened_at = self.opened_at.load(Ordering::SeqCst);
-        if opened_at < 0 {
-            return true;
-        }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs().cast_signed());
-        now.saturating_sub(opened_at) >= CIRCUIT_BREAKER_TIMEOUT_SECS
-    }
-
-    /// Record a successful request: reset failure counter.
-    fn record_success(&self) {
-        self.consecutive_failures.store(0, Ordering::SeqCst);
-        self.opened_at.store(-1, Ordering::SeqCst);
-    }
-
-    /// Record a failure: increment counter and open circuit if threshold reached.
-    fn record_failure(&self, service: &str) {
-        let prev = self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
-        if prev + 1 >= CIRCUIT_BREAKER_THRESHOLD {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs().cast_signed());
-            // Only update opened_at when transitioning to Open
-            if prev + 1 == CIRCUIT_BREAKER_THRESHOLD {
-                self.opened_at.store(now, Ordering::SeqCst);
-                error!(
-                    service = %service,
-                    threshold = CIRCUIT_BREAKER_THRESHOLD,
-                    "Circuit breaker opened after {} consecutive failures",
-                    CIRCUIT_BREAKER_THRESHOLD
-                );
-            }
-        }
-    }
-}
+use tracing::{info, warn, Level};
 
 /// Tower [`Layer`] that wraps a gRPC service and signals the circuit breaker
 /// after each RPC call completes.

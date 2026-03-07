@@ -80,6 +80,8 @@ pub struct SyncTvServer {
     http_handle: Option<JoinHandle<()>>,
 }
 
+const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn build_ws_ticket_service(
     redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     is_cluster_mode: bool,
@@ -99,6 +101,48 @@ fn build_ws_ticket_service(
         (false, None) => synctv_core::service::WsTicketService::with_memory(None),
     };
     Ok(Some(Arc::new(svc)))
+}
+
+async fn await_task_shutdown(name: &'static str, mut handle: JoinHandle<()>, timeout: Duration) {
+    match tokio::time::timeout(timeout, &mut handle).await {
+        Ok(Ok(())) => info!("{name} stopped"),
+        Ok(Err(e)) => warn!("{name} panicked during shutdown: {e}"),
+        Err(_) => {
+            warn!(
+                "{name} did not stop within {}s, aborting task",
+                timeout.as_secs()
+            );
+            handle.abort();
+            match handle.await {
+                Ok(()) => info!("{name} aborted cleanly"),
+                Err(e) if e.is_cancelled() => info!("{name} aborted"),
+                Err(e) => warn!("{name} failed after abort: {e}"),
+            }
+        }
+    }
+}
+
+async fn cleanup_partial_startup(
+    shutdown_tx: &watch::Sender<bool>,
+    cleanup_cancel: &tokio_util::sync::CancellationToken,
+    cleanup_handle: Option<JoinHandle<()>>,
+    grpc_handle: Option<JoinHandle<()>>,
+) {
+    let _ = shutdown_tx.send(true);
+    cleanup_cancel.cancel();
+
+    if let Some(handle) = cleanup_handle {
+        await_task_shutdown(
+            "connection cleanup task",
+            handle,
+            STARTUP_CLEANUP_TIMEOUT,
+        )
+        .await;
+    }
+
+    if let Some(handle) = grpc_handle {
+        await_task_shutdown("gRPC server", handle, STARTUP_CLEANUP_TIMEOUT).await;
+    }
 }
 
 impl SyncTvServer {
@@ -140,17 +184,37 @@ impl SyncTvServer {
 
         // Start background connection cleanup (every 60 seconds)
         let cleanup_cancel = tokio_util::sync::CancellationToken::new();
-        let _conn_cleanup = self
+        let cleanup_handle = self
             .services
             .connection_manager
             .spawn_cleanup_task(Duration::from_mins(1), cleanup_cancel.clone());
 
         // Start gRPC server
-        let grpc_handle = self.start_grpc_server(shutdown_rx.clone()).await?;
+        let grpc_handle = match self.start_grpc_server(shutdown_rx.clone()).await {
+            Ok(handle) => handle,
+            Err(err) => {
+                cleanup_partial_startup(&shutdown_tx, &cleanup_cancel, Some(cleanup_handle), None)
+                    .await;
+                return Err(err);
+            }
+        };
         self.grpc_handle = Some(grpc_handle);
 
         // Start HTTP server with graceful shutdown
-        let http_handle = self.start_http_server(shutdown_rx.clone()).await?;
+        let http_handle = match self.start_http_server(shutdown_rx.clone()).await {
+            Ok(handle) => handle,
+            Err(err) => {
+                let grpc_handle = self.grpc_handle.take();
+                cleanup_partial_startup(
+                    &shutdown_tx,
+                    &cleanup_cancel,
+                    Some(cleanup_handle),
+                    grpc_handle,
+                )
+                .await;
+                return Err(err);
+            }
+        };
         self.http_handle = Some(http_handle);
 
         // Spawn streaming event listener for cluster-wide kicks
@@ -260,6 +324,7 @@ impl SyncTvServer {
         let _ = tokio::time::timeout(http_drain_budget, async {
             let _ = grpc_handle.await;
             let _ = http_handle.await;
+            let _ = cleanup_handle.await;
         })
         .await;
         info!("gRPC and HTTP servers shut down");
@@ -317,14 +382,7 @@ impl SyncTvServer {
         // Wait for admin event listener
         if let Some(handle) = admin_event_handle {
             info!("Waiting for admin event listener to stop...");
-            match tokio::time::timeout(Duration::from_secs(5), handle).await {
-                Ok(_) => {
-                    info!("Admin event listener stopped");
-                }
-                Err(_) => {
-                    warn!("Admin event listener did not stop within 5s, proceeding");
-                }
-            }
+            await_task_shutdown("admin event listener", handle, Duration::from_secs(5)).await;
         }
 
         // Shut down remaining infrastructure components
@@ -507,7 +565,11 @@ impl SyncTvServer {
                 }),
                 turn_health_checker: self.services.turn_health_checker.clone(),
                 credential_encryption: self.services.credential_encryption.clone(),
-                messaging_rate_limit_config: self.services.rate_limit_config.clone(),
+                messaging_rate_limit_config: synctv_core::service::RateLimitConfig {
+                    chat_per_second: self.config.messaging_rate_limits.chat_per_second,
+                    danmaku_per_second: self.config.messaging_rate_limits.danmaku_per_second,
+                    window_seconds: self.config.messaging_rate_limits.window_seconds,
+                },
                 providers_manager: Some(self.services.providers_manager.clone()),
             });
 
@@ -609,7 +671,14 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::build_ws_ticket_service;
+    use super::{await_task_shutdown, build_ws_ticket_service, cleanup_partial_startup};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    use tokio::sync::watch;
+    use tokio_util::sync::CancellationToken;
 
     /// Test that invalid HTTP address format returns an error
     #[test]
@@ -702,6 +771,63 @@ mod tests {
                 "cluster.enabled=true requires Redis-backed WebSocket ticket service wiring"
             ),
             "Unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_partial_startup_signals_and_joins_tasks() {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let cleanup_cancel = CancellationToken::new();
+
+        let cleanup_stopped = Arc::new(AtomicBool::new(false));
+        let cleanup_stopped_clone = Arc::clone(&cleanup_stopped);
+        let cleanup_cancel_for_task = cleanup_cancel.clone();
+        let cleanup_handle = tokio::spawn(async move {
+            cleanup_cancel_for_task.cancelled().await;
+            cleanup_stopped_clone.store(true, Ordering::SeqCst);
+        });
+
+        let grpc_stopped = Arc::new(AtomicBool::new(false));
+        let grpc_stopped_clone = Arc::clone(&grpc_stopped);
+        let grpc_handle = tokio::spawn(async move {
+            let _ = shutdown_rx.changed().await;
+            grpc_stopped_clone.store(true, Ordering::SeqCst);
+        });
+
+        cleanup_partial_startup(
+            &shutdown_tx,
+            &cleanup_cancel,
+            Some(cleanup_handle),
+            Some(grpc_handle),
+        )
+        .await;
+
+        assert!(cleanup_cancel.is_cancelled());
+        assert!(cleanup_stopped.load(Ordering::SeqCst));
+        assert!(grpc_stopped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_await_task_shutdown_aborts_timed_out_task() {
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_clone = Arc::clone(&dropped);
+        let handle = tokio::spawn(async move {
+            let _guard = DropFlag(dropped_clone);
+            std::future::pending::<()>().await;
+        });
+
+        await_task_shutdown("pending task", handle, Duration::from_millis(10)).await;
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "timed-out task should be aborted rather than detached"
         );
     }
 

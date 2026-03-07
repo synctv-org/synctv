@@ -434,6 +434,7 @@ mod config_initialization_tests {
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
+            messaging_rate_limits: synctv_core::config::MessagingRateLimitConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),
         }

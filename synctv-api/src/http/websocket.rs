@@ -469,12 +469,36 @@ pub async fn websocket_handler(
         return Err(AppError::too_many_requests(e));
     }
 
+    let failed_upgrade_cleanup = build_failed_upgrade_cleanup(
+        state.connection_manager.clone(),
+        rid.clone(),
+        user_id.clone(),
+    );
+
     // Authentication and membership verified, upgrade to WebSocket.
     // Reservations are released inside handle_socket after join_room completes.
     // Limit max message size to 64KB (default is 64MB which is excessive for signaling)
     Ok(ws
         .max_message_size(64 * 1024)
+        .on_failed_upgrade(failed_upgrade_cleanup)
         .on_upgrade(move |socket| handle_socket(socket, state, room_id, user_id)))
+}
+
+fn build_failed_upgrade_cleanup(
+    connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+    room_id: RoomId,
+    user_id: UserId,
+) -> impl FnOnce(axum::Error) + Send + 'static {
+    move |error| {
+        warn!(
+            room_id = %room_id.as_str(),
+            user_id = %user_id.as_str(),
+            error = %error,
+            "WebSocket upgrade failed after reserving connection slots; releasing reservations"
+        );
+        connection_manager.release_room_reservation(&room_id);
+        connection_manager.release_user_reservation(&user_id);
+    }
 }
 
 async fn handle_socket(
@@ -614,6 +638,9 @@ async fn handle_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+    use synctv_core::models::{RoomId, UserId};
     use synctv_core::service::RateLimitConfig;
 
     // ========== WsQuery Tests ==========
@@ -814,5 +841,59 @@ mod tests {
         assert!(debug_str.contains("chat_per_second"));
         assert!(debug_str.contains("danmaku_per_second"));
         assert!(debug_str.contains("window_seconds"));
+    }
+
+    #[test]
+    fn test_failed_upgrade_cleanup_releases_room_reservation() {
+        let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
+            max_per_room: 1,
+            max_per_user: 4,
+            ..ConnectionLimits::default()
+        }));
+        let room_id = RoomId::from_string("room-upgrade-fail".to_string());
+        let user_id = UserId::from_string("user-upgrade-fail".to_string());
+
+        manager
+            .reserve_room_slot(&room_id)
+            .expect("initial room reservation should succeed");
+        assert!(
+            manager.reserve_room_slot(&room_id).is_err(),
+            "second reservation should fail until cleanup runs"
+        );
+
+        let cleanup = build_failed_upgrade_cleanup(manager.clone(), room_id.clone(), user_id);
+        cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
+
+        assert!(
+            manager.reserve_room_slot(&room_id).is_ok(),
+            "cleanup should release the leaked room reservation"
+        );
+    }
+
+    #[test]
+    fn test_failed_upgrade_cleanup_releases_user_reservation() {
+        let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
+            max_per_room: 4,
+            max_per_user: 1,
+            ..ConnectionLimits::default()
+        }));
+        let room_id = RoomId::from_string("room-upgrade-fail".to_string());
+        let user_id = UserId::from_string("user-upgrade-fail".to_string());
+
+        manager
+            .reserve_user_slot(&user_id)
+            .expect("initial user reservation should succeed");
+        assert!(
+            manager.reserve_user_slot(&user_id).is_err(),
+            "second reservation should fail until cleanup runs"
+        );
+
+        let cleanup = build_failed_upgrade_cleanup(manager.clone(), room_id, user_id.clone());
+        cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
+
+        assert!(
+            manager.reserve_user_slot(&user_id).is_ok(),
+            "cleanup should release the leaked user reservation"
+        );
     }
 }

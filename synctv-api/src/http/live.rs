@@ -20,7 +20,9 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use bytes::Bytes;
 use serde::Deserialize;
+use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 
@@ -36,6 +38,21 @@ pub struct LiveQuery {
     room_id: Option<String>,
     /// Authentication token
     token: Option<String>,
+}
+
+async fn send_flv_chunk(
+    tx: &mpsc::Sender<Result<Bytes, std::io::Error>>,
+    chunk: Result<Bytes, std::io::Error>,
+    write_timeout: std::time::Duration,
+) -> bool {
+    if write_timeout.as_secs() > 0 {
+        matches!(
+            tokio::time::timeout(write_timeout, tx.send(chunk)).await,
+            Ok(Ok(()))
+        )
+    } else {
+        tx.try_send(chunk).is_ok()
+    }
 }
 
 /// Create live streaming router
@@ -155,7 +172,7 @@ async fn handle_flv_stream(
 
     // Create bounded channel wrapper that monitors disconnect signals
     // Match FLV_RESPONSE_CHANNEL_CAPACITY from synctv-xiu (512 entries ≈ 4MB)
-    let (tx, rx_wrapped) = tokio::sync::mpsc::channel(512);
+    let (tx, rx_wrapped) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(512);
 
     // Spawn task to forward data and monitor disconnect signals.
     // The subscriber_guard lives here — dropped when the task ends (viewer disconnect),
@@ -196,12 +213,7 @@ async fn handle_flv_stream(
                 data = rx.recv() => {
                     if let Some(chunk) = data {
                         // Apply write timeout for slow clients
-                        let send_success = if write_timeout.as_secs() > 0 {
-                            tokio::time::timeout(write_timeout, tx.send(chunk)).await.is_ok()
-                        } else {
-                            // No write timeout, use try_send for backpressure
-                            tx.try_send(chunk).is_ok()
-                        };
+                        let send_success = send_flv_chunk(&tx, chunk, write_timeout).await;
 
                         if send_success {
                             consecutive_drops = 0;
@@ -811,5 +823,50 @@ mod tests {
     #[test]
     fn test_png_content_type() {
         assert_eq!("image/png", "image/png");
+    }
+
+    #[tokio::test]
+    async fn test_send_flv_chunk_fails_when_receiver_closed() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+
+        let sent =
+            send_flv_chunk(
+                &tx,
+                Ok(Bytes::from_static(b"frame")),
+                std::time::Duration::from_secs(1),
+            )
+            .await;
+
+        assert!(!sent);
+    }
+
+    #[tokio::test]
+    async fn test_send_flv_chunk_succeeds_without_timeout_when_capacity_available() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+        let sent =
+            send_flv_chunk(&tx, Ok(Bytes::from_static(b"frame")), std::time::Duration::ZERO)
+                .await;
+
+        assert!(sent);
+        assert!(matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"frame")));
+    }
+
+    #[tokio::test]
+    async fn test_send_flv_chunk_times_out_for_blocked_receiver() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        tx.send(Ok(Bytes::from_static(b"first")))
+            .await
+            .expect("initial send should fill channel");
+
+        let sent = send_flv_chunk(
+            &tx,
+            Ok(Bytes::from_static(b"second")),
+            std::time::Duration::from_millis(1),
+        )
+        .await;
+
+        assert!(!sent);
     }
 }

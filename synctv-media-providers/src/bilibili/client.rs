@@ -72,22 +72,32 @@ impl WbiKeys {
     }
 }
 
-/// Global in-memory WBI key cache.
-/// WBI keys are refreshed from Bilibili's nav API every 30 minutes.
-static WBI_KEY_CACHE: LazyLock<tokio::sync::Mutex<Option<WbiKeys>>> =
-    LazyLock::new(|| tokio::sync::Mutex::new(None));
+/// Shared WBI refresh state.
+///
+/// This is scoped to a service/client instance and injected explicitly instead of
+/// living in process-global statics. That avoids cross-instance interference in
+/// production and keeps tests isolated.
+pub(crate) struct WbiState {
+    key_cache: tokio::sync::Mutex<Option<WbiKeys>>,
+    refresh_in_progress: AtomicUsize,
+    refresh_notify: tokio::sync::Notify,
+    consecutive_failures: AtomicUsize,
+    #[cfg(test)]
+    api_call_count: AtomicUsize,
+}
 
-/// Refresh lock to prevent thundering herd when cache expires.
-/// Uses an atomic counter: 0 = no refresh in progress, >0 = refresh in progress.
-static WBI_REFRESH_IN_PROGRESS: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
-
-/// Notify for waking tasks waiting for refresh to complete.
-/// Replaces spin-loop waiting with efficient async notification.
-static WBI_REFRESH_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
-
-/// Counter for consecutive refresh failures. Used to prevent infinite retry loops
-/// when the WBI API is persistently unavailable.
-static WBI_CONSECUTIVE_FAILURES: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
+impl Default for WbiState {
+    fn default() -> Self {
+        Self {
+            key_cache: tokio::sync::Mutex::new(None),
+            refresh_in_progress: AtomicUsize::new(0),
+            refresh_notify: tokio::sync::Notify::new(),
+            consecutive_failures: AtomicUsize::new(0),
+            #[cfg(test)]
+            api_call_count: AtomicUsize::new(0),
+        }
+    }
+}
 
 /// Maximum number of consecutive refresh failures before we give up and return an error.
 /// This prevents infinite waiting when the WBI API is persistently unavailable.
@@ -97,88 +107,68 @@ const WBI_MAX_CONSECUTIVE_FAILURES: usize = 3;
 /// This prevents tasks from waiting indefinitely if the refreshing task fails silently.
 const WBI_REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Counter for tracking number of API calls (for testing).
-#[cfg(test)]
-static WBI_API_CALL_COUNT: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
-
 /// WBI key cache TTL (refresh keys every 30 minutes).
 const WBI_KEY_TTL: Duration = Duration::from_mins(30);
 
-/// Get a valid cached WBI key if available and not expired.
-async fn get_valid_wbi_key() -> Option<String> {
-    let guard = WBI_KEY_CACHE.lock().await;
-    guard
-        .as_ref()
-        .filter(|k| k.is_valid())
-        .map(|k| k.mixin_key.clone())
-}
-
-/// Store a new WBI key in the cache with expiration.
-async fn set_wbi_key(mixin_key: String) {
-    let mut guard = WBI_KEY_CACHE.lock().await;
-    *guard = Some(WbiKeys {
-        mixin_key,
-        expires_at: std::time::Instant::now() + WBI_KEY_TTL,
-    });
-}
-
-/// Try to claim the refresh lock. Returns true if this task should perform the refresh.
-/// Uses compare_exchange for atomic coordination.
-fn try_claim_refresh_lock() -> bool {
-    // Try to transition from 0 to 1
-    WBI_REFRESH_IN_PROGRESS
-        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-}
-
-/// Release the refresh lock after a successful refresh, reset failure counter, and notify waiters.
-fn release_refresh_lock_on_success_and_notify() {
-    WBI_CONSECUTIVE_FAILURES.store(0, Ordering::Release);
-    WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
-    WBI_REFRESH_NOTIFY.notify_waiters();
-}
-
-/// Release the refresh lock after a failed refresh, increment failure counter, and notify waiters.
-/// Returns true if we've exceeded the maximum consecutive failures.
-fn release_refresh_lock_on_failure_and_notify() -> bool {
-    let failures = WBI_CONSECUTIVE_FAILURES.fetch_add(1, Ordering::AcqRel) + 1;
-    WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
-    WBI_REFRESH_NOTIFY.notify_waiters();
-    failures >= WBI_MAX_CONSECUTIVE_FAILURES
-}
-
-/// Check if we've exceeded the maximum consecutive failures.
-fn has_exceeded_max_failures() -> bool {
-    WBI_CONSECUTIVE_FAILURES.load(Ordering::Acquire) >= WBI_MAX_CONSECUTIVE_FAILURES
-}
-
-/// Reset the consecutive failure counter. Used by tests and when a cached key is available.
-fn reset_consecutive_failures() {
-    WBI_CONSECUTIVE_FAILURES.store(0, Ordering::Release);
-}
-
-/// Reset all global WBI state for test isolation.
-///
-/// Parallel tests that share the process-wide WBI cache / refresh lock can
-/// interfere with each other.  Call this at the start of any test that
-/// exercises WBI signing to get a clean slate.
-///
-/// # Safety (logical)
-/// This is only compiled for `#[cfg(test)]` and should **not** be called from
-/// production code.
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) async fn reset_wbi_state_for_tests() {
-    // Clear the cached key
-    {
-        let mut guard = WBI_KEY_CACHE.lock().await;
-        *guard = None;
+impl WbiState {
+    pub(crate) async fn get_valid_wbi_key(&self) -> Option<String> {
+        let guard = self.key_cache.lock().await;
+        guard
+            .as_ref()
+            .filter(|k| k.is_valid())
+            .map(|k| k.mixin_key.clone())
     }
-    // Reset atomics
-    WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
-    WBI_CONSECUTIVE_FAILURES.store(0, Ordering::Release);
-    // Reset test API call counter
-    WBI_API_CALL_COUNT.store(0, Ordering::Relaxed);
+
+    pub(crate) async fn set_wbi_key(&self, mixin_key: String) {
+        let mut guard = self.key_cache.lock().await;
+        *guard = Some(WbiKeys {
+            mixin_key,
+            expires_at: std::time::Instant::now() + WBI_KEY_TTL,
+        });
+    }
+
+    fn try_claim_refresh_lock(&self) -> bool {
+        self.refresh_in_progress
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn release_refresh_lock_on_success_and_notify(&self) {
+        self.consecutive_failures.store(0, Ordering::Release);
+        self.refresh_in_progress.store(0, Ordering::Release);
+        self.refresh_notify.notify_waiters();
+    }
+
+    fn release_refresh_lock_on_failure_and_notify(&self) -> bool {
+        let failures = self.consecutive_failures.fetch_add(1, Ordering::AcqRel) + 1;
+        self.refresh_in_progress.store(0, Ordering::Release);
+        self.refresh_notify.notify_waiters();
+        failures >= WBI_MAX_CONSECUTIVE_FAILURES
+    }
+
+    fn has_exceeded_max_failures(&self) -> bool {
+        self.consecutive_failures.load(Ordering::Acquire) >= WBI_MAX_CONSECUTIVE_FAILURES
+    }
+
+    fn reset_consecutive_failures(&self) {
+        self.consecutive_failures.store(0, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn reset_for_tests(&self) {
+        {
+            let mut guard = self.key_cache.lock().await;
+            *guard = None;
+        }
+        self.refresh_in_progress.store(0, Ordering::Release);
+        self.consecutive_failures.store(0, Ordering::Release);
+        self.api_call_count.store(0, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    fn api_call_count(&self) -> usize {
+        self.api_call_count.load(Ordering::Relaxed)
+    }
 }
 
 /// Generate the mixin key from `img_key` and `sub_key` using the encoding table.
@@ -274,6 +264,7 @@ fn sanitize_cookie_pair(key: &str, value: &str) -> String {
 pub struct BilibiliClient {
     client: Client,
     cookies: Option<HashMap<String, String>>,
+    wbi_state: Arc<WbiState>,
 }
 
 impl BilibiliClient {
@@ -283,9 +274,14 @@ impl BilibiliClient {
     /// via `LazyLock` and the constructor only clones an `Arc`.
     #[must_use]
     pub fn new() -> Self {
+        Self::new_with_wbi_state(Arc::new(WbiState::default()))
+    }
+
+    pub(crate) fn new_with_wbi_state(wbi_state: Arc<WbiState>) -> Self {
         Self {
             client: SHARED_CLIENT.clone(),
             cookies: None,
+            wbi_state,
         }
     }
 
@@ -295,10 +291,23 @@ impl BilibiliClient {
     /// via `LazyLock` and the constructor only clones an `Arc`.
     #[must_use]
     pub fn with_cookies(cookies: HashMap<String, String>) -> Self {
+        Self::with_cookies_and_wbi_state(cookies, Arc::new(WbiState::default()))
+    }
+
+    pub(crate) fn with_cookies_and_wbi_state(
+        cookies: HashMap<String, String>,
+        wbi_state: Arc<WbiState>,
+    ) -> Self {
         Self {
             client: SHARED_CLIENT.clone(),
             cookies: Some(cookies),
+            wbi_state,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shared_wbi_state(&self) -> Arc<WbiState> {
+        self.wbi_state.clone()
     }
 
     /// Get WBI mixin key, fetching and caching it if necessary.
@@ -316,38 +325,41 @@ impl BilibiliClient {
     ) -> Result<String, BilibiliError> {
         // Check cache (unless force refresh)
         if !force_refresh {
-            if let Some(key) = get_valid_wbi_key().await {
+            if let Some(key) = self.wbi_state.get_valid_wbi_key().await {
                 // Reset failure counter on successful cache hit
-                reset_consecutive_failures();
+                self.wbi_state.reset_consecutive_failures();
                 return Ok(key);
             }
         }
 
         // Check if we've exceeded max consecutive failures - fail fast
-        if has_exceeded_max_failures() {
+        if self.wbi_state.has_exceeded_max_failures() {
             return Err(BilibiliError::Parse(
                 "WBI key refresh unavailable: too many consecutive failures".to_string(),
             ));
         }
 
         // Try to claim the refresh lock. Only one task will succeed.
-        if try_claim_refresh_lock() {
+        if self.wbi_state.try_claim_refresh_lock() {
             // We got the lock - we are responsible for refreshing.
             let result = self.fetch_and_cache_wbi_key().await;
             match &result {
                 Ok(_) => {
-                    release_refresh_lock_on_success_and_notify();
+                    self.wbi_state.release_refresh_lock_on_success_and_notify();
                 }
                 Err(_) => {
-                    release_refresh_lock_on_failure_and_notify();
+                    self.wbi_state.release_refresh_lock_on_failure_and_notify();
                 }
             }
             result
         } else {
             // Another task is refreshing. Wait for notification with timeout.
             // This prevents thundering herd and reduces unnecessary CPU usage.
-            let notify_result =
-                tokio::time::timeout(WBI_REFRESH_TIMEOUT, WBI_REFRESH_NOTIFY.notified()).await;
+            let notify_result = tokio::time::timeout(
+                WBI_REFRESH_TIMEOUT,
+                self.wbi_state.refresh_notify.notified(),
+            )
+            .await;
 
             if notify_result.is_err() {
                 // Timeout waiting for notification - the refreshing task may have failed silently
@@ -358,13 +370,13 @@ impl BilibiliClient {
             }
 
             // After being notified, check the cache again.
-            if let Some(key) = get_valid_wbi_key().await {
-                reset_consecutive_failures();
+            if let Some(key) = self.wbi_state.get_valid_wbi_key().await {
+                self.wbi_state.reset_consecutive_failures();
                 return Ok(key);
             }
 
             // Check if we've exceeded max failures before retrying
-            if has_exceeded_max_failures() {
+            if self.wbi_state.has_exceeded_max_failures() {
                 return Err(BilibiliError::Parse(
                     "WBI key refresh unavailable: too many consecutive failures".to_string(),
                 ));
@@ -372,21 +384,24 @@ impl BilibiliClient {
 
             // If cache is still empty after notification (refresh failed),
             // try to refresh ourselves as a fallback.
-            if try_claim_refresh_lock() {
+            if self.wbi_state.try_claim_refresh_lock() {
                 let result = self.fetch_and_cache_wbi_key().await;
                 match &result {
                     Ok(_) => {
-                        release_refresh_lock_on_success_and_notify();
+                        self.wbi_state.release_refresh_lock_on_success_and_notify();
                     }
                     Err(_) => {
-                        release_refresh_lock_on_failure_and_notify();
+                        self.wbi_state.release_refresh_lock_on_failure_and_notify();
                     }
                 }
                 result
             } else {
                 // Another task beat us to it - wait again with timeout
-                let notify_result =
-                    tokio::time::timeout(WBI_REFRESH_TIMEOUT, WBI_REFRESH_NOTIFY.notified()).await;
+                let notify_result = tokio::time::timeout(
+                    WBI_REFRESH_TIMEOUT,
+                    self.wbi_state.refresh_notify.notified(),
+                )
+                .await;
 
                 if notify_result.is_err() {
                     return Err(BilibiliError::Parse(
@@ -395,19 +410,20 @@ impl BilibiliClient {
                 }
 
                 // Check cache one more time
-                if let Some(key) = get_valid_wbi_key().await {
-                    reset_consecutive_failures();
+                if let Some(key) = self.wbi_state.get_valid_wbi_key().await {
+                    self.wbi_state.reset_consecutive_failures();
                     return Ok(key);
                 }
 
                 // Check if we've exceeded max failures
-                if has_exceeded_max_failures() {
+                if self.wbi_state.has_exceeded_max_failures() {
                     return Err(BilibiliError::Parse(
                         "WBI key refresh unavailable: too many consecutive failures".to_string(),
                     ));
                 }
 
-                get_valid_wbi_key()
+                self.wbi_state
+                    .get_valid_wbi_key()
                     .await
                     .ok_or_else(|| BilibiliError::Parse("WBI key refresh failed".to_string()))
             }
@@ -417,7 +433,9 @@ impl BilibiliClient {
     /// Fetch WBI key from Bilibili API and cache it.
     async fn fetch_and_cache_wbi_key(&self) -> Result<String, BilibiliError> {
         #[cfg(test)]
-        WBI_API_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+        self.wbi_state
+            .api_call_count
+            .fetch_add(1, Ordering::Relaxed);
 
         let url = "https://api.bilibili.com/x/web-interface/nav";
         let req = self.add_cookies(self.client.get(url).header("Referer", REFERER));
@@ -457,7 +475,7 @@ impl BilibiliClient {
         }
 
         // Store in cache with TTL
-        set_wbi_key(mixin_key.clone()).await;
+        self.wbi_state.set_wbi_key(mixin_key.clone()).await;
 
         Ok(mixin_key)
     }
@@ -3827,9 +3845,36 @@ mod tests {
         assert!(header.contains("evilkey=evilvalue"));
     }
 
+    #[tokio::test]
+    async fn test_wbi_state_is_isolated_per_client_instance() {
+        let client_a = BilibiliClient::new();
+        let client_b = BilibiliClient::new();
+
+        let state_a = client_a.shared_wbi_state();
+        let state_b = client_b.shared_wbi_state();
+
+        state_a.reset_for_tests().await;
+        state_b.reset_for_tests().await;
+
+        state_a.set_wbi_key("key-a".to_string()).await;
+        state_b.set_wbi_key("key-b".to_string()).await;
+
+        assert_eq!(state_a.get_valid_wbi_key().await.as_deref(), Some("key-a"));
+        assert_eq!(state_b.get_valid_wbi_key().await.as_deref(), Some("key-b"));
+
+        state_a.release_refresh_lock_on_failure_and_notify();
+        state_a.release_refresh_lock_on_failure_and_notify();
+        state_a.release_refresh_lock_on_failure_and_notify();
+
+        assert!(state_a.has_exceeded_max_failures());
+        assert!(!state_b.has_exceeded_max_failures());
+        assert_eq!(state_a.api_call_count(), 0);
+        assert_eq!(state_b.api_call_count(), 0);
+    }
+
     // Note: WBI Key Refresh Coordination tests were removed as they referenced
     // a non-existent WbiKeyCache struct. The WBI key caching is handled by
-    // global static variables (WBI_KEY_CACHE, WBI_REFRESH_IN_PROGRESS, etc.)
+    // instance-scoped `WbiState` shared explicitly by a `BilibiliService`.
 
     // ========== B5: .expect("REASON") panic prevention ==========
 

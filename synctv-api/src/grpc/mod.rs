@@ -71,6 +71,7 @@ impl_grpc_service_ext!(<T> crate::proto::admin_service_server::AdminServiceServe
 impl_grpc_service_ext!(<T> synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_livestream::grpc::StreamRelayServiceServer<T>);
 
 /// Log an internal error and return a generic gRPC status to avoid leaking details.
 ///
@@ -156,10 +157,25 @@ fn should_register_cluster_grpc_service(
         && node_registry_available
 }
 
+fn should_register_livestream_relay_service(
+    config: &synctv_core::Config,
+    live_streaming_infrastructure_available: bool,
+) -> bool {
+    config.cluster_runtime_enabled()
+        && !config.server.cluster_secret.is_empty()
+        && live_streaming_infrastructure_available
+}
+
 fn validate_cluster_grpc_runtime_requirements(
     config: &synctv_core::Config,
     node_registry_available: bool,
 ) -> anyhow::Result<()> {
+    if config.cluster_runtime_enabled() && config.server.cluster_secret.is_empty() {
+        return Err(anyhow::anyhow!(
+            "cluster.enabled=true requires server.cluster_secret before starting the gRPC server; refusing to start with unauthenticated cluster endpoints"
+        ));
+    }
+
     if config.cluster_runtime_enabled() && !node_registry_available {
         return Err(anyhow::anyhow!(
             "cluster.enabled=true requires NodeRegistry before starting the gRPC server; refusing to start with cluster gRPC disabled"
@@ -384,6 +400,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let email_svc_for_admin_api = email_service_for_admin.unwrap_or_else(|| {
         Arc::new(EmailService::new(None).expect("EmailService::new(None) should not fail"))
     });
+    let live_streaming_infrastructure_for_admin = live_streaming_infrastructure.clone();
 
     let admin_api = Arc::new(crate::impls::AdminApiImpl::new(
         room_service.clone(),
@@ -393,7 +410,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         email_svc_for_admin_api,
         Arc::new(connection_manager_for_provider.clone()),
         provider_instance_manager,
-        live_streaming_infrastructure,
+        live_streaming_infrastructure_for_admin,
         redis_publish_tx.clone(),
         audit_service.clone(),
     ));
@@ -771,6 +788,46 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         );
     }
 
+    if should_register_livestream_relay_service(config, live_streaming_infrastructure.is_some()) {
+        let live_infra = live_streaming_infrastructure.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "cluster.enabled=true requires livestream infrastructure before registering the relay gRPC service"
+            )
+        })?;
+        let relay_service = synctv_livestream::grpc::StreamRelayServiceImpl::new(
+            live_infra.registry.clone(),
+            cluster_node_id.clone(),
+            live_infra.stream_hub_event_sender.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .with_cluster_secret(config.server.cluster_secret.clone());
+
+        let relay_service = if let Some(segment_manager) = live_infra.segment_manager.clone() {
+            relay_service.with_segment_manager(segment_manager)
+        } else {
+            relay_service
+        };
+
+        let relay_service = if let Some(hls_stream_registry) = live_infra.hls_stream_registry.clone()
+        {
+            relay_service.with_hls_stream_registry(hls_stream_registry)
+        } else {
+            relay_service
+        };
+
+        let relay_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
+        router = router.add_service(tonic::codegen::InterceptedService::new(
+            synctv_livestream::grpc::StreamRelayServiceServer::new(relay_service)
+                .with_message_size_limit(max_message_size),
+            move |req| relay_interceptor.validate(req),
+        ));
+        tracing::info!("Livestream relay gRPC service registered with shared-secret auth");
+    } else if config.cluster_runtime_enabled() {
+        tracing::warn!(
+            "Cluster mode enabled but livestream relay gRPC service not registered because livestream infrastructure is unavailable"
+        );
+    }
+
     // Register gRPC health check service (standard grpc.health.v1.Health).
     // All registered services are marked as SERVING so gRPC health probes
     // return the correct status rather than UNKNOWN.
@@ -795,6 +852,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         .await;
     health_reporter
         .set_serving::<AdminServiceServer<AdminServiceImpl>>()
+        .await;
+    health_reporter
+        .set_serving::<synctv_livestream::grpc::StreamRelayServiceServer<
+            synctv_livestream::grpc::StreamRelayServiceImpl,
+        >>()
         .await;
     router = router.add_service(health_service);
     tracing::info!("gRPC health check service registered (all services marked SERVING)");
@@ -846,7 +908,10 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_register_cluster_grpc_service, validate_cluster_grpc_runtime_requirements};
+    use super::{
+        should_register_cluster_grpc_service, should_register_livestream_relay_service,
+        validate_cluster_grpc_runtime_requirements,
+    };
 
     #[test]
     fn test_cluster_grpc_service_requires_cluster_mode() {
@@ -893,10 +958,51 @@ mod tests {
     }
 
     #[test]
+    fn test_cluster_grpc_runtime_requires_cluster_secret() {
+        let mut config = synctv_core::Config::default();
+        config.cluster.enabled = true;
+
+        let err = validate_cluster_grpc_runtime_requirements(&config, true)
+            .expect_err("cluster runtime must fail closed without cluster_secret");
+
+        assert!(
+            err.to_string().contains("server.cluster_secret"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_standalone_grpc_runtime_allows_missing_node_registry() {
         let config = synctv_core::Config::default();
 
         validate_cluster_grpc_runtime_requirements(&config, false)
             .expect("standalone gRPC runtime should allow missing NodeRegistry");
+    }
+
+    #[test]
+    fn test_livestream_relay_service_requires_cluster_mode_secret_and_infra() {
+        let mut config = synctv_core::Config::default();
+
+        assert!(
+            !should_register_livestream_relay_service(&config, true),
+            "standalone mode must not expose livestream relay gRPC service"
+        );
+
+        config.cluster.enabled = true;
+        assert!(
+            !should_register_livestream_relay_service(&config, true),
+            "cluster mode without a secret must fail closed"
+        );
+
+        config.server.cluster_secret = "shared-secret".to_string();
+        assert!(
+            !should_register_livestream_relay_service(&config, false),
+            "relay service must not be registered before livestream infra is ready"
+        );
+
+        assert!(
+            should_register_livestream_relay_service(&config, true),
+            "cluster mode with secret and livestream infra should register relay service"
+        );
     }
 }

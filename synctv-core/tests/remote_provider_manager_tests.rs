@@ -608,6 +608,36 @@ async fn test_fallback_when_instance_name_none() {
     );
 }
 
+// ─── Test 11b: Explicit instance must not silently fallback locally ─────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_resolve_client_required_rejects_missing_remote_instance() {
+    let infra = TestInfra::new().await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+
+    let result = manager
+        .resolve_client_required(
+            Some("missing-instance"),
+            |_channel| "remote",
+            || "local",
+        )
+        .await;
+
+    assert!(result.is_err(), "explicit remote instance must not fallback to local");
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, synctv_core::provider::ProviderError::InstanceNotFound(ref name) if name == "missing-instance"),
+        "unexpected error: {err:?}"
+    );
+}
+
 // ─── Test 12: Fallback when remote instance exists but channel fails ─────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

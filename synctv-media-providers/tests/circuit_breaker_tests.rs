@@ -5,6 +5,7 @@
 
 #![allow(clippy::unwrap_used)]
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 
@@ -233,17 +234,19 @@ fn test_threshold_check_accuracy() {
 #[test]
 fn test_reset_visibility() {
     let counter = Arc::new(AtomicU32::new(100));
+    let (tx, rx) = mpsc::channel();
 
     let c1 = Arc::clone(&counter);
     let t1 = thread::spawn(move || {
         // Reset to 0
         c1.store(0, Ordering::SeqCst);
+        tx.send(()).unwrap();
     });
 
     let c2 = Arc::clone(&counter);
     let t2 = thread::spawn(move || {
-        // Wait a bit then read
-        thread::sleep(std::time::Duration::from_millis(1));
+        // Wait until the writer signals the reset completed.
+        rx.recv().unwrap();
         c2.load(Ordering::SeqCst)
     });
 

@@ -140,6 +140,67 @@ impl ProxyMetrics for NoopMetrics {
     fn on_proxy_complete(&self, _protocol: &str, _duration: Duration, _error: Option<&str>) {}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyErrorKind {
+    Timeout,
+    Connection,
+    Ssrf,
+    InvalidRequest,
+    Upstream,
+    Other,
+}
+
+impl ProxyErrorKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Connection => "connection",
+            Self::Ssrf => "ssrf",
+            Self::InvalidRequest => "invalid_request",
+            Self::Upstream => "upstream",
+            Self::Other => "other",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ProxyError {
+    Timeout(String),
+    Connection(String),
+    Ssrf(String),
+    InvalidRequest(String),
+    Upstream(String),
+    Other(String),
+}
+
+impl ProxyError {
+    fn kind(&self) -> ProxyErrorKind {
+        match self {
+            Self::Timeout(_) => ProxyErrorKind::Timeout,
+            Self::Connection(_) => ProxyErrorKind::Connection,
+            Self::Ssrf(_) => ProxyErrorKind::Ssrf,
+            Self::InvalidRequest(_) => ProxyErrorKind::InvalidRequest,
+            Self::Upstream(_) => ProxyErrorKind::Upstream,
+            Self::Other(_) => ProxyErrorKind::Other,
+        }
+    }
+}
+
+impl std::fmt::Display for ProxyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout(message) => write!(f, "Request timed out: {message}"),
+            Self::Connection(message) => write!(f, "Connection failed: {message}"),
+            Self::Ssrf(message) => write!(f, "SSRF protection blocked request: {message}"),
+            Self::InvalidRequest(message) => write!(f, "Invalid proxy request: {message}"),
+            Self::Upstream(message) => write!(f, "Upstream rejected request: {message}"),
+            Self::Other(message) => write!(f, "Proxy request failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ProxyError {}
+
 /// Fetch a remote URL and return the response.
 ///
 /// The `metrics` parameter allows callers to inject their own metrics
@@ -155,16 +216,7 @@ pub async fn proxy_fetch_and_forward(
     let elapsed = start.elapsed();
     let error_type = match &result {
         Ok(_) => None,
-        Err(e) => {
-            let msg = e.to_string();
-            Some(if msg.contains("timeout") {
-                "timeout"
-            } else if msg.contains("connection") {
-                "connection"
-            } else {
-                "other"
-            })
-        }
+        Err(e) => e.downcast_ref::<ProxyError>().map(|err| err.kind().as_str()),
     };
 
     // Derive the media type label from the Content-Type header of the proxied
@@ -235,9 +287,10 @@ fn build_proxy_request(cfg: &ProxyConfig<'_>) -> reqwest::RequestBuilder {
 async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response, anyhow::Error> {
     // Validate URL scheme to prevent SSRF via non-HTTP schemes (e.g., file://)
     if !cfg.url.starts_with("http://") && !cfg.url.starts_with("https://") {
-        return Err(anyhow::anyhow!(
-            "Invalid URL scheme: only http and https are supported"
-        ));
+        return Err(ProxyError::InvalidRequest(
+            "only http and https are supported".to_string(),
+        )
+        .into());
     }
 
     let request = build_proxy_request(&cfg);
@@ -272,9 +325,10 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // where u64 > usize::MAX would wrap around and pass the size check.
     if let Some(cl) = proxy_response.content_length() {
         if usize::try_from(cl).map_or(true, |s| s > MAX_PROXY_BODY_SIZE) {
-            return Err(anyhow::anyhow!(
-                "Response too large ({cl} bytes, max {MAX_PROXY_BODY_SIZE})"
-            ));
+            return Err(ProxyError::Upstream(format!(
+                "response too large ({cl} bytes, max {MAX_PROXY_BODY_SIZE})"
+            ))
+            .into());
         }
     }
 
@@ -894,7 +948,7 @@ async fn send_with_redirect_validation(
     // Build the request to capture headers before sending.
     let built = request
         .build()
-        .map_err(|e| anyhow::anyhow!("Failed to build proxy request: {e}"))?;
+        .map_err(|e| ProxyError::InvalidRequest(format!("failed to build proxy request: {e}")))?;
 
     // Capture the original request's origin for cross-origin detection.
     let original_origin = built.url().origin().ascii_serialization();
@@ -910,21 +964,21 @@ async fn send_with_redirect_validation(
     let mut response = PROXY_CLIENT
         .execute(built)
         .await
-        .map_err(|e| anyhow::anyhow!("Proxy request failed: {e}"))?;
+        .map_err(classify_reqwest_error)?;
 
     let mut hops = 0usize;
     while response.status().is_redirection() {
         hops += 1;
         if hops > MAX_REDIRECTS {
-            return Err(anyhow::anyhow!("Too many redirects ({MAX_REDIRECTS} max)"));
+            return Err(ProxyError::Upstream(format!("too many redirects ({MAX_REDIRECTS} max)")).into());
         }
 
         let location = response
             .headers()
             .get(reqwest::header::LOCATION)
-            .ok_or_else(|| anyhow::anyhow!("Redirect without Location header"))?
+            .ok_or_else(|| ProxyError::Upstream("redirect without Location header".to_string()))?
             .to_str()
-            .map_err(|_| anyhow::anyhow!("Invalid Location header"))?
+            .map_err(|_| ProxyError::Upstream("invalid Location header".to_string()))?
             .to_string();
 
         // Validate redirect URL scheme to prevent protocol downgrade attacks
@@ -932,7 +986,7 @@ async fn send_with_redirect_validation(
         if let Ok(parsed) = url::Url::parse(&location) {
             let scheme = parsed.scheme();
             if scheme != "http" && scheme != "https" {
-                return Err(anyhow::anyhow!("Redirect to disallowed scheme: {scheme}"));
+                return Err(ProxyError::Ssrf(format!("redirect to disallowed scheme: {scheme}")).into());
             }
         } else {
             // Relative URLs are allowed (they inherit the original scheme)
@@ -956,13 +1010,30 @@ async fn send_with_redirect_validation(
         response = redirect_req
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Redirect request failed: {e}"))?;
+            .map_err(classify_reqwest_error)?;
     }
 
     Ok(ProxyResponse {
         response,
         followed_redirects: hops > 0,
     })
+}
+
+fn classify_reqwest_error(error: reqwest::Error) -> anyhow::Error {
+    let message = error.to_string();
+    let proxy_error = if error.is_timeout() {
+        ProxyError::Timeout(message)
+    } else if error.is_connect() {
+        ProxyError::Connection(message)
+    } else {
+        let lower = message.to_ascii_lowercase();
+        if lower.contains("private") || lower.contains("loopback") || lower.contains("disallowed") || lower.contains("blocked") {
+            ProxyError::Ssrf(message)
+        } else {
+            ProxyError::Other(message)
+        }
+    };
+    proxy_error.into()
 }
 
 #[cfg(test)]
@@ -1299,8 +1370,9 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("Invalid URL scheme"),
-            "Expected URL scheme error, got: {err}"
+            err.to_string()
+                .contains("only http and https are supported"),
+            "Expected invalid-request scheme rejection, got: {err}"
         );
     }
 
@@ -1318,8 +1390,9 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("Invalid URL scheme"),
-            "Expected URL scheme error, got: {err}"
+            err.to_string()
+                .contains("only http and https are supported"),
+            "Expected invalid-request scheme rejection, got: {err}"
         );
     }
 
@@ -1337,8 +1410,9 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("Invalid URL scheme"),
-            "Expected URL scheme error, got: {err}"
+            err.to_string()
+                .contains("only http and https are supported"),
+            "Expected invalid-request scheme rejection, got: {err}"
         );
     }
 
@@ -1356,8 +1430,29 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("Invalid URL scheme"),
-            "Expected URL scheme error, got: {err}"
+            err.to_string()
+                .contains("only http and https are supported"),
+            "Expected invalid-request scheme rejection, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_proxy_error_kind_mapping() {
+        assert_eq!(ProxyError::Timeout("x".into()).kind(), ProxyErrorKind::Timeout);
+        assert_eq!(ProxyError::Connection("x".into()).kind(), ProxyErrorKind::Connection);
+        assert_eq!(ProxyError::Ssrf("x".into()).kind(), ProxyErrorKind::Ssrf);
+        assert_eq!(ProxyError::InvalidRequest("x".into()).kind(), ProxyErrorKind::InvalidRequest);
+        assert_eq!(ProxyError::Upstream("x".into()).kind(), ProxyErrorKind::Upstream);
+        assert_eq!(ProxyError::Other("x".into()).kind(), ProxyErrorKind::Other);
+    }
+
+    #[test]
+    fn test_proxy_error_kind_as_str() {
+        assert_eq!(ProxyErrorKind::Timeout.as_str(), "timeout");
+        assert_eq!(ProxyErrorKind::Connection.as_str(), "connection");
+        assert_eq!(ProxyErrorKind::Ssrf.as_str(), "ssrf");
+        assert_eq!(ProxyErrorKind::InvalidRequest.as_str(), "invalid_request");
+        assert_eq!(ProxyErrorKind::Upstream.as_str(), "upstream");
+        assert_eq!(ProxyErrorKind::Other.as_str(), "other");
     }
 }

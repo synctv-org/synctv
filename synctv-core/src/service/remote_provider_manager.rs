@@ -14,6 +14,7 @@
 // notification so other replicas can invalidate their local cache.
 
 use crate::models::ProviderInstance;
+use crate::provider::ProviderError;
 use crate::repository::ProviderInstanceRepository;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -510,6 +511,31 @@ impl RemoteProviderManager {
             }
         }
         load_local()
+    }
+
+    /// Resolve a provider client without silently falling back when an explicit
+    /// remote instance name was requested.
+    ///
+    /// Semantics:
+    /// - `instance_name=None`: use the local singleton client.
+    /// - `instance_name=Some(name)` and remote exists: use remote client.
+    /// - `instance_name=Some(name)` and remote missing/disabled/unreachable:
+    ///   return [`ProviderError::InstanceNotFound`] instead of masking the issue
+    ///   by falling back to the local singleton.
+    pub async fn resolve_client_required<T>(
+        &self,
+        instance_name: Option<&str>,
+        create_remote: impl FnOnce(Channel) -> T,
+        load_local: impl FnOnce() -> T,
+    ) -> std::result::Result<T, ProviderError> {
+        match instance_name {
+            Some(name) => self
+                .get(name)
+                .await
+                .map(create_remote)
+                .ok_or_else(|| ProviderError::InstanceNotFound(name.to_string())),
+            None => Ok(load_local()),
+        }
     }
 
     /// List all remote instance names (from cache + DB)

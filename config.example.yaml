@@ -221,6 +221,20 @@ connection_limits:
   ws_message_rate_limit_per_second: 50
 
 # ============================================================================
+# Messaging Rate Limits
+# ============================================================================
+#
+# Domain-level chat and danmaku limits enforced by the shared messaging logic.
+
+messaging_rate_limits:
+  # Maximum chat messages per sliding window.
+  chat_per_second: 10
+  # Maximum danmaku messages per sliding window.
+  danmaku_per_second: 3
+  # Sliding-window size in seconds.
+  window_seconds: 1
+
+# ============================================================================
 # Bootstrap Configuration
 # ============================================================================
 #

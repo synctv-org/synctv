@@ -223,30 +223,11 @@ impl ProviderClientManager {
 }
 
 // ============================================================================
-// Global ProviderClientManager (for backward compatibility)
-// ============================================================================
-
-/// Global default `ProviderClientManager` instance.
-///
-/// This is used by `load_local_xxx_client()` functions for backward compatibility.
-/// New code should prefer creating a `ProviderClientManager` explicitly and
-/// passing it through the dependency injection system.
-static GLOBAL_CLIENT_MANAGER: std::sync::LazyLock<ProviderClientManager> =
-    std::sync::LazyLock::new(ProviderClientManager::new);
-
-// ============================================================================
 // Alist Client
 // ============================================================================
 
 /// Type alias for Alist client
 pub type AlistClientArc = Arc<dyn AlistInterface>;
-
-/// Load local Alist client (from global manager).
-///
-/// Prefer using `ProviderClientManager::local_alist_client()` with dependency injection.
-pub fn load_local_alist_client() -> AlistClientArc {
-    GLOBAL_CLIENT_MANAGER.local_alist_client()
-}
 
 /// Create remote Alist client (thin wrapper around gRPC client)
 #[must_use]
@@ -480,13 +461,6 @@ use synctv_media_providers::bilibili::{BilibiliError, BilibiliInterface};
 /// Type alias for Bilibili client
 pub type BilibiliClientArc = Arc<dyn BilibiliInterface>;
 
-/// Load local Bilibili client (from global manager).
-///
-/// Prefer using `ProviderClientManager::local_bilibili_client()` with dependency injection.
-pub fn load_local_bilibili_client() -> BilibiliClientArc {
-    GLOBAL_CLIENT_MANAGER.local_bilibili_client()
-}
-
 /// Create remote Bilibili client (thin wrapper around gRPC client)
 #[must_use]
 pub fn create_remote_bilibili_client(channel: tonic::transport::Channel) -> BilibiliClientArc {
@@ -659,13 +633,6 @@ use synctv_media_providers::emby::{EmbyError, EmbyInterface};
 
 /// Type alias for Emby client
 pub type EmbyClientArc = Arc<dyn EmbyInterface>;
-
-/// Load local Emby client (from global manager).
-///
-/// Prefer using `ProviderClientManager::local_emby_client()` with dependency injection.
-pub fn load_local_emby_client() -> EmbyClientArc {
-    GLOBAL_CLIENT_MANAGER.local_emby_client()
-}
 
 /// Create remote Emby client (thin wrapper around gRPC client)
 #[must_use]
@@ -853,16 +820,6 @@ mod tests {
         let resolved_client = manager.resolve_emby_client(None);
 
         assert!(Arc::ptr_eq(&local_client, &resolved_client));
-    }
-
-    /// Test that global client manager provides consistent clients
-    #[test]
-    fn test_global_client_manager_consistency() {
-        let client1 = load_local_alist_client();
-        let client2 = load_local_alist_client();
-
-        // Both calls should return the same client (from global manager)
-        assert!(Arc::ptr_eq(&client1, &client2));
     }
 
     /// Test that `create_remote_xxx_client` functions work

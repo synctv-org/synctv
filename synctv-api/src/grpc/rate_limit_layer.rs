@@ -47,6 +47,7 @@ pub struct GrpcRateLimitLayer {
     rate_limiter: Arc<RateLimiter>,
     config: Arc<Config>,
     jwt_validator: Arc<JwtValidator>,
+    strict_distributed: bool,
 }
 
 impl GrpcRateLimitLayer {
@@ -66,11 +67,19 @@ impl GrpcRateLimitLayer {
         config: Arc<Config>,
         jwt_validator: JwtValidator,
     ) -> Self {
+        let strict_distributed = config.cluster_runtime_enabled();
         Self {
             rate_limiter: Arc::new(rate_limiter),
             config,
             jwt_validator: Arc::new(jwt_validator),
+            strict_distributed,
         }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub const fn uses_strict_distributed(&self) -> bool {
+        self.strict_distributed
     }
 }
 
@@ -83,6 +92,7 @@ impl<S> Layer<S> for GrpcRateLimitLayer {
             rate_limiter: self.rate_limiter.clone(),
             config: self.config.clone(),
             jwt_validator: self.jwt_validator.clone(),
+            strict_distributed: self.strict_distributed,
         }
     }
 }
@@ -95,6 +105,7 @@ pub struct GrpcRateLimitService<S> {
     rate_limiter: Arc<RateLimiter>,
     config: Arc<Config>,
     jwt_validator: Arc<JwtValidator>,
+    strict_distributed: bool,
 }
 
 /// Extract service and method labels from a gRPC path for metrics.
@@ -411,6 +422,7 @@ where
 
         let client_id = extract_client_id(req.headers(), &config, &jwt_validator);
         let grpc_rate_config = config.grpc_rate_limits.clone();
+        let strict_distributed = self.strict_distributed;
 
         Box::pin(async move {
             // Use the same key format as HTTP middleware ("ratelimit:{category}:{client_id}")
@@ -419,10 +431,15 @@ where
             let max_reqs = tier.max_requests(&grpc_rate_config);
             let win_secs = tier.window_seconds(&grpc_rate_config);
 
-            if let Err(_e) = rate_limiter
-                .check_rate_limit(&rate_key, max_reqs, win_secs)
-                .await
-            {
+            let rate_limit_result = if strict_distributed {
+                rate_limiter
+                    .check_rate_limit_distributed(&rate_key, max_reqs, win_secs)
+                    .await
+            } else {
+                rate_limiter.check_rate_limit(&rate_key, max_reqs, win_secs).await
+            };
+
+            if let Err(_e) = rate_limit_result {
                 warn!(
                     client_id = %client_id,
                     tier = ?tier,
@@ -932,6 +949,43 @@ mod tests {
         assert_eq!(
             id, "anon:203.0.113.50",
             "Invalid JWT should fall back to IP"
+        );
+    }
+
+    #[test]
+    fn test_grpc_rate_limit_layer_uses_strict_distributed_in_cluster_mode() {
+        let mut config = test_config();
+        config.cluster.enabled = true;
+        config.server.cluster_secret = "cluster-secret-for-test".to_string();
+
+        let jwt_service = create_test_jwt_service();
+        let jwt_validator = create_test_jwt_validator(&jwt_service);
+        let layer = GrpcRateLimitLayer::new(
+            RateLimiter::in_memory_only("cluster-grpc:".to_string()),
+            Arc::new(config),
+            jwt_validator,
+        );
+
+        assert!(
+            layer.uses_strict_distributed(),
+            "cluster mode gRPC rate limiting must fail closed instead of degrading to per-replica in-memory quotas"
+        );
+    }
+
+    #[test]
+    fn test_grpc_rate_limit_layer_keeps_best_effort_mode_in_standalone() {
+        let config = test_config();
+        let jwt_service = create_test_jwt_service();
+        let jwt_validator = create_test_jwt_validator(&jwt_service);
+        let layer = GrpcRateLimitLayer::new(
+            RateLimiter::in_memory_only("standalone-grpc:".to_string()),
+            Arc::new(config),
+            jwt_validator,
+        );
+
+        assert!(
+            !layer.uses_strict_distributed(),
+            "standalone gRPC rate limiting may use best-effort local quotas"
         );
     }
 

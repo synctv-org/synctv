@@ -344,8 +344,6 @@ fn test_quarantine_error_message() {
 /// UNCOMMENT THIS TEST after implementing the resign method.
 #[tokio::test]
 async fn test_any_leader_elector_has_resign_method() {
-    use synctv_cluster::leader::AnyLeaderElector;
-
     let elector = std::sync::Arc::new(synctv_core::service::AlwaysLeader) as std::sync::Arc<dyn synctv_cluster::leader::LeaderRuntime>;
 
     // This should compile and be callable

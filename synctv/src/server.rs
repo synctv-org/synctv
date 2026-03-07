@@ -76,8 +76,8 @@ pub struct SyncTvServer {
     services: Services,
     livestream_state: Option<LivestreamState>,
     pool: PgPool,
-    grpc_handle: Option<JoinHandle<()>>,
-    http_handle: Option<JoinHandle<()>>,
+    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    http_handle: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -122,11 +122,66 @@ async fn await_task_shutdown(name: &'static str, mut handle: JoinHandle<()>, tim
     }
 }
 
+fn map_runtime_server_exit(
+    name: &'static str,
+    result: Result<anyhow::Result<()>, tokio::task::JoinError>,
+) -> anyhow::Result<()> {
+    match result {
+        Ok(Ok(())) => Err(anyhow::anyhow!(
+            "{name} stopped unexpectedly without an error"
+        )),
+        Ok(Err(err)) => Err(anyhow::anyhow!("{name} stopped unexpectedly: {err}")),
+        Err(err) if err.is_cancelled() => Err(anyhow::anyhow!("{name} task was cancelled")),
+        Err(err) => Err(anyhow::anyhow!("{name} task panicked: {err}")),
+    }
+}
+
+fn map_background_task_exit(
+    name: &'static str,
+    result: Result<(), tokio::task::JoinError>,
+) -> anyhow::Result<()> {
+    match result {
+        Ok(()) => Err(anyhow::anyhow!(
+            "{name} stopped unexpectedly without an error"
+        )),
+        Err(err) if err.is_cancelled() => Err(anyhow::anyhow!("{name} task was cancelled")),
+        Err(err) => Err(anyhow::anyhow!("{name} task panicked: {err}")),
+    }
+}
+
+async fn await_runtime_server_shutdown(
+    name: &'static str,
+    mut handle: JoinHandle<anyhow::Result<()>>,
+    timeout: Duration,
+) {
+    match tokio::time::timeout(timeout, &mut handle).await {
+        Ok(join_result) => match join_result {
+            Ok(Ok(())) => info!("{name} stopped"),
+            Ok(Err(err)) => warn!("{name} stopped with error during shutdown: {err}"),
+            Err(err) if err.is_cancelled() => info!("{name} task cancelled during shutdown"),
+            Err(err) => warn!("{name} panicked during shutdown: {err}"),
+        },
+        Err(_) => {
+            warn!(
+                "{name} did not stop within {}s, aborting task",
+                timeout.as_secs()
+            );
+            handle.abort();
+            match handle.await {
+                Ok(Ok(())) => info!("{name} aborted cleanly"),
+                Ok(Err(err)) => warn!("{name} returned error after abort: {err}"),
+                Err(err) if err.is_cancelled() => info!("{name} aborted"),
+                Err(err) => warn!("{name} failed after abort: {err}"),
+            }
+        }
+    }
+}
+
 async fn cleanup_partial_startup(
     shutdown_tx: &watch::Sender<bool>,
     cleanup_cancel: &tokio_util::sync::CancellationToken,
     cleanup_handle: Option<JoinHandle<()>>,
-    grpc_handle: Option<JoinHandle<()>>,
+    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
 ) {
     let _ = shutdown_tx.send(true);
     cleanup_cancel.cancel();
@@ -141,7 +196,7 @@ async fn cleanup_partial_startup(
     }
 
     if let Some(handle) = grpc_handle {
-        await_task_shutdown("gRPC server", handle, STARTUP_CLEANUP_TIMEOUT).await;
+        await_runtime_server_shutdown("gRPC server", handle, STARTUP_CLEANUP_TIMEOUT).await;
     }
 }
 
@@ -291,17 +346,14 @@ impl SyncTvServer {
             .take()
             .ok_or_else(|| anyhow::anyhow!("HTTP server handle missing after startup"))?;
 
-        tokio::select! {
-            _ = &mut grpc_handle => {
-                error!("gRPC server stopped unexpectedly");
-            }
-            _ = &mut http_handle => {
-                error!("HTTP server stopped unexpectedly");
-            }
+        let unexpected_exit = tokio::select! {
+            result = &mut grpc_handle => Some(map_runtime_server_exit("gRPC server", result)),
+            result = &mut http_handle => Some(map_runtime_server_exit("HTTP server", result)),
             () = shutdown_signal() => {
                 info!("Shutdown signal received, starting graceful shutdown...");
+                None
             }
-        }
+        };
 
         // Signal gRPC/HTTP servers to shut down
         let _ = shutdown_tx.send(true);
@@ -322,8 +374,8 @@ impl SyncTvServer {
             http_drain_budget.as_secs()
         );
         let _ = tokio::time::timeout(http_drain_budget, async {
-            let _ = grpc_handle.await;
-            let _ = http_handle.await;
+            await_runtime_server_shutdown("gRPC server", grpc_handle, Duration::ZERO).await;
+            await_runtime_server_shutdown("HTTP server", http_handle, Duration::ZERO).await;
             let _ = cleanup_handle.await;
         })
         .await;
@@ -397,6 +449,9 @@ impl SyncTvServer {
         info!("Database pool closed");
 
         info!("SyncTV server shut down complete");
+        if let Some(result) = unexpected_exit {
+            return result;
+        }
         Ok(())
     }
 
@@ -446,7 +501,7 @@ impl SyncTvServer {
     async fn start_grpc_server(
         &self,
         shutdown_rx: watch::Receiver<bool>,
-    ) -> anyhow::Result<JoinHandle<()>> {
+    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let config = self.config.clone();
         let cluster_manager = self.services.cluster_manager.clone();
 
@@ -498,9 +553,7 @@ impl SyncTvServer {
                 credential_encryption: services.credential_encryption.clone(),
                 grpc_listener: Some(grpc_listener),
             };
-            if let Err(e) = synctv_api::grpc::serve(grpc_config).await {
-                error!("gRPC server error: {}", e);
-            }
+            synctv_api::grpc::serve(grpc_config).await
         });
 
         Ok(handle)
@@ -510,7 +563,7 @@ impl SyncTvServer {
     async fn start_http_server(
         &self,
         shutdown_rx: watch::Receiver<bool>,
-    ) -> anyhow::Result<JoinHandle<()>> {
+    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let http_address = self.config.http_address();
         let user_service = self.services.user_service.clone();
         let room_service = self.services.room_service.clone();
@@ -534,8 +587,8 @@ impl SyncTvServer {
         let ws_ticket_service =
             build_ws_ticket_service(self.services.redis_conn.clone(), is_cluster_mode)?;
 
-        let http_router =
-            synctv_api::http::create_router_from_config(synctv_api::http::RouterConfig {
+        let (http_router, http_state) =
+            synctv_api::http::create_router_with_state_from_config(synctv_api::http::RouterConfig {
                 config: Arc::new(self.config.clone()),
                 user_service,
                 room_service,
@@ -572,6 +625,7 @@ impl SyncTvServer {
                 },
                 providers_manager: Some(self.services.providers_manager.clone()),
             });
+        let proxy_slice_cache = http_state.proxy_slice_cache.clone();
 
         // Parse and bind HTTP address before spawning the task to propagate errors properly
         let http_addr: std::net::SocketAddr = http_address
@@ -586,21 +640,46 @@ impl SyncTvServer {
 
         let handle = tokio::spawn(async move {
             let mut rx = shutdown_rx;
+            let proxy_cache_lifecycle =
+                synctv_api::http::start_proxy_cache_lifecycle(proxy_slice_cache);
             let graceful = async move {
                 let _ = rx.changed().await;
             };
 
-            if let Err(e) = axum::serve(
+            let server = axum::serve(
                 listener,
                 http_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
-            .with_graceful_shutdown(graceful)
-            .await
-            {
-                error!("HTTP server error: {}", e);
-            }
+            .with_graceful_shutdown(graceful);
+
+            let server_result = if let Some(lifecycle) = proxy_cache_lifecycle {
+                let mut lifecycle_handle = lifecycle.handle;
+                let lifecycle_cancel = lifecycle.cancel;
+
+                let result = tokio::select! {
+                    server_result = server => {
+                        lifecycle_cancel.cancel();
+                        let _ = lifecycle_handle.await;
+                        server_result
+                    }
+                    lifecycle_result = &mut lifecycle_handle => {
+                        lifecycle_cancel.cancel();
+                        return map_background_task_exit(
+                            "HTTP proxy cache lifecycle",
+                            lifecycle_result,
+                        );
+                    }
+                };
+
+                result
+            } else {
+                server.await
+            };
+
+            server_result.map_err(|e| anyhow::anyhow!("HTTP server error: {e}"))?;
 
             info!("HTTP server shut down gracefully");
+            Ok(())
         });
 
         Ok(handle)
@@ -671,7 +750,10 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::{await_task_shutdown, build_ws_ticket_service, cleanup_partial_startup};
+    use super::{
+        await_task_shutdown, build_ws_ticket_service, cleanup_partial_startup,
+        map_background_task_exit, map_runtime_server_exit,
+    };
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -792,6 +874,7 @@ mod tests {
         let grpc_handle = tokio::spawn(async move {
             let _ = shutdown_rx.changed().await;
             grpc_stopped_clone.store(true, Ordering::SeqCst);
+            Ok::<(), anyhow::Error>(())
         });
 
         cleanup_partial_startup(
@@ -828,6 +911,67 @@ mod tests {
         assert!(
             dropped.load(Ordering::SeqCst),
             "timed-out task should be aborted rather than detached"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_runtime_server_exit_ok_is_treated_as_failure() {
+        let handle = tokio::spawn(async { Ok::<(), anyhow::Error>(()) });
+
+        let err = map_runtime_server_exit("HTTP server", handle.await)
+            .expect_err("unexpected task completion must fail closed");
+
+        assert!(
+            err.to_string()
+                .contains("HTTP server stopped unexpectedly without an error"),
+            "Unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_runtime_server_exit_propagates_inner_error() {
+        let handle = tokio::spawn(async {
+            Err::<(), anyhow::Error>(anyhow::anyhow!("listener accept loop failed"))
+        });
+
+        let err = map_runtime_server_exit("gRPC server", handle.await)
+            .expect_err("server task errors must bubble up");
+
+        assert!(
+            err.to_string()
+                .contains("gRPC server stopped unexpectedly: listener accept loop failed"),
+            "Unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_runtime_server_exit_propagates_panic() {
+        let handle = tokio::spawn(async move {
+            panic!("boom");
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        });
+
+        let err = map_runtime_server_exit("gRPC server", handle.await)
+            .expect_err("panics must be surfaced as startup failures");
+
+        assert!(
+            err.to_string().contains("gRPC server task panicked"),
+            "Unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_background_task_exit_ok_is_treated_as_failure() {
+        let handle = tokio::spawn(async {});
+
+        let err = map_background_task_exit("HTTP proxy cache lifecycle", handle.await)
+            .expect_err("unexpected background task completion must fail closed");
+
+        assert!(
+            err.to_string()
+                .contains("HTTP proxy cache lifecycle stopped unexpectedly without an error"),
+            "Unexpected error: {err}"
         );
     }
 

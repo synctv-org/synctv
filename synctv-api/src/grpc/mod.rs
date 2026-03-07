@@ -719,6 +719,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 signing_key: proxy_signing_key.clone(),
             }),
             proxy_signing_key: proxy_signing_key.clone(),
+            proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+            )),
         });
 
         // Register provider gRPC services with auth interceptor

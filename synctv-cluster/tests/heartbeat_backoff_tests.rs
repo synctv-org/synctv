@@ -59,6 +59,22 @@ async fn setup_redis() -> (testcontainers::ContainerAsync<Redis>, redis::Client,
     (redis_container, redis_client, redis_url)
 }
 
+async fn connect_redis_with_retry(
+    redis_client: &redis::Client,
+) -> redis::aio::MultiplexedConnection {
+    let mut retries = 0u32;
+    loop {
+        match redis_client.get_multiplexed_async_connection().await {
+            Ok(conn) => return conn,
+            Err(_) if retries < 60 => {
+                retries += 1;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => panic!("Redis connection failed after {retries} retries: {e}"),
+        }
+    }
+}
+
 /// Test that re-registration after heartbeat failure uses backoff.
 ///
 /// This test verifies the backoff mechanism:
@@ -108,10 +124,7 @@ async fn test_heartbeat_reregistration_has_backoff() {
         .await;
 
     // Delete the key to simulate expiry
-    let mut conn = redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap();
+    let mut conn = connect_redis_with_retry(&redis_client).await;
     let key = "backoff:cluster:nodes:backoff-node";
     let _: () = redis::cmd("DEL")
         .arg(key)
@@ -199,10 +212,7 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
     );
 
     // Delete the key to trigger re-registration
-    let mut conn = redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap();
+    let mut conn = connect_redis_with_retry(&redis_client).await;
     let key = "clearbackoff:cluster:nodes:clear-backoff-node";
     let _: () = redis::cmd("DEL")
         .arg(key)
@@ -266,10 +276,7 @@ async fn test_backoff_increases_exponentially() {
         .await
         .expect("register should succeed");
 
-    let mut conn = redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap();
+    let mut conn = connect_redis_with_retry(&redis_client).await;
     let key = "expbackoff:cluster:nodes:exp-backoff-node";
 
     // Track backoff durations

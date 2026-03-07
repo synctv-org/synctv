@@ -41,6 +41,8 @@ use synctv_core::service::ProxySigningKey;
 use synctv_core::service::{RemoteProviderManager, RoomService, UserService};
 use synctv_livestream::api::LiveStreamingInfrastructure;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
@@ -126,6 +128,13 @@ pub struct AppState {
     pub proxy_services: Arc<ProxyServices>,
     /// HMAC signing key for proxy URL authentication
     pub proxy_signing_key: Arc<ProxySigningKey>,
+    /// Shared proxy slice cache used by unified provider proxy routes.
+    pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+}
+
+pub struct ProxyCacheLifecycleRuntime {
+    pub cancel: CancellationToken,
+    pub handle: JoinHandle<()>,
 }
 
 impl std::ops::Deref for AppState {
@@ -149,9 +158,15 @@ impl AppState {
 
 /// Create the HTTP router from configuration struct
 pub fn create_router_from_config(config: RouterConfig) -> axum::Router {
+    let (router, _) = create_router_with_state_from_config(config);
+    router
+}
+
+/// Create the HTTP router and the shared application state from configuration.
+pub fn create_router_with_state_from_config(config: RouterConfig) -> (axum::Router, AppState) {
     let state = build_app_state(config);
     let router = register_all_routes(state.clone());
-    apply_global_layers(router, &state)
+    (apply_global_layers(router, &state), state)
 }
 
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
@@ -295,6 +310,10 @@ fn build_app_state(config: RouterConfig) -> AppState {
         signing_key: proxy_signing_key.clone(),
     });
 
+    let proxy_slice_cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+        synctv_proxy::slice_cache::SliceCacheConfig::default(),
+    ));
+
     AppState {
         router_config: Arc::new(config),
         rate_limit_config,
@@ -313,7 +332,24 @@ fn build_app_state(config: RouterConfig) -> AppState {
         proxy_provider_registry,
         proxy_services,
         proxy_signing_key,
+        proxy_slice_cache,
     }
+}
+
+pub fn start_proxy_cache_lifecycle(
+    cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+) -> Option<ProxyCacheLifecycleRuntime> {
+    if !cache.config().enabled {
+        return None;
+    }
+
+    let manager = synctv_proxy::slice_cache::CacheLifecycleManager::new(
+        cache.backend().clone(),
+        cache.config().clone(),
+    );
+    let cancel = manager.cancellation_token();
+    let handle = manager.start();
+    Some(ProxyCacheLifecycleRuntime { cancel, handle })
 }
 
 /// Body size limits for specific endpoint categories (Issue #23).
@@ -741,4 +777,70 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start_proxy_cache_lifecycle;
+    use bytes::Bytes;
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
+    use synctv_proxy::slice_cache::{SliceCache, SliceCacheBackend, SliceCacheConfig, StoredEntry};
+
+    #[tokio::test]
+    async fn test_start_proxy_cache_lifecycle_evicts_expired_entries_and_stops_on_cancel() {
+        let cache = Arc::new(SliceCache::new(SliceCacheConfig {
+            eviction_interval: Duration::from_millis(20),
+            max_cache_size: 1024,
+            ..SliceCacheConfig::default()
+        }));
+        let key = "expired-slice".to_string();
+        cache
+            .backend()
+            .put(
+                &key,
+                StoredEntry {
+                    data: Bytes::from_static(b"stale"),
+                    inserted_at: SystemTime::now() - Duration::from_secs(2),
+                    ttl: Duration::from_millis(5),
+                    last_accessed: SystemTime::now() - Duration::from_secs(2),
+                },
+            )
+            .await
+            .expect("seed expired slice");
+
+        let lifecycle = start_proxy_cache_lifecycle(cache.clone())
+            .expect("enabled proxy cache must start lifecycle task");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if cache.backend().get(&key).await.is_none() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("lifecycle task should evict expired slices");
+
+        lifecycle.cancel.cancel();
+
+        tokio::time::timeout(Duration::from_secs(1), lifecycle.handle)
+            .await
+            .expect("lifecycle task should stop after cancellation")
+            .expect("lifecycle join should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_start_proxy_cache_lifecycle_skips_disabled_cache() {
+        let cache = Arc::new(SliceCache::new(SliceCacheConfig {
+            enabled: false,
+            ..SliceCacheConfig::default()
+        }));
+
+        assert!(
+            start_proxy_cache_lifecycle(cache).is_none(),
+            "disabled proxy cache must not start lifecycle task"
+        );
+    }
 }

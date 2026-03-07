@@ -33,6 +33,8 @@ pub enum StreamHubErrorValue {
     SerdeError(Error),
     #[error("client session error: {0}")]
     ClientSessionError(String),
+    #[error("internal streamhub task failed: {0}")]
+    InternalTaskError(String),
 }
 
 #[derive(Debug, thiserror::Error)]

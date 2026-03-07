@@ -103,7 +103,7 @@ mod tests {
             let node_id = generate_node_id();
             assert!(!node_id.is_empty(), "node_id should not be empty");
             assert!(node_id.contains('-'), "Should use hostname-based format");
-            assert!(!node_id.contains('_'), "Should not include probed IP format");
+            assert_ne!(node_id, "unknown", "Should include uniqueness suffix");
         });
     }
 

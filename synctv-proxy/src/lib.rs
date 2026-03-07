@@ -15,6 +15,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Response,
 };
+use reqwest::header::{HeaderName, HeaderValue, REFERER, USER_AGENT};
 
 /// Maximum response body size for proxied media (256 MB).
 const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;
@@ -97,19 +98,36 @@ pub fn apply_provider_headers(
     mut request: reqwest::RequestBuilder,
     url: &str,
     provider_headers: &HashMap<String, String>,
-) -> reqwest::RequestBuilder {
+) -> Result<reqwest::RequestBuilder, anyhow::Error> {
+    let mut has_user_agent = false;
+    let mut has_referer = false;
+
     for (name, value) in provider_headers {
-        request = request.header(name.as_str(), value.as_str());
+        let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+            ProxyError::InvalidRequest(format!("invalid provider header name `{name}`: {e}"))
+        })?;
+        let header_value = HeaderValue::from_str(value).map_err(|e| {
+            ProxyError::InvalidRequest(format!("invalid provider header value for `{name}`: {e}"))
+        })?;
+
+        if header_name == USER_AGENT {
+            has_user_agent = true;
+        }
+        if header_name == REFERER {
+            has_referer = true;
+        }
+
+        request = request.header(header_name, header_value);
     }
 
-    if !provider_headers.contains_key("User-Agent") {
+    if !has_user_agent {
         request = request.header(
-            "User-Agent",
+            USER_AGENT,
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         );
     }
 
-    if !provider_headers.contains_key("Referer") {
+    if !has_referer {
         if let Ok(parsed) = url::Url::parse(url) {
             let referer = format!(
                 "{}://{}{}",
@@ -117,11 +135,11 @@ pub fn apply_provider_headers(
                 parsed.host_str().unwrap_or(""),
                 parsed.path()
             );
-            request = request.header("Referer", referer);
+            request = request.header(REFERER, referer);
         }
     }
 
-    request
+    Ok(request)
 }
 
 /// Callback for proxy metrics reporting.
@@ -267,7 +285,7 @@ const CLIENT_HEADER_ALLOWLIST: &[&str] = &[
 ///
 /// This is the single point of request construction used by both the initial
 /// fetch and retry attempts.
-fn build_proxy_request(cfg: &ProxyConfig<'_>) -> reqwest::RequestBuilder {
+fn build_proxy_request(cfg: &ProxyConfig<'_>) -> Result<reqwest::RequestBuilder, anyhow::Error> {
     let mut request = PROXY_CLIENT.get(cfg.url);
 
     // Forward only allowlisted client headers to avoid leaking auth tokens / cookies
@@ -293,7 +311,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
         .into());
     }
 
-    let request = build_proxy_request(&cfg);
+    let request = build_proxy_request(&cfg)?;
     let proxy_result = send_with_redirect_validation(request).await?;
 
     // Retry only on specific retryable 5xx server errors (500, 502, 503, 504).
@@ -310,7 +328,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
             );
             tokio::time::sleep(retry_delay).await;
 
-            let retry_req = build_proxy_request(&cfg);
+            let retry_req = build_proxy_request(&cfg)?;
             let retry_result = send_with_redirect_validation(retry_req).await?;
             (retry_result.response, retry_result.followed_redirects)
         } else {
@@ -461,7 +479,7 @@ pub async fn proxy_m3u8_and_rewrite(
         }
     }
 
-    let request = apply_provider_headers(PROXY_CLIENT.get(url), url, provider_headers);
+    let request = apply_provider_headers(PROXY_CLIENT.get(url), url, provider_headers)?;
 
     let proxy_result = send_with_redirect_validation(request).await?;
     let proxy_response = proxy_result.response;
@@ -911,14 +929,6 @@ const REDIRECT_PRESERVE_HEADERS: &[&str] = &[
 /// redirects follows browser `strict-origin-when-cross-origin` behaviour.
 const CROSS_ORIGIN_DROP_HEADERS: &[&str] = &["referer"];
 
-/// Extract the origin (scheme + host + port) from a URL string.
-/// Returns `None` if the URL cannot be parsed.
-fn url_origin(url: &str) -> Option<String> {
-    url::Url::parse(url)
-        .ok()
-        .map(|u| u.origin().ascii_serialization())
-}
-
 /// Result of `send_with_redirect_validation`.
 struct ProxyResponse {
     /// The final HTTP response after following any redirects.
@@ -973,6 +983,7 @@ async fn send_with_redirect_validation(
             return Err(ProxyError::Upstream(format!("too many redirects ({MAX_REDIRECTS} max)")).into());
         }
 
+        let current_url = response.url().clone();
         let location = response
             .headers()
             .get(reqwest::header::LOCATION)
@@ -981,23 +992,24 @@ async fn send_with_redirect_validation(
             .map_err(|_| ProxyError::Upstream("invalid Location header".to_string()))?
             .to_string();
 
+        let location = current_url.join(&location).map_err(|e| {
+            ProxyError::Upstream(format!("invalid redirect target `{location}`: {e}"))
+        })?;
+
         // Validate redirect URL scheme to prevent protocol downgrade attacks
         // (e.g. redirecting to file://, ftp://, data://, etc.)
-        if let Ok(parsed) = url::Url::parse(&location) {
-            let scheme = parsed.scheme();
-            if scheme != "http" && scheme != "https" {
-                return Err(ProxyError::Ssrf(format!("redirect to disallowed scheme: {scheme}")).into());
-            }
-        } else {
-            // Relative URLs are allowed (they inherit the original scheme)
+        let scheme = location.scheme();
+        if scheme != "http" && scheme != "https" {
+            return Err(
+                ProxyError::Ssrf(format!("redirect to disallowed scheme: {scheme}")).into(),
+            );
         }
 
         // Determine if this redirect crosses origin boundaries.
-        let is_cross_origin =
-            url_origin(&location).is_some_and(|redirect_origin| redirect_origin != original_origin);
+        let is_cross_origin = location.origin().ascii_serialization() != original_origin;
 
         // SSRF protection is handled by the DNS resolver at connection time
-        let mut redirect_req = PROXY_CLIENT.get(&location);
+        let mut redirect_req = PROXY_CLIENT.get(location.clone());
         for (name, value) in &preserved {
             // Drop sensitive headers (e.g. Referer) on cross-origin redirects
             // to avoid leaking signed URLs to third-party hosts.
@@ -1007,6 +1019,7 @@ async fn send_with_redirect_validation(
             redirect_req = redirect_req.header(name.clone(), value.clone());
         }
 
+        drop(response);
         response = redirect_req
             .send()
             .await
@@ -1454,5 +1467,46 @@ mod tests {
         assert_eq!(ProxyErrorKind::InvalidRequest.as_str(), "invalid_request");
         assert_eq!(ProxyErrorKind::Upstream.as_str(), "upstream");
         assert_eq!(ProxyErrorKind::Other.as_str(), "other");
+    }
+
+    #[tokio::test]
+    async fn test_send_with_redirect_validation_resolves_relative_location() {
+        let server = wiremock::MockServer::start().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/start"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(302).insert_header("location", "/final"),
+            )
+            .mount(&server)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/final"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let request = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client should build")
+            .get(format!("{}/start", server.uri()));
+
+        let result = send_with_redirect_validation(request).await;
+        assert!(
+            result.is_ok(),
+            "relative redirects should resolve against original URL"
+        );
+
+        let proxy_response = result.expect("redirect should succeed");
+        assert_eq!(proxy_response.response.status(), reqwest::StatusCode::OK);
+        let body = proxy_response
+            .response
+            .bytes()
+            .await
+            .expect("body should be readable");
+        assert_eq!(body.as_ref(), b"ok");
+        assert!(proxy_response.followed_redirects);
     }
 }

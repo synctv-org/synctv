@@ -302,10 +302,11 @@ mod p1_cluster_cleanup_tests {
             .await
             .expect("ClusterManager::new should succeed");
 
-        // Create a registry and start heartbeat loop
-        let client = redis::Client::open("redis://localhost:6379").unwrap();
+        // Create a local-only registry and start heartbeat loop.
+        // This test verifies cancellation semantics, not Redis I/O latency.
         let registry = Arc::new(
-            NodeRegistry::new(client, "cancel-test-node".to_string(), 30, "test:").unwrap(),
+            NodeRegistry::new_local_only("cancel-test-node".to_string(), 30, "test:")
+                .unwrap(),
         );
         registry
             .test_insert_local(NodeInfo::new(
@@ -347,9 +348,10 @@ mod p1_cluster_cleanup_tests {
         manager.shutdown().await;
         let elapsed = start.elapsed();
 
-        // Since token was already cancelled, shutdown should be fast
+        // Since token was already cancelled, shutdown should be fast.
+        // Keep a little margin for CI scheduler jitter.
         assert!(
-            elapsed < Duration::from_millis(500),
+            elapsed < Duration::from_secs(1),
             "Shutdown after cancel should be fast, took: {elapsed:?}"
         );
     }

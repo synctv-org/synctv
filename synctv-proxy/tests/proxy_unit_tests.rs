@@ -17,7 +17,8 @@ fn build_and_get_headers(
 ) -> reqwest::header::HeaderMap {
     let client = reqwest::Client::new();
     let request = client.get(url);
-    let request = apply_provider_headers(request, url, provider_headers);
+    let request = apply_provider_headers(request, url, provider_headers)
+        .expect("provider headers should be valid");
     let built = request.build().expect("Failed to build request");
     built.headers().clone()
 }
@@ -48,6 +49,16 @@ fn test_custom_user_agent_not_overridden() {
 }
 
 #[test]
+fn test_custom_user_agent_case_insensitive_not_overridden() {
+    let mut provider = HashMap::new();
+    provider.insert("user-agent".to_string(), "CustomAgent/2.0".to_string());
+    let headers = build_and_get_headers("https://example.com/video.mp4", &provider);
+    let ua = headers.get("user-agent").expect("User-Agent should exist");
+    assert_eq!(ua.to_str().unwrap(), "CustomAgent/2.0");
+    assert_eq!(headers.get_all("user-agent").iter().count(), 1);
+}
+
+#[test]
 fn test_default_referer_constructed_from_url() {
     let headers =
         build_and_get_headers("https://cdn.example.com/path/to/video.mp4", &HashMap::new());
@@ -73,6 +84,19 @@ fn test_custom_referer_not_overridden() {
 }
 
 #[test]
+fn test_custom_referer_case_insensitive_not_overridden() {
+    let mut provider = HashMap::new();
+    provider.insert(
+        "referer".to_string(),
+        "https://custom.example.com/lower".to_string(),
+    );
+    let headers = build_and_get_headers("https://cdn.example.com/video.mp4", &provider);
+    let referer = headers.get("referer").expect("Referer should exist");
+    assert_eq!(referer.to_str().unwrap(), "https://custom.example.com/lower");
+    assert_eq!(headers.get_all("referer").iter().count(), 1);
+}
+
+#[test]
 fn test_unparseable_url_no_referer_crash() {
     // apply_provider_headers should not panic when url::Url::parse fails.
     // We use a valid HTTP URL with a nonsense host so reqwest can build it,
@@ -83,7 +107,8 @@ fn test_unparseable_url_no_referer_crash() {
     let request = client.get("https://example.com/path");
     // Pass a malformed URL string to apply_provider_headers directly.
     // The function uses url::Url::parse internally; if it fails, no Referer is set.
-    let request = apply_provider_headers(request, ":::invalid", &HashMap::new());
+    let request = apply_provider_headers(request, ":::invalid", &HashMap::new())
+        .expect("empty provider headers should be accepted");
     let built = request.build().expect("Request should still build");
     // url::Url::parse(":::invalid") fails, so no Referer header should be set.
     assert!(

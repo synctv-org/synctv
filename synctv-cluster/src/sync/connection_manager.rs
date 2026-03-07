@@ -1963,34 +1963,106 @@ impl ConnectionManager {
             }
         }
 
-        // Sync total counter (only if we have local connections)
-        if local_total > 0 {
-            let script_result: Result<Vec<i64>, _> = sync_script
-                .key(&total_key)
-                .arg(local_total as i64)
-                .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
-                .invoke_async(conn)
-                .await;
-            match script_result {
-                Ok(result) if result.len() >= 2 => {
-                    let old_value = result[0];
-                    let was_changed = result[1];
-                    if was_changed == 1 {
-                        sync_count += 1;
-                        warn!(
-                            key = %total_key,
-                            old_value = old_value,
-                            new_value = local_total,
-                            "Synchronized total connection counter to Redis (was out of sync)"
-                        );
+        let script_result: Result<Vec<i64>, _> = sync_script
+            .key(&total_key)
+            .arg(local_total as i64)
+            .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
+            .invoke_async(conn)
+            .await;
+        match script_result {
+            Ok(result) if result.len() >= 2 => {
+                let old_value = result[0];
+                let was_changed = result[1];
+                if was_changed == 1 {
+                    sync_count += 1;
+                    warn!(
+                        key = %total_key,
+                        old_value = old_value,
+                        new_value = local_total,
+                        "Synchronized total connection counter to Redis (was out of sync)"
+                    );
+                }
+            }
+            Ok(_) => {
+                warn!(key = %total_key, "Unexpected result format from Redis sync script");
+            }
+            Err(e) => {
+                sync_errors += 1;
+                warn!(key = %total_key, error = %e, "Failed to sync total counter to Redis");
+            }
+        }
+
+        for key in [
+            format!("{}connections:user:*", self.redis_key_prefix),
+            format!("{}connections:room:*", self.redis_key_prefix),
+        ] {
+            let mut cursor: u64 = 0;
+            loop {
+                let scan_result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg(&key)
+                    .arg("COUNT")
+                    .arg(100)
+                    .query_async(conn)
+                    .await;
+
+                match scan_result {
+                    Ok((new_cursor, keys)) => {
+                        cursor = new_cursor;
+                        for redis_key in keys {
+                            let is_known = user_counts.contains_key(&redis_key)
+                                || room_counts.contains_key(&redis_key);
+                            if is_known {
+                                continue;
+                            }
+
+                            let set_result: Result<Vec<i64>, _> = sync_script
+                                .key(&redis_key)
+                                .arg(0i64)
+                                .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
+                                .invoke_async(conn)
+                                .await;
+                            match set_result {
+                                Ok(result) if result.len() >= 2 => {
+                                    let old_value = result[0];
+                                    let was_changed = result[1];
+                                    if was_changed == 1 {
+                                        sync_count += 1;
+                                        warn!(
+                                            key = %redis_key,
+                                            old_value = old_value,
+                                            new_value = 0,
+                                            "Cleared stale distributed connection counter from Redis"
+                                        );
+                                    }
+                                }
+                                Ok(_) => {
+                                    warn!(
+                                        key = %redis_key,
+                                        "Unexpected result format from Redis sync script"
+                                    );
+                                }
+                                Err(e) => {
+                                    sync_errors += 1;
+                                    warn!(
+                                        key = %redis_key,
+                                        error = %e,
+                                        "Failed to clear stale distributed connection counter"
+                                    );
+                                }
+                            }
+                        }
+
+                        if cursor == 0 {
+                            break;
+                        }
                     }
-                }
-                Ok(_) => {
-                    warn!(key = %total_key, "Unexpected result format from Redis sync script");
-                }
-                Err(e) => {
-                    sync_errors += 1;
-                    warn!(key = %total_key, error = %e, "Failed to sync total counter to Redis");
+                    Err(e) => {
+                        sync_errors += 1;
+                        warn!(pattern = %key, error = %e, "Failed to scan distributed counters");
+                        break;
+                    }
                 }
             }
         }

@@ -28,6 +28,20 @@ use {
     utils::Uuid,
 };
 
+fn map_task_join_error(task_name: &str, error: tokio::task::JoinError) -> StreamHubError {
+    let detail = if error.is_panic() {
+        format!("{task_name} panicked")
+    } else if error.is_cancelled() {
+        format!("{task_name} was cancelled")
+    } else {
+        format!("{task_name} failed: {error}")
+    };
+
+    StreamHubError {
+        value: StreamHubErrorValue::InternalTaskError(detail),
+    }
+}
+
 /// Tracks per-subscriber frame drop counts for diagnostics.
 struct SubscriberDropCounter {
     sender: FrameDataSender,
@@ -533,83 +547,90 @@ impl StreamDataTransceiver {
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
-                if let Some(val) = receiver.recv().await {
-                    match val {
-                        TransceiverEvent::Subscribe {
-                            sender,
-                            info,
-                            result_sender,
-                        } => {
-                            if let Err(err) = stream_handler
-                                .send_prior_data(sender.clone(), info.sub_type)
-                                .await
-                            {
-                                // A single subscriber's channel may be closed before
-                                // prior data finishes sending. Skip this subscriber
-                                // instead of breaking the entire event loop.
-                                tracing::warn!("receive_event_loop send_prior_data err (skipping subscriber): {err}");
-                                continue;
-                            }
-                            match sender {
-                                DataSender::Frame {
-                                    sender: frame_sender,
-                                } => {
-                                    frame_senders.lock().await.insert(
-                                        info.id,
-                                        SubscriberDropCounter {
-                                            sender: frame_sender,
-                                            drop_count: Arc::new(AtomicU64::new(0)),
-                                        },
-                                    );
-                                    // Bump generation so fan-out loop rebuilds snapshot
-                                    frame_generation.fetch_add(1, Ordering::Release);
-                                }
-                                DataSender::Packet {
-                                    sender: packet_sender,
-                                } => {
-                                    packet_senders.lock().await.insert(
-                                        info.id,
-                                        PacketSubscriberDropCounter {
-                                            sender: packet_sender,
-                                            drop_count: Arc::new(AtomicU64::new(0)),
-                                        },
-                                    );
-                                    packet_generation.fetch_add(1, Ordering::Release);
-                                }
-                            }
+                let Some(val) = receiver.recv().await else {
+                    if let Err(err) = exit.send(()) {
+                        tracing::debug!(
+                            "receive_event_loop: shutdown broadcast had no receivers: {err}"
+                        );
+                    }
+                    break;
+                };
 
-                            if let Err(err) = result_sender.send(statistic_sender.clone()) {
-                                tracing::error!(
-                                    "receive_event_loop:send statistic send err :{err:?} "
+                match val {
+                    TransceiverEvent::Subscribe {
+                        sender,
+                        info,
+                        result_sender,
+                    } => {
+                        if let Err(err) = stream_handler
+                            .send_prior_data(sender.clone(), info.sub_type)
+                            .await
+                        {
+                            // A single subscriber's channel may be closed before
+                            // prior data finishes sending. Skip this subscriber
+                            // instead of breaking the entire event loop.
+                            tracing::warn!("receive_event_loop send_prior_data err (skipping subscriber): {err}");
+                            continue;
+                        }
+                        match sender {
+                            DataSender::Frame {
+                                sender: frame_sender,
+                            } => {
+                                frame_senders.lock().await.insert(
+                                    info.id,
+                                    SubscriberDropCounter {
+                                        sender: frame_sender,
+                                        drop_count: Arc::new(AtomicU64::new(0)),
+                                    },
                                 );
+                                // Bump generation so fan-out loop rebuilds snapshot
+                                frame_generation.fetch_add(1, Ordering::Release);
                             }
-
-                            let mut statistics_data = statistics_data.lock().await;
-                            statistics_data.subscriber_count += 1;
-                        }
-                        TransceiverEvent::UnSubscribe { info } => {
-                            // Remove from both sender maps and update statistics
-                            // in a single logical block to minimize lock hold times.
-                            {
-                                frame_senders.lock().await.remove(&info.id);
-                                let mut ps = packet_senders.lock().await;
-
-                                ps.remove(&info.id);
+                            DataSender::Packet {
+                                sender: packet_sender,
+                            } => {
+                                packet_senders.lock().await.insert(
+                                    info.id,
+                                    PacketSubscriberDropCounter {
+                                        sender: packet_sender,
+                                        drop_count: Arc::new(AtomicU64::new(0)),
+                                    },
+                                );
+                                packet_generation.fetch_add(1, Ordering::Release);
                             }
-                            frame_generation.fetch_add(1, Ordering::Release);
-                            packet_generation.fetch_add(1, Ordering::Release);
+                        }
 
-                            let mut statistics_data = statistics_data.lock().await;
-                            statistics_data.subscribers.remove(&info.id);
-                            statistics_data.subscriber_count =
-                                statistics_data.subscriber_count.saturating_sub(1);
+                        if let Err(err) = result_sender.send(statistic_sender.clone()) {
+                            tracing::error!(
+                                "receive_event_loop:send statistic send err :{err:?} "
+                            );
                         }
-                        TransceiverEvent::UnPublish {} => {
-                            if let Err(err) = exit.send(()) {
-                                tracing::error!("TransmitterEvent::UnPublish send error: {err}");
-                            }
-                            break;
+
+                        let mut statistics_data = statistics_data.lock().await;
+                        statistics_data.subscriber_count += 1;
+                    }
+                    TransceiverEvent::UnSubscribe { info } => {
+                        // Remove from both sender maps and update statistics
+                        // in a single logical block to minimize lock hold times.
+                        {
+                            frame_senders.lock().await.remove(&info.id);
+                            let mut ps = packet_senders.lock().await;
+
+                            ps.remove(&info.id);
                         }
+                        frame_generation.fetch_add(1, Ordering::Release);
+                        packet_generation.fetch_add(1, Ordering::Release);
+
+                        let mut statistics_data = statistics_data.lock().await;
+                        statistics_data.subscribers.remove(&info.id);
+                        statistics_data.subscriber_count =
+                            statistics_data.subscriber_count.saturating_sub(1);
+                    }
+                    TransceiverEvent::UnPublish {} => {
+                        if let Err(err) = exit.send(()) {
+                            tracing::error!("TransmitterEvent::UnPublish send error: {err}");
+                        }
+                        break;
                     }
                 }
             }
@@ -633,7 +654,7 @@ impl StreamDataTransceiver {
                 self.statistic_data.clone(),
             );
             tasks.spawn(async move {
-                handle.await.ok();
+                handle.await.map_err(|error| map_task_join_error("frame loop", error))
             });
         }
 
@@ -647,7 +668,7 @@ impl StreamDataTransceiver {
                 self.statistic_data.clone(),
             );
             tasks.spawn(async move {
-                handle.await.ok();
+                handle.await.map_err(|error| map_task_join_error("packet loop", error))
             });
         }
 
@@ -658,7 +679,9 @@ impl StreamDataTransceiver {
             self.statistic_data.clone(),
         );
         tasks.spawn(async move {
-            stats_handle.await.ok();
+            stats_handle
+                .await
+                .map_err(|error| map_task_join_error("statistics loop", error))
         });
 
         let event_handle = Self::receive_event_loop(
@@ -672,11 +695,31 @@ impl StreamDataTransceiver {
             self.statistic_data_sender,
             self.statistic_data.clone(),
         );
-        // Wait for the event loop to finish (triggered by UnPublish),
-        // then abort remaining tasks.
-        let _ = event_handle.await;
+        let event_result = event_handle
+            .await
+            .map_err(|error| map_task_join_error("event loop", error));
         tasks.abort_all();
-        while tasks.join_next().await.is_some() {}
+
+        let mut first_error = event_result.err();
+        while let Some(join_result) = tasks.join_next().await {
+            match join_result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+                Err(error) => {
+                    if first_error.is_none() && !error.is_cancelled() {
+                        first_error = Some(map_task_join_error("transceiver child task", error));
+                    }
+                }
+            }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
 
         Ok(())
     }
@@ -1094,5 +1137,127 @@ impl StreamsHub {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+    use crate::streamhub::define::{NotifyInfo, SubDataType, SubscribeType};
+
+    struct NoopHandler;
+
+    #[async_trait]
+    impl TStreamHandler for NoopHandler {
+        async fn send_prior_data(
+            &self,
+            _sender: DataSender,
+            _sub_type: SubscribeType,
+        ) -> Result<(), StreamHubError> {
+            Ok(())
+        }
+    }
+
+    struct PanicOnPriorDataHandler;
+
+    #[async_trait]
+    impl TStreamHandler for PanicOnPriorDataHandler {
+        async fn send_prior_data(
+            &self,
+            _sender: DataSender,
+            _sub_type: SubscribeType,
+        ) -> Result<(), StreamHubError> {
+            panic!("intentional streamhub event loop panic");
+        }
+    }
+
+    fn test_identifier() -> StreamIdentifier {
+        StreamIdentifier::Rtmp {
+            app_name: "live".to_string(),
+            stream_name: "panic-test".to_string(),
+        }
+    }
+
+    fn test_subscriber() -> SubscriberInfo {
+        SubscriberInfo {
+            id: Uuid::new(),
+            sub_type: SubscribeType::RtmpPull,
+            notify_info: NotifyInfo {
+                request_url: "http://localhost/test".to_string(),
+                remote_addr: "127.0.0.1:12345".to_string(),
+            },
+            sub_data_type: SubDataType::Frame,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_receive_event_loop_exits_when_event_channel_closes() {
+        let (exit_tx, _) = broadcast::channel(1);
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let (stat_tx, _stat_rx) = mpsc::channel(1);
+
+        let handle = StreamDataTransceiver::receive_event_loop(
+            Arc::new(NoopHandler),
+            exit_tx,
+            event_rx,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
+            stat_tx,
+            Arc::new(Mutex::new(StatisticsStream::new(test_identifier()))),
+        );
+
+        drop(event_tx);
+
+        let join_result = tokio::time::timeout(Duration::from_millis(200), handle)
+            .await
+            .expect("event loop should exit promptly when channel closes");
+
+        assert!(join_result.is_ok(), "event loop task should not panic");
+    }
+
+    #[tokio::test]
+    async fn test_transceiver_run_propagates_event_loop_panic() {
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let transceiver = StreamDataTransceiver::new(
+            DataReceiver {
+                frame_receiver: None,
+                packet_receiver: None,
+            },
+            event_rx,
+            test_identifier(),
+            Arc::new(PanicOnPriorDataHandler),
+        );
+
+        let run_handle = tokio::spawn(transceiver.run(event_tx.clone()));
+
+        let (result_sender, _result_receiver) = oneshot::channel();
+        let (frame_sender, _frame_receiver) = mpsc::channel(1);
+        event_tx
+            .send(TransceiverEvent::Subscribe {
+                sender: DataSender::Frame {
+                    sender: frame_sender,
+                },
+                info: test_subscriber(),
+                result_sender,
+            })
+            .await
+            .expect("subscribe event should be delivered");
+        drop(event_tx);
+
+        let run_result = tokio::time::timeout(Duration::from_secs(1), run_handle)
+            .await
+            .expect("transceiver should stop after event loop panic")
+            .expect("run task should not panic");
+
+        let err = run_result.expect_err("event loop panic must be propagated");
+        assert!(
+            err.to_string().contains("event loop"),
+            "unexpected error: {err}"
+        );
     }
 }

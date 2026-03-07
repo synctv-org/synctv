@@ -586,6 +586,7 @@ mod websocket_e2e {
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::rate_limit::RateLimiter;
     // Security checks (password version, user status) handled by SecurityPipeline
+    use synctv_core_testing::postgres::docker_startup_timeout;
     use synctv_cluster::sync::{
         ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
     };
@@ -620,11 +621,11 @@ mod websocket_e2e {
     }
 
     impl TestInfra {
-        /// Applies a 30-second timeout to container startup to fail fast when Docker
-        /// is unavailable (instead of hanging indefinitely).
+        /// Applies the shared Docker startup timeout budget so workspace-scale
+        /// `nextest -j20` runs don't fail spuriously under daemon contention.
         async fn new() -> Self {
             let (pg_container, redis_container) =
-                tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                tokio::time::timeout(docker_startup_timeout(), async {
                     tokio::join!(
                         Postgres::default()
                             .with_db_name("synctv_test")
@@ -979,6 +980,9 @@ mod websocket_e2e {
                     b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
                 ),
             ),
+            proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+            )),
         };
 
         // Build a minimal router with just the WebSocket endpoint
@@ -2666,6 +2670,7 @@ mod websocket_connection_limit_timing {
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::rate_limit::RateLimiter;
     use synctv_core::service::{RoomService, UserService};
+    use synctv_core_testing::postgres::docker_startup_timeout;
 
     use sqlx::PgPool;
     use testcontainers::core::ImageExt;
@@ -2721,11 +2726,11 @@ mod websocket_connection_limit_timing {
     }
 
     impl TestInfra {
-        /// Applies a 30-second timeout to container startup to fail fast when Docker
-        /// is unavailable (instead of hanging indefinitely).
+        /// Applies the shared Docker startup timeout budget so workspace-scale
+        /// `nextest -j20` runs don't fail spuriously under daemon contention.
         async fn new() -> Self {
             let (pg_container, redis_container) =
-                tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                tokio::time::timeout(docker_startup_timeout(), async {
                     tokio::join!(
                         Postgres::default()
                             .with_db_name("synctv_test")
@@ -3001,6 +3006,9 @@ mod websocket_connection_limit_timing {
                     b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
                 ),
             ),
+            proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+            )),
         };
 
         let app = axum::Router::new()

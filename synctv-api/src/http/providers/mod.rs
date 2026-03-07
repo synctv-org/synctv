@@ -18,6 +18,7 @@ use axum::{
     extract::{Path, RawQuery, State},
     http::HeaderMap,
 };
+use std::sync::Arc;
 
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::provider::proxy::{ProxyAction, ProxyRequestContext};
@@ -63,6 +64,50 @@ pub(crate) async fn execute_proxy_action(
                 .expect("valid response"))
         }
     }
+}
+
+async fn execute_proxy_action_with_state(
+    state: &AppState,
+    action: ProxyAction,
+    client_headers: &axum::http::HeaderMap,
+) -> crate::http::error::AppResult<axum::response::Response> {
+    match action {
+        ProxyAction::FetchAndForward { url, headers } => {
+            let cache_enabled = proxy_cache_enabled(state.settings_registry.as_ref())
+                .map_err(|e| AppError::internal(format!("Failed to load proxy cache setting: {e}")))?;
+            let range_header = client_headers
+                .get(axum::http::header::RANGE)
+                .and_then(|value| value.to_str().ok());
+
+            if should_use_proxy_cache(cache_enabled, range_header) {
+
+                return synctv_proxy::slice_cache::proxy_with_cache(
+                    &state.proxy_slice_cache,
+                    range_header,
+                    &url,
+                    &headers,
+                )
+                .await
+                .map_err(Into::into);
+            }
+
+            execute_proxy_action(ProxyAction::FetchAndForward { url, headers }, client_headers).await
+        }
+        other => execute_proxy_action(other, client_headers).await,
+    }
+}
+
+fn proxy_cache_enabled(
+    settings_registry: Option<&Arc<synctv_core::service::SettingsRegistry>>,
+) -> Result<bool, synctv_core::Error> {
+    settings_registry
+        .map(|registry| registry.proxy_cache_enable.get())
+        .transpose()
+        .map(|value: Option<bool>| value.unwrap_or(false))
+}
+
+fn should_use_proxy_cache(cache_enabled: bool, range_header: Option<&str>) -> bool {
+    cache_enabled && range_header.is_some()
 }
 
 /// Wildcard CORS preflight handler for provider proxy routes.
@@ -134,5 +179,145 @@ pub(crate) async fn unified_proxy_handler(
 
     // 7. Resolve and execute
     let action = proxy.resolve_proxy(&ctx).await.map_err(AppError::from)?;
-    execute_proxy_action(action, &headers).await
+    execute_proxy_action_with_state(&state, action, &headers).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use bytes::Bytes;
+    use std::collections::HashMap;
+    use synctv_core::service::{SettingsRegistry, SettingsService};
+    use synctv_core::repository::SettingsRepository;
+    use synctv_core_testing::postgres::create_test_pool;
+    use synctv_proxy::slice_cache::SliceCacheConfig;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn test_execute_proxy_action_fetch_and_forward_does_not_cache_by_default() {
+        let mock_server = MockServer::start().await;
+        let body = Bytes::from_static(b"video-body");
+
+        Mock::given(method("GET"))
+            .and(path("/video.mp4"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(body.clone())
+                    .insert_header("Content-Length", body.len().to_string()),
+            )
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let headers = HeaderMap::new();
+        let action = ProxyAction::FetchAndForward {
+            url: format!("{}/video.mp4", mock_server.uri()),
+            headers: HashMap::new(),
+        };
+
+        let response1 = execute_proxy_action(action.clone(), &headers).await.unwrap();
+        let response2 = execute_proxy_action(action, &headers).await.unwrap();
+
+        let body1 = to_bytes(response1.into_body(), usize::MAX).await.unwrap();
+        let body2 = to_bytes(response2.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body1, body);
+        assert_eq!(body2, body);
+    }
+
+    #[tokio::test]
+    async fn test_slice_cache_hits_second_range_request() {
+        let mock_server = MockServer::start().await;
+        let total_size: u64 = 10 * 1024 * 1024;
+        let slice_body = Bytes::from(vec![0xAB; 2 * 1024 * 1024]);
+
+        Mock::given(method("HEAD"))
+            .and(path("/video.mp4"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Length", total_size.to_string())
+                    .insert_header("Accept-Ranges", "bytes"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/video.mp4"))
+            .and(header("Range", "bytes=0-2097151"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_bytes(slice_body.clone())
+                    .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
+                    .insert_header("Content-Length", "2097152"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache = synctv_proxy::slice_cache::SliceCache::new(SliceCacheConfig::default());
+        let url = format!("{}/video.mp4", mock_server.uri());
+        let headers = HashMap::new();
+
+        let response1 = synctv_proxy::slice_cache::proxy_with_cache(
+            &cache,
+            Some("bytes=0-999"),
+            &url,
+            &headers,
+        )
+        .await
+        .unwrap();
+        let response2 = synctv_proxy::slice_cache::proxy_with_cache(
+            &cache,
+            Some("bytes=0-999"),
+            &url,
+            &headers,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            response1.headers().get("X-Cache-Status").unwrap(),
+            "MISS"
+        );
+        assert_eq!(
+            response2.headers().get("X-Cache-Status").unwrap(),
+            "HIT"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_cache_enabled_reads_runtime_setting() {
+        let (_pg, pool) = create_test_pool().await;
+
+        let settings_service = Arc::new(SettingsService::new(
+            SettingsRepository::new(pool.clone()),
+            pool.clone(),
+        ));
+        settings_service.initialize().await.unwrap();
+        let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+        sqlx::query(
+            "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
+             ON CONFLICT (key) DO NOTHING",
+        )
+        .bind("proxy.proxy_cache_enable")
+        .bind("proxy")
+        .bind("false")
+        .execute(&pool)
+        .await
+        .unwrap();
+        settings_registry.proxy_cache_enable.set(true).await.unwrap();
+
+        assert!(proxy_cache_enabled(Some(&settings_registry)).unwrap());
+        assert!(!proxy_cache_enabled(None).unwrap());
+    }
+
+    #[test]
+    fn test_should_use_proxy_cache_requires_both_setting_and_range() {
+        assert!(should_use_proxy_cache(true, Some("bytes=0-999")));
+        assert!(!should_use_proxy_cache(true, None));
+        assert!(!should_use_proxy_cache(false, Some("bytes=0-999")));
+        assert!(!should_use_proxy_cache(false, None));
+    }
 }

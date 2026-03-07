@@ -1,5 +1,7 @@
 //! `PostgreSQL` test container helpers
 
+use std::time::Duration;
+
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use testcontainers::core::ImageExt;
@@ -9,9 +11,27 @@ use testcontainers_modules::postgres::Postgres;
 
 /// Default `PostgreSQL` version for test containers
 pub const POSTGRES_VERSION: &str = "16-alpine";
+const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;
+const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
+const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
 
 /// Type alias for `PostgreSQL` test container
 pub type TestContainer = ContainerAsync<Postgres>;
+
+/// Returns the timeout budget used for Docker-backed integration tests.
+///
+/// The default is intentionally higher than 30 seconds because workspace-scale
+/// `cargo nextest -j20` runs can cold-pull images or contend on Docker daemon
+/// resources, making a 30s cap spuriously fail healthy tests.
+#[must_use]
+pub fn docker_startup_timeout() -> Duration {
+    std::env::var(DOCKER_STARTUP_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS))
+}
 
 /// Creates a `PostgreSQL` test container and connection pool
 ///
@@ -38,7 +58,7 @@ pub type TestContainer = ContainerAsync<Postgres>;
 /// ```
 pub async fn create_test_pool() -> (TestContainer, PgPool) {
     let postgres = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        docker_startup_timeout(),
         Postgres::default()
             .with_db_name("synctv_test")
             .with_user("synctv")
@@ -103,7 +123,7 @@ pub async fn create_test_pool() -> (TestContainer, PgPool) {
 /// ```
 pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) {
     let postgres = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        docker_startup_timeout(),
         Postgres::default()
             .with_db_name(db_name)
             .with_user("synctv")
@@ -149,4 +169,72 @@ pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) 
         .expect("Failed to run migrations");
 
     (postgres, pool)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn test_docker_startup_timeout_defaults_to_extended_budget() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::remove_var(DOCKER_STARTUP_TIMEOUT_ENV);
+        }
+
+        assert_eq!(
+            docker_startup_timeout(),
+            Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn test_docker_startup_timeout_honors_valid_override() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::set_var(DOCKER_STARTUP_TIMEOUT_ENV, "180");
+        }
+
+        assert_eq!(docker_startup_timeout(), Duration::from_secs(180));
+
+        unsafe {
+            std::env::remove_var(DOCKER_STARTUP_TIMEOUT_ENV);
+        }
+    }
+
+    #[test]
+    fn test_docker_startup_timeout_rejects_too_small_override() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::set_var(DOCKER_STARTUP_TIMEOUT_ENV, "5");
+        }
+
+        assert_eq!(
+            docker_startup_timeout(),
+            Duration::from_secs(MIN_DOCKER_STARTUP_TIMEOUT_SECS)
+        );
+
+        unsafe {
+            std::env::remove_var(DOCKER_STARTUP_TIMEOUT_ENV);
+        }
+    }
+
+    #[test]
+    fn test_docker_startup_timeout_ignores_invalid_override() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::set_var(DOCKER_STARTUP_TIMEOUT_ENV, "not-a-number");
+        }
+
+        assert_eq!(
+            docker_startup_timeout(),
+            Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS)
+        );
+
+        unsafe {
+            std::env::remove_var(DOCKER_STARTUP_TIMEOUT_ENV);
+        }
+    }
 }

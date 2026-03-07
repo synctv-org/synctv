@@ -509,6 +509,65 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
     // (If disconnect retry task wasn't cancelled, this could hang)
 }
 
+/// Test that reconciliation also clears stale zero-count counters.
+///
+/// If unregister cleanup partially fails during shutdown, Redis can retain
+/// positive counters even though local state is already empty. Reconciliation
+/// must drive those counters back to 0 instead of leaving them to expire by TTL.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_reconcile_clears_stale_zero_count_counters() {
+    let (_container, conn) = setup_redis().await;
+
+    let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), "reconcile_zero:");
+    let user_id = uid("user_zero");
+    let room_id = rid("room_zero");
+
+    manager
+        .register("conn_zero".to_string(), user_id.clone())
+        .await
+        .unwrap();
+    manager.join_room("conn_zero", room_id.clone()).await.unwrap();
+    manager.unregister("conn_zero").await;
+
+    assert_eq!(manager.connection_count(), 0);
+    assert_eq!(manager.user_connection_count(&user_id), 0);
+    assert_eq!(manager.room_connection_count(&room_id), 0);
+
+    let mut redis_conn = conn.clone();
+    let _: () = redis_conn
+        .set("reconcile_zero:connections:total", 1i64)
+        .await
+        .unwrap();
+    let _: () = redis_conn
+        .set("reconcile_zero:connections:user:user_zero", 1i64)
+        .await
+        .unwrap();
+    let _: () = redis_conn
+        .set("reconcile_zero:connections:room:room_zero", 1i64)
+        .await
+        .unwrap();
+
+    manager.reconcile_with_redis().await;
+
+    let total: Option<i64> = redis_conn
+        .get("reconcile_zero:connections:total")
+        .await
+        .unwrap();
+    let user: Option<i64> = redis_conn
+        .get("reconcile_zero:connections:user:user_zero")
+        .await
+        .unwrap();
+    let room: Option<i64> = redis_conn
+        .get("reconcile_zero:connections:room:room_zero")
+        .await
+        .unwrap();
+
+    assert_eq!(total.unwrap_or_default(), 0);
+    assert_eq!(user.unwrap_or_default(), 0);
+    assert_eq!(room.unwrap_or_default(), 0);
+}
+
 // ============================================================================
 // TTL Value Verification Tests (Task #16)
 // ============================================================================

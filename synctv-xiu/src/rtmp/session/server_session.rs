@@ -146,7 +146,7 @@ impl ServerSession {
         // M-1: Maximum buffer size during handshake to prevent memory exhaustion
         const MAX_HANDSHAKE_BUFFER: usize = 8192;
 
-        while bytes_len < handshake::define::RTMP_HANDSHAKE_SIZE {
+        while bytes_len < handshake::define::RTMP_HANDSHAKE_SIZE + 1 {
             let remaining = handshake_timeout
                 .checked_sub(handshake_start.elapsed())
                 .ok_or(SessionError {
@@ -1013,5 +1013,103 @@ impl ServerSession {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use bytes::{Bytes, BytesMut};
+    use std::collections::VecDeque;
+    use tokio::time::timeout;
+
+    use crate::bytesio::bytesio::{NetType, TNetIO};
+    use crate::bytesio::bytesio_errors::BytesIOError;
+    use crate::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY;
+
+    struct ChunkedNetIo {
+        reads: VecDeque<BytesMut>,
+    }
+
+    impl ChunkedNetIo {
+        fn new(reads: Vec<BytesMut>) -> Self {
+            Self {
+                reads: reads.into(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl TNetIO for ChunkedNetIo {
+        async fn write(&mut self, _bytes: Bytes) -> Result<(), BytesIOError> {
+            Ok(())
+        }
+
+        async fn read(&mut self) -> Result<BytesMut, BytesIOError> {
+            Ok(self.reads.pop_front().unwrap_or_default())
+        }
+
+        async fn read_timeout(&mut self, _duration: Duration) -> Result<BytesMut, BytesIOError> {
+            self.read().await
+        }
+
+        fn get_net_type(&self) -> NetType {
+            NetType::TCP
+        }
+    }
+
+    fn build_c0c1() -> Vec<u8> {
+        let mut data = Vec::with_capacity(1 + handshake::define::RTMP_HANDSHAKE_SIZE);
+        data.push(handshake::define::RTMP_VERSION as u8);
+        data.extend_from_slice(&12345_u32.to_be_bytes());
+        data.extend_from_slice(&[0u8; 4]);
+        data.extend((0..(handshake::define::RTMP_HANDSHAKE_SIZE - 8)).map(|i| (i % 255) as u8));
+        data
+    }
+
+    #[tokio::test]
+    async fn test_server_session_handshake_accepts_fragmented_c0_c1() {
+        let c0c1 = build_c0c1();
+        let split_at = handshake::define::RTMP_HANDSHAKE_SIZE;
+        let io: Box<dyn TNetIO + Send + Sync> = Box::new(ChunkedNetIo::new(vec![
+            BytesMut::from(&c0c1[..split_at]),
+            BytesMut::from(&c0c1[split_at..]),
+        ]));
+        let io = Arc::new(Mutex::new(io));
+        let (event_sender, _event_receiver) =
+            tokio::sync::mpsc::channel(STREAM_HUB_EVENT_CHANNEL_CAPACITY);
+
+        let mut session = ServerSession {
+            app_name: String::new(),
+            stream_name: String::new(),
+            query: None,
+            io: Arc::clone(&io),
+            handshaker: HandshakeServer::new(Arc::clone(&io)),
+            unpacketizer: ChunkUnpacketizer::new(),
+            state: ServerSessionState::Handshake,
+            bytesio_data: BytesMut::new(),
+            has_remaing_data: false,
+            connect_properties: ConnectProperties::default(),
+            common: Common::new(None, event_sender, SessionType::Server, None),
+            gop_num: 1,
+            auth: None,
+            is_publishing: false,
+            last_message_time: tokio::time::Instant::now(),
+            per_stream_max_bytes: None,
+            callbacks: Arc::new(StreamEventCallbacks::default()),
+        };
+
+        let result = timeout(Duration::from_secs(1), session.handshake()).await;
+        assert!(result.is_ok(), "fragmented handshake should complete promptly");
+        assert!(
+            matches!(result.expect("timeout should not fire"), Ok(())),
+            "fragmented handshake should not fail when C0/C1 arrives across TCP frames"
+        );
+        assert!(matches!(session.state, ServerSessionState::Handshake));
+        assert!(matches!(
+            session.handshaker.state(),
+            ServerHandshakeState::ReadC2
+        ));
     }
 }

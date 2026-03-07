@@ -14,6 +14,24 @@ use synctv_core::models::id::{MediaId, RoomId, UserId};
 mod integration_test_helpers;
 use integration_test_helpers::{create_node, TestRedis};
 
+async fn recv_until_room_settings_changed(
+    room_rx: &mut tokio::sync::mpsc::Receiver<ClusterEvent>,
+) -> ClusterEvent {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .expect("Timed out waiting for RoomSettingsChanged");
+        let event = tokio::time::timeout(remaining.min(Duration::from_secs(5)), room_rx.recv())
+            .await
+            .expect("Timed out waiting for RoomSettingsChanged")
+            .expect("Room channel closed");
+        if matches!(event, ClusterEvent::RoomSettingsChanged { .. }) {
+            return event;
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn test_cross_replica_kick_user() {
@@ -282,11 +300,9 @@ async fn test_cross_replica_room_settings_changed() {
         "RoomSettingsChanged should be published to Redis"
     );
 
-    // Node A should receive the settings change
-    let received = tokio::time::timeout(Duration::from_secs(5), room_rx.recv())
-        .await
-        .expect("Timed out waiting for RoomSettingsChanged")
-        .expect("Room channel closed");
+    // Node A may observe earlier room lifecycle chatter before the Redis
+    // settings event arrives; wait until the matching event is received.
+    let received = recv_until_room_settings_changed(&mut room_rx).await;
 
     assert_eq!(received.event_type(), "room_settings_changed");
     if let ClusterEvent::RoomSettingsChanged { settings_json, .. } = &received {

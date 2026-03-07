@@ -11,23 +11,11 @@ use std::time::Duration;
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::AsyncCommands;
 use synctv_core::service::{PgTokenBlacklistStore, TieredTokenBlacklistStore, TokenBlacklistStore};
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
+use synctv_core_testing::start_redis_with_client;
 use tokio::sync::RwLock;
 
-async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::Client) {
-    let container = tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
-        .await
-        .expect("Docker container startup timed out")
-        .expect("Failed to start Redis container");
-
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-    let client = redis::Client::open(format!("redis://127.0.0.1:{port}"))
-        .expect("Failed to create Redis client");
-    (container, client)
+async fn start_redis() -> (synctv_core_testing::RedisContainer, redis::Client) {
+    start_redis_with_client().await
 }
 
 fn unavailable_pg_store() -> PgTokenBlacklistStore {

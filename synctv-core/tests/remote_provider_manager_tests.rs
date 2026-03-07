@@ -1117,6 +1117,9 @@ async fn scenario_provider_instance_parse_timeout() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
 async fn test_remote_provider_manager_scenarios() {
+    let _ = rustls::crypto::CryptoProvider::install_default(
+        rustls::crypto::ring::default_provider(),
+    );
     scenario_channel_creation_from_db_config().await;
     scenario_channel_cache_hit().await;
     scenario_channel_cache_ttl_expiration().await;

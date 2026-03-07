@@ -613,7 +613,7 @@ async fn test_cache_invalidation_rollback_safety() {
     };
     // Start PostgreSQL
     let postgres = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        docker_startup_timeout(),
         Postgres::default()
             .with_db_name("synctv_test")
             .with_user("synctv")

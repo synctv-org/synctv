@@ -12,12 +12,14 @@ use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use synctv_core_testing::postgres::docker_startup_timeout;
 use synctv_core::{
     models::ProviderInstance, repository::ProviderInstanceRepository,
     service::remote_provider_manager::RemoteProviderManager,
 };
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
+use tokio::sync::OnceCell;
 use tokio::sync::RwLock;
 
 // Test utilities
@@ -33,11 +35,17 @@ struct TestInfra {
     _redis: testcontainers::ContainerAsync<testcontainers_modules::redis::Redis>,
 }
 
+static TEST_INFRA: OnceCell<TestInfra> = OnceCell::const_new();
+
+async fn shared_test_infra() -> &'static TestInfra {
+    TEST_INFRA.get_or_init(TestInfra::new).await
+}
+
 impl TestInfra {
     async fn new() -> Self {
         // Start containers
         let pg_container = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            docker_startup_timeout(),
             testcontainers_modules::postgres::Postgres::default()
                 .with_user("synctv")
                 .with_password("synctv_test")
@@ -49,7 +57,7 @@ impl TestInfra {
         .expect("Docker container startup timed out (is Docker running?)")
         .expect("Failed to start Postgres");
         let redis_container = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            docker_startup_timeout(),
             testcontainers_modules::redis::Redis::default().start(),
         )
         .await
@@ -186,10 +194,8 @@ fn make_test_instance_tls(name: &str, insecure: bool) -> ProviderInstance {
 
 // ─── Test 1: Channel creation from DB config ────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_channel_creation_from_db_config() {
-    let infra = TestInfra::new().await;
+async fn scenario_channel_creation_from_db_config() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -215,7 +221,7 @@ async fn test_channel_creation_from_db_config() {
     );
 
     // Verify instance exists in DB
-    let repo = ProviderInstanceRepository::new(infra.pool);
+    let repo = ProviderInstanceRepository::new(infra.pool.clone());
     let fetched = repo.get_by_name("test-instance-1").await.unwrap();
     assert!(fetched.is_some());
     assert_eq!(fetched.unwrap().name, "test-instance-1");
@@ -223,10 +229,8 @@ async fn test_channel_creation_from_db_config() {
 
 // ─── Test 2: Channel cache hit (cached channel returned) ─────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_channel_cache_hit() {
-    let infra = TestInfra::new().await;
+async fn scenario_channel_cache_hit() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -252,10 +256,8 @@ async fn test_channel_cache_hit() {
 
 // ─── Test 3: Channel cache TTL expiration ───────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_channel_cache_ttl_expiration() {
-    let infra = TestInfra::new().await;
+async fn scenario_channel_cache_ttl_expiration() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -289,10 +291,8 @@ async fn test_channel_cache_ttl_expiration() {
 
 // ─── Test 4: Redis Pub/Sub invalidation ─────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_redis_pubsub_invalidation() {
-    let infra = TestInfra::new().await;
+async fn scenario_redis_pubsub_invalidation() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -347,7 +347,7 @@ async fn test_redis_pubsub_invalidation() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Verify manager2 sees the update
-    let repo = ProviderInstanceRepository::new(infra.pool);
+    let repo = ProviderInstanceRepository::new(infra.pool.clone());
     let fetched = repo.get_by_name("test-instance-4").await.unwrap();
     assert!(fetched.is_some());
     assert_eq!(
@@ -358,10 +358,8 @@ async fn test_redis_pubsub_invalidation() {
 
 // ─── Test 5: Redis invalidation on delete ───────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_redis_invalidation_on_delete() {
-    let infra = TestInfra::new().await;
+async fn scenario_redis_invalidation_on_delete() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -413,10 +411,8 @@ async fn test_redis_invalidation_on_delete() {
 
 // ─── Test 6: Health check integration ───────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_health_check_integration() {
-    let infra = TestInfra::new().await;
+async fn scenario_health_check_integration() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -446,10 +442,8 @@ async fn test_health_check_integration() {
 
 // ─── Test 7: Health check with enabled/disabled instances ──────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_health_check_respects_enabled_flag() {
-    let infra = TestInfra::new().await;
+async fn scenario_health_check_respects_enabled_flag() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -486,10 +480,8 @@ async fn test_health_check_respects_enabled_flag() {
 
 // ─── Test 8: TLS configuration (non-insecure) ───────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_tls_configuration_secure() {
-    let infra = TestInfra::new().await;
+async fn scenario_tls_configuration_secure() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -517,7 +509,7 @@ async fn test_tls_configuration_secure() {
 
     // Now create the manager and verify it can list the instance
     let manager = RemoteProviderManager::new(
-        Arc::new(ProviderInstanceRepository::new(infra.pool)),
+        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
         redis_conn,
         redis_client,
     );
@@ -532,10 +524,8 @@ async fn test_tls_configuration_secure() {
 
 // ─── Test 9: TLS configuration (insecure) ───────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_tls_configuration_insecure() {
-    let infra = TestInfra::new().await;
+async fn scenario_tls_configuration_insecure() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -558,7 +548,7 @@ async fn test_tls_configuration_insecure() {
 
     // If it succeeds (unlikely with port 1), verify the stored config
     if let Ok(Ok(())) = &result {
-        let repo = ProviderInstanceRepository::new(infra.pool);
+        let repo = ProviderInstanceRepository::new(infra.pool.clone());
         let fetched = repo.get_by_name("test-instance-9").await.unwrap();
         assert!(fetched.is_some());
         let fetched = fetched.unwrap();
@@ -573,10 +563,8 @@ async fn test_tls_configuration_insecure() {
 
 // ─── Test 10: Fallback to local provider (no remote instance) ───────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_fallback_to_local_provider() {
-    let infra = TestInfra::new().await;
+async fn scenario_fallback_to_local_provider() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -611,10 +599,8 @@ async fn test_fallback_to_local_provider() {
 
 // ─── Test 11: Fallback when instance_name is None ───────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_fallback_when_instance_name_none() {
-    let infra = TestInfra::new().await;
+async fn scenario_fallback_when_instance_name_none() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -636,10 +622,8 @@ async fn test_fallback_when_instance_name_none() {
 
 // ─── Test 11b: Explicit instance must not silently fallback locally ─────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_resolve_client_required_rejects_missing_remote_instance() {
-    let infra = TestInfra::new().await;
+async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -666,10 +650,8 @@ async fn test_resolve_client_required_rejects_missing_remote_instance() {
 
 // ─── Test 12: Fallback when remote instance exists but channel fails ─────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_fallback_when_channel_creation_fails() {
-    let infra = TestInfra::new().await;
+async fn scenario_fallback_when_channel_creation_fails() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -692,10 +674,8 @@ async fn test_fallback_when_channel_creation_fails() {
 
 // ─── Test 13: Enable/disable instance ───────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_enable_disable_instance() {
-    let infra = TestInfra::new().await;
+async fn scenario_enable_disable_instance() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -737,10 +717,8 @@ async fn test_enable_disable_instance() {
 
 // ─── Test 14: Reconnect instance ────────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_reconnect_instance() {
-    let infra = TestInfra::new().await;
+async fn scenario_reconnect_instance() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -777,10 +755,8 @@ async fn test_reconnect_instance() {
 
 // ─── Test 15: Add duplicate instance fails ───────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_add_duplicate_instance_fails() {
-    let infra = TestInfra::new().await;
+async fn scenario_add_duplicate_instance_fails() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -807,10 +783,8 @@ async fn test_add_duplicate_instance_fails() {
 
 // ─── Test 16: Update non-existent instance fails ─────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_update_nonexistent_instance_fails() {
-    let infra = TestInfra::new().await;
+async fn scenario_update_nonexistent_instance_fails() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -832,10 +806,8 @@ async fn test_update_nonexistent_instance_fails() {
 
 // ─── Test 17: Delete non-existent instance fails ─────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_delete_nonexistent_instance_fails() {
-    let infra = TestInfra::new().await;
+async fn scenario_delete_nonexistent_instance_fails() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -856,10 +828,8 @@ async fn test_delete_nonexistent_instance_fails() {
 
 // ─── Test 18: Get all instances ─────────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_get_all_instances() {
-    let infra = TestInfra::new().await;
+async fn scenario_get_all_instances() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -903,10 +873,8 @@ async fn test_get_all_instances() {
 
 // ─── Test 19: Manager without Redis (local-only invalidation) ───────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_manager_without_redis() {
-    let infra = TestInfra::new().await;
+async fn scenario_manager_without_redis() {
+    let infra = shared_test_infra().await;
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
     let manager = RemoteProviderManager::new(
@@ -939,10 +907,8 @@ async fn test_manager_without_redis() {
 
 // ─── Test 20: Init pre-warms cache ──────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_init_pre_warms_cache() {
-    let infra = TestInfra::new().await;
+async fn scenario_init_pre_warms_cache() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -971,10 +937,8 @@ async fn test_init_pre_warms_cache() {
 
 // ─── Test 21: SSRF validation prevents internal endpoints ───────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_ssrf_validation_blocks_internal_ips() {
-    let infra = TestInfra::new().await;
+async fn scenario_ssrf_validation_blocks_internal_ips() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -1008,10 +972,8 @@ async fn test_ssrf_validation_blocks_internal_ips() {
 
 // ─── Test 22: SSRF validation allows public endpoints ───────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_ssrf_validation_allows_public_endpoints() {
-    let infra = TestInfra::new().await;
+async fn scenario_ssrf_validation_allows_public_endpoints() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -1034,17 +996,15 @@ async fn test_ssrf_validation_allows_public_endpoints() {
     );
 
     // Verify it's in the DB
-    let repo = ProviderInstanceRepository::new(infra.pool);
+    let repo = ProviderInstanceRepository::new(infra.pool.clone());
     let fetched = repo.get_by_name("test-instance-22").await.unwrap();
     assert!(fetched.is_some());
 }
 
 // ─── Test 23: resolve_client with remote instance ───────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_resolve_client_uses_remote_when_available() {
-    let infra = TestInfra::new().await;
+async fn scenario_resolve_client_uses_remote_when_available() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -1073,10 +1033,8 @@ async fn test_resolve_client_uses_remote_when_available() {
 
 // ─── Test 24: Cache respects max capacity ───────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_cache_respects_max_capacity() {
-    let infra = TestInfra::new().await;
+async fn scenario_cache_respects_max_capacity() {
+    let infra = shared_test_infra().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -1099,10 +1057,8 @@ async fn test_cache_respects_max_capacity() {
 
 // ─── Test 25: Provider instance supports_provider ───────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_provider_instance_supports_provider() {
-    let _infra = TestInfra::new().await;
+async fn scenario_provider_instance_supports_provider() {
+    let _infra = shared_test_infra().await;
 
     // Create instance with multiple providers
     let instance = ProviderInstance {
@@ -1134,10 +1090,8 @@ async fn test_provider_instance_supports_provider() {
 
 // ─── Test 26: Provider instance parse_timeout ───────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_provider_instance_parse_timeout() {
-    let _infra = TestInfra::new().await;
+async fn scenario_provider_instance_parse_timeout() {
+    let _infra = shared_test_infra().await;
 
     // Test valid timeout formats
     let instance1 = make_test_instance("test-26a");
@@ -1158,4 +1112,36 @@ async fn test_provider_instance_parse_timeout() {
         instance4.parse_timeout().is_err(),
         "Invalid timeout should parse error"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_remote_provider_manager_scenarios() {
+    scenario_channel_creation_from_db_config().await;
+    scenario_channel_cache_hit().await;
+    scenario_channel_cache_ttl_expiration().await;
+    scenario_redis_pubsub_invalidation().await;
+    scenario_redis_invalidation_on_delete().await;
+    scenario_health_check_integration().await;
+    scenario_health_check_respects_enabled_flag().await;
+    scenario_tls_configuration_secure().await;
+    scenario_tls_configuration_insecure().await;
+    scenario_fallback_to_local_provider().await;
+    scenario_fallback_when_instance_name_none().await;
+    scenario_resolve_client_required_rejects_missing_remote_instance().await;
+    scenario_fallback_when_channel_creation_fails().await;
+    scenario_enable_disable_instance().await;
+    scenario_reconnect_instance().await;
+    scenario_add_duplicate_instance_fails().await;
+    scenario_update_nonexistent_instance_fails().await;
+    scenario_delete_nonexistent_instance_fails().await;
+    scenario_get_all_instances().await;
+    scenario_manager_without_redis().await;
+    scenario_init_pre_warms_cache().await;
+    scenario_ssrf_validation_blocks_internal_ips().await;
+    scenario_ssrf_validation_allows_public_endpoints().await;
+    scenario_resolve_client_uses_remote_when_available().await;
+    scenario_cache_respects_max_capacity().await;
+    scenario_provider_instance_supports_provider().await;
+    scenario_provider_instance_parse_timeout().await;
 }

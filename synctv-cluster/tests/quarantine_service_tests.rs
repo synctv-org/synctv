@@ -346,8 +346,7 @@ fn test_quarantine_error_message() {
 async fn test_any_leader_elector_has_resign_method() {
     use synctv_cluster::leader::AnyLeaderElector;
 
-    // Create a Disabled elector (doesn't require Redis)
-    let elector = AnyLeaderElector::Disabled;
+    let elector = std::sync::Arc::new(synctv_core::service::AlwaysLeader) as std::sync::Arc<dyn synctv_cluster::leader::LeaderRuntime>;
 
     // This should compile and be callable
     // If resign() is not public, this will fail to compile

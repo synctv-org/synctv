@@ -14,7 +14,7 @@ default = ["k8s", "mimalloc"]
 # Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
 # Disable to reduce binary size for non-K8s deployments:
 #   cargo build --no-default-features
-k8s = ["synctv-cluster/k8s"]
+k8s = ["synctv-cluster/k8s", "synctv-core/k8s"]
 # Allocator selection (mutually exclusive — enable at most one):
 #   mimalloc (default) — fast, works on all platforms
 #   jemalloc           — excellent for long-running servers, unix only

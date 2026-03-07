@@ -67,7 +67,8 @@ impl ClientApiImpl {
         let counts = self
             .connection_manager
             .room_connection_count_distributed_batch(&room_id_refs)
-            .await;
+            .await
+            .map_err(ApiError::Internal)?;
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for (r, count) in rooms.iter().zip(counts) {
@@ -104,7 +105,8 @@ impl ClientApiImpl {
         let counts = self
             .connection_manager
             .room_connection_count_distributed_batch(&room_id_refs)
-            .await;
+            .await
+            .map_err(ApiError::Internal)?;
 
         // Batch-fetch room settings for three-layer permission calculation (A6 fix)
         let room_id_strs: Vec<&str> = rooms.iter().map(|(r, _, _, _)| r.id.as_str()).collect();
@@ -200,6 +202,7 @@ impl ClientApiImpl {
             .connection_manager
             .room_connection_count_distributed(&room.id)
             .await
+            .map_err(ApiError::Internal)?
             .try_into()
             .ok();
 
@@ -242,6 +245,7 @@ impl ClientApiImpl {
             .connection_manager
             .room_connection_count_distributed(&rid)
             .await
+            .map_err(ApiError::Internal)?
             .try_into()
             .ok();
 
@@ -304,6 +308,7 @@ impl ClientApiImpl {
             .connection_manager
             .room_connection_count_distributed(&rid)
             .await
+            .map_err(ApiError::Internal)?
             .try_into()
             .ok();
 
@@ -465,6 +470,7 @@ impl ClientApiImpl {
             .connection_manager
             .room_connection_count_distributed(&rid)
             .await
+            .map_err(ApiError::Internal)?
             .try_into()
             .ok();
 
@@ -817,7 +823,8 @@ impl ClientApiImpl {
         let distributed_counts = self
             .connection_manager
             .room_connection_count_distributed_batch(&room_id_refs)
-            .await;
+            .await
+            .map_err(ApiError::Internal)?;
 
         let mut room_online: Vec<(synctv_core::models::Room, i32)> = rooms
             .into_iter()

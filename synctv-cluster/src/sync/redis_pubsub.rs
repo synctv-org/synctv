@@ -2690,8 +2690,7 @@ mod tests {
                     .await
                     .expect("publish should succeed");
 
-                match tokio::time::timeout(tokio::time::Duration::from_millis(500), rx.recv())
-                    .await
+                match tokio::time::timeout(tokio::time::Duration::from_millis(500), rx.recv()).await
                 {
                     Ok(Some(event)) => return event,
                     Ok(None) => {

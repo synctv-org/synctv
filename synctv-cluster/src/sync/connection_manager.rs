@@ -235,6 +235,11 @@ pub struct ConnectionManager {
     /// Cancelled on shutdown to stop the background task.
     disconnect_retry_cancel: Arc<tokio_util::sync::CancellationToken>,
 
+    /// Whether the disconnect retry task has already been started.
+    /// Guards `start()` against spawning duplicate background tasks when
+    /// startup wiring calls it more than once.
+    disconnect_retry_started: Arc<std::sync::atomic::AtomicBool>,
+
     /// Channel for queuing failed Redis counter operations for background retry.
     /// When a Redis INCR/DECR fails during register/unregister, the operation is
     /// sent here so a background task can retry it, ensuring eventual consistency
@@ -307,6 +312,7 @@ impl ConnectionManager {
             redis_key_prefix: String::new(),
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             disconnect_retry_cancel: Arc::new(disconnect_retry_cancel),
+            disconnect_retry_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_retries_tx,
             pending_retries_rx: Arc::new(tokio::sync::Mutex::new(Some(pending_retries_rx))),
         }
@@ -318,7 +324,16 @@ impl ConnectionManager {
     /// within an async context (i.e. after the Tokio runtime is available).
     /// [`with_redis`](Self::with_redis) calls this automatically.
     pub fn start(&self) {
+        if self.disconnect_retry_started.swap(true, Ordering::AcqRel) {
+            debug!("Disconnect retry task already started; skipping duplicate start()");
+            return;
+        }
         self.spawn_disconnect_retry_task((*self.disconnect_retry_cancel).clone());
+    }
+
+    #[cfg(test)]
+    fn disconnect_retry_task_started(&self) -> bool {
+        self.disconnect_retry_started.load(Ordering::Acquire)
     }
 
     /// Enable distributed connection counting via Redis.
@@ -1375,20 +1390,23 @@ impl ConnectionManager {
     /// Reads the Redis atomic counter (`connections:total`) which is maintained
     /// by `register`/`unregister`. Falls back to the local-only count if Redis
     /// is not configured or unavailable.
-    pub async fn connection_count_distributed(&self) -> usize {
+    pub async fn connection_count_distributed(&self) -> Result<usize, String> {
         if let Some(ref conn) = self.redis_conn {
             let redis_key = format!("{}connections:total", self.redis_key_prefix);
             let mut conn_clone = conn.clone();
             match conn_clone.get::<_, Option<i64>>(&redis_key).await {
-                Ok(Some(count)) if count > 0 => return count as usize,
-                Ok(_) => return 0,
+                Ok(Some(count)) if count > 0 => return Ok(count as usize),
+                Ok(_) => return Ok(0),
                 Err(e) => {
-                    warn!("Failed to read distributed total connection count from Redis, falling back to local: {e}");
+                    warn!("Failed to read distributed total connection count from Redis: {e}");
+                    return Err(
+                        "Distributed total connection count unavailable while Redis is degraded"
+                            .to_string(),
+                    );
                 }
             }
         }
-        // Fallback to local-only count
-        self.connection_count()
+        Ok(self.connection_count())
     }
 
     /// Get connection count for a user
@@ -1412,7 +1430,10 @@ impl ConnectionManager {
     /// Reads the Redis atomic counter (`connections:room:{room_id}`) which is
     /// maintained by `register`/`unregister`/`join_room`. Falls back to the
     /// local-only count if Redis is not configured or unavailable.
-    pub async fn room_connection_count_distributed(&self, room_id: &RoomId) -> usize {
+    pub async fn room_connection_count_distributed(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<usize, String> {
         if let Some(ref conn) = self.redis_conn {
             let redis_key = format!(
                 "{}connections:room:{}",
@@ -1421,15 +1442,18 @@ impl ConnectionManager {
             );
             let mut conn_clone = conn.clone();
             match conn_clone.get::<_, Option<i64>>(&redis_key).await {
-                Ok(Some(count)) if count > 0 => return count as usize,
-                Ok(_) => return 0,
+                Ok(Some(count)) if count > 0 => return Ok(count as usize),
+                Ok(_) => return Ok(0),
                 Err(e) => {
-                    warn!("Failed to read distributed room connection count from Redis, falling back to local: {e}");
+                    warn!("Failed to read distributed room connection count from Redis: {e}");
+                    return Err(
+                        "Distributed room connection count unavailable while Redis is degraded"
+                            .to_string(),
+                    );
                 }
             }
         }
-        // Fallback to local-only count
-        self.room_connection_count(room_id)
+        Ok(self.room_connection_count(room_id))
     }
 
     /// Get connection counts for multiple rooms across all replicas (distributed).
@@ -1440,9 +1464,9 @@ impl ConnectionManager {
     pub async fn room_connection_count_distributed_batch(
         &self,
         room_ids: &[&RoomId],
-    ) -> Vec<usize> {
+    ) -> Result<Vec<usize>, String> {
         if room_ids.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         if let Some(ref conn) = self.redis_conn {
@@ -1458,22 +1482,27 @@ impl ConnectionManager {
                 .await
             {
                 Ok(values) => {
-                    return values
+                    return Ok(values
                         .into_iter()
                         .map(|v| v.filter(|&c| c > 0).unwrap_or(0) as usize)
-                        .collect();
+                        .collect());
                 }
                 Err(e) => {
-                    warn!("Failed to read distributed room connection counts from Redis (MGET), falling back to local: {e}");
+                    warn!(
+                        "Failed to read distributed room connection counts from Redis (MGET): {e}"
+                    );
+                    return Err(
+                        "Distributed room connection counts unavailable while Redis is degraded"
+                            .to_string(),
+                    );
                 }
             }
         }
 
-        // Fallback to local-only counts
-        room_ids
+        Ok(room_ids
             .iter()
             .map(|rid| self.room_connection_count(rid))
-            .collect()
+            .collect())
     }
 
     /// Get total connections ever established
@@ -2289,8 +2318,16 @@ impl ConnectionManager {
     /// Get all connection IDs for a user across all replicas (from Redis).
     ///
     /// Returns connection IDs from Redis, which includes connections from
-    /// all replicas in the cluster. Falls back to local-only if Redis fails.
-    pub async fn get_user_connections_distributed(&self, user_id: &UserId) -> Vec<String> {
+    /// all replicas in the cluster.
+    ///
+    /// When Redis-backed distributed state is unavailable, this fails closed
+    /// instead of silently degrading to local-only state. In cluster mode,
+    /// a local fallback would return a partial view and break admin/security
+    /// operations that require a global connection set.
+    pub async fn get_user_connections_distributed(
+        &self,
+        user_id: &UserId,
+    ) -> Result<Vec<String>, String> {
         if let Some(ref conn) = self.redis_conn {
             let user_index_key = format!(
                 "{}conn_mgr:user:{}",
@@ -2300,27 +2337,35 @@ impl ConnectionManager {
             let mut conn_clone = conn.clone();
 
             match conn_clone.smembers::<_, Vec<String>>(&user_index_key).await {
-                Ok(conn_ids) => return conn_ids,
+                Ok(conn_ids) => return Ok(conn_ids),
                 Err(e) => {
-                    warn!(
-                        "Failed to fetch user connections from Redis, falling back to local: {e}"
+                    warn!("Failed to fetch user connections from Redis: {e}");
+                    return Err(
+                        "Distributed user connection lookup unavailable while Redis is degraded"
+                            .to_string(),
                     );
                 }
             }
         }
 
-        // Fallback to local-only
-        self.get_user_connections(user_id)
+        Ok(self
+            .get_user_connections(user_id)
             .into_iter()
             .map(|c| c.connection_id)
-            .collect()
+            .collect())
     }
 
     /// Get all connections in a room across all replicas (from Redis).
     ///
     /// Returns connection IDs from Redis, which includes connections from
-    /// all replicas in the cluster. Falls back to local-only if Redis fails.
-    pub async fn get_room_connections_distributed(&self, room_id: &RoomId) -> Vec<String> {
+    /// all replicas in the cluster.
+    ///
+    /// When Redis-backed distributed state is unavailable, this fails closed
+    /// instead of silently degrading to local-only state.
+    pub async fn get_room_connections_distributed(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<Vec<String>, String> {
         if let Some(ref conn) = self.redis_conn {
             let room_index_key = format!(
                 "{}conn_mgr:room:{}",
@@ -2330,20 +2375,22 @@ impl ConnectionManager {
             let mut conn_clone = conn.clone();
 
             match conn_clone.smembers::<_, Vec<String>>(&room_index_key).await {
-                Ok(conn_ids) => return conn_ids,
+                Ok(conn_ids) => return Ok(conn_ids),
                 Err(e) => {
-                    warn!(
-                        "Failed to fetch room connections from Redis, falling back to local: {e}"
+                    warn!("Failed to fetch room connections from Redis: {e}");
+                    return Err(
+                        "Distributed room connection lookup unavailable while Redis is degraded"
+                            .to_string(),
                     );
                 }
             }
         }
 
-        // Fallback to local-only
-        self.get_room_connections(room_id)
+        Ok(self
+            .get_room_connections(room_id)
             .into_iter()
             .map(|c| c.connection_id)
-            .collect()
+            .collect())
     }
 
     /// Atomically increment a Redis counter, set its TTL, and check if the new
@@ -2542,6 +2589,49 @@ mod tests {
         let conn = manager.get_connection("conn1").unwrap();
         assert_eq!(conn.message_count, 2);
         assert_eq!(manager.total_messages(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_user_connections_distributed_without_redis_uses_local_state() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("user1".to_string());
+
+        manager
+            .register("conn1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+
+        let conn_ids = manager
+            .get_user_connections_distributed(&user_id)
+            .await
+            .expect("standalone mode should read local state");
+
+        assert_eq!(conn_ids, vec!["conn1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_room_connection_count_distributed_without_redis_uses_local_state() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("user1".to_string());
+        let room_id = RoomId::from_string("room1".to_string());
+
+        manager
+            .register("conn1".to_string(), user_id)
+            .await
+            .unwrap();
+        manager.join_room("conn1", room_id.clone()).await.unwrap();
+
+        let count = manager
+            .room_connection_count_distributed(&room_id)
+            .await
+            .expect("standalone mode should read local room count");
+        assert_eq!(count, 1);
+
+        let counts = manager
+            .room_connection_count_distributed_batch(&[&room_id])
+            .await
+            .expect("standalone mode should read local room counts");
+        assert_eq!(counts, vec![1]);
     }
 
     #[tokio::test]
@@ -2963,6 +3053,32 @@ mod tests {
         // Give the spawned task a moment to initialize
         tokio::time::sleep(Duration::from_millis(10)).await;
         // Shutdown should cancel the retry task cleanly
+        manager.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_start_is_idempotent() {
+        let manager = ConnectionManager::new(ConnectionLimits::default());
+
+        assert!(
+            !manager.disconnect_retry_task_started(),
+            "disconnect retry task should not be started before start()"
+        );
+
+        manager.start();
+        assert!(
+            manager.disconnect_retry_task_started(),
+            "start() should mark the disconnect retry task as started"
+        );
+
+        manager.start();
+        manager.start();
+
+        assert!(
+            manager.disconnect_retry_task_started(),
+            "duplicate start() calls must be a no-op"
+        );
+
         manager.shutdown();
     }
 }

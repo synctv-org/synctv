@@ -57,19 +57,60 @@ pub async fn init_redis(
     config: &Config,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<Option<RedisHandles>, anyhow::Error> {
-    if config.redis.url.is_empty() {
-        info!("Redis URL is not configured — running without Redis");
-        return Ok(None);
-    }
-
     let handles = match config.redis.deployment_mode {
-        RedisDeploymentMode::Standalone => init_standalone(config).await?,
+        RedisDeploymentMode::Standalone => {
+            if config.redis.url.is_empty() {
+                info!("Redis URL is not configured — running without Redis");
+                return Ok(None);
+            }
+            init_standalone(config).await?
+        }
         RedisDeploymentMode::Sentinel => init_sentinel(config, cancel).await?,
         RedisDeploymentMode::Cluster => {
             unreachable!("Cluster mode was already checked and rejected by config validation");
         }
     };
     Ok(Some(handles))
+}
+
+#[cfg(test)]
+mod init_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_init_redis_standalone_without_url_returns_none() {
+        let mut config = Config::default();
+        config.redis.url.clear();
+        config.redis.deployment_mode = RedisDeploymentMode::Standalone;
+
+        let result = init_redis(&config, None)
+            .await
+            .expect("standalone without redis.url should be allowed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_init_redis_sentinel_without_url_attempts_backend_init() {
+        let mut config = Config::default();
+        config.redis.url.clear();
+        config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
+        config.redis.sentinel_master_name = Some("mymaster".to_string());
+        config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
+
+        let err = init_redis(&config, None)
+            .await
+            .expect_err("sentinel mode must not short-circuit to None when redis.url is empty");
+
+        assert!(
+            err.to_string().contains("Sentinel")
+                || err.to_string().contains("sentinel")
+                || err.to_string().contains("Connection refused")
+                || err.to_string().contains("InvalidClientConfig")
+                || err.to_string().contains("did not parse"),
+            "unexpected error: {err}"
+        );
+    }
 }
 
 async fn init_standalone(config: &Config) -> Result<RedisHandles, anyhow::Error> {
@@ -108,9 +149,17 @@ async fn init_sentinel(
         .collect();
     let mut sentinel = redis::sentinel::Sentinel::build(sentinel_addrs.clone())?;
 
-    let node_info: Option<&redis::sentinel::SentinelNodeConnectionInfo> = None;
+    let node_info = if config.redis.url.is_empty() {
+        None
+    } else {
+        let connection_info: redis::ConnectionInfo = config.redis.url.parse()?;
+        Some(
+            redis::sentinel::SentinelNodeConnectionInfo::default()
+                .set_redis_connection_info(connection_info.redis_settings().clone()),
+        )
+    };
     let client = sentinel
-        .async_master_for(master_name.as_str(), node_info)
+        .async_master_for(master_name.as_str(), node_info.as_ref())
         .await
         .map_err(|e| anyhow::anyhow!("Sentinel master discovery failed: {e}"))?;
 
@@ -255,7 +304,7 @@ async fn init_sentinel(
 }
 
 #[cfg(test)]
-mod tests {
+mod concurrency_tests {
     use super::*;
 
     /// M15: Verify that the sentinel health check uses a read lock (clone) for PING,

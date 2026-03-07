@@ -37,12 +37,8 @@ fn make_user(username: &str) -> User {
 
 fn make_user_service(pool: sqlx::PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
-    let username_cache = UsernameCache::new(
-        Arc::new(NoopCacheL2),
-        "test:username:".to_string(),
-        100,
-        60,
-    );
+    let username_cache =
+        UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     UserService::new(
         pool,
@@ -94,9 +90,11 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         None,
         None,
     )
-    .with_rate_limiter(synctv_core::service::rate_limit::RateLimiter::in_memory_only(
-        "api:room-password:".to_string(),
-    ));
+    .with_rate_limiter(
+        synctv_core::service::rate_limit::RateLimiter::in_memory_only(
+            "api:room-password:".to_string(),
+        ),
+    );
 
     for attempt in 0..4 {
         let resp = client_api

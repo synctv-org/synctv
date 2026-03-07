@@ -114,6 +114,7 @@ turn-server.workspace = true
 
 [features]
 default = []
+k8s = []
 
 [lints]
 workspace = true

@@ -84,8 +84,20 @@ fn build_ws_ticket_service(
     redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     is_cluster_mode: bool,
 ) -> anyhow::Result<Option<Arc<synctv_core::service::WsTicketService>>> {
-    let svc = synctv_core::service::WsTicketService::new(redis_conn, None, is_cluster_mode)
-        .map_err(|e| anyhow::anyhow!("Failed to initialize WebSocket ticket service: {e}"))?;
+    let svc = match (is_cluster_mode, redis_conn) {
+        (true, Some(shared_conn)) => {
+            synctv_core::service::WsTicketService::with_redis(shared_conn, None)
+        }
+        (true, None) => {
+            return Err(anyhow::anyhow!(
+                "cluster.enabled=true requires Redis-backed WebSocket ticket service wiring"
+            ));
+        }
+        (false, Some(shared_conn)) => {
+            synctv_core::service::WsTicketService::with_redis(shared_conn, None)
+        }
+        (false, None) => synctv_core::service::WsTicketService::with_memory(None),
+    };
     Ok(Some(Arc::new(svc)))
 }
 
@@ -686,7 +698,9 @@ mod tests {
             .expect_err("cluster mode must not fall back to memory-backed ws tickets");
 
         assert!(
-            error.to_string().contains("Redis is required"),
+            error.to_string().contains(
+                "cluster.enabled=true requires Redis-backed WebSocket ticket service wiring"
+            ),
             "Unexpected error: {error}"
         );
     }

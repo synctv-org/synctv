@@ -738,7 +738,7 @@ impl Config {
     /// Resolve the advertise host for cluster node registration.
     ///
     /// Priority: `server.advertise_host` config > `POD_IP` env var >
-    /// first non-loopback IP > system hostname.
+    /// system hostname > `server.host`.
     /// This address must be routable from other nodes (never `0.0.0.0`).
     #[must_use]
     pub fn advertise_host(&self) -> String {
@@ -754,37 +754,11 @@ impl Config {
             }
         }
 
-        // 3. Auto-detect first non-loopback IP (for non-K8s environments like
-        //    Docker Compose, bare-metal, or VMs where hostname may not be routable)
-        if let Some(ip) = Self::detect_non_loopback_ip() {
-            return ip;
-        }
-
-        // 4. System hostname (last resort)
+        // 3. System hostname (local-only fallback; avoids external network dependency)
         hostname::get()
             .ok()
             .and_then(|h| h.into_string().ok())
             .unwrap_or_else(|| self.server.host.clone())
-    }
-
-    /// Detect the outbound IP address by performing a UDP connect to a public
-    /// address. This triggers the OS to select the appropriate network interface
-    /// without actually sending any packets.
-    ///
-    /// Returns `None` if the detection fails (e.g., no network available).
-    fn detect_non_loopback_ip() -> Option<String> {
-        // Connect a UDP socket to a well-known public IP (Google DNS).
-        // No actual data is sent; the OS just selects the outbound interface.
-        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-        socket.connect("8.8.8.8:53").ok()?;
-        let local_addr = socket.local_addr().ok()?;
-        let ip = local_addr.ip();
-
-        if ip.is_loopback() || ip.is_unspecified() {
-            return None;
-        }
-
-        Some(ip.to_string())
     }
 
     /// Get the gRPC address advertised to other cluster nodes.
@@ -1602,21 +1576,40 @@ impl Config {
             );
         }
 
-        // Validate: cluster mode requires Redis.
+        // Validate: cluster mode requires a Redis backend to be configured.
         // Redis is essential for cross-replica pub/sub, leader election, node registry,
         // distributed rate limiting, and brute-force protection. Running cluster mode
         // without Redis causes silent data loss and broken multi-replica coordination.
         let cluster_mode_active = self.cluster_runtime_enabled();
-        if cluster_mode_active && self.redis.url.is_empty() {
+        let redis_backend_configured = match self.redis.deployment_mode {
+            RedisDeploymentMode::Standalone => !self.redis.url.is_empty(),
+            RedisDeploymentMode::Sentinel => {
+                self.redis
+                    .sentinel_master_name
+                    .as_ref()
+                    .is_some_and(|name| !name.is_empty())
+                    && !self.redis.sentinel_addresses.is_empty()
+            }
+            RedisDeploymentMode::Cluster => !self.redis.cluster_nodes.is_empty(),
+        };
+        if cluster_mode_active && !redis_backend_configured {
             errors.push(
                 "cluster mode requires Redis to be configured. \
-                 Set redis.url (or SYNCTV_REDIS_URL env var) before enabling \
-                 cluster.enabled=true."
+                 Configure either redis.url for standalone mode or Sentinel settings \
+                 before enabling cluster.enabled=true."
                     .to_string(),
             );
         }
 
         if cluster_mode_active && self.cluster.discovery_mode == "k8s_dns" {
+            if !cfg!(feature = "k8s") {
+                errors.push(
+                    "cluster.discovery_mode='k8s_dns' requires the 'k8s' feature to be compiled in. \
+                     Rebuild with Kubernetes support enabled."
+                        .to_string(),
+                );
+            }
+
             match std::env::var("HEADLESS_SERVICE_NAME") {
                 Ok(value) if !value.trim().is_empty() => {}
                 _ => errors.push(
@@ -1637,6 +1630,14 @@ impl Config {
         }
 
         if cluster_mode_active && self.cluster.leader_election_mode == "k8s_lease" {
+            if !cfg!(feature = "k8s") {
+                errors.push(
+                    "cluster.leader_election_mode='k8s_lease' requires the 'k8s' feature to be compiled in. \
+                     Rebuild with Kubernetes support enabled or switch to 'redis'."
+                        .to_string(),
+                );
+            }
+
             match std::env::var("POD_NAME") {
                 Ok(value) if !value.trim().is_empty() => {}
                 _ => errors.push(
@@ -1776,10 +1777,11 @@ impl Config {
             .providers
             .as_object()
             .is_some_and(|obj| !obj.is_empty());
-        if oauth2_enabled && self.redis.url.is_empty() && self.cluster.enabled {
+        if oauth2_enabled && !redis_backend_configured && self.cluster.enabled {
             errors.push(
                 "OAuth2 requires Redis for state storage in cluster mode. \
-                 Configure redis.url or disable OAuth2 by removing all oauth2.providers."
+                 Configure a Redis backend (redis.url, Sentinel, or Cluster) \
+                 or disable OAuth2 by removing all oauth2.providers."
                     .to_string(),
             );
         }
@@ -2342,6 +2344,48 @@ mod tests {
         assert_eq!(config.http_address(), "127.0.0.1:8080");
     }
 
+    #[test]
+    fn test_advertise_host_prefers_explicit_config_over_env() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let old_pod_ip = set_env_var("POD_IP", Some("10.0.0.99"));
+
+        let mut config = valid_prod_config();
+        config.server.advertise_host = "10.1.2.3".to_string();
+
+        assert_eq!(config.advertise_host(), "10.1.2.3");
+
+        restore_env_var("POD_IP", old_pod_ip);
+    }
+
+    #[test]
+    fn test_advertise_host_uses_pod_ip_before_hostname() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let old_pod_ip = set_env_var("POD_IP", Some("10.2.3.4"));
+
+        let config = valid_prod_config();
+
+        assert_eq!(config.advertise_host(), "10.2.3.4");
+
+        restore_env_var("POD_IP", old_pod_ip);
+    }
+
+    #[test]
+    fn test_advertise_host_falls_back_to_hostname_without_pod_ip() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let old_pod_ip = set_env_var("POD_IP", None);
+
+        let config = valid_prod_config();
+        let advertise_host = config.advertise_host();
+
+        assert!(
+            !advertise_host.is_empty(),
+            "hostname fallback should produce a non-empty advertise host"
+        );
+        assert_ne!(advertise_host, "0.0.0.0");
+
+        restore_env_var("POD_IP", old_pod_ip);
+    }
+
     /// Helper to create a valid production config for validation tests
     fn valid_prod_config() -> Config {
         Config {
@@ -2436,6 +2480,66 @@ mod tests {
         config.livestream.hls_shared_storage = false;
         // This should pass validation (only a warning is logged)
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_cluster_oauth2_accepts_redis_sentinel_backend_without_url() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let old_pod_name = set_env_var("POD_NAME", Some("synctv-0"));
+        let old_pod_namespace = set_env_var("POD_NAMESPACE", Some("default"));
+
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.cluster.leader_election_mode = "k8s_lease".to_string();
+        config.oauth2.providers = serde_json::json!({
+            "github": {
+                "type": "github",
+                "client_id": "client-id",
+                "client_secret": "client-secret"
+            }
+        });
+        config.redis.url.clear();
+        config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
+        config.redis.sentinel_master_name = Some("mymaster".to_string());
+        config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
+
+        let result = config.validate();
+
+        restore_env_var("POD_NAME", old_pod_name);
+        restore_env_var("POD_NAMESPACE", old_pod_namespace);
+
+        if let Err(errors) = result {
+            assert!(
+                !errors.iter().any(|e| e.contains("OAuth2 requires Redis")),
+                "Sentinel-backed Redis should satisfy OAuth2 cluster validation, got: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_cluster_oauth2_accepts_redis_cluster_backend_without_url() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.oauth2.providers = serde_json::json!({
+            "github": {
+                "type": "github",
+                "client_id": "client-id",
+                "client_secret": "client-secret"
+            }
+        });
+        config.redis.url.clear();
+        config.redis.deployment_mode = RedisDeploymentMode::Cluster;
+        config.redis.cluster_nodes =
+            vec!["127.0.0.1:7000".to_string(), "127.0.0.1:7001".to_string()];
+
+        let result = config.validate();
+
+        if let Err(errors) = result {
+            assert!(
+                !errors.iter().any(|e| e.contains("OAuth2 requires Redis")),
+                "Redis Cluster backend should satisfy OAuth2 cluster validation, got: {errors:?}"
+            );
+        }
     }
 
     #[test]
@@ -2707,6 +2811,22 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_cluster_enabled_with_sentinel_without_redis_url_ok() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.redis.url = String::new();
+        config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
+        config.redis.sentinel_master_name = Some("mymaster".to_string());
+        config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
+        config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
+
+        assert!(
+            config.validate().is_ok(),
+            "cluster mode should accept Sentinel-backed Redis without redis.url"
+        );
+    }
+
+    #[test]
     fn test_validate_cluster_secret_without_cluster_enabled_is_standalone() {
         let mut config = valid_prod_config();
         // cluster_secret alone must not implicitly enable cluster mode
@@ -2843,6 +2963,69 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("POD_NAMESPACE") && e.contains("k8s_lease")),
             "Expected POD_NAMESPACE validation error, got: {errors:?}"
+        );
+
+        if !cfg!(feature = "k8s") {
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.contains("k8s_lease") && e.contains("requires the 'k8s' feature")),
+                "Expected k8s feature validation error, got: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_k8s_dns_requires_compiled_k8s_support() {
+        if cfg!(feature = "k8s") {
+            return;
+        }
+
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let old_headless = set_env_var("HEADLESS_SERVICE_NAME", Some("synctv-headless"));
+        let old_namespace = set_env_var("POD_NAMESPACE", Some("default"));
+
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.cluster.discovery_mode = "k8s_dns".to_string();
+
+        let errors = config.validate().unwrap_err();
+
+        restore_env_var("HEADLESS_SERVICE_NAME", old_headless);
+        restore_env_var("POD_NAMESPACE", old_namespace);
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("k8s_dns") && e.contains("requires the 'k8s' feature")),
+            "Expected k8s feature validation error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_k8s_lease_requires_compiled_k8s_support() {
+        if cfg!(feature = "k8s") {
+            return;
+        }
+
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let old_pod_name = set_env_var("POD_NAME", Some("synctv-0"));
+        let old_namespace = set_env_var("POD_NAMESPACE", Some("default"));
+
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.cluster.leader_election_mode = "k8s_lease".to_string();
+
+        let errors = config.validate().unwrap_err();
+
+        restore_env_var("POD_NAME", old_pod_name);
+        restore_env_var("POD_NAMESPACE", old_namespace);
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("k8s_lease") && e.contains("requires the 'k8s' feature")),
+            "Expected k8s feature validation error, got: {errors:?}"
         );
     }
 

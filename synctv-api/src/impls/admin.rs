@@ -256,7 +256,8 @@ impl AdminApiImpl {
         let counts = self
             .connection_manager
             .room_connection_count_distributed_batch(&room_id_refs)
-            .await;
+            .await
+            .map_err(ApiError::Internal)?;
 
         let room_list: Vec<_> = rooms
             .into_iter()
@@ -299,6 +300,7 @@ impl AdminApiImpl {
                 self.connection_manager
                     .room_connection_count_distributed(&room.id)
                     .await
+                    .map_err(ApiError::Internal)?
                     .try_into()
                     .ok(),
                 creator_username.as_deref(),
@@ -1528,7 +1530,8 @@ impl AdminApiImpl {
         let count_vec = self
             .connection_manager
             .room_connection_count_distributed_batch(&all_room_ids)
-            .await;
+            .await
+            .map_err(ApiError::Internal)?;
         let count_map: std::collections::HashMap<&synctv_core::models::RoomId, usize> =
             all_room_ids.into_iter().zip(count_vec).collect();
 
@@ -1645,6 +1648,7 @@ impl AdminApiImpl {
                 self.connection_manager
                     .room_connection_count_distributed(&rid)
                     .await
+                    .map_err(ApiError::Internal)?
                     .try_into()
                     .ok(),
                 None,
@@ -1697,6 +1701,7 @@ impl AdminApiImpl {
                 self.connection_manager
                     .room_connection_count_distributed(&rid)
                     .await
+                    .map_err(ApiError::Internal)?
                     .try_into()
                     .ok(),
                 None,
@@ -1739,6 +1744,7 @@ impl AdminApiImpl {
                 self.connection_manager
                     .room_connection_count_distributed(&rid)
                     .await
+                    .map_err(ApiError::Internal)?
                     .try_into()
                     .ok(),
                 None,
@@ -1816,6 +1822,7 @@ impl AdminApiImpl {
                 self.connection_manager
                     .room_connection_count_distributed(&rid)
                     .await
+                    .map_err(ApiError::Internal)?
                     .try_into()
                     .ok(),
                 None,
@@ -1878,6 +1885,7 @@ impl AdminApiImpl {
                 self.connection_manager
                     .room_connection_count_distributed(&rid)
                     .await
+                    .map_err(ApiError::Internal)?
                     .try_into()
                     .ok(),
                 None,

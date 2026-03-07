@@ -67,6 +67,10 @@ impl ProviderInstanceRepository {
                     other => Ok(Some(other.to_string())),
                 }
             }
+            (Some(_), Some(value)) if !value.is_empty() => Err(crate::Error::Internal(
+                "Provider instance contains plaintext sensitive data while credential encryption is enabled"
+                    .to_string(),
+            )),
             _ => Ok(stored.clone()),
         }
     }
@@ -496,6 +500,8 @@ impl UserProviderCredentialRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::CredentialEncryption;
+    use serde_json::json;
 
     // Note: These are unit tests for the repository structure.
     // Integration tests with actual database should be in tests/ directory.
@@ -506,5 +512,37 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let _instance_repo = ProviderInstanceRepository::new(pool.clone());
         let _credential_repo = UserProviderCredentialRepository::new(pool);
+    }
+
+    #[tokio::test]
+    async fn test_provider_instance_repo_rejects_plaintext_sensitive_fields_when_encryption_enabled(
+    ) {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let encryption = CredentialEncryption::new(&[7u8; 32]).unwrap();
+        let repo = ProviderInstanceRepository::new_with_encryption(pool, encryption);
+
+        let err = repo
+            .decrypt_field(&Some("plaintext-secret".to_string()))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("plaintext sensitive data"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_user_provider_credential_repo_rejects_plaintext_json_when_encryption_enabled() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let encryption = CredentialEncryption::new(&[9u8; 32]).unwrap();
+        let repo = UserProviderCredentialRepository::new_with_encryption(pool, encryption);
+
+        let err = repo
+            .decrypt_credential(&json!({"token": "plaintext"}))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Plaintext credentials are no longer supported"),
+            "unexpected error: {err}"
+        );
     }
 }

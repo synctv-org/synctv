@@ -441,7 +441,7 @@ pub async fn init_services(
         redis_handles.as_ref(),
         &config.redis.key_prefix,
         cluster_mode,
-    );
+    )?;
 
     // Initialize User Notification service
     let notification_repo = NotificationRepository::new(pool.clone());
@@ -692,6 +692,7 @@ enum PublishKeyBackendMode {
 const fn publish_key_backend_mode(cluster_mode: bool, has_redis: bool) -> PublishKeyBackendMode {
     match (cluster_mode, has_redis) {
         (true, true) => PublishKeyBackendMode::RedisFailClosed,
+        (true, false) => PublishKeyBackendMode::RedisFailClosed,
         (false, true) => PublishKeyBackendMode::RedisBestEffort,
         (_, false) => PublishKeyBackendMode::Memory,
     }
@@ -702,35 +703,39 @@ fn build_publish_key_service(
     redis_handles: Option<&RedisHandles>,
     key_prefix: &str,
     cluster_mode: bool,
-) -> PublishKeyService {
+) -> Result<PublishKeyService, anyhow::Error> {
     match publish_key_backend_mode(cluster_mode, redis_handles.is_some()) {
         PublishKeyBackendMode::RedisFailClosed => {
-            let redis_handles = redis_handles.expect(
-                "cluster mode requires Redis handles; this invariant is validated before init_services",
-            );
+            let redis_handles = redis_handles.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cluster mode requires Redis handles for fail-closed publish key deduplication"
+                )
+            })?;
             info!("Publish key service initialized with Redis JTI deduplication (fail-closed)");
-            PublishKeyService::with_redis_shared_fail_closed(
+            Ok(PublishKeyService::with_redis_shared_fail_closed(
                 jwt_service,
                 24,
                 redis_handles.conn.clone(),
                 key_prefix.to_string(),
-            )
+            ))
         }
         PublishKeyBackendMode::RedisBestEffort => {
-            let redis_handles = redis_handles.expect(
-                "Redis-backed publish key mode requires Redis handles to be present",
-            );
+            let redis_handles = redis_handles.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Redis-backed publish key mode requires Redis handles to be present"
+                )
+            })?;
             info!("Publish key service initialized with Redis JTI deduplication");
-            PublishKeyService::with_redis_shared(
+            Ok(PublishKeyService::with_redis_shared(
                 jwt_service,
                 24,
                 redis_handles.conn.clone(),
                 key_prefix.to_string(),
-            )
+            ))
         }
         PublishKeyBackendMode::Memory => {
             info!("Publish key service initialized with in-memory JTI deduplication");
-            PublishKeyService::with_default_ttl(jwt_service)
+            Ok(PublishKeyService::with_default_ttl(jwt_service))
         }
     }
 }
@@ -843,6 +848,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_build_publish_key_service_returns_error_without_redis_in_cluster_mode() {
+        let jwt_service = JwtService::with_durations(
+            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+            24,
+            30,
+            24,
+            60,
+        )
+        .expect("jwt service");
+
+        let error = build_publish_key_service(jwt_service, None, "test:", true)
+            .expect_err("cluster mode publish key service must return an error without Redis");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster mode requires Redis handles for fail-closed publish key deduplication"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn test_build_room_service_wires_brute_force_protection() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
@@ -853,13 +880,9 @@ mod tests {
             24,
             60,
         )
-            .expect("jwt service");
-        let username_cache = UsernameCache::new(
-            Arc::new(NoopCacheL2),
-            "test:user:".to_string(),
-            100,
-            60,
-        );
+        .expect("jwt service");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:user:".to_string(), 100, 60);
         let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );

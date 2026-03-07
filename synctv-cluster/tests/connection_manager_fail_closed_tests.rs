@@ -98,3 +98,42 @@ async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() 
         Some("room_a")
     );
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_distributed_connection_queries_fail_closed_when_redis_is_unavailable() {
+    let redis = TestRedis::start().await;
+    let conn = redis_connection(&redis.redis_url).await;
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "fail_closed_get:");
+
+    manager
+        .register("conn1".to_string(), uid("user1"))
+        .await
+        .expect("initial registration should succeed while Redis is healthy");
+    manager
+        .join_room("conn1", rid("room_a"))
+        .await
+        .expect("initial room join should succeed while Redis is healthy");
+
+    drop(redis._redis);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let user_err = tokio::time::timeout(
+        Duration::from_secs(3),
+        manager.get_user_connections_distributed(&uid("user1")),
+    )
+    .await
+    .expect("user distributed query should not hang when Redis disappears")
+    .expect_err("user distributed query should fail closed when Redis is unavailable");
+    assert!(user_err.contains("Distributed user connection lookup unavailable"));
+
+    let room_err = tokio::time::timeout(
+        Duration::from_secs(3),
+        manager.get_room_connections_distributed(&rid("room_a")),
+    )
+    .await
+    .expect("room distributed query should not hang when Redis disappears")
+    .expect_err("room distributed query should fail closed when Redis is unavailable");
+    assert!(room_err.contains("Distributed room connection lookup unavailable"));
+}

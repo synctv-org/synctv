@@ -132,14 +132,16 @@ pub async fn create_node_with_config(
         .expect("Failed to create ClusterManager")
 }
 
-
 #[allow(dead_code)]
 /// Broadcasts until every target client has actually received the expected
 /// chat message. This avoids brittle fixed sleeps when Redis Pub/Sub room
 /// subscriptions are still propagating across replicas.
 pub async fn broadcast_until_all_clients_receive(
     manager: &ClusterManager,
-    clients: &mut [(tokio::sync::mpsc::Receiver<synctv_cluster::sync::events::ClusterEvent>, String)],
+    clients: &mut [(
+        tokio::sync::mpsc::Receiver<synctv_cluster::sync::events::ClusterEvent>,
+        String,
+    )],
     expected_message: &str,
     mut make_event: impl FnMut() -> synctv_cluster::sync::events::ClusterEvent,
     label: &str,
@@ -170,7 +172,9 @@ pub async fn broadcast_until_all_clients_receive(
 
         if pending.iter().any(|is_pending| *is_pending) && tokio::time::Instant::now() >= deadline {
             let missing = pending.into_iter().filter(|is_pending| *is_pending).count();
-            panic!("timed out waiting for {label}; {missing} clients still missing expected message");
+            panic!(
+                "timed out waiting for {label}; {missing} clients still missing expected message"
+            );
         }
     }
 }

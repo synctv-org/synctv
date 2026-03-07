@@ -44,13 +44,6 @@ pub enum AnyLeaderElector {
     /// Kubernetes Lease-based leader election (K8s only, requires `k8s` feature)
     #[cfg(feature = "k8s")]
     K8s(K8sLeaderElector),
-    /// Disabled leader election (non-cluster mode).
-    ///
-    /// Used when running in standalone mode without Redis.
-    /// `is_leader()` always returns `false`, meaning this node never runs
-    /// cluster-wide singleton tasks. In standalone mode, each node runs
-    /// its own local tasks without coordination.
-    Disabled,
 }
 
 impl AnyLeaderElector {
@@ -60,7 +53,6 @@ impl AnyLeaderElector {
             Self::Redis(e) => e.is_leader(),
             #[cfg(feature = "k8s")]
             Self::K8s(e) => e.is_leader(),
-            Self::Disabled => false,
         }
     }
 
@@ -80,7 +72,6 @@ impl AnyLeaderElector {
                     None
                 }
             }
-            Self::Disabled => None,
         }
     }
 
@@ -96,7 +87,6 @@ impl AnyLeaderElector {
             Self::Redis(e) => e.leader_epoch(),
             #[cfg(feature = "k8s")]
             Self::K8s(e) => e.leader_epoch(),
-            Self::Disabled => 0,
         }
     }
 
@@ -110,14 +100,6 @@ impl AnyLeaderElector {
             Self::Redis(e) => e.subscribe(),
             #[cfg(feature = "k8s")]
             Self::K8s(e) => e.subscribe(),
-            Self::Disabled => {
-                // Create a closed channel that never sends events.
-                // Since the Disabled elector never becomes leader,
-                // subscribers will only see channel closure when dropped.
-                let (tx, rx) = broadcast::channel(1);
-                drop(tx); // Close immediately
-                rx
-            }
         }
     }
 
@@ -130,13 +112,6 @@ impl AnyLeaderElector {
             Self::Redis(e) => e.start(cancel_token),
             #[cfg(feature = "k8s")]
             Self::K8s(e) => e.start(cancel_token),
-            Self::Disabled => {
-                // No-op: Disabled elector doesn't run any background task.
-                // Return a handle that completes immediately when cancelled.
-                tokio::spawn(async move {
-                    cancel_token.cancelled().await;
-                })
-            }
         }
     }
 
@@ -172,9 +147,6 @@ impl AnyLeaderElector {
             Self::Redis(e) => e.resign().await,
             #[cfg(feature = "k8s")]
             Self::K8s(e) => e.resign_public().await,
-            Self::Disabled => {
-                // No-op: Disabled elector never has leadership to resign
-            }
         }
     }
 }
@@ -185,12 +157,6 @@ impl LeaderElect for AnyLeaderElector {
             Self::Redis(e) => e.event_tx.subscribe(),
             #[cfg(feature = "k8s")]
             Self::K8s(e) => e.subscribe(),
-            Self::Disabled => {
-                // Create a closed channel that never sends events.
-                let (tx, rx) = broadcast::channel(1);
-                drop(tx);
-                rx
-            }
         }
     }
 }
@@ -203,8 +169,15 @@ impl synctv_core::service::LeaderCheck for AnyLeaderElector {
 
 impl LeaderElect for synctv_core::service::AlwaysLeader {
     fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
-        let (_tx, rx) = broadcast::channel(1);
-        rx
+        static ALWAYS_LEADER_EVENT_TX: std::sync::OnceLock<broadcast::Sender<LeadershipEvent>> =
+            std::sync::OnceLock::new();
+
+        ALWAYS_LEADER_EVENT_TX
+            .get_or_init(|| {
+                let (tx, _rx) = broadcast::channel(1);
+                tx
+            })
+            .subscribe()
     }
 }
 
@@ -356,6 +329,100 @@ pub trait LeaderElect {
         .unwrap_or_default();
 
         token
+    }
+}
+
+/// Startup inputs for constructing the configured leader election backend.
+pub struct LeaderRuntimeBuilder<'a> {
+    pub cluster_enabled: bool,
+    pub leader_mode: &'a str,
+    pub node_id: &'a str,
+    pub redis_conn: Option<redis::aio::ConnectionManager>,
+    pub redis_key_prefix: &'a str,
+    pub redis_is_sentinel: bool,
+}
+
+impl<'a> LeaderRuntimeBuilder<'a> {
+    #[must_use]
+    pub const fn new(
+        cluster_enabled: bool,
+        leader_mode: &'a str,
+        node_id: &'a str,
+        redis_conn: Option<redis::aio::ConnectionManager>,
+        redis_key_prefix: &'a str,
+        redis_is_sentinel: bool,
+    ) -> Self {
+        Self {
+            cluster_enabled,
+            leader_mode,
+            node_id,
+            redis_conn,
+            redis_key_prefix,
+            redis_is_sentinel,
+        }
+    }
+
+    pub async fn build(self) -> anyhow::Result<AnyLeaderElector> {
+        if !self.cluster_enabled {
+            return Err(anyhow::anyhow!(
+                "LeaderRuntimeBuilder is cluster-only; standalone mode must use AlwaysLeader directly"
+            ));
+        }
+
+        match self.leader_mode {
+            #[cfg(feature = "k8s")]
+            "k8s_lease" => {
+                let pod_name = std::env::var("POD_NAME").map_err(|_| {
+                    anyhow::anyhow!(
+                        "cluster.leader_election_mode='k8s_lease' requires POD_NAME; \
+                         this should have been caught by configuration validation"
+                    )
+                })?;
+                let namespace = std::env::var("POD_NAMESPACE").map_err(|_| {
+                    anyhow::anyhow!(
+                        "cluster.leader_election_mode='k8s_lease' requires POD_NAMESPACE; \
+                         this should have been caught by configuration validation"
+                    )
+                })?;
+
+                let elector = K8sLeaderElector::new(
+                    pod_name,
+                    namespace,
+                    K8sLeaderElectorConfig::default(),
+                )
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "K8s leader election initialization failed: {e}. \
+                         Cannot safely continue in cluster mode. \
+                         Either fix K8s RBAC/env vars or set cluster.leader_election_mode='redis'"
+                    )
+                })?;
+
+                Ok(AnyLeaderElector::K8s(elector))
+            }
+            #[cfg(not(feature = "k8s"))]
+            "k8s_lease" => Err(anyhow::anyhow!(
+                "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
+                 Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
+            )),
+            "redis" => {
+                let redis_conn = self.redis_conn.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cluster.enabled=true requires Redis-backed leader election wiring"
+                    )
+                })?;
+                Ok(AnyLeaderElector::Redis(LeaderElector::new(
+                    redis_conn,
+                    self.node_id.to_string(),
+                    self.redis_key_prefix,
+                    self.redis_is_sentinel,
+                )))
+            }
+            other => Err(anyhow::anyhow!(
+                "cluster.leader_election_mode is validated before startup: {other}"
+            )),
+        }
     }
 }
 
@@ -1039,79 +1106,23 @@ mod tests {
         );
     }
 
-    // ============================================================================
-    // Tests for Disabled variant
-    // ============================================================================
-
-    #[test]
-    fn test_disabled_is_leader_returns_false() {
-        let elector = AnyLeaderElector::Disabled;
-        assert!(
-            !elector.is_leader(),
-            "Disabled elector should never be leader"
-        );
-    }
-
-    #[test]
-    fn test_disabled_current_leader_identity_returns_none() {
-        let elector = AnyLeaderElector::Disabled;
-        assert_eq!(
-            elector.current_leader_identity(),
-            None,
-            "Disabled elector should have no leader identity"
-        );
-    }
-
-    #[test]
-    fn test_disabled_leader_epoch_returns_zero() {
-        let elector = AnyLeaderElector::Disabled;
-        assert_eq!(
-            elector.leader_epoch(),
-            0,
-            "Disabled elector should have epoch 0"
-        );
-    }
-
     #[tokio::test]
-    async fn test_disabled_subscribe_returns_closed_channel() {
-        let elector = AnyLeaderElector::Disabled;
-        let mut rx = elector.subscribe();
+    async fn test_builder_rejects_standalone_mode() {
+        let error = match LeaderRuntimeBuilder::new(false, "redis", "node-1", None, "synctv:", false)
+            .build()
+            .await
+        {
+            Ok(_) => panic!("standalone mode must use AlwaysLeader directly"),
+            Err(error) => error,
+        };
 
-        // Channel should be closed (no sender)
-        use broadcast::error::TryRecvError;
-        let result = rx.try_recv();
         assert!(
-            matches!(result, Err(TryRecvError::Closed)),
-            "Disabled elector should have a closed subscription channel"
+            error
+                .to_string()
+                .contains("LeaderRuntimeBuilder is cluster-only"),
+            "unexpected error: {error}"
         );
     }
-
-    #[tokio::test]
-    async fn test_disabled_start_returns_task_that_completes_on_cancel() {
-        let elector = AnyLeaderElector::Disabled;
-        let cancel_token = CancellationToken::new();
-
-        let handle = elector.start(cancel_token.clone());
-
-        // Task should be running (waiting for cancel)
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        assert!(
-            !handle.is_finished(),
-            "Task should be running while not cancelled"
-        );
-
-        // Cancel and wait for completion
-        cancel_token.cancel();
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        assert!(
-            handle.is_finished(),
-            "Task should complete after cancellation"
-        );
-
-        // Clean up
-        handle.abort();
-    }
-
 
     #[tokio::test]
     async fn test_always_leader_implements_unified_runtime_trait() {
@@ -1134,27 +1145,22 @@ mod tests {
     }
 
     #[test]
-    fn test_disabled_leader_check_trait() {
+    fn test_always_leader_leader_check_trait() {
         use synctv_core::service::LeaderCheck;
-        let elector = AnyLeaderElector::Disabled;
-        assert!(!LeaderCheck::is_leader(&elector));
+        let elector = synctv_core::service::AlwaysLeader;
+        assert!(LeaderCheck::is_leader(&elector));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_disabled_leader_guard_cancelled_on_channel_close() {
-        // The leader_guard creates a CancellationToken and spawns a task
-        // that watches the subscription channel. When the channel closes,
-        // the guard should be cancelled.
-        let elector = AnyLeaderElector::Disabled;
+    async fn test_always_leader_guard_stays_active_without_loss_event() {
+        let elector = synctv_core::service::AlwaysLeader;
         let guard = elector.leader_guard();
 
-        // The subscription channel is already closed, so the spawned task
-        // should cancel the guard almost immediately.
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         assert!(
-            guard.is_cancelled(),
-            "Guard should be cancelled because Disabled elector has closed channel"
+            !guard.is_cancelled(),
+            "AlwaysLeader guard should remain active without leadership loss"
         );
     }
 }

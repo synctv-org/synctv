@@ -119,6 +119,7 @@ pub async fn init_cluster_discovery(
         Option<Arc<HealthMonitor>>,
         Option<Arc<LoadBalancer>>,
         Option<tokio::task::JoinHandle<()>>,
+        Option<tokio::task::JoinHandle<()>>,
     ),
     anyhow::Error,
 > {
@@ -157,7 +158,7 @@ pub async fn init_cluster_discovery(
             // Bridge: periodically merge DNS-discovered peers into the
             // NodeRegistry so HealthMonitor/LoadBalancer see newly-scaled
             // pods before they self-register via Redis heartbeat.
-            {
+            let bridge_handle = {
                 let dns = k8s_discovery.clone();
                 let reg = registry.clone();
                 let bridge_cancel = cm.cancel_token();
@@ -177,11 +178,17 @@ pub async fn init_cluster_discovery(
                             }
                         }
                     }
-                });
-                info!("K8s DNS -> NodeRegistry sync bridge started (15s interval)");
-            }
+                })
+            };
+            info!("K8s DNS -> NodeRegistry sync bridge started (15s interval)");
 
-            Ok((Some(registry), Some(hm), Some(lb), Some(dns_refresh_handle)))
+            Ok((
+                Some(registry),
+                Some(hm),
+                Some(lb),
+                Some(dns_refresh_handle),
+                Some(bridge_handle),
+            ))
         }
         #[cfg(not(feature = "k8s"))]
         "k8s_dns" => Err(anyhow::anyhow!(
@@ -222,13 +229,27 @@ pub async fn init_cluster_discovery(
             let handle = static_discovery.start();
             info!("Static peer discovery started");
 
-            Ok((Some(registry), Some(hm), Some(lb), Some(handle)))
+            Ok((Some(registry), Some(hm), Some(lb), Some(handle), None))
         }
         "redis" => {
             let (registry, hm, lb) =
                 init_cluster_components(redis_handles, cm, config, connection_manager).await?;
-            Ok((Some(registry), Some(hm), Some(lb), None))
+            Ok((Some(registry), Some(hm), Some(lb), None, None))
         }
         _ => unreachable!("cluster.discovery_mode is validated before startup: {discovery_mode}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_cluster_discovery_return_shape_reserves_bridge_handle_for_k8s_only() {
+        let redis_shape = (true, true, true, false, false);
+        let static_shape = (true, true, true, true, false);
+        let k8s_dns_shape = (true, true, true, true, true);
+
+        assert_eq!(redis_shape, (true, true, true, false, false));
+        assert_eq!(static_shape, (true, true, true, true, false));
+        assert_eq!(k8s_dns_shape, (true, true, true, true, true));
     }
 }

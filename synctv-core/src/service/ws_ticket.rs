@@ -327,40 +327,22 @@ impl WsTicketService {
 
     /// Create a new WebSocket ticket service, choosing backend based on Redis availability.
     ///
-    /// In cluster mode, Redis is **required**; passing `None` returns an error.
+    /// Backend capability decisions belong to configuration validation and
+    /// startup wiring. This constructor only maps an already-chosen storage
+    /// dependency to the correct implementation.
+    #[must_use]
     pub fn new(
         redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
         ticket_ttl_secs: Option<u64>,
-        cluster_mode: bool,
-    ) -> Result<Self> {
+    ) -> Self {
         if let Some(shared_conn) = redis_conn {
-            Ok(Self::with_redis(shared_conn, ticket_ttl_secs))
+            Self::with_redis(shared_conn, ticket_ttl_secs)
         } else {
-            if cluster_mode {
-                return Err(Error::Internal(
-                    "Redis is required for WebSocket ticket service in cluster mode. \
-                     Tickets stored in memory are only visible on the replica that created them, \
-                     causing authentication failures on other replicas. Configure Redis."
-                        .to_string(),
-                ));
-            }
-
-            if Self::detect_multi_replica_environment() {
-                warn!(
-                    "WebSocket ticket service is using in-memory storage while multi-replica \
-                     environment signals are present (Kubernetes / Docker Swarm / REPLICAS env). \
-                     This is only safe when cluster.enabled=false and traffic stays single-replica. \
-                     Configure Redis before enabling cluster mode."
-                );
-            } else {
-                warn!(
-                    "WebSocket ticket service using in-memory storage. \
-                     This is only suitable for single-replica deployments. \
-                     For multi-replica setups, configure Redis."
-                );
-            }
-
-            Ok(Self::with_memory(ticket_ttl_secs))
+            warn!(
+                "WebSocket ticket service using in-memory storage. \
+                 This is only suitable for deployments that intentionally run without cluster-backed tickets."
+            );
+            Self::with_memory(ticket_ttl_secs)
         }
     }
 
@@ -555,53 +537,11 @@ impl WsTicketService {
         rng.fill(&mut bytes);
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     }
-
-    /// Detect if the environment appears to be a multi-replica deployment.
-    fn detect_multi_replica_environment() -> bool {
-        if std::env::var("KUBERNETES_SERVICE_HOST").is_ok() {
-            return true;
-        }
-        for var in &["REPLICAS", "SYNCTV_REPLICAS"] {
-            if let Ok(val) = std::env::var(var) {
-                if let Ok(count) = val.parse::<u32>() {
-                    if count > 1 {
-                        return true;
-                    }
-                }
-            }
-        }
-        if std::path::Path::new("/var/run/secrets/kubernetes.io").exists() {
-            return true;
-        }
-        false
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn with_env_var<T>(key: &str, value: Option<&str>, test: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-        let original = std::env::var(key).ok();
-
-        match value {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
-        }
-
-        let result = test();
-
-        match original {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
-        }
-
-        result
-    }
 
     fn create_test_user_id(id: &str) -> UserId {
         UserId::from_string(id.to_string())
@@ -715,12 +655,6 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_multi_replica_no_env_is_false() {
-        let result = WsTicketService::detect_multi_replica_environment();
-        let _ = result;
-    }
-
-    #[test]
     fn test_memory_mode_creates_valid_service() {
         let service = WsTicketService::with_memory(Some(60));
         assert_eq!(service.store.backend_name(), "memory");
@@ -735,21 +669,8 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_mode_requires_redis() {
-        let result = WsTicketService::new(None, None, true);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Redis is required"),
-            "Error should mention Redis requirement; got: {err_msg}"
-        );
-    }
-
-    #[test]
     fn test_non_cluster_mode_allows_memory() {
-        let result = WsTicketService::new(None, None, false);
-        assert!(result.is_ok());
-        let service = result.unwrap();
+        let service = WsTicketService::new(None, None);
         assert_eq!(service.store.backend_name(), "memory");
     }
 
@@ -757,103 +678,29 @@ mod tests {
     // Cluster mode Redis dependency tests (TDD)
     // ============================================================================
 
-    /// Test: cluster mode without Redis returns a descriptive error.
-    /// This is the core issue - in cluster mode, tickets created on replica A
-    /// cannot be validated on replica B without shared Redis storage.
+    /// Test: backend selection without Redis uses memory.
     #[test]
-    fn test_cluster_mode_without_redis_returns_error() {
-        let result = WsTicketService::new(None, Some(30), true);
-
-        assert!(
-            result.is_err(),
-            "Cluster mode without Redis should return an error"
-        );
-
-        let err = result.unwrap_err();
-        let err_msg = err.to_string();
-
-        // Error message should be descriptive and mention the core issue
-        assert!(
-            err_msg.contains("Redis is required"),
-            "Error should mention Redis is required; got: {err_msg}"
-        );
-        assert!(
-            err_msg.contains("cluster mode") || err_msg.contains("cluster"),
-            "Error should mention cluster mode; got: {err_msg}"
-        );
-        assert!(
-            err_msg.contains("replica") || err_msg.contains("replicas"),
-            "Error should explain the replica visibility issue; got: {err_msg}"
-        );
+    fn test_new_without_redis_uses_memory_backend() {
+        let service = WsTicketService::new(None, Some(30));
+        assert_eq!(service.backend_name(), "memory");
     }
 
-    /// Test: cluster mode error message provides actionable guidance.
-    /// Users should know how to fix the configuration.
     #[test]
-    fn test_cluster_mode_error_message_is_actionable() {
-        let result = WsTicketService::new(None, None, true);
-        let err_msg = result.unwrap_err().to_string();
-
-        // Should suggest configuring Redis
-        assert!(
-            err_msg.contains("Configure Redis"),
-            "Error should suggest configuring Redis; got: {err_msg}"
-        );
-    }
-
-    /// Test: cluster mode with custom TTL still requires Redis.
-    /// TTL configuration should not bypass the Redis requirement.
-    #[test]
-    fn test_cluster_mode_with_custom_ttl_still_requires_redis() {
-        let result = WsTicketService::new(None, Some(60), true);
-
-        assert!(
-            result.is_err(),
-            "Cluster mode should require Redis regardless of TTL setting"
-        );
-    }
-
-    /// Test: cluster mode with zero TTL still requires Redis.
-    #[test]
-    fn test_cluster_mode_with_zero_ttl_still_requires_redis() {
-        let result = WsTicketService::new(None, Some(0), true);
-
-        assert!(
-            result.is_err(),
-            "Cluster mode should require Redis even with zero TTL"
-        );
+    fn test_new_without_redis_preserves_custom_ttl() {
+        let service = WsTicketService::new(None, Some(60));
+        assert_eq!(service.ticket_ttl_secs(), 60);
     }
 
     /// Test: non-cluster mode without Redis works but logs warning.
     /// Single-replica deployments should still function without Redis.
     #[test]
     fn test_non_cluster_mode_without_redis_succeeds() {
-        let result = WsTicketService::new(None, Some(30), false);
-
-        assert!(result.is_ok(), "Non-cluster mode should work without Redis");
-
-        let service = result.unwrap();
+        let service = WsTicketService::new(None, Some(30));
         assert_eq!(
             service.backend_name(),
             "memory",
             "Non-cluster mode without Redis should use memory backend"
         );
-    }
-
-    /// Test: `cluster.enabled=false` must remain the only runtime switch.
-    /// Even inside Kubernetes (where KUBERNETES_SERVICE_HOST exists), non-cluster
-    /// mode should still allow memory-backed tickets when Redis is absent.
-    #[test]
-    fn test_non_cluster_mode_allows_memory_even_when_k8s_env_is_present() {
-        with_env_var("KUBERNETES_SERVICE_HOST", Some("10.0.0.1"), || {
-            let result = WsTicketService::new(None, Some(30), false);
-            assert!(
-                result.is_ok(),
-                "cluster=false should not be overridden by environment heuristics"
-            );
-            let service = result.unwrap();
-            assert_eq!(service.backend_name(), "memory");
-        });
     }
 
     /// Test: `from_store` allows custom backends for testing purposes.
@@ -864,30 +711,5 @@ mod tests {
 
         assert_eq!(service.backend_name(), "memory");
         assert_eq!(service.ticket_ttl_secs(), 45);
-    }
-
-    // ========== D7: detect_multi_replica should fail, not just warn ==========
-
-    /// Test: detect_multi_replica_environment returns a bool (not panic).
-    /// When it returns true, WsTicketService::new should return an error
-    /// instead of silently using in-memory storage.
-    #[test]
-    fn test_detect_multi_replica_returns_bool() {
-        // This just verifies detect_multi_replica_environment doesn't panic.
-        // In CI without Kubernetes env vars it should return false.
-        let _result = WsTicketService::detect_multi_replica_environment();
-    }
-
-    /// Test: verify that when detect_multi_replica_environment() would return true
-    /// (which we can't easily test without setting env vars), the error message
-    /// from the cluster_mode=true path is descriptive and mentions replicas.
-    #[test]
-    fn test_cluster_error_mentions_multi_replica_risk() {
-        let result = WsTicketService::new(None, None, true);
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("replica"),
-            "Error should explain multi-replica risk; got: {err_msg}"
-        );
     }
 }

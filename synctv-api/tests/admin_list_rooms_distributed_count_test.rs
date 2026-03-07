@@ -65,7 +65,8 @@ async fn test_distributed_batch_count_returns_vec() {
     // Without Redis, this returns local counts (0 for both)
     let counts = conn_manager
         .room_connection_count_distributed_batch(&room_ids)
-        .await;
+        .await
+        .expect("standalone mode should return local distributed batch counts");
 
     assert_eq!(counts.len(), 2, "Should return count for each room");
     assert_eq!(counts[0], 0, "Room 1 count should be 0");

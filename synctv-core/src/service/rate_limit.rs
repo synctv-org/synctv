@@ -944,8 +944,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_strict_distributed_flag_makes_check_rate_limit_fail_closed() {
-        let limiter = RateLimiter::in_memory_only("strict_switch:".to_string())
-            .with_strict_distributed();
+        let limiter =
+            RateLimiter::in_memory_only("strict_switch:".to_string()).with_strict_distributed();
 
         let result = limiter.check_rate_limit("key", 5, 60).await;
         assert!(
@@ -959,7 +959,10 @@ mod tests {
         let limiter = RateLimiter::in_memory_only("non_strict_switch:".to_string());
 
         let result = limiter.check_rate_limit("key", 5, 60).await;
-        assert!(result.is_ok(), "non-strict mode should preserve in-memory behavior");
+        assert!(
+            result.is_ok(),
+            "non-strict mode should preserve in-memory behavior"
+        );
     }
 
     #[tokio::test]

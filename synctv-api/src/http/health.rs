@@ -278,23 +278,23 @@ fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
 /// (e.g. using in-memory fallback due to a transient Redis error), the health
 /// check will still correctly detect that Redis is unavailable.
 ///
-/// Issue #41: In cluster mode, Redis is required. If Redis is not configured
-/// and the node is in cluster mode, this returns an error (503).
-/// In single-node mode, Redis is optional and "not configured" is OK.
+/// Redis readiness reflects the health of the configured Redis connection.
+///
+/// Whether Redis must exist is a configuration-layer invariant enforced during
+/// startup validation. At runtime, a missing Redis handle is treated as
+/// "not configured" rather than re-enforcing cluster configuration rules.
 async fn check_redis_health(state: &AppState) -> Result<(), String> {
-    let is_cluster_mode = state.cluster_manager.is_some();
-
     // Resolve a fresh ConnectionManager clone from the shared RwLock.
     // Returns None when Redis is not configured.
     let redis_conn = state.resolve_redis_conn().await;
 
+    check_redis_health_from_conn(redis_conn).await
+}
+
+async fn check_redis_health_from_conn(
+    redis_conn: Option<redis::aio::ConnectionManager>,
+) -> Result<(), String> {
     let Some(mut conn) = redis_conn else {
-        // Redis not configured.
-        if is_cluster_mode {
-            warn!("Redis not configured but cluster mode is active — node is not ready");
-            return Err("Redis is required for cluster mode but is not configured".to_string());
-        }
-        // Single-node mode: Redis is optional
         return Ok(());
     };
 
@@ -822,6 +822,15 @@ mod tests {
     fn test_memory_threshold_constant() {
         // Verify the threshold is set at 90%
         assert_eq!(MEMORY_UNHEALTHY_THRESHOLD_PERCENT, 90.0);
+    }
+
+    #[tokio::test]
+    async fn test_check_redis_health_accepts_missing_redis_connection() {
+        let result = check_redis_health_from_conn(None).await;
+        assert!(
+            result.is_ok(),
+            "missing redis should be treated as not configured"
+        );
     }
 
     /// M18: Verify that cgroup memory check is attempted on Linux.

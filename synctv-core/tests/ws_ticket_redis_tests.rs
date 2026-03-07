@@ -175,12 +175,7 @@ async fn test_redis_ticket_concurrent_consumption() {
 async fn test_cluster_mode_with_redis_succeeds() {
     let (_container, conn) = start_redis().await;
 
-    // Use WsTicketService::new with cluster_mode=true and Redis provided
-    let result = WsTicketService::new(Some(conn), Some(30), true);
-
-    assert!(result.is_ok(), "Cluster mode with Redis should succeed");
-
-    let service = result.unwrap();
+    let service = WsTicketService::new(Some(conn), Some(30));
     assert_eq!(
         service.backend_name(),
         "redis",
@@ -194,7 +189,7 @@ async fn test_cluster_mode_with_redis_succeeds() {
 async fn test_cluster_mode_with_redis_roundtrip() {
     let (_container, conn) = start_redis().await;
 
-    let service = WsTicketService::new(Some(conn), Some(30), true).unwrap();
+    let service = WsTicketService::new(Some(conn), Some(30));
 
     let uid = user_id("cluster_user_1");
     let rid = room_id("cluster_room_1");
@@ -213,7 +208,7 @@ async fn test_cluster_mode_with_redis_roundtrip() {
 async fn test_cluster_mode_with_redis_custom_ttl() {
     let (_container, conn) = start_redis().await;
 
-    let service = WsTicketService::new(Some(conn), Some(60), true).unwrap();
+    let service = WsTicketService::new(Some(conn), Some(60));
 
     assert_eq!(service.ticket_ttl_secs(), 60);
 }
@@ -242,14 +237,14 @@ async fn test_cluster_mode_simulated_multi_replica_roundtrip() {
     let conn_clone = conn.clone();
 
     // "Replica A" creates the ticket
-    let service_a = WsTicketService::new(Some(conn), Some(30), true).unwrap();
+    let service_a = WsTicketService::new(Some(conn), Some(30));
     let uid = user_id("multi_replica_user");
     let rid = room_id("multi_replica_room");
 
     let ticket = service_a.create_ticket(&uid, &rid, 0).await.unwrap();
 
     // "Replica B" (different service instance, same Redis) validates the ticket
-    let service_b = WsTicketService::new(Some(conn_clone), Some(30), true).unwrap();
+    let service_b = WsTicketService::new(Some(conn_clone), Some(30));
 
     let validated = service_b.validate_and_consume(&ticket, &rid).await.unwrap();
     assert_eq!(validated.user_id.as_str(), "multi_replica_user");

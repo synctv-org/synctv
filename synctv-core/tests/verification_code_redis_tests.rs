@@ -12,8 +12,7 @@ use synctv_core::service::{EmailService, RedisVerificationCodeStore, Verificatio
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
-async fn start_redis(
-) -> (
+async fn start_redis() -> (
     testcontainers::ContainerAsync<Redis>,
     Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
 ) {

@@ -156,6 +156,19 @@ fn should_register_cluster_grpc_service(
         && node_registry_available
 }
 
+fn validate_cluster_grpc_runtime_requirements(
+    config: &synctv_core::Config,
+    node_registry_available: bool,
+) -> anyhow::Result<()> {
+    if config.cluster_runtime_enabled() && !node_registry_available {
+        return Err(anyhow::anyhow!(
+            "cluster.enabled=true requires NodeRegistry before starting the gRPC server; refusing to start with cluster gRPC disabled"
+        ));
+    }
+
+    Ok(())
+}
+
 // Use synctv_proto for all server traits and message types (single source of truth)
 use crate::proto::admin_service_server::AdminServiceServer;
 use crate::proto::client::{
@@ -264,6 +277,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         grpc_listener,
     } = grpc_config;
     let addr = config.grpc_address().parse()?;
+
+    validate_cluster_grpc_runtime_requirements(config, node_registry.is_some())?;
 
     // Derive HMAC signing key for proxy URLs from JWT secret
     let proxy_signing_key = std::sync::Arc::new(
@@ -751,8 +766,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             "Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)"
         );
     } else {
-        tracing::warn!(
-            "Cluster mode is enabled but NodeRegistry is unavailable — cluster gRPC service will not be registered"
+        unreachable!(
+            "cluster.enabled=true without NodeRegistry must be rejected before gRPC service assembly"
         );
     }
 
@@ -831,7 +846,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::should_register_cluster_grpc_service;
+    use super::{should_register_cluster_grpc_service, validate_cluster_grpc_runtime_requirements};
 
     #[test]
     fn test_cluster_grpc_service_requires_cluster_mode() {
@@ -860,5 +875,28 @@ mod tests {
             !should_register_cluster_grpc_service(&config, false),
             "cluster gRPC must not be registered before NodeRegistry is ready"
         );
+    }
+
+    #[test]
+    fn test_cluster_grpc_runtime_requires_node_registry() {
+        let mut config = synctv_core::Config::default();
+        config.cluster.enabled = true;
+        config.server.cluster_secret = "shared-secret".to_string();
+
+        let err = validate_cluster_grpc_runtime_requirements(&config, false)
+            .expect_err("cluster runtime must fail closed without NodeRegistry");
+
+        assert!(
+            err.to_string().contains("requires NodeRegistry"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_standalone_grpc_runtime_allows_missing_node_registry() {
+        let config = synctv_core::Config::default();
+
+        validate_cluster_grpc_runtime_requirements(&config, false)
+            .expect("standalone gRPC runtime should allow missing NodeRegistry");
     }
 }

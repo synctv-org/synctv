@@ -11,9 +11,7 @@ use anyhow::Result;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 
-use synctv_cluster::leader::{LeaderElector, LeaderRuntime};
-#[cfg(feature = "k8s")]
-use synctv_cluster::leader::{K8sLeaderElector, K8sLeaderElectorConfig};
+use synctv_cluster::leader::{LeaderRuntime, LeaderRuntimeBuilder};
 use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
 use synctv_core::{
     bootstrap::{
@@ -89,22 +87,47 @@ fn should_start_cache_invalidation_listener(config: &Config, has_redis: bool) ->
     cluster_runtime_enabled(config) && has_redis
 }
 
+fn should_run_startup_partition_initialization(config: &Config) -> bool {
+    !cluster_runtime_enabled(config)
+}
+
 fn build_connection_manager(
     limits: ConnectionLimits,
     redis_conn: Option<redis::aio::ConnectionManager>,
     redis_key_prefix: &str,
     cluster_mode: bool,
-) -> ConnectionManager {
+) -> Result<ConnectionManager> {
     let manager = if cluster_mode {
-        let conn = redis_conn.expect(
-            "cluster.enabled=true requires Redis-backed ConnectionManager wiring",
-        );
+        let conn = redis_conn.ok_or_else(|| {
+            anyhow::anyhow!("cluster.enabled=true requires Redis-backed ConnectionManager wiring")
+        })?;
         ConnectionManager::new(limits).with_redis(conn, redis_key_prefix)
     } else {
-        ConnectionManager::new(limits)
+        let manager = ConnectionManager::new(limits);
+        manager.start();
+        manager
     };
-    manager.start();
-    manager
+    Ok(manager)
+}
+
+fn require_cluster_redis_conn<'a>(
+    redis_conn: Option<&'a Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+) -> Result<&'a Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>> {
+    redis_conn.ok_or_else(|| {
+        anyhow::anyhow!(
+            "startup invariant violated: cluster runtime reached without Redis connection wiring"
+        )
+    })
+}
+
+fn require_cluster_redis_handles<'a>(
+    redis_handles: Option<&'a RedisHandles>,
+) -> Result<&'a RedisHandles> {
+    redis_handles.ok_or_else(|| {
+        anyhow::anyhow!(
+            "startup invariant violated: cluster runtime reached without Redis handle wiring"
+        )
+    })
 }
 
 impl Application {
@@ -113,14 +136,6 @@ impl Application {
     /// If any phase fails, all resources created in earlier phases are cleaned up
     /// via the `ShutdownCoordinator` before returning the error.
     pub async fn build(config: Config) -> Result<Self> {
-        // Validate configuration before any initialization (fail fast on misconfigurations)
-        if let Err(errors) = config.validate() {
-            return Err(anyhow::anyhow!(
-                "Configuration validation failed: {}",
-                errors.join("; ")
-            ));
-        }
-
         let shutdown_budget =
             std::time::Duration::from_secs(config.server.shutdown_drain_timeout_seconds);
         let mut shutdown = ShutdownCoordinator::new(shutdown_budget);
@@ -268,13 +283,22 @@ impl Application {
             }
         }
 
-        // Initialize audit log partitions (non-fatal)
-        info!("Initializing audit log partitions...");
-        if let Err(e) = synctv_core::service::ensure_audit_partitions_on_startup(&infra.pool).await
-        {
-            error!(
-                "Failed to initialize audit partitions (non-fatal, continuing startup): {}",
-                e
+        // In cluster mode, partition management is leader-gated and starts immediately
+        // after leader election. Running the startup path on every replica would bypass
+        // the unified leader abstraction and cause concurrent DDL/cleanup.
+        if should_run_startup_partition_initialization(&infra.config) {
+            info!("Initializing audit log partitions for standalone startup...");
+            if let Err(e) =
+                synctv_core::service::ensure_audit_partitions_on_startup(&infra.pool).await
+            {
+                error!(
+                    "Failed to initialize audit partitions (non-fatal, continuing startup): {}",
+                    e
+                );
+            }
+        } else {
+            info!(
+                "Cluster mode enabled — deferring audit partition initialization to leader-gated singleton task"
             );
         }
 
@@ -345,28 +369,34 @@ impl Application {
             task: synctv_services.settings_listen_task.clone(),
         });
 
-        // Initialize chat message partitions (needs settings_registry from services)
-        info!("Initializing chat message partitions...");
-        if let Err(e) = synctv_core::service::ensure_chat_partitions_on_startup(
-            &infra.pool,
-            synctv_services.settings_registry.clone(),
-        )
-        .await
-        {
-            error!(
-                "Failed to initialize chat partitions (non-fatal, continuing startup): {}",
-                e
-            );
-        }
+        if should_run_startup_partition_initialization(&infra.config) {
+            // Initialize chat message partitions (needs settings_registry from services)
+            info!("Initializing chat message partitions for standalone startup...");
+            if let Err(e) = synctv_core::service::ensure_chat_partitions_on_startup(
+                &infra.pool,
+                synctv_services.settings_registry.clone(),
+            )
+            .await
+            {
+                error!(
+                    "Failed to initialize chat partitions (non-fatal, continuing startup): {}",
+                    e
+                );
+            }
 
-        // Initialize notification partitions (monthly granularity)
-        info!("Initializing notification partitions...");
-        if let Err(e) =
-            synctv_core::service::ensure_notification_partitions_on_startup(&infra.pool).await
-        {
-            error!(
-                "Failed to initialize notification partitions (non-fatal, continuing startup): {}",
-                e
+            // Initialize notification partitions (monthly granularity)
+            info!("Initializing notification partitions for standalone startup...");
+            if let Err(e) =
+                synctv_core::service::ensure_notification_partitions_on_startup(&infra.pool).await
+            {
+                error!(
+                    "Failed to initialize notification partitions (non-fatal, continuing startup): {}",
+                    e
+                );
+            }
+        } else {
+            info!(
+                "Cluster mode enabled — deferring chat and notification partition initialization to leader-gated singleton tasks"
             );
         }
 
@@ -384,19 +414,17 @@ impl Application {
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<LeaderState> {
         if !cluster_runtime_enabled(&infra.config) {
-            info!("Cluster mode disabled — using AlwaysLeader");
+            info!("Cluster mode disabled — using unified standalone leader runtime");
             synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(0);
             synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(1);
             synctv_core::metrics::cluster::LEADER_ELECTION_EPOCH.set(0);
             synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(0);
-            return Ok(LeaderState {
-                leader_runtime: Arc::new(synctv_core::service::AlwaysLeader),
-            });
+        return Ok(LeaderState {
+            leader_runtime: Arc::new(synctv_core::service::AlwaysLeader),
+        });
         }
 
-        let redis_conn = core.services.redis_conn.as_ref().expect(
-            "cluster.enabled=true invariant violated: Redis must be configured before runtime init",
-        );
+        let redis_conn = require_cluster_redis_conn(core.services.redis_conn.as_ref())?;
 
         // With Redis configured, cluster mode may be active.
         // Leader election failure in this scenario would be catastrophic:
@@ -410,122 +438,46 @@ impl Application {
 
         let leader_cancel = shutdown.register_token("leader_election");
 
-        let (leader_elector, leader_election_handle) = {
-            let leader_mode = infra.config.cluster.leader_election_mode.as_str();
-            match leader_mode {
-                #[cfg(feature = "k8s")]
-                "k8s_lease" => {
-                    info!("Using K8s Lease-based leader election");
-                    // Set metrics: K8s mode (2)
-                    synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(2);
-                    let pod_name = std::env::var("POD_NAME").map_err(|_| {
-                        anyhow::anyhow!(
-                            "cluster.leader_election_mode='k8s_lease' requires POD_NAME; \
-                             this should have been caught by configuration validation"
-                        )
-                    })?;
-                    let namespace = std::env::var("POD_NAMESPACE").map_err(|_| {
-                        anyhow::anyhow!(
-                            "cluster.leader_election_mode='k8s_lease' requires POD_NAMESPACE; \
-                             this should have been caught by configuration validation"
-                        )
-                    })?;
+        let leader_mode = infra.config.cluster.leader_election_mode.as_str();
+        let plain_conn = redis_conn.read().await.clone();
+        let is_sentinel = matches!(
+            infra.config.redis.deployment_mode,
+            synctv_core::config::RedisDeploymentMode::Sentinel
+        );
 
-                    match K8sLeaderElector::new(
-                        pod_name.clone(),
-                        namespace.clone(),
-                        K8sLeaderElectorConfig::default(),
-                    )
-                    .await
-                    {
-                        Ok(elector) => {
-                            let handle = elector.start(leader_cancel.clone());
-                            info!(
-                                pod_name = %pod_name,
-                                namespace = %namespace,
-                                "K8s leader election started"
-                            );
-                            (
-                                Some(synctv_cluster::leader::AnyLeaderElector::K8s(elector)),
-                                Some(handle),
-                            )
-                        }
-                        Err(e) => {
-                            // CRITICAL: Do not fall back to AlwaysLeader here!
-                            // In cluster mode, this would cause split-brain.
-                            // Instead, fail fast and let the operator fix the issue.
-                            error!(
-                                error = %e,
-                                pod_name = %pod_name,
-                                namespace = %namespace,
-                                "CRITICAL: K8s leader election initialization failed"
-                            );
-                            error!(
-                                "Required env vars: POD_NAME={}, POD_NAMESPACE={}",
-                                std::env::var("POD_NAME")
-                                    .unwrap_or_else(|_| "<not set>".to_string()),
-                                std::env::var("POD_NAMESPACE")
-                                    .unwrap_or_else(|_| "<not set>".to_string()),
-                            );
-                            error!(
-                                "Ensure the service account has RBAC permissions: \
-                                 verbs [get,create,update] on resource 'leases' in group 'coordination.k8s.io'"
-                            );
-                            error!(
-                                "Refusing to start with AlwaysLeader fallback to prevent split-brain. \
-                                 Fix the K8s configuration or switch to 'redis' leader election mode."
-                            );
-                            return Err(anyhow::anyhow!(
-                                "K8s leader election initialization failed: {e}. \
-                                 Cannot safely continue in cluster mode. \
-                                 Either fix K8s RBAC/env vars or set cluster.leader_election_mode='redis'"
-                            ));
-                        }
-                    }
-                }
-                #[cfg(not(feature = "k8s"))]
-                "k8s_lease" => {
-                    // CRITICAL: Feature not compiled in, cannot proceed.
-                    // This is a configuration error that must be fixed.
-                    error!(
-                        "K8s Lease-based leader election requested but the 'k8s' feature \
-                         was not compiled in. Rebuild with: cargo build --features k8s"
-                    );
-                    return Err(anyhow::anyhow!(
-                        "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
-                         Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
-                    ));
-                }
-                "redis" => {
-                    // Set metrics: Redis mode (1)
-                    synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(1);
+        let leader_elector = LeaderRuntimeBuilder::new(
+            true,
+            leader_mode,
+            &infra.node_id,
+            Some(plain_conn),
+            &infra.config.redis.key_prefix,
+            is_sentinel,
+        )
+        .build()
+        .await
+        .map_err(|e| {
+            error!(error = %e, mode = leader_mode, "CRITICAL: leader election initialization failed");
+            e
+        })?;
 
-                    let plain_conn = redis_conn.read().await.clone();
-                    let is_sentinel = matches!(
-                        infra.config.redis.deployment_mode,
-                        synctv_core::config::RedisDeploymentMode::Sentinel
-                    );
-                    let elector = LeaderElector::new(
-                        plain_conn,
-                        infra.node_id.clone(),
-                        &infra.config.redis.key_prefix,
-                        is_sentinel,
-                    );
-                    let handle = elector.start(leader_cancel.clone());
-                    info!(
-                        "Redis-based leader election started (node_id={})",
-                        infra.node_id
-                    );
-                    (
-                        Some(synctv_cluster::leader::AnyLeaderElector::Redis(elector)),
-                        Some(handle),
-                    )
-                }
-                _ => unreachable!(
-                    "cluster.leader_election_mode is validated before startup: {leader_mode}"
-                ),
+        match leader_mode {
+            "redis" => {
+                synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(1);
+                info!(
+                    "Redis-based leader election started (node_id={})",
+                    infra.node_id
+                );
             }
-        };
+            "k8s_lease" => {
+                synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(2);
+                info!("K8s Lease-based leader election started");
+            }
+            _ => unreachable!(
+                "cluster.leader_election_mode is validated before startup: {leader_mode}"
+            ),
+        }
+
+        let leader_election_handle = Some(leader_elector.start(leader_cancel.clone()));
 
         // Track leader election background task
         if let Some(handle) = leader_election_handle {
@@ -534,20 +486,7 @@ impl Application {
 
         // leader_elector is guaranteed to be Some here because we return early on error.
         // This eliminates the unsafe AlwaysLeader fallback that could cause split-brain.
-        let leader_runtime: Arc<dyn LeaderRuntime> = if let Some(elector) = &leader_elector {
-                Arc::new(elector.clone())
-            } else {
-                // This branch should never be reached because all code paths either
-                // set leader_elector to Some or return early with Err.
-                // However, if a logic bug causes us to reach here, fail gracefully
-                // instead of panicking, to avoid split-brain in cluster mode.
-                error!(
-                "CRITICAL: leader_elector is None after initialization - this indicates a logic bug"
-            );
-                return Err(anyhow::anyhow!(
-                    "leader_elector is None after successful initialization - this is a bug"
-                ));
-            };
+        let leader_runtime: Arc<dyn LeaderRuntime> = Arc::new(leader_elector);
 
         Ok(LeaderState { leader_runtime })
     }
@@ -645,7 +584,7 @@ impl Application {
             redis_conn_for_connections,
             &infra.config.redis.key_prefix,
             cluster_runtime_enabled(&infra.config),
-        );
+        )?;
         info!(
             max_per_user = infra.config.connection_limits.max_per_user,
             max_per_room = infra.config.connection_limits.max_per_room,
@@ -666,9 +605,7 @@ impl Application {
 
         // ClusterManager (requires Redis)
         let permission_service = Some(core.services.room_service.permission_service().clone());
-        let redis_handles = infra.redis_handles.as_ref().expect(
-            "cluster.enabled=true invariant violated: Redis must be configured before runtime init",
-        );
+        let redis_handles = require_cluster_redis_handles(infra.redis_handles.as_ref())?;
 
         // Create a cancellation token for the cluster manager that is a child
         // of the ShutdownCoordinator's token, so coordinator shutdown also
@@ -728,13 +665,21 @@ impl Application {
 
         // Cluster discovery (NodeRegistry, HealthMonitor) — requires Redis
         // D1 fix: When cluster is explicitly enabled, discovery failures are fatal.
-        let (node_registry, health_monitor, _load_balancer, dns_refresh_handle) =
-            init_cluster_discovery(&infra.config, redis_handles, &cluster_manager, &connection_manager)
-                .await?;
+        let (node_registry, health_monitor, _load_balancer, dns_refresh_handle, dns_bridge_handle) =
+            init_cluster_discovery(
+                &infra.config,
+                redis_handles,
+                &cluster_manager,
+                &connection_manager,
+            )
+            .await?;
 
         // Track DNS refresh task
         if let Some(handle) = dns_refresh_handle {
             shutdown.register_task("dns_refresh", handle);
+        }
+        if let Some(handle) = dns_bridge_handle {
+            shutdown.register_task("dns_bridge", handle);
         }
 
         let redis_publish_tx = cluster_manager.redis_publish_tx().cloned();
@@ -886,6 +831,22 @@ mod tests {
         assert!(should_start_cache_invalidation_listener(&config, true));
     }
 
+    #[test]
+    fn test_startup_partition_initialization_only_runs_in_standalone_mode() {
+        let mut config = Config::default();
+        config.server.cluster_secret = "shared-secret".to_string();
+
+        assert!(
+            should_run_startup_partition_initialization(&config),
+            "standalone mode must keep startup partition initialization enabled"
+        );
+
+        config.cluster.enabled = true;
+        assert!(
+            !should_run_startup_partition_initialization(&config),
+            "cluster mode must defer startup partition initialization to leader-gated tasks"
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires Docker"]
@@ -913,7 +874,8 @@ mod tests {
             Some(conn.clone()),
             "test-cluster:",
             true,
-        );
+        )
+        .expect("cluster mode should require and accept Redis-backed connection manager");
 
         let cluster_config = ClusterConfig {
             redis_client: Some(client),
@@ -938,7 +900,7 @@ mod tests {
         assert!(!metrics.has_leader_elector);
 
         cluster_manager.set_connection_manager(connection_manager);
-        cluster_manager.set_leader_elector(Arc::new(synctv_cluster::leader::AnyLeaderElector::Disabled));
+        cluster_manager.set_leader_elector(Arc::new(synctv_core::service::AlwaysLeader));
 
         let metrics = cluster_manager.metrics();
         assert!(metrics.has_connection_manager);
@@ -973,7 +935,8 @@ mod tests {
             Some(app_conn),
             "test-app:",
             true,
-        );
+        )
+        .expect("cluster mode should build Redis-backed connection manager");
 
         manager
             .register(
@@ -1031,7 +994,8 @@ mod tests {
             Some(app_conn),
             "test-standalone:",
             false,
-        );
+        )
+        .expect("standalone mode should build local connection manager");
 
         manager
             .register(
@@ -1059,5 +1023,47 @@ mod tests {
         );
 
         manager.shutdown();
+    }
+
+    #[test]
+    fn test_build_connection_manager_returns_error_without_redis_in_cluster_mode() {
+        let error = match build_connection_manager(ConnectionLimits::default(), None, "test:", true)
+        {
+            Ok(_) => panic!("cluster mode without Redis wiring must return an error"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster.enabled=true requires Redis-backed ConnectionManager wiring"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_require_cluster_redis_handles_returns_error_instead_of_panicking() {
+        let error = require_cluster_redis_handles(None)
+            .expect_err("missing Redis handles in cluster runtime must return an error");
+
+        assert!(
+            error.to_string().contains(
+                "startup invariant violated: cluster runtime reached without Redis handle wiring"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_require_cluster_redis_conn_returns_error_instead_of_panicking() {
+        let error = require_cluster_redis_conn(None)
+            .expect_err("missing Redis connection in cluster runtime must return an error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("startup invariant violated: cluster runtime reached without Redis connection wiring"),
+            "unexpected error: {error}"
+        );
     }
 }

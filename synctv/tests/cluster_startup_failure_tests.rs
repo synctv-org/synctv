@@ -9,10 +9,9 @@
 #![allow(clippy::unwrap_used)]
 use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig, Config,
-    ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
-    HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
-    MessagingRateLimitConfig, OAuth2Config, PasswordComplexityConfig, RedisConfig,
-    ServerConfig, WebRTCConfig,
+    ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig, HttpRateLimitConfig,
+    JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig, MessagingRateLimitConfig,
+    OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig, WebRTCConfig,
 };
 
 /// Create a minimal standalone config for testing (no Redis, no cluster mode)
@@ -305,8 +304,7 @@ mod p1_cluster_cleanup_tests {
         // Create a local-only registry and start heartbeat loop.
         // This test verifies cancellation semantics, not Redis I/O latency.
         let registry = Arc::new(
-            NodeRegistry::new_local_only("cancel-test-node".to_string(), 30, "test:")
-                .unwrap(),
+            NodeRegistry::new_local_only("cancel-test-node".to_string(), 30, "test:").unwrap(),
         );
         registry
             .test_insert_local(NodeInfo::new(

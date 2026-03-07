@@ -15,7 +15,7 @@ use synctv_cluster::leader::{LeaderRuntime, LeaderRuntimeBuilder};
 use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
 use synctv_core::{
     bootstrap::{
-        bootstrap_root_user, database::init_database_with_cancel, has_any_users, init_redis,
+        bootstrap_root_user, database::init_database_with_cancel, has_any_admin_users, init_redis,
         init_services, RedisHandles,
     },
     cache::{CacheInvalidationService, KeyBuilder},
@@ -89,6 +89,10 @@ fn should_start_cache_invalidation_listener(config: &Config, has_redis: bool) ->
 
 fn should_run_startup_partition_initialization(config: &Config) -> bool {
     !cluster_runtime_enabled(config)
+}
+
+const fn should_continue_startup_after_root_bootstrap_failure(has_admin_user: bool) -> bool {
+    has_admin_user
 }
 
 fn build_connection_manager(
@@ -279,15 +283,17 @@ impl Application {
         // Bootstrap root user
         info!("Checking root user bootstrap...");
         if let Err(e) = bootstrap_root_user(&infra.pool, &infra.config.bootstrap).await {
-            // On first deployment (no users exist), bootstrap failure is fatal
-            // because there would be no way to administer the system.
-            if has_any_users(&infra.pool).await {
+            // Startup can continue only if the system already has an active
+            // administrator account that can manage it.
+            if should_continue_startup_after_root_bootstrap_failure(
+                has_any_admin_users(&infra.pool).await,
+            ) {
                 warn!("Failed to bootstrap root user: {}", e);
-                warn!("Existing users found, continuing startup");
+                warn!("Existing administrator found, continuing startup");
             } else {
                 return Err(anyhow::anyhow!(
-                    "Failed to bootstrap root user on first deployment (no users exist): {e}. \
-                     The system cannot operate without at least one user."
+                    "Failed to bootstrap root user and no active administrator exists: {e}. \
+                     The system cannot operate without at least one administrator."
                 ));
             }
         }
@@ -428,9 +434,9 @@ impl Application {
             synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(1);
             synctv_core::metrics::cluster::LEADER_ELECTION_EPOCH.set(0);
             synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(0);
-        return Ok(LeaderState {
-            leader_runtime: Arc::new(synctv_core::service::AlwaysLeader),
-        });
+            return Ok(LeaderState {
+                leader_runtime: Arc::new(synctv_core::service::AlwaysLeader),
+            });
         }
 
         let redis_conn = require_cluster_redis_conn(core.services.redis_conn.as_ref())?;
@@ -815,9 +821,8 @@ mod tests {
     use synctv_core::config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
         ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
-        HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig,
-        MediaProvidersConfig, OAuth2Config, PasswordComplexityConfig, RedisConfig,
-        ServerConfig, WebRTCConfig,
+        HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
+        OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig, WebRTCConfig,
     };
 
     fn minimal_valid_startup_config() -> Config {
@@ -916,6 +921,18 @@ mod tests {
         assert!(
             !should_run_startup_partition_initialization(&config),
             "cluster mode must defer startup partition initialization to leader-gated tasks"
+        );
+    }
+
+    #[test]
+    fn test_root_bootstrap_failure_only_allows_existing_admins() {
+        assert!(
+            should_continue_startup_after_root_bootstrap_failure(true),
+            "existing admins should allow startup to continue"
+        );
+        assert!(
+            !should_continue_startup_after_root_bootstrap_failure(false),
+            "non-admin user presence must not mask bootstrap failure"
         );
     }
 

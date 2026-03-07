@@ -20,7 +20,6 @@
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use tokio::sync::OnceCell;
 use synctv_core::{
     cache::{self, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -33,17 +32,13 @@ use synctv_core::{
     Error, KeyBuilder,
 };
 use synctv_core_testing::{create_test_pool, start_redis_url, RedisContainer, TestContainer};
+use tokio::sync::OnceCell;
 
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
 
-async fn create_test_infra() -> (
-    TestContainer,
-    RedisContainer,
-    PgPool,
-    String,
-) {
+async fn create_test_infra() -> (TestContainer, RedisContainer, PgPool, String) {
     let (postgres, pool) = create_test_pool().await;
     let (redis, redis_url) = start_redis_url().await;
 

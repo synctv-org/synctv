@@ -19,8 +19,6 @@
 use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
-use synctv_core_testing::postgres::docker_startup_timeout;
-use synctv_core_testing::start_redis_url as start_test_redis_url;
 use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
     models::{
@@ -33,6 +31,8 @@ use synctv_core::{
     },
     service::{permission::PermissionService, playback::PlaybackService},
 };
+use synctv_core_testing::postgres::docker_startup_timeout;
+use synctv_core_testing::start_redis_url as start_test_redis_url;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
@@ -852,11 +852,10 @@ async fn test_cache_consistency_without_redis() {
 // ============================================================================
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
-    let container =
-        tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis");
+    let container = tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Redis");
     let port = container
         .get_host_port_ipv4(6379)
         .await

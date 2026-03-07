@@ -13,7 +13,7 @@ use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use crate::{apply_provider_headers, PROXY_CLIENT};
+use crate::{apply_provider_headers, proxy_client};
 
 use super::backend::{CacheBackend, SliceCacheBackend};
 use super::config::{CacheBackendConfig, SliceCacheConfig};
@@ -335,7 +335,7 @@ impl SliceCache {
             aligned_range_for_slice(slice_index, self.config.slice_size, total_size)?;
         let range_header = format!("bytes={range_start}-{range_end}");
 
-        let mut request = PROXY_CLIENT.get(url);
+        let mut request = proxy_client()?.get(url);
         request = apply_provider_headers(request, url, provider_headers)?;
         request = request.header("Range", &range_header);
 
@@ -375,7 +375,7 @@ impl SliceCache {
             // Entry was evicted between the conditional request and now --
             // fall through to a full re-fetch.  This is an unlikely edge
             // case; we rebuild the request without conditional headers.
-            let mut request2 = PROXY_CLIENT.get(url);
+            let mut request2 = proxy_client()?.get(url);
             request2 = apply_provider_headers(request2, url, provider_headers)?;
             request2 = request2.header("Range", &range_header);
             let resp2 = match request2.send().await {

@@ -12,11 +12,11 @@ use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_core_testing::postgres::docker_startup_timeout;
 use synctv_core::{
     models::ProviderInstance, repository::ProviderInstanceRepository,
     service::remote_provider_manager::RemoteProviderManager,
 };
+use synctv_core_testing::postgres::docker_startup_timeout;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use tokio::sync::OnceCell;
@@ -320,7 +320,12 @@ async fn scenario_redis_pubsub_invalidation() {
 
     wait_until(Duration::from_secs(3), Duration::from_millis(50), || {
         let manager2 = &manager2;
-        async move { manager2.list().await.contains(&"test-instance-4".to_string()) }
+        async move {
+            manager2
+                .list()
+                .await
+                .contains(&"test-instance-4".to_string())
+        }
     })
     .await;
 
@@ -633,14 +638,13 @@ async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     let result = manager
-        .resolve_client_required(
-            Some("missing-instance"),
-            |_channel| "remote",
-            || "local",
-        )
+        .resolve_client_required(Some("missing-instance"), |_channel| "remote", || "local")
         .await;
 
-    assert!(result.is_err(), "explicit remote instance must not fallback to local");
+    assert!(
+        result.is_err(),
+        "explicit remote instance must not fallback to local"
+    );
     let err = result.unwrap_err();
     assert!(
         matches!(err, synctv_core::provider::ProviderError::InstanceNotFound(ref name) if name == "missing-instance"),
@@ -1117,9 +1121,8 @@ async fn scenario_provider_instance_parse_timeout() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
 async fn test_remote_provider_manager_scenarios() {
-    let _ = rustls::crypto::CryptoProvider::install_default(
-        rustls::crypto::ring::default_provider(),
-    );
+    let _ =
+        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
     scenario_channel_creation_from_db_config().await;
     scenario_channel_cache_hit().await;
     scenario_channel_cache_ttl_expiration().await;

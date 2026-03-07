@@ -3234,5 +3234,4 @@ mod tests {
         .expect("should parse admin role");
         assert_eq!(admin_role, UserRole::Admin);
     }
-
 }

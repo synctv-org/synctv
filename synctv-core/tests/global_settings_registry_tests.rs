@@ -550,7 +550,6 @@ fn test_public_settings_skips_empty_custom_publish_host() {
     assert!(!json.contains("custom_publish_host"));
 }
 
-
 // ============================================================================
 // Concurrent Updates Test (Last Write Wins)
 // ============================================================================

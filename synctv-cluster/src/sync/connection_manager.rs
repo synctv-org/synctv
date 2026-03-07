@@ -1554,24 +1554,27 @@ impl ConnectionManager {
             for room_id in room_ids {
                 let connection_ids = self.get_room_connections_distributed(room_id).await?;
                 for connection_id in connection_ids {
-                    let conn_key = format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix);
+                    let conn_key =
+                        format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix);
                     let mut conn_clone = self
                         .redis_conn
                         .as_ref()
                         .expect("checked is_some above")
                         .clone();
 
-                    let metadata: Option<String> = conn_clone
-                        .get(&conn_key)
-                        .await
-                        .map_err(|e| format!("Failed to fetch distributed connection metadata: {e}"))?;
+                    let metadata: Option<String> =
+                        conn_clone.get(&conn_key).await.map_err(|e| {
+                            format!("Failed to fetch distributed connection metadata: {e}")
+                        })?;
 
                     let Some(metadata) = metadata else {
                         continue;
                     };
 
-                    let info: ConnectionInfoPersistent = serde_json::from_str(&metadata)
-                        .map_err(|e| format!("Failed to deserialize distributed connection metadata: {e}"))?;
+                    let info: ConnectionInfoPersistent =
+                        serde_json::from_str(&metadata).map_err(|e| {
+                            format!("Failed to deserialize distributed connection metadata: {e}")
+                        })?;
 
                     if info.room_id.as_deref() == Some(room_id.as_str()) {
                         room_to_users
@@ -2520,7 +2523,10 @@ impl ConnectionManager {
     ///
     /// In standalone mode this uses local in-memory state. In cluster mode it
     /// derives the count from the Redis-backed distributed connection index.
-    pub async fn user_connection_count_distributed(&self, user_id: &UserId) -> Result<usize, String> {
+    pub async fn user_connection_count_distributed(
+        &self,
+        user_id: &UserId,
+    ) -> Result<usize, String> {
         Ok(self.get_user_connections_distributed(user_id).await?.len())
     }
 
@@ -2590,9 +2596,12 @@ impl ConnectionManager {
 
             let mut count = 0usize;
             for entry in metadata.into_iter().flatten() {
-                let info: ConnectionInfoPersistent = serde_json::from_str(&entry)
-                    .map_err(|e| format!("Failed to deserialize distributed connection metadata: {e}"))?;
-                if info.user_id == user_id.as_str() && info.room_id.as_deref() == Some(room_id.as_str()) {
+                let info: ConnectionInfoPersistent = serde_json::from_str(&entry).map_err(|e| {
+                    format!("Failed to deserialize distributed connection metadata: {e}")
+                })?;
+                if info.user_id == user_id.as_str()
+                    && info.room_id.as_deref() == Some(room_id.as_str())
+                {
                     count += 1;
                 }
             }
@@ -2661,12 +2670,9 @@ impl ConnectionManager {
             return Ok(false);
         }
 
-        Ok(self
-            .get_user_connections(user_id)
-            .into_iter()
-            .any(|conn| {
-                conn.connection_id != excluding_connection_id && conn.room_id.as_ref() == Some(room_id)
-            }))
+        Ok(self.get_user_connections(user_id).into_iter().any(|conn| {
+            conn.connection_id != excluding_connection_id && conn.room_id.as_ref() == Some(room_id)
+        }))
     }
 
     /// Returns true if the user already has at least one active connection in the same room,
@@ -2840,7 +2846,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_has_other_connection_for_user_in_room_distributed_uses_local_state_without_redis() {
+    async fn test_has_other_connection_for_user_in_room_distributed_uses_local_state_without_redis()
+    {
         let manager = ConnectionManager::default();
         let user_id = UserId::from_string("user1".to_string());
         let room_id = RoomId::from_string("room1".to_string());

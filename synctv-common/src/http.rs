@@ -92,14 +92,7 @@ impl SsrfSafeClientBuilder {
     }
 
     /// Build the [`reqwest::Client`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the underlying `reqwest::ClientBuilder` fails (e.g., TLS
-    /// backend unavailable). This is intentional — callers typically store
-    /// the result in a `LazyLock` and cannot propagate errors.
-    #[must_use]
-    pub fn build(self) -> reqwest::Client {
+    pub fn build(self) -> Result<reqwest::Client, reqwest::Error> {
         let mut builder = reqwest::Client::builder()
             .dns_resolver(ssrf_dns_resolver())
             .connect_timeout(self.connect_timeout)
@@ -117,25 +110,21 @@ impl SsrfSafeClientBuilder {
             builder = builder.user_agent(ua);
         }
 
-        builder
-            .build()
-            .expect("Failed to build SSRF-safe HTTP client")
+        builder.build()
     }
 }
 
 /// Build a provider-preset client (convenience wrapper).
 ///
 /// Equivalent to `SsrfSafeClientBuilder::provider().build()`.
-#[must_use]
-pub fn build_provider_client() -> reqwest::Client {
+pub fn build_provider_client() -> Result<reqwest::Client, reqwest::Error> {
     SsrfSafeClientBuilder::provider().build()
 }
 
 /// Build a proxy-preset client (convenience wrapper).
 ///
 /// Equivalent to `SsrfSafeClientBuilder::proxy().build()`.
-#[must_use]
-pub fn build_proxy_client() -> reqwest::Client {
+pub fn build_proxy_client() -> Result<reqwest::Client, reqwest::Error> {
     SsrfSafeClientBuilder::proxy().build()
 }
 
@@ -182,18 +171,19 @@ mod tests {
 
     #[test]
     fn test_build_provider_client() {
-        let _client = build_provider_client();
+        let _client = build_provider_client().expect("provider client should build");
     }
 
     #[test]
     fn test_build_proxy_client() {
-        let _client = build_proxy_client();
+        let _client = build_proxy_client().expect("proxy client should build");
     }
 
     #[test]
     fn test_build_with_user_agent() {
         let _client = SsrfSafeClientBuilder::provider()
             .user_agent("MyApp/1.0")
-            .build();
+            .build()
+            .expect("custom provider client should build");
     }
 }

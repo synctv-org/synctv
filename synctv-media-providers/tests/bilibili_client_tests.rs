@@ -3,15 +3,14 @@
 //! Tests for `parse_video_page`, `get_video_url`, `get_dash_video_url`,
 //! and `get_live_streams` using wiremock mocked endpoints.
 //!
-//! Note: `BilibiliClient` uses a shared static `SHARED_CLIENT` that hardcodes
-//! Bilibili's API hostnames. To test with wiremock, we cannot redirect
-//! `BilibiliClient` methods to a local mock server (they always hit
-//! api.bilibili.com). Instead, we test the lower-level utilities and
-//! `match_url` parsing thoroughly, and add wiremock tests for the helpers
-//! and error-checking code paths that we CAN intercept.
+//! The client supports transport and endpoint injection, so critical HTTP paths
+//! can be verified against a local mock server.
 
 #![allow(clippy::unwrap_used)]
+use synctv_media_providers::bilibili::client::BilibiliEndpoints;
 use synctv_media_providers::BilibiliClient;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ============================================================================
 // match_url additional coverage
@@ -112,8 +111,8 @@ fn test_is_short_link_false_positives() {
 
 #[test]
 fn test_client_creation_no_cookies() {
-    // BilibiliClient::new() is infallible; just verify it doesn't panic.
-    let _client = BilibiliClient::new();
+    let client = BilibiliClient::new();
+    assert!(client.is_ok(), "client construction should succeed");
 }
 
 #[test]
@@ -121,8 +120,38 @@ fn test_client_creation_with_cookies() {
     let mut cookies = std::collections::HashMap::new();
     cookies.insert("SESSDATA".to_string(), "abc123".to_string());
     cookies.insert("bili_jct".to_string(), "csrf_token".to_string());
-    // BilibiliClient::with_cookies() is infallible; just verify it doesn't panic.
-    let _client = BilibiliClient::with_cookies(cookies);
+    let client = BilibiliClient::with_cookies(cookies);
+    assert!(
+        client.is_ok(),
+        "client construction with cookies should succeed"
+    );
+}
+
+#[tokio::test]
+async fn test_new_qr_code_uses_injected_endpoints() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/passport-login/web/qrcode/generate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "code": 0,
+            "message": "0",
+            "data": {
+                "url": "https://mock.local/qr",
+                "qrcode_key": "qr-test-key"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = BilibiliClient::new_with_transport_defaults(
+        reqwest::Client::new(),
+        BilibiliEndpoints::for_test(server.uri()),
+    )
+    .unwrap();
+
+    let (url, key) = client.new_qr_code().await.unwrap();
+    assert_eq!(url, "https://mock.local/qr");
+    assert_eq!(key, "qr-test-key");
 }
 
 // ============================================================================

@@ -436,7 +436,9 @@ where
                     .check_rate_limit_distributed(&rate_key, max_reqs, win_secs)
                     .await
             } else {
-                rate_limiter.check_rate_limit(&rate_key, max_reqs, win_secs).await
+                rate_limiter
+                    .check_rate_limit(&rate_key, max_reqs, win_secs)
+                    .await
             };
 
             if let Err(_e) = rate_limit_result {

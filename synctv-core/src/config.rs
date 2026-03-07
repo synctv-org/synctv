@@ -1,7 +1,11 @@
 use config::{Config as ConfigBuilder, ConfigError, File};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
-use std::str::FromStr;
+
+fn process_env(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
 
 /// Application configuration
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -696,6 +700,20 @@ impl Config {
     /// 2. Config file (if provided)
     /// 3. Defaults (lowest priority)
     pub fn load(config_file: Option<&str>) -> Result<Self, ConfigError> {
+        Self::load_with_env(config_file, &process_env)
+    }
+
+    pub fn load_with_env_map(
+        config_file: Option<&str>,
+        env: &HashMap<String, String>,
+    ) -> Result<Self, ConfigError> {
+        Self::load_with_env(config_file, &|name| env.get(name).cloned())
+    }
+
+    fn load_with_env(
+        config_file: Option<&str>,
+        get_env: &impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, ConfigError> {
         let mut builder = ConfigBuilder::builder();
 
         // Load config file if provided
@@ -712,7 +730,7 @@ impl Config {
         // We don't use the config crate's Environment source because its separator
         // cannot distinguish nesting from underscores within field names.
         // Instead, every SYNCTV_ env var is mapped explicitly here.
-        config.apply_env_overrides()?;
+        config.apply_env_overrides_with(get_env)?;
 
         Ok(config)
     }
@@ -720,6 +738,10 @@ impl Config {
     /// Load from environment variables only (for Docker/K8s)
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::load(None)
+    }
+
+    pub fn from_env_map(env: &HashMap<String, String>) -> Result<Self, ConfigError> {
+        Self::load_with_env_map(None, env)
     }
 
     /// Load from file path
@@ -770,16 +792,23 @@ impl Config {
     /// This address must be routable from other nodes (never `0.0.0.0`).
     #[must_use]
     pub fn advertise_host(&self) -> String {
+        self.advertise_host_with(&process_env)
+    }
+
+    #[must_use]
+    pub fn advertise_host_with_env_map(&self, env: &HashMap<String, String>) -> String {
+        self.advertise_host_with(&|name| env.get(name).cloned())
+    }
+
+    fn advertise_host_with(&self, get_env: &impl Fn(&str) -> Option<String>) -> String {
         // 1. Explicit config value (set via SYNCTV_SERVER_ADVERTISE_HOST)
         if !self.server.advertise_host.is_empty() {
             return self.server.advertise_host.clone();
         }
 
         // 2. POD_IP env var (set by Kubernetes downward API)
-        if let Ok(pod_ip) = std::env::var("POD_IP") {
-            if !pod_ip.is_empty() {
-                return pod_ip;
-            }
+        if let Some(pod_ip) = get_env("POD_IP").filter(|value| !value.is_empty()) {
+            return pod_ip;
         }
 
         // 3. System hostname (local-only fallback; avoids external network dependency)
@@ -809,7 +838,86 @@ impl Config {
     /// - `SYNCTV_SERVER_HOST=0.0.0.0`
     /// - `SYNCTV_DATABASE_URL=postgresql://...`
     /// - `SYNCTV_SERVER_ADVERTISE_HOST=10.0.0.1`
-    fn apply_env_overrides(&mut self) -> Result<(), ConfigError> {
+    fn apply_env_overrides_with(
+        &mut self,
+        get_env: &impl Fn(&str) -> Option<String>,
+    ) -> Result<(), ConfigError> {
+        let env_override_str = |name: &str, target: &mut String| {
+            if let Some(val) = get_env(name) {
+                *target = val;
+            }
+        };
+        let env_override_opt_str = |name: &str, target: &mut Option<String>| {
+            if let Some(val) = get_env(name) {
+                *target = Some(val);
+            }
+        };
+        let env_override_parse = |name: &str,
+                                  target: &mut dyn std::any::Any|
+         -> Result<(), ConfigError> {
+            macro_rules! parse_into {
+                    ($ty:ty) => {
+                        if let Some(target) = target.downcast_mut::<$ty>() {
+                            if let Some(val) = get_env(name) {
+                                let parsed = val.parse().map_err(|error| {
+                                    ConfigError::Message(format!(
+                                        "Invalid value for environment variable {name}: '{val}' ({error})"
+                                    ))
+                                })?;
+                                *target = parsed;
+                            }
+                            return Ok(());
+                        }
+                    };
+                }
+            parse_into!(u16);
+            parse_into!(u32);
+            parse_into!(u64);
+            parse_into!(usize);
+            parse_into!(i32);
+            parse_into!(i64);
+            parse_into!(f64);
+            Err(ConfigError::Message(format!(
+                "Unsupported environment override target type for {name}"
+            )))
+        };
+        let env_override_bool = |name: &str, target: &mut bool| -> Result<(), ConfigError> {
+            if let Some(val) = get_env(name) {
+                match val.to_lowercase().as_str() {
+                    "true" | "1" | "yes" => *target = true,
+                    "false" | "0" | "no" => *target = false,
+                    _ => {
+                        return Err(ConfigError::Message(format!(
+                            "Invalid boolean value for environment variable {name}: '{val}'"
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        };
+        let env_override_csv = |name: &str, target: &mut Vec<String>| {
+            if let Some(val) = get_env(name) {
+                *target = val
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+        };
+        let env_override_json_or_csv = |name: &str, target: &mut Vec<String>| {
+            if let Some(val) = get_env(name) {
+                if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&val) {
+                    *target = parsed;
+                } else {
+                    *target = val
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+            }
+        };
+
         // -- Server --
         env_override_str("SYNCTV_SERVER_HOST", &mut self.server.host);
         env_override_parse("SYNCTV_SERVER_GRPC_PORT", &mut self.server.grpc_port)?;
@@ -881,7 +989,7 @@ impl Config {
             &mut self.redis.connect_timeout_seconds,
         )?;
         env_override_str("SYNCTV_REDIS_KEY_PREFIX", &mut self.redis.key_prefix);
-        if let Ok(val) = std::env::var("SYNCTV_REDIS_DEPLOYMENT_MODE") {
+        if let Some(val) = get_env("SYNCTV_REDIS_DEPLOYMENT_MODE") {
             match val.to_lowercase().as_str() {
                 "standalone" => self.redis.deployment_mode = RedisDeploymentMode::Standalone,
                 "sentinel" => self.redis.deployment_mode = RedisDeploymentMode::Sentinel,
@@ -995,7 +1103,7 @@ impl Config {
         )?;
 
         // -- WebRTC --
-        if let Ok(val) = std::env::var("SYNCTV_WEBRTC_MODE") {
+        if let Some(val) = get_env("SYNCTV_WEBRTC_MODE") {
             match val.to_lowercase().as_str() {
                 "signaling_only" => self.webrtc.mode = WebRTCMode::SignalingOnly,
                 "peer_to_peer" => self.webrtc.mode = WebRTCMode::PeerToPeer,
@@ -1282,6 +1390,17 @@ impl Config {
 
     /// Validate configuration at startup (fail fast on misconfigurations)
     pub fn validate(&self) -> Result<(), Vec<String>> {
+        self.validate_with_env(&process_env)
+    }
+
+    pub fn validate_with_env_map(&self, env: &HashMap<String, String>) -> Result<(), Vec<String>> {
+        self.validate_with_env(&|name| env.get(name).cloned())
+    }
+
+    fn validate_with_env(
+        &self,
+        get_env: &impl Fn(&str) -> Option<String>,
+    ) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
         // Validate port numbers are in valid range (1-65535)
@@ -1320,9 +1439,7 @@ impl Config {
         }
 
         if self.server.shutdown_drain_timeout_seconds == 0 {
-            errors.push(
-                "server.shutdown_drain_timeout_seconds must be greater than 0".to_string(),
-            );
+            errors.push("server.shutdown_drain_timeout_seconds must be greater than 0".to_string());
         }
 
         // Validate JWT secret
@@ -1679,8 +1796,8 @@ impl Config {
                 );
             }
 
-            match std::env::var("HEADLESS_SERVICE_NAME") {
-                Ok(value) if !value.trim().is_empty() => {}
+            match get_env("HEADLESS_SERVICE_NAME") {
+                Some(value) if !value.trim().is_empty() => {}
                 _ => errors.push(
                     "cluster.discovery_mode='k8s_dns' requires HEADLESS_SERVICE_NAME to be set \
                      during configuration validation."
@@ -1688,8 +1805,8 @@ impl Config {
                 ),
             }
 
-            match std::env::var("POD_NAMESPACE") {
-                Ok(value) if !value.trim().is_empty() => {}
+            match get_env("POD_NAMESPACE") {
+                Some(value) if !value.trim().is_empty() => {}
                 _ => errors.push(
                     "cluster.discovery_mode='k8s_dns' requires POD_NAMESPACE to be set \
                      during configuration validation."
@@ -1707,8 +1824,8 @@ impl Config {
                 );
             }
 
-            match std::env::var("POD_NAME") {
-                Ok(value) if !value.trim().is_empty() => {}
+            match get_env("POD_NAME") {
+                Some(value) if !value.trim().is_empty() => {}
                 _ => errors.push(
                     "cluster.leader_election_mode='k8s_lease' requires POD_NAME to be set \
                      during configuration validation."
@@ -1716,8 +1833,8 @@ impl Config {
                 ),
             }
 
-            match std::env::var("POD_NAMESPACE") {
-                Ok(value) if !value.trim().is_empty() => {}
+            match get_env("POD_NAMESPACE") {
+                Some(value) if !value.trim().is_empty() => {}
                 _ => errors.push(
                     "cluster.leader_election_mode='k8s_lease' requires POD_NAMESPACE to be set \
                      during configuration validation."
@@ -1784,7 +1901,7 @@ impl Config {
             );
         }
 
-        if self.cluster.enabled && self.advertise_host() == "0.0.0.0" {
+        if self.cluster.enabled && self.advertise_host_with(get_env) == "0.0.0.0" {
             errors.push(
                 "server.advertise_host must resolve to a routable address when cluster mode is enabled. \
                  The current advertise host resolves to 0.0.0.0, which other replicas cannot reach for gRPC/HLS proxying. \
@@ -1868,79 +1985,6 @@ impl Config {
             Ok(())
         } else {
             Err(errors)
-        }
-    }
-}
-
-// --- Environment variable override helpers (single underscore format) ---
-
-fn env_override_str(name: &str, target: &mut String) {
-    if let Ok(val) = std::env::var(name) {
-        *target = val;
-    }
-}
-
-fn env_override_opt_str(name: &str, target: &mut Option<String>) {
-    if let Ok(val) = std::env::var(name) {
-        *target = Some(val);
-    }
-}
-
-fn env_override_parse<T>(name: &str, target: &mut T) -> Result<(), ConfigError>
-where
-    T: FromStr,
-    <T as FromStr>::Err: std::fmt::Display,
-{
-    if let Ok(val) = std::env::var(name) {
-        let parsed = val.parse().map_err(|error| {
-            ConfigError::Message(format!(
-                "Invalid value for environment variable {name}: '{val}' ({error})"
-            ))
-        })?;
-        *target = parsed;
-    }
-
-    Ok(())
-}
-
-fn env_override_bool(name: &str, target: &mut bool) -> Result<(), ConfigError> {
-    if let Ok(val) = std::env::var(name) {
-        match val.to_lowercase().as_str() {
-            "true" | "1" | "yes" => *target = true,
-            "false" | "0" | "no" => *target = false,
-            _ => {
-                return Err(ConfigError::Message(format!(
-                    "Invalid boolean value for environment variable {name}: '{val}'"
-                )));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn env_override_csv(name: &str, target: &mut Vec<String>) {
-    if let Ok(val) = std::env::var(name) {
-        *target = val
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-}
-
-fn env_override_json_or_csv(name: &str, target: &mut Vec<String>) {
-    if let Ok(val) = std::env::var(name) {
-        // Try JSON array first (e.g., '["https://app.example.com"]')
-        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&val) {
-            *target = parsed;
-        } else {
-            // Fall back to comma-separated
-            *target = val
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
         }
     }
 }
@@ -2311,29 +2355,18 @@ impl Default for GrpcRateLimitConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::collections::HashMap;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn set_env_var(key: &str, value: Option<&str>) -> Option<String> {
-        let previous = std::env::var(key).ok();
-        match value {
-            Some(value) => std::env::set_var(key, value),
-            None => std::env::remove_var(key),
-        }
-        previous
-    }
-
-    fn restore_env_var(key: &str, previous: Option<String>) {
-        match previous {
-            Some(value) => std::env::set_var(key, value),
-            None => std::env::remove_var(key),
-        }
+    fn env_map(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
     }
 
     #[test]
     fn test_default_config() {
-        let config = Config::from_env().unwrap_or_else(|_| Config {
+        let config = Config::from_env_map(&HashMap::new()).unwrap_or_else(|_| Config {
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),
@@ -2441,60 +2474,46 @@ mod tests {
 
     #[test]
     fn test_advertise_host_prefers_explicit_config_over_env() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_pod_ip = set_env_var("POD_IP", Some("10.0.0.99"));
-
         let mut config = valid_prod_config();
         config.server.advertise_host = "10.1.2.3".to_string();
 
-        assert_eq!(config.advertise_host(), "10.1.2.3");
-
-        restore_env_var("POD_IP", old_pod_ip);
+        assert_eq!(
+            config.advertise_host_with_env_map(&env_map(&[("POD_IP", "10.0.0.99")])),
+            "10.1.2.3"
+        );
     }
 
     #[test]
     fn test_advertise_host_uses_pod_ip_before_hostname() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_pod_ip = set_env_var("POD_IP", Some("10.2.3.4"));
-
         let config = valid_prod_config();
 
-        assert_eq!(config.advertise_host(), "10.2.3.4");
-
-        restore_env_var("POD_IP", old_pod_ip);
+        assert_eq!(
+            config.advertise_host_with_env_map(&env_map(&[("POD_IP", "10.2.3.4")])),
+            "10.2.3.4"
+        );
     }
 
     #[test]
     fn test_advertise_host_falls_back_to_hostname_without_pod_ip() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_pod_ip = set_env_var("POD_IP", None);
-
         let config = valid_prod_config();
-        let advertise_host = config.advertise_host();
+        let advertise_host = config.advertise_host_with_env_map(&HashMap::new());
 
         assert!(
             !advertise_host.is_empty(),
             "hostname fallback should produce a non-empty advertise host"
         );
         assert_ne!(advertise_host, "0.0.0.0");
-
-        restore_env_var("POD_IP", old_pod_ip);
     }
 
     #[test]
     fn test_cluster_mode_rejects_unroutable_advertise_host() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_pod_ip = set_env_var("POD_IP", None);
-
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.server.advertise_host = "0.0.0.0".to_string();
 
         let errors = config
-            .validate()
+            .validate_with_env_map(&HashMap::new())
             .expect_err("cluster mode must reject unroutable advertise_host");
-
-        restore_env_var("POD_IP", old_pod_ip);
 
         assert!(
             errors.iter().any(|e| e.contains("server.advertise_host")),
@@ -2504,12 +2523,8 @@ mod tests {
 
     #[test]
     fn test_from_env_rejects_invalid_numeric_override() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_port = set_env_var("SYNCTV_SERVER_HTTP_PORT", Some("not-a-port"));
-
-        let error = Config::from_env().expect_err("invalid numeric override must fail closed");
-
-        restore_env_var("SYNCTV_SERVER_HTTP_PORT", old_port);
+        let error = Config::from_env_map(&env_map(&[("SYNCTV_SERVER_HTTP_PORT", "not-a-port")]))
+            .expect_err("invalid numeric override must fail closed");
 
         let message = error.to_string();
         assert!(message.contains("SYNCTV_SERVER_HTTP_PORT"));
@@ -2518,12 +2533,8 @@ mod tests {
 
     #[test]
     fn test_from_env_rejects_invalid_boolean_override() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_metrics = set_env_var("SYNCTV_SERVER_METRICS_ENABLED", Some("maybe"));
-
-        let error = Config::from_env().expect_err("invalid boolean override must fail closed");
-
-        restore_env_var("SYNCTV_SERVER_METRICS_ENABLED", old_metrics);
+        let error = Config::from_env_map(&env_map(&[("SYNCTV_SERVER_METRICS_ENABLED", "maybe")]))
+            .expect_err("invalid boolean override must fail closed");
 
         let message = error.to_string();
         assert!(message.contains("SYNCTV_SERVER_METRICS_ENABLED"));
@@ -2629,10 +2640,6 @@ mod tests {
 
     #[test]
     fn test_validate_cluster_oauth2_accepts_redis_sentinel_backend_without_url() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_pod_name = set_env_var("POD_NAME", Some("synctv-0"));
-        let old_pod_namespace = set_env_var("POD_NAMESPACE", Some("default"));
-
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.cluster.leader_election_mode = "k8s_lease".to_string();
@@ -2648,10 +2655,10 @@ mod tests {
         config.redis.sentinel_master_name = Some("mymaster".to_string());
         config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
 
-        let result = config.validate();
-
-        restore_env_var("POD_NAME", old_pod_name);
-        restore_env_var("POD_NAMESPACE", old_pod_namespace);
+        let result = config.validate_with_env_map(&env_map(&[
+            ("POD_NAME", "synctv-0"),
+            ("POD_NAMESPACE", "default"),
+        ]));
 
         if let Err(errors) = result {
             assert!(
@@ -2855,9 +2862,15 @@ mod tests {
 
         let errors = config.validate().unwrap_err();
 
-        assert!(errors.iter().any(|e| e.contains("database.connect_timeout_seconds")));
-        assert!(errors.iter().any(|e| e.contains("database.idle_timeout_seconds")));
-        assert!(errors.iter().any(|e| e.contains("database.max_lifetime_seconds")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("database.connect_timeout_seconds")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("database.idle_timeout_seconds")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("database.max_lifetime_seconds")));
     }
 
     #[test]
@@ -2883,38 +2896,38 @@ mod tests {
         let mut config = valid_prod_config();
 
         config.messaging_rate_limits.chat_per_second = 0;
-        let errors = config.validate().expect_err("chat rate limit must be validated");
-        assert!(errors.iter().any(|e| e.contains("messaging_rate_limits.chat_per_second")));
+        let errors = config
+            .validate()
+            .expect_err("chat rate limit must be validated");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("messaging_rate_limits.chat_per_second")));
 
         config.messaging_rate_limits.chat_per_second = 1;
         config.messaging_rate_limits.danmaku_per_second = 0;
-        let errors = config.validate().expect_err("danmaku rate limit must be validated");
-        assert!(errors.iter().any(|e| e.contains("messaging_rate_limits.danmaku_per_second")));
+        let errors = config
+            .validate()
+            .expect_err("danmaku rate limit must be validated");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("messaging_rate_limits.danmaku_per_second")));
 
         config.messaging_rate_limits.danmaku_per_second = 1;
         config.messaging_rate_limits.window_seconds = 0;
         let errors = config.validate().expect_err("window must be validated");
-        assert!(errors.iter().any(|e| e.contains("messaging_rate_limits.window_seconds")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("messaging_rate_limits.window_seconds")));
     }
 
     #[test]
     fn test_from_env_overrides_messaging_rate_limits() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_chat = set_env_var("SYNCTV_MESSAGING_RATE_LIMITS_CHAT_PER_SECOND", Some("17"));
-        let old_danmaku = set_env_var(
-            "SYNCTV_MESSAGING_RATE_LIMITS_DANMAKU_PER_SECOND",
-            Some("9"),
-        );
-        let old_window = set_env_var("SYNCTV_MESSAGING_RATE_LIMITS_WINDOW_SECONDS", Some("4"));
-
-        let config = Config::from_env().expect("messaging rate env overrides should parse");
-
-        restore_env_var("SYNCTV_MESSAGING_RATE_LIMITS_CHAT_PER_SECOND", old_chat);
-        restore_env_var(
-            "SYNCTV_MESSAGING_RATE_LIMITS_DANMAKU_PER_SECOND",
-            old_danmaku,
-        );
-        restore_env_var("SYNCTV_MESSAGING_RATE_LIMITS_WINDOW_SECONDS", old_window);
+        let config = Config::from_env_map(&env_map(&[
+            ("SYNCTV_MESSAGING_RATE_LIMITS_CHAT_PER_SECOND", "17"),
+            ("SYNCTV_MESSAGING_RATE_LIMITS_DANMAKU_PER_SECOND", "9"),
+            ("SYNCTV_MESSAGING_RATE_LIMITS_WINDOW_SECONDS", "4"),
+        ]))
+        .expect("messaging rate env overrides should parse");
 
         assert_eq!(config.messaging_rate_limits.chat_per_second, 17);
         assert_eq!(config.messaging_rate_limits.danmaku_per_second, 9);
@@ -3122,18 +3135,11 @@ mod tests {
 
     #[test]
     fn test_validate_k8s_dns_requires_env_vars_in_cluster_mode() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_headless = set_env_var("HEADLESS_SERVICE_NAME", None);
-        let old_namespace = set_env_var("POD_NAMESPACE", None);
-
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.cluster.discovery_mode = "k8s_dns".to_string();
 
-        let errors = config.validate().unwrap_err();
-
-        restore_env_var("HEADLESS_SERVICE_NAME", old_headless);
-        restore_env_var("POD_NAMESPACE", old_namespace);
+        let errors = config.validate_with_env_map(&HashMap::new()).unwrap_err();
 
         assert!(
             errors
@@ -3151,18 +3157,11 @@ mod tests {
 
     #[test]
     fn test_validate_k8s_lease_requires_env_vars_in_cluster_mode() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_pod_name = set_env_var("POD_NAME", None);
-        let old_namespace = set_env_var("POD_NAMESPACE", None);
-
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.cluster.leader_election_mode = "k8s_lease".to_string();
 
-        let errors = config.validate().unwrap_err();
-
-        restore_env_var("POD_NAME", old_pod_name);
-        restore_env_var("POD_NAMESPACE", old_namespace);
+        let errors = config.validate_with_env_map(&HashMap::new()).unwrap_err();
 
         assert!(
             errors
@@ -3193,18 +3192,16 @@ mod tests {
             return;
         }
 
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_headless = set_env_var("HEADLESS_SERVICE_NAME", Some("synctv-headless"));
-        let old_namespace = set_env_var("POD_NAMESPACE", Some("default"));
-
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.cluster.discovery_mode = "k8s_dns".to_string();
 
-        let errors = config.validate().unwrap_err();
-
-        restore_env_var("HEADLESS_SERVICE_NAME", old_headless);
-        restore_env_var("POD_NAMESPACE", old_namespace);
+        let errors = config
+            .validate_with_env_map(&env_map(&[
+                ("HEADLESS_SERVICE_NAME", "synctv-headless"),
+                ("POD_NAMESPACE", "default"),
+            ]))
+            .unwrap_err();
 
         assert!(
             errors
@@ -3220,18 +3217,16 @@ mod tests {
             return;
         }
 
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let old_pod_name = set_env_var("POD_NAME", Some("synctv-0"));
-        let old_namespace = set_env_var("POD_NAMESPACE", Some("default"));
-
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.cluster.leader_election_mode = "k8s_lease".to_string();
 
-        let errors = config.validate().unwrap_err();
-
-        restore_env_var("POD_NAME", old_pod_name);
-        restore_env_var("POD_NAMESPACE", old_namespace);
+        let errors = config
+            .validate_with_env_map(&env_map(&[
+                ("POD_NAME", "synctv-0"),
+                ("POD_NAMESPACE", "default"),
+            ]))
+            .unwrap_err();
 
         assert!(
             errors

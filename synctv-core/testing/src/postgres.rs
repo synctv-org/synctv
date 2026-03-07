@@ -25,8 +25,12 @@ pub type TestContainer = ContainerAsync<Postgres>;
 /// resources, making a 30s cap spuriously fail healthy tests.
 #[must_use]
 pub fn docker_startup_timeout() -> Duration {
-    std::env::var(DOCKER_STARTUP_TIMEOUT_ENV)
-        .ok()
+    docker_startup_timeout_from(std::env::var(DOCKER_STARTUP_TIMEOUT_ENV).ok().as_deref())
+}
+
+#[must_use]
+fn docker_startup_timeout_from(value: Option<&str>) -> Duration {
+    value
         .and_then(|value| value.parse::<u64>().ok())
         .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
         .map(Duration::from_secs)
@@ -175,66 +179,35 @@ pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) 
 mod tests {
     use super::*;
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn test_docker_startup_timeout_defaults_to_extended_budget() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        unsafe {
-            std::env::remove_var(DOCKER_STARTUP_TIMEOUT_ENV);
-        }
-
         assert_eq!(
-            docker_startup_timeout(),
+            docker_startup_timeout_from(None),
             Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS)
         );
     }
 
     #[test]
     fn test_docker_startup_timeout_honors_valid_override() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        unsafe {
-            std::env::set_var(DOCKER_STARTUP_TIMEOUT_ENV, "180");
-        }
-
-        assert_eq!(docker_startup_timeout(), Duration::from_secs(180));
-
-        unsafe {
-            std::env::remove_var(DOCKER_STARTUP_TIMEOUT_ENV);
-        }
+        assert_eq!(
+            docker_startup_timeout_from(Some("180")),
+            Duration::from_secs(180)
+        );
     }
 
     #[test]
     fn test_docker_startup_timeout_rejects_too_small_override() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        unsafe {
-            std::env::set_var(DOCKER_STARTUP_TIMEOUT_ENV, "5");
-        }
-
         assert_eq!(
-            docker_startup_timeout(),
+            docker_startup_timeout_from(Some("5")),
             Duration::from_secs(MIN_DOCKER_STARTUP_TIMEOUT_SECS)
         );
-
-        unsafe {
-            std::env::remove_var(DOCKER_STARTUP_TIMEOUT_ENV);
-        }
     }
 
     #[test]
     fn test_docker_startup_timeout_ignores_invalid_override() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        unsafe {
-            std::env::set_var(DOCKER_STARTUP_TIMEOUT_ENV, "not-a-number");
-        }
-
         assert_eq!(
-            docker_startup_timeout(),
+            docker_startup_timeout_from(Some("not-a-number")),
             Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS)
         );
-
-        unsafe {
-            std::env::remove_var(DOCKER_STARTUP_TIMEOUT_ENV);
-        }
     }
 }

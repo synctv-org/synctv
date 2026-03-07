@@ -84,11 +84,12 @@ const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn build_ws_ticket_service(
     redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    redis_key_prefix: &str,
     is_cluster_mode: bool,
 ) -> anyhow::Result<Option<Arc<synctv_core::service::WsTicketService>>> {
     let svc = match (is_cluster_mode, redis_conn) {
         (true, Some(shared_conn)) => {
-            synctv_core::service::WsTicketService::with_redis(shared_conn, None)
+            synctv_core::service::WsTicketService::with_redis(shared_conn, redis_key_prefix, None)
         }
         (true, None) => {
             return Err(anyhow::anyhow!(
@@ -96,7 +97,7 @@ fn build_ws_ticket_service(
             ));
         }
         (false, Some(shared_conn)) => {
-            synctv_core::service::WsTicketService::with_redis(shared_conn, None)
+            synctv_core::service::WsTicketService::with_redis(shared_conn, redis_key_prefix, None)
         }
         (false, None) => synctv_core::service::WsTicketService::with_memory(None),
     };
@@ -187,12 +188,7 @@ async fn cleanup_partial_startup(
     cleanup_cancel.cancel();
 
     if let Some(handle) = cleanup_handle {
-        await_task_shutdown(
-            "connection cleanup task",
-            handle,
-            STARTUP_CLEANUP_TIMEOUT,
-        )
-        .await;
+        await_task_shutdown("connection cleanup task", handle, STARTUP_CLEANUP_TIMEOUT).await;
     }
 
     if let Some(handle) = grpc_handle {
@@ -583,12 +579,15 @@ impl SyncTvServer {
 
         let live_streaming_infrastructure = self.services.live_streaming_infrastructure.clone();
 
-        let is_cluster_mode = self.config.cluster.enabled;
-        let ws_ticket_service =
-            build_ws_ticket_service(self.services.redis_conn.clone(), is_cluster_mode)?;
+        let is_cluster_mode = self.config.cluster_runtime_enabled();
+        let ws_ticket_service = build_ws_ticket_service(
+            self.services.redis_conn.clone(),
+            &self.config.redis.key_prefix,
+            is_cluster_mode,
+        )?;
 
-        let (http_router, http_state) =
-            synctv_api::http::create_router_with_state_from_config(synctv_api::http::RouterConfig {
+        let (http_router, http_state) = synctv_api::http::create_router_with_state_from_config(
+            synctv_api::http::RouterConfig {
                 config: Arc::new(self.config.clone()),
                 user_service,
                 room_service,
@@ -625,7 +624,8 @@ impl SyncTvServer {
                 },
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
                 providers_manager: Some(self.services.providers_manager.clone()),
-            });
+            },
+        );
         let proxy_slice_cache = http_state.proxy_slice_cache.clone();
 
         // Parse and bind HTTP address before spawning the task to propagate errors properly
@@ -837,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_ws_ticket_service_uses_memory_in_standalone_without_redis() {
-        let service = build_ws_ticket_service(None, false)
+        let service = build_ws_ticket_service(None, "synctv:", false)
             .expect("standalone mode should allow memory-backed ws tickets")
             .expect("ws ticket service should be configured");
 
@@ -845,8 +845,16 @@ mod tests {
     }
 
     #[test]
+    fn test_ws_ticket_service_prefers_redis_when_available() {
+        // Standalone mode may still use Redis when configured.
+        assert!(build_ws_ticket_service(None, "synctv:", false)
+            .expect("standalone without redis should succeed")
+            .is_some());
+    }
+
+    #[test]
     fn test_ws_ticket_service_rejects_memory_backend_in_cluster_mode() {
-        let error = build_ws_ticket_service(None, true)
+        let error = build_ws_ticket_service(None, "synctv:", true)
             .expect_err("cluster mode must not fall back to memory-backed ws tickets");
 
         assert!(

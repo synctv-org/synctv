@@ -10,6 +10,7 @@
 //! Run with: cargo test --test `ws_ticket_redis_tests`
 #![allow(clippy::unwrap_used)]
 
+use redis::AsyncCommands;
 use std::sync::Arc;
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::WsTicketService;
@@ -35,7 +36,7 @@ fn room_id(id: &str) -> RoomId {
 #[ignore = "Requires Docker"]
 async fn test_redis_ticket_create_and_validate_roundtrip() {
     let (_container, conn) = start_redis().await;
-    let service = WsTicketService::with_redis(conn, Some(30));
+    let service = WsTicketService::with_redis(conn, "synctv:", Some(30));
 
     let uid = user_id("user_rt_1");
     let rid = room_id("room_rt_1");
@@ -52,7 +53,7 @@ async fn test_redis_ticket_create_and_validate_roundtrip() {
 #[ignore = "Requires Docker"]
 async fn test_redis_ticket_one_time_use() {
     let (_container, conn) = start_redis().await;
-    let service = WsTicketService::with_redis(conn, Some(30));
+    let service = WsTicketService::with_redis(conn, "synctv:", Some(30));
 
     let uid = user_id("user_otu_1");
     let rid = room_id("room_otu_1");
@@ -75,7 +76,7 @@ async fn test_redis_ticket_one_time_use() {
 #[ignore = "Requires Docker"]
 async fn test_redis_ticket_room_mismatch_rejected() {
     let (_container, conn) = start_redis().await;
-    let service = WsTicketService::with_redis(conn, Some(30));
+    let service = WsTicketService::with_redis(conn, "synctv:", Some(30));
 
     let uid = user_id("user_rm_1");
     let room_a = room_id("room_a");
@@ -96,7 +97,7 @@ async fn test_redis_ticket_room_mismatch_rejected() {
 async fn test_redis_ticket_ttl_expiry() {
     let (_container, conn) = start_redis().await;
     // 1-second TTL
-    let service = WsTicketService::with_redis(conn, Some(1));
+    let service = WsTicketService::with_redis(conn, "synctv:", Some(1));
 
     let uid = user_id("user_ttl_1");
     let rid = room_id("room_ttl_1");
@@ -114,7 +115,7 @@ async fn test_redis_ticket_ttl_expiry() {
 #[ignore = "Requires Docker"]
 async fn test_redis_ticket_concurrent_consumption() {
     let (_container, conn) = start_redis().await;
-    let service = WsTicketService::with_redis(conn, Some(30));
+    let service = WsTicketService::with_redis(conn, "synctv:", Some(30));
 
     let uid = user_id("user_conc_1");
     let rid = room_id("room_conc_1");
@@ -160,7 +161,7 @@ async fn test_redis_ticket_concurrent_consumption() {
 async fn test_cluster_mode_with_redis_succeeds() {
     let (_container, conn) = start_redis().await;
 
-    let service = WsTicketService::new(Some(conn), Some(30));
+    let service = WsTicketService::new(Some(conn), "synctv:", Some(30));
     assert_eq!(
         service.backend_name(),
         "redis",
@@ -174,7 +175,7 @@ async fn test_cluster_mode_with_redis_succeeds() {
 async fn test_cluster_mode_with_redis_roundtrip() {
     let (_container, conn) = start_redis().await;
 
-    let service = WsTicketService::new(Some(conn), Some(30));
+    let service = WsTicketService::new(Some(conn), "synctv:", Some(30));
 
     let uid = user_id("cluster_user_1");
     let rid = room_id("cluster_room_1");
@@ -193,7 +194,7 @@ async fn test_cluster_mode_with_redis_roundtrip() {
 async fn test_cluster_mode_with_redis_custom_ttl() {
     let (_container, conn) = start_redis().await;
 
-    let service = WsTicketService::new(Some(conn), Some(60));
+    let service = WsTicketService::new(Some(conn), "synctv:", Some(60));
 
     assert_eq!(service.ticket_ttl_secs(), 60);
 }
@@ -205,7 +206,7 @@ async fn test_cluster_mode_with_redis_custom_ttl() {
 async fn test_with_redis_creates_redis_backend() {
     let (_container, conn) = start_redis().await;
 
-    let service = WsTicketService::with_redis(conn, Some(30));
+    let service = WsTicketService::with_redis(conn, "synctv:", Some(30));
 
     assert_eq!(service.backend_name(), "redis");
 }
@@ -222,14 +223,14 @@ async fn test_cluster_mode_simulated_multi_replica_roundtrip() {
     let conn_clone = conn.clone();
 
     // "Replica A" creates the ticket
-    let service_a = WsTicketService::new(Some(conn), Some(30));
+    let service_a = WsTicketService::new(Some(conn), "synctv:", Some(30));
     let uid = user_id("multi_replica_user");
     let rid = room_id("multi_replica_room");
 
     let ticket = service_a.create_ticket(&uid, &rid, 0).await.unwrap();
 
     // "Replica B" (different service instance, same Redis) validates the ticket
-    let service_b = WsTicketService::new(Some(conn_clone), Some(30));
+    let service_b = WsTicketService::new(Some(conn_clone), "synctv:", Some(30));
 
     let validated = service_b.validate_and_consume(&ticket, &rid).await.unwrap();
     assert_eq!(validated.user_id.as_str(), "multi_replica_user");
@@ -237,4 +238,34 @@ async fn test_cluster_mode_simulated_multi_replica_roundtrip() {
     // Ticket should be consumed (one-time use)
     let result = service_a.validate_and_consume(&ticket, &rid).await;
     assert!(result.is_err(), "Ticket should already be consumed");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_redis_ticket_uses_configured_key_prefix() {
+    let (_container, conn) = start_redis().await;
+    let service = WsTicketService::with_redis(conn.clone(), "tenant-a:", Some(30));
+
+    let uid = user_id("user_prefix_1");
+    let rid = room_id("room_prefix_1");
+    let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
+
+    let mut redis_conn = conn.read().await.clone();
+    let payload: Option<String> = redis_conn
+        .get(format!("tenant-a:ws_ticket:{ticket}"))
+        .await
+        .unwrap();
+    assert!(
+        payload.is_some(),
+        "ticket must be stored under configured prefix"
+    );
+
+    let old_key_payload: Option<String> = redis_conn
+        .get(format!("synctv:ws_ticket:{ticket}"))
+        .await
+        .unwrap();
+    assert!(
+        old_key_payload.is_none(),
+        "ticket must not leak into hard-coded default prefix"
+    );
 }

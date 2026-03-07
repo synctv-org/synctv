@@ -39,11 +39,71 @@ const REFERER: &str = "https://www.bilibili.com";
 
 /// Shared HTTP client for all Bilibili requests (connection pooling).
 /// SSRF-safe: uses the common DNS resolver and disables redirects.
-static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
+static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> = LazyLock::new(|| {
     synctv_common::http::SsrfSafeClientBuilder::provider()
         .user_agent(USER_AGENT)
         .build()
 });
+
+fn shared_client() -> Result<Client, BilibiliError> {
+    SHARED_CLIENT
+        .as_ref()
+        .map(Clone::clone)
+        .map_err(|err| BilibiliError::Network(err.to_string()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BilibiliEndpoints {
+    pub web_base: String,
+    pub api_base: String,
+    pub passport_base: String,
+    pub live_api_base: String,
+}
+
+impl Default for BilibiliEndpoints {
+    fn default() -> Self {
+        Self {
+            web_base: "https://www.bilibili.com".to_string(),
+            api_base: "https://api.bilibili.com".to_string(),
+            passport_base: "https://passport.bilibili.com".to_string(),
+            live_api_base: "https://api.live.bilibili.com".to_string(),
+        }
+    }
+}
+
+impl BilibiliEndpoints {
+    #[must_use]
+    pub fn for_test(base_url: impl AsRef<str>) -> Self {
+        let base = base_url.as_ref().trim_end_matches('/').to_string();
+        Self {
+            web_base: base.clone(),
+            api_base: base.clone(),
+            passport_base: base.clone(),
+            live_api_base: base,
+        }
+    }
+
+    fn join(base: &str, path: &str) -> String {
+        format!(
+            "{}/{}",
+            base.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
+    }
+
+    fn api_url(&self, path: &str) -> String {
+        Self::join(&self.api_base, path)
+    }
+
+    fn passport_url(&self, path: &str) -> String {
+        Self::join(&self.passport_base, path)
+    }
+
+    #[allow(dead_code)]
+    fn live_api_url(&self, path: &str) -> String {
+        Self::join(&self.live_api_base, path)
+    }
+}
 
 // ============================================================================
 // WBI Signing
@@ -265,44 +325,76 @@ pub struct BilibiliClient {
     client: Client,
     cookies: Option<HashMap<String, String>>,
     wbi_state: Arc<WbiState>,
+    endpoints: BilibiliEndpoints,
 }
 
 impl BilibiliClient {
     /// Create a new Bilibili client (reuses shared connection pool and rate limiter).
-    ///
-    /// This is infallible because the shared HTTP client is constructed lazily
-    /// via `LazyLock` and the constructor only clones an `Arc`.
-    #[must_use]
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, BilibiliError> {
         Self::new_with_wbi_state(Arc::new(WbiState::default()))
     }
 
-    pub(crate) fn new_with_wbi_state(wbi_state: Arc<WbiState>) -> Self {
-        Self {
-            client: SHARED_CLIENT.clone(),
+    pub(crate) fn new_with_wbi_state(wbi_state: Arc<WbiState>) -> Result<Self, BilibiliError> {
+        Self::new_with_transport(shared_client()?, BilibiliEndpoints::default(), wbi_state)
+    }
+
+    pub(crate) fn new_with_transport(
+        client: Client,
+        endpoints: BilibiliEndpoints,
+        wbi_state: Arc<WbiState>,
+    ) -> Result<Self, BilibiliError> {
+        Ok(Self {
+            client,
             cookies: None,
             wbi_state,
-        }
+            endpoints,
+        })
+    }
+
+    pub fn new_with_transport_defaults(
+        client: Client,
+        endpoints: BilibiliEndpoints,
+    ) -> Result<Self, BilibiliError> {
+        Self::new_with_transport(client, endpoints, Arc::new(WbiState::default()))
     }
 
     /// Create a new Bilibili client with cookies (reuses shared connection pool and rate limiter).
-    ///
-    /// This is infallible because the shared HTTP client is constructed lazily
-    /// via `LazyLock` and the constructor only clones an `Arc`.
-    #[must_use]
-    pub fn with_cookies(cookies: HashMap<String, String>) -> Self {
+    pub fn with_cookies(cookies: HashMap<String, String>) -> Result<Self, BilibiliError> {
         Self::with_cookies_and_wbi_state(cookies, Arc::new(WbiState::default()))
     }
 
     pub(crate) fn with_cookies_and_wbi_state(
         cookies: HashMap<String, String>,
         wbi_state: Arc<WbiState>,
-    ) -> Self {
-        Self {
-            client: SHARED_CLIENT.clone(),
+    ) -> Result<Self, BilibiliError> {
+        Self::with_cookies_and_transport(
+            cookies,
+            shared_client()?,
+            BilibiliEndpoints::default(),
+            wbi_state,
+        )
+    }
+
+    pub(crate) fn with_cookies_and_transport(
+        cookies: HashMap<String, String>,
+        client: Client,
+        endpoints: BilibiliEndpoints,
+        wbi_state: Arc<WbiState>,
+    ) -> Result<Self, BilibiliError> {
+        Ok(Self {
+            client,
             cookies: Some(cookies),
             wbi_state,
-        }
+            endpoints,
+        })
+    }
+
+    pub fn with_cookies_and_transport_defaults(
+        cookies: HashMap<String, String>,
+        client: Client,
+        endpoints: BilibiliEndpoints,
+    ) -> Result<Self, BilibiliError> {
+        Self::with_cookies_and_transport(cookies, client, endpoints, Arc::new(WbiState::default()))
     }
 
     #[cfg(test)]
@@ -534,11 +626,11 @@ impl BilibiliClient {
             data: Option<QrCodeData>,
         }
 
-        let url = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
-        let req = self
-            .client
-            .get(url)
-            .header("Referer", "https://passport.bilibili.com/login");
+        let url = self
+            .endpoints
+            .passport_url("/x/passport-login/web/qrcode/generate");
+        let referer = self.endpoints.passport_url("/login");
+        let req = self.client.get(url).header("Referer", referer);
 
         let resp = check_response(req.send().await?).await?;
         let json: QrCodeResp = json_with_limit(resp).await?;
@@ -1113,19 +1205,23 @@ impl BilibiliClient {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
         let bvid = bvid.to_string();
+        let endpoint = self.endpoints.api_url("/x/web-interface/view");
+        let referer = self.endpoints.web_base.clone();
 
         with_retry(|| {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
             let bvid = bvid.clone();
+            let endpoint = endpoint.clone();
+            let referer = referer.clone();
             async move {
-                let mut req = client.get("https://api.bilibili.com/x/web-interface/view");
+                let mut req = client.get(&endpoint);
                 if bvid.is_empty() {
                     req = req.query(&[("aid", &aid.to_string())]);
                 } else {
                     req = req.query(&[("bvid", &bvid)]);
                 }
-                req = req.header("Referer", REFERER);
+                req = req.header("Referer", referer.as_str());
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
@@ -1938,7 +2034,7 @@ impl BilibiliClient {
     ///
     /// # async fn demo() -> Result<(), BilibiliError> {
     /// let room_id = 123_u64;
-    /// let client = Arc::new(BilibiliClient::new());
+    /// let client = Arc::new(BilibiliClient::new()?);
     /// let config = ReconnectConfig {
     ///     max_retries: 5,
     ///     initial_delay: Duration::from_secs(1),
@@ -2179,7 +2275,7 @@ impl LiveDanmakuConnection {
     ///
     /// # async fn demo() -> Result<(), BilibiliError> {
     /// let room_id = 123_u64;
-    /// let client = BilibiliClient::new();
+    /// let client = BilibiliClient::new()?;
     /// let conn = Arc::new(client.connect_live_danmaku(room_id).await?);
     /// let config = HeartbeatConfig {
     ///     interval: Duration::from_secs(30),
@@ -2281,7 +2377,7 @@ pub enum ReconnectResult {
 ///
 /// # async fn demo() -> Result<(), BilibiliError> {
 /// let room_id = 123_u64;
-/// let client = Arc::new(BilibiliClient::new());
+/// let client = Arc::new(BilibiliClient::new()?);
 /// let reconnect_config = ReconnectConfig {
 ///     max_retries: 5,
 ///     initial_delay: Duration::from_secs(1),
@@ -2865,7 +2961,7 @@ pub struct DanmuHost {
 
 impl Default for BilibiliClient {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("default Bilibili client should construct shared HTTP client")
     }
 }
 
@@ -3425,7 +3521,7 @@ mod tests {
 
     #[test]
     fn test_client_creation_no_cookies() {
-        let client = BilibiliClient::new();
+        let client = BilibiliClient::new().unwrap();
         assert!(client.cookies.is_none());
     }
 
@@ -3433,7 +3529,7 @@ mod tests {
     fn test_client_creation_with_cookies() {
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "abc123".to_string());
-        let client = BilibiliClient::with_cookies(cookies.clone());
+        let client = BilibiliClient::with_cookies(cookies.clone()).unwrap();
         assert!(client.cookies.is_some());
         assert_eq!(
             client.cookies.as_ref().unwrap().get("SESSDATA"),
@@ -3814,7 +3910,7 @@ mod tests {
 
     #[test]
     fn test_build_cookie_header_empty_returns_none() {
-        let client = BilibiliClient::new();
+        let client = BilibiliClient::new().unwrap();
         assert!(client.build_cookie_header().is_none());
     }
 
@@ -3823,7 +3919,7 @@ mod tests {
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "abc123".to_string());
         cookies.insert("bili_jct".to_string(), "token456".to_string());
-        let client = BilibiliClient::with_cookies(cookies);
+        let client = BilibiliClient::with_cookies(cookies).unwrap();
 
         let header = client.build_cookie_header().unwrap();
         // Should contain both cookies joined by "; "
@@ -3836,7 +3932,7 @@ mod tests {
     fn test_build_cookie_header_sanitizes_crlf() {
         let mut cookies = HashMap::new();
         cookies.insert("evil\r\nkey".to_string(), "evil\r\nvalue".to_string());
-        let client = BilibiliClient::with_cookies(cookies);
+        let client = BilibiliClient::with_cookies(cookies).unwrap();
 
         let header = client.build_cookie_header().unwrap();
         // CRLF characters should be stripped
@@ -3847,8 +3943,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_wbi_state_is_isolated_per_client_instance() {
-        let client_a = BilibiliClient::new();
-        let client_b = BilibiliClient::new();
+        let client_a = BilibiliClient::new().unwrap();
+        let client_b = BilibiliClient::new().unwrap();
 
         let state_a = client_a.shared_wbi_state();
         let state_b = client_b.shared_wbi_state();

@@ -11,10 +11,7 @@ use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
 use integration_test_helpers::TestRedis;
 
-async fn setup_redis() -> (
-    TestRedis,
-    redis::aio::ConnectionManager,
-) {
+async fn setup_redis() -> (TestRedis, redis::aio::ConnectionManager) {
     let redis = TestRedis::start().await;
     let redis_client =
         redis::Client::open(redis.redis_url.as_str()).expect("Failed to create Redis client");
@@ -360,7 +357,8 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
 async fn test_reconcile_clears_stale_zero_count_counters() {
     let (_container, conn) = setup_redis().await;
 
-    let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), "reconcile_zero:");
+    let manager = ConnectionManager::new(ConnectionLimits::default())
+        .with_redis(conn.clone(), "reconcile_zero:");
     let user_id = uid("user_zero");
     let room_id = rid("room_zero");
 
@@ -368,7 +366,10 @@ async fn test_reconcile_clears_stale_zero_count_counters() {
         .register("conn_zero".to_string(), user_id.clone())
         .await
         .unwrap();
-    manager.join_room("conn_zero", room_id.clone()).await.unwrap();
+    manager
+        .join_room("conn_zero", room_id.clone())
+        .await
+        .unwrap();
     manager.unregister("conn_zero").await;
 
     assert_eq!(manager.connection_count(), 0);

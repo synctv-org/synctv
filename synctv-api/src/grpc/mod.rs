@@ -166,6 +166,13 @@ fn should_register_livestream_relay_service(
         && live_streaming_infrastructure_available
 }
 
+fn should_mark_livestream_relay_serving(
+    config: &synctv_core::Config,
+    live_streaming_infrastructure_available: bool,
+) -> bool {
+    should_register_livestream_relay_service(config, live_streaming_infrastructure_available)
+}
+
 fn validate_cluster_grpc_runtime_requirements(
     config: &synctv_core::Config,
     node_registry_available: bool,
@@ -814,12 +821,12 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             relay_service
         };
 
-        let relay_service = if let Some(hls_stream_registry) = live_infra.hls_stream_registry.clone()
-        {
-            relay_service.with_hls_stream_registry(hls_stream_registry)
-        } else {
-            relay_service
-        };
+        let relay_service =
+            if let Some(hls_stream_registry) = live_infra.hls_stream_registry.clone() {
+                relay_service.with_hls_stream_registry(hls_stream_registry)
+            } else {
+                relay_service
+            };
 
         let relay_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
         router = router.add_service(tonic::codegen::InterceptedService::new(
@@ -859,13 +866,15 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     health_reporter
         .set_serving::<AdminServiceServer<AdminServiceImpl>>()
         .await;
-    health_reporter
-        .set_serving::<synctv_livestream::grpc::StreamRelayServiceServer<
-            synctv_livestream::grpc::StreamRelayServiceImpl,
-        >>()
-        .await;
+    if should_mark_livestream_relay_serving(config, live_streaming_infrastructure.is_some()) {
+        health_reporter
+            .set_serving::<synctv_livestream::grpc::StreamRelayServiceServer<
+                synctv_livestream::grpc::StreamRelayServiceImpl,
+            >>()
+            .await;
+    }
     router = router.add_service(health_service);
-    tracing::info!("gRPC health check service registered (all services marked SERVING)");
+    tracing::info!("gRPC health check service registered");
 
     // Register gRPC reflection service if enabled in config
     if config.server.enable_reflection {
@@ -915,8 +924,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_register_cluster_grpc_service, should_register_livestream_relay_service,
-        validate_cluster_grpc_runtime_requirements,
+        should_mark_livestream_relay_serving, should_register_cluster_grpc_service,
+        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
     };
 
     #[test]
@@ -1009,6 +1018,14 @@ mod tests {
         assert!(
             should_register_livestream_relay_service(&config, true),
             "cluster mode with secret and livestream infra should register relay service"
+        );
+        assert!(
+            should_mark_livestream_relay_serving(&config, true),
+            "health status must only be marked serving when relay service is actually registered"
+        );
+        assert!(
+            !should_mark_livestream_relay_serving(&config, false),
+            "health status must not report relay serving when infra is unavailable"
         );
     }
 }

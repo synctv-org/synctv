@@ -1,13 +1,13 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Compile stream.proto for internal stream relay service
-    // This is service-to-service communication, not exposed externally
+    let protoc = protoc_bin_vendored::protoc_bin_path()?;
+    let mut prost_config = tonic_prost_build::Config::new();
+    prost_config.protoc_executable(protoc);
+
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
-        // Use bytes::Bytes instead of Vec<u8> for proto `bytes` fields,
-        // enabling zero-copy pass-through from FrameData (which also uses Bytes).
         .bytes(".")
-        .compile_protos(&["proto/stream.proto"], &["proto"])?;
+        .compile_with_config(prost_config, &["proto/stream.proto"], &["proto"])?;
 
     Ok(())
 }

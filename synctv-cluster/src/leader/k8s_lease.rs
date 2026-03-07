@@ -1112,5 +1112,4 @@ mod tests {
 
         assert_eq!(consecutive_failures.load(Ordering::Relaxed), 6);
     }
-
 }

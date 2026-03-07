@@ -1101,7 +1101,10 @@ mod tests {
         };
 
         let result = timeout(Duration::from_secs(1), session.handshake()).await;
-        assert!(result.is_ok(), "fragmented handshake should complete promptly");
+        assert!(
+            result.is_ok(),
+            "fragmented handshake should complete promptly"
+        );
         assert!(
             matches!(result.expect("timeout should not fire"), Ok(())),
             "fragmented handshake should not fail when C0/C1 arrives across TCP frames"

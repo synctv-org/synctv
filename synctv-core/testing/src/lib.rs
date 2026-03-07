@@ -15,8 +15,8 @@ pub mod services;
 pub use fixtures::{TestRoom, TestUser};
 pub use postgres::{create_test_pool, create_test_pool_with_db, TestContainer};
 pub use redis::{
-    start_redis, start_redis_shared, start_redis_url, start_redis_with_client, RedisContainer,
-    RedisConnectionManager, SharedRedisConnectionManager,
+    start_redis, start_redis_shared, start_redis_url, start_redis_with_client,
+    RedisConnectionManager, RedisContainer, SharedRedisConnectionManager,
 };
 pub use services::{
     create_test_attempt_tracker, create_test_brute_force_protection, create_test_jwt_service,

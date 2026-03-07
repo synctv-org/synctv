@@ -881,9 +881,9 @@ mod tests {
             .expect_err("cluster mode publish key service must return an error without Redis");
 
         assert!(
-            error
-                .to_string()
-                .contains("cluster mode requires Redis handles for fail-closed publish key deduplication"),
+            error.to_string().contains(
+                "cluster mode requires Redis handles for fail-closed publish key deduplication"
+            ),
             "unexpected error: {error}"
         );
     }

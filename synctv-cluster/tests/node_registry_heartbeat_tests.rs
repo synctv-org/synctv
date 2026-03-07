@@ -27,11 +27,10 @@ fn docker_startup_timeout() -> Duration {
 
 /// Helper to create a Redis container and client.
 async fn setup_redis() -> (testcontainers::ContainerAsync<Redis>, redis::Client, String) {
-    let redis_container =
-        tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis container");
+    let redis_container = tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Redis container");
 
     let redis_host = redis_container
         .get_host()

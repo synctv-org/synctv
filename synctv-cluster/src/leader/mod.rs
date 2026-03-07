@@ -1108,13 +1108,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_rejects_standalone_mode() {
-        let error = match LeaderRuntimeBuilder::new(false, "redis", "node-1", None, "synctv:", false)
-            .build()
-            .await
-        {
-            Ok(_) => panic!("standalone mode must use AlwaysLeader directly"),
-            Err(error) => error,
-        };
+        let error =
+            match LeaderRuntimeBuilder::new(false, "redis", "node-1", None, "synctv:", false)
+                .build()
+                .await
+            {
+                Ok(_) => panic!("standalone mode must use AlwaysLeader directly"),
+                Err(error) => error,
+            };
 
         assert!(
             error

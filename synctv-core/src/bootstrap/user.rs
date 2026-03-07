@@ -100,6 +100,29 @@ pub async fn has_any_users(pool: &PgPool) -> bool {
     .unwrap_or(false)
 }
 
+/// Check whether any active administrator-capable users exist in the database.
+///
+/// Startup may continue after bootstrap failure only when the system already has
+/// an existing administrative account (`root` or `admin`) that can manage it.
+pub async fn has_any_admin_users(pool: &PgPool) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM users
+            WHERE deleted_at IS NULL
+              AND status = $1
+              AND (role = $2 OR role = $3)
+            LIMIT 1
+        )",
+    )
+    .bind(UserStatus::Active)
+    .bind(UserRole::Root)
+    .bind(UserRole::Admin)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +158,13 @@ mod tests {
 
         assert_eq!(user.role, UserRole::Root);
         assert_eq!(user.status, UserStatus::Active);
+    }
+
+    #[test]
+    fn test_admin_roles_include_root_and_admin_only() {
+        assert!(matches!(UserRole::Root, UserRole::Root | UserRole::Admin));
+        assert!(matches!(UserRole::Admin, UserRole::Root | UserRole::Admin));
+        assert!(!matches!(UserRole::User, UserRole::Root | UserRole::Admin));
     }
 
     // Integration tests require database connection

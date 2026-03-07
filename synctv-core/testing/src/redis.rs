@@ -53,8 +53,10 @@ pub async fn start_redis_url() -> (RedisContainer, String) {
 pub async fn wait_for_redis_ready(client: &redis::Client) {
     for _ in 0..120 {
         if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
-            let ping_result: redis::RedisResult<String> = redis::cmd("PING").query_async(&mut conn).await;
-            let set_result: redis::RedisResult<()> = conn.set_ex("synctv:test:ping", "pong", 5).await;
+            let ping_result: redis::RedisResult<String> =
+                redis::cmd("PING").query_async(&mut conn).await;
+            let set_result: redis::RedisResult<()> =
+                conn.set_ex("synctv:test:ping", "pong", 5).await;
             let get_result: redis::RedisResult<String> = conn.get("synctv:test:ping").await;
             if ping_result.is_ok() && set_result.is_ok() && get_result.as_deref() == Ok("pong") {
                 return;

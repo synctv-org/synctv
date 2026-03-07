@@ -103,7 +103,8 @@ impl HeartbeatSchedule {
 
     #[must_use]
     pub fn period_with_random_jitter(self) -> Duration {
-        self.base_interval + Duration::from_secs(rand::rng().random_range(0u64..=self.max_jitter_secs))
+        self.base_interval
+            + Duration::from_secs(rand::rng().random_range(0u64..=self.max_jitter_secs))
     }
 
     #[must_use]
@@ -1395,7 +1396,10 @@ impl StreamMessageHandler {
         };
         let result = self.cluster_manager.broadcast(event);
 
-        if should_retry_user_left_broadcast(result.clone(), self.cluster_manager.metrics().redis_enabled) {
+        if should_retry_user_left_broadcast(
+            result.clone(),
+            self.cluster_manager.metrics().redis_enabled,
+        ) {
             // Critical UserLeft event failed to reach any destination.
             // This can happen when Redis is temporarily unavailable.
             // Spawn a background task to retry the broadcast with exponential backoff.
@@ -3027,7 +3031,11 @@ fn disconnect_signal_requires_skip_cleanup(
 }
 
 #[inline]
-fn admin_event_requires_skip_cleanup(event: &ClusterEvent, user_id: &UserId, room_id: &RoomId) -> bool {
+fn admin_event_requires_skip_cleanup(
+    event: &ClusterEvent,
+    user_id: &UserId,
+    room_id: &RoomId,
+) -> bool {
     match event {
         ClusterEvent::KickUser { user_id: uid, .. } => uid == user_id,
         ClusterEvent::KickUserFromRoom {
@@ -3043,7 +3051,6 @@ fn admin_event_requires_skip_cleanup(event: &ClusterEvent, user_id: &UserId, roo
         _ => false,
     }
 }
-
 
 /// Validate danmaku color format.
 ///
@@ -4059,7 +4066,9 @@ mod tests {
         );
         member.status = synctv_core::models::MemberStatus::Banned;
 
-        assert!(super::membership_invalidation_requires_skip_cleanup(Some(&member)));
+        assert!(super::membership_invalidation_requires_skip_cleanup(Some(
+            &member
+        )));
     }
 
     #[test]
@@ -4075,7 +4084,9 @@ mod tests {
             synctv_core::models::RoomRole::Member,
         );
 
-        assert!(!super::membership_invalidation_requires_skip_cleanup(Some(&member)));
+        assert!(!super::membership_invalidation_requires_skip_cleanup(Some(
+            &member
+        )));
     }
 
     #[test]
@@ -4152,7 +4163,6 @@ mod tests {
             &rid,
         ));
     }
-
 
     // ========== Connection Reservation Tests (P1#6) ==========
 

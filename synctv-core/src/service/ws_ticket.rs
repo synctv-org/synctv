@@ -117,28 +117,45 @@ pub trait TicketStore: Send + Sync {
 /// this store automatically picks up the new master.
 pub struct RedisTicketStore {
     shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    key_prefix: String,
 }
 
 impl RedisTicketStore {
+    fn normalize_key_prefix(prefix: impl Into<String>) -> String {
+        let key_prefix = prefix.into();
+        if key_prefix.is_empty() || key_prefix.ends_with(':') {
+            key_prefix
+        } else {
+            format!("{key_prefix}:")
+        }
+    }
+
     #[must_use]
-    pub fn new(shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
-        Self { shared_conn }
+    pub fn new(
+        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        Self {
+            shared_conn,
+            key_prefix: Self::normalize_key_prefix(key_prefix),
+        }
     }
 
     async fn conn(&self) -> redis::aio::ConnectionManager {
         self.shared_conn.read().await.clone()
     }
-}
 
-/// Redis key prefix for WebSocket tickets
-const WS_TICKET_PREFIX: &str = "synctv:ws_ticket:";
+    fn redis_key(&self, ticket: &str) -> String {
+        format!("{}ws_ticket:{}", self.key_prefix, ticket)
+    }
+}
 
 #[async_trait]
 impl TicketStore for RedisTicketStore {
     async fn store(&self, ticket: &str, data: &WsTicketData, ttl_secs: u64) -> Result<()> {
         use redis::AsyncCommands;
 
-        let key = format!("{WS_TICKET_PREFIX}{ticket}");
+        let key = self.redis_key(ticket);
         let json = serde_json::to_string(data)
             .map_err(|e| Error::Internal(format!("Failed to serialize ticket data: {e}")))?;
 
@@ -155,7 +172,7 @@ impl TicketStore for RedisTicketStore {
     }
 
     async fn consume(&self, ticket: &str) -> Result<Option<WsTicketData>> {
-        let key = format!("{WS_TICKET_PREFIX}{ticket}");
+        let key = self.redis_key(ticket);
         let mut conn = self.conn().await;
 
         // Get and delete atomically using Lua script
@@ -310,10 +327,11 @@ impl WsTicketService {
     #[must_use]
     pub fn with_redis(
         shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: impl Into<String>,
         ticket_ttl_secs: Option<u64>,
     ) -> Self {
         Self::from_store(
-            Arc::new(RedisTicketStore::new(shared_conn)),
+            Arc::new(RedisTicketStore::new(shared_conn, key_prefix)),
             ticket_ttl_secs,
         )
     }
@@ -333,10 +351,11 @@ impl WsTicketService {
     #[must_use]
     pub fn new(
         redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+        key_prefix: impl Into<String>,
         ticket_ttl_secs: Option<u64>,
     ) -> Self {
         if let Some(shared_conn) = redis_conn {
-            Self::with_redis(shared_conn, ticket_ttl_secs)
+            Self::with_redis(shared_conn, key_prefix, ticket_ttl_secs)
         } else {
             warn!(
                 "WebSocket ticket service using in-memory storage. \
@@ -670,7 +689,7 @@ mod tests {
 
     #[test]
     fn test_non_cluster_mode_allows_memory() {
-        let service = WsTicketService::new(None, None);
+        let service = WsTicketService::new(None, "synctv:", None);
         assert_eq!(service.store.backend_name(), "memory");
     }
 
@@ -681,13 +700,13 @@ mod tests {
     /// Test: backend selection without Redis uses memory.
     #[test]
     fn test_new_without_redis_uses_memory_backend() {
-        let service = WsTicketService::new(None, Some(30));
+        let service = WsTicketService::new(None, "synctv:", Some(30));
         assert_eq!(service.backend_name(), "memory");
     }
 
     #[test]
     fn test_new_without_redis_preserves_custom_ttl() {
-        let service = WsTicketService::new(None, Some(60));
+        let service = WsTicketService::new(None, "synctv:", Some(60));
         assert_eq!(service.ticket_ttl_secs(), 60);
     }
 
@@ -695,7 +714,7 @@ mod tests {
     /// Single-replica deployments should still function without Redis.
     #[test]
     fn test_non_cluster_mode_without_redis_succeeds() {
-        let service = WsTicketService::new(None, Some(30));
+        let service = WsTicketService::new(None, "synctv:", Some(30));
         assert_eq!(
             service.backend_name(),
             "memory",
@@ -711,5 +730,18 @@ mod tests {
 
         assert_eq!(service.backend_name(), "memory");
         assert_eq!(service.ticket_ttl_secs(), 45);
+    }
+
+    #[test]
+    fn test_redis_ticket_store_normalizes_prefix_separator() {
+        assert_eq!(
+            RedisTicketStore::normalize_key_prefix("tenant-a:"),
+            "tenant-a:"
+        );
+        assert_eq!(
+            RedisTicketStore::normalize_key_prefix("tenant-a"),
+            "tenant-a:"
+        );
+        assert_eq!(RedisTicketStore::normalize_key_prefix(""), "");
     }
 }

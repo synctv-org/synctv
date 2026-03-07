@@ -26,11 +26,12 @@ use std::process;
 use synctv_core::Config;
 
 fn main() {
-    // Set up basic console logging for validation output
-    if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "warn");
-    }
-    tracing_subscriber::fmt::init();
+    // Set up basic console logging for validation output without mutating the
+    // process environment (Rust 2024 treats env writes as unsafe).
+    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".to_string());
+    let filter = tracing_subscriber::EnvFilter::try_new(log_level)
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     println!("SyncTV Configuration Validator");
     println!("================================\n");
@@ -98,12 +99,17 @@ fn main() {
 
 /// Load configuration without starting the server
 fn load_config_for_validation(config_path: &Option<String>) -> Result<Config, String> {
+    load_config_for_validation_with_env(config_path, &std::collections::HashMap::new())
+}
+
+fn load_config_for_validation_with_env(
+    config_path: &Option<String>,
+    env: &std::collections::HashMap<String, String>,
+) -> Result<Config, String> {
     if let Some(path) = config_path {
         Config::from_file(path).map_err(|e| e.to_string())
     } else {
-        Config::from_env()
-            .or_else(|_| Ok(Config::default()))
-            .map_err(|e: std::convert::Infallible| e.to_string())
+        Config::from_env_map(env).map_err(|e| e.to_string())
     }
 }
 
@@ -175,4 +181,34 @@ fn mask_sensitive(url: &str) -> String {
     }
 
     url.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn load_config_for_validation_rejects_invalid_env_override() {
+        let result = load_config_for_validation_with_env(
+            &None,
+            &HashMap::from([(
+                "SYNCTV_SERVER_GRPC_PORT".to_string(),
+                "invalid-port".to_string(),
+            )]),
+        );
+        assert!(
+            result.is_err(),
+            "invalid env override must not fall back to defaults"
+        );
+    }
+
+    #[test]
+    fn load_config_for_validation_uses_defaults_when_env_is_empty() {
+        let result = load_config_for_validation_with_env(&None, &HashMap::new());
+        assert!(
+            result.is_ok(),
+            "empty environment should still load default config"
+        );
+    }
 }

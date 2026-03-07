@@ -44,7 +44,15 @@ fn validate_item_id(id: &str) -> Result<(), EmbyError> {
 
 /// Shared HTTP client for all Emby requests (connection pooling).
 /// SSRF-safe: uses the common DNS resolver and disables redirects.
-static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(synctv_common::http::build_provider_client);
+static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
+    LazyLock::new(synctv_common::http::build_provider_client);
+
+fn shared_client() -> Result<Client, EmbyError> {
+    SHARED_CLIENT
+        .as_ref()
+        .map(Clone::clone)
+        .map_err(|err| EmbyError::Network(err.to_string()))
+}
 
 const X_EMBY_TOKEN: &str = "X-Emby-Token";
 
@@ -65,7 +73,7 @@ impl EmbyClient {
             host: host.into(),
             token: None,
             user_id: None,
-            client: SHARED_CLIENT.clone(),
+            client: shared_client()?,
             api_prefix: None,
             device_id: uuid::Uuid::new_v4().to_string(),
         })
@@ -81,7 +89,7 @@ impl EmbyClient {
             host: host.into(),
             token: Some(token.into()),
             user_id: Some(user_id.into()),
-            client: SHARED_CLIENT.clone(),
+            client: shared_client()?,
             api_prefix: None,
             device_id: uuid::Uuid::new_v4().to_string(),
         })

@@ -73,14 +73,15 @@ async fn execute_proxy_action_with_state(
 ) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
         ProxyAction::FetchAndForward { url, headers } => {
-            let cache_enabled = proxy_cache_enabled(state.settings_registry.as_ref())
-                .map_err(|e| AppError::internal(format!("Failed to load proxy cache setting: {e}")))?;
+            let cache_enabled =
+                proxy_cache_enabled(state.settings_registry.as_ref()).map_err(|e| {
+                    AppError::internal(format!("Failed to load proxy cache setting: {e}"))
+                })?;
             let range_header = client_headers
                 .get(axum::http::header::RANGE)
                 .and_then(|value| value.to_str().ok());
 
             if should_use_proxy_cache(cache_enabled, range_header) {
-
                 return synctv_proxy::slice_cache::proxy_with_cache(
                     &state.proxy_slice_cache,
                     range_header,
@@ -91,7 +92,11 @@ async fn execute_proxy_action_with_state(
                 .map_err(Into::into);
             }
 
-            execute_proxy_action(ProxyAction::FetchAndForward { url, headers }, client_headers).await
+            execute_proxy_action(
+                ProxyAction::FetchAndForward { url, headers },
+                client_headers,
+            )
+            .await
         }
         other => execute_proxy_action(other, client_headers).await,
     }
@@ -188,8 +193,8 @@ mod tests {
     use axum::body::to_bytes;
     use bytes::Bytes;
     use std::collections::HashMap;
-    use synctv_core::service::{SettingsRegistry, SettingsService};
     use synctv_core::repository::SettingsRepository;
+    use synctv_core::service::{SettingsRegistry, SettingsService};
     use synctv_core_testing::postgres::create_test_pool;
     use synctv_proxy::slice_cache::SliceCacheConfig;
     use wiremock::matchers::{header, method, path};
@@ -217,7 +222,9 @@ mod tests {
             headers: HashMap::new(),
         };
 
-        let response1 = execute_proxy_action(action.clone(), &headers).await.unwrap();
+        let response1 = execute_proxy_action(action.clone(), &headers)
+            .await
+            .unwrap();
         let response2 = execute_proxy_action(action, &headers).await.unwrap();
 
         let body1 = to_bytes(response1.into_body(), usize::MAX).await.unwrap();
@@ -277,14 +284,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(
-            response1.headers().get("X-Cache-Status").unwrap(),
-            "MISS"
-        );
-        assert_eq!(
-            response2.headers().get("X-Cache-Status").unwrap(),
-            "HIT"
-        );
+        assert_eq!(response1.headers().get("X-Cache-Status").unwrap(), "MISS");
+        assert_eq!(response2.headers().get("X-Cache-Status").unwrap(), "HIT");
     }
 
     #[tokio::test]
@@ -307,7 +308,11 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        settings_registry.proxy_cache_enable.set(true).await.unwrap();
+        settings_registry
+            .proxy_cache_enable
+            .set(true)
+            .await
+            .unwrap();
 
         assert!(proxy_cache_enabled(Some(&settings_registry)).unwrap());
         assert!(!proxy_cache_enabled(None).unwrap());

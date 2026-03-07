@@ -8,13 +8,13 @@
 
 use sqlx::PgPool;
 use std::sync::Arc;
-use synctv_core_testing::postgres::docker_startup_timeout;
 use synctv_core::{
     models::{
         MemberStatus, Room, RoomId, RoomMember, RoomRole, SignupMethod, User, UserId, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
 };
+use synctv_core_testing::postgres::docker_startup_timeout;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;

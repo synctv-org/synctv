@@ -76,13 +76,14 @@ impl EmbyProvider {
     }
 
     /// Get Emby client for the given instance name (remote if available, local fallback)
-    async fn get_client(&self, instance_name: Option<&str>) -> Result<EmbyClientArc, ProviderError> {
+    async fn get_client(
+        &self,
+        instance_name: Option<&str>,
+    ) -> Result<EmbyClientArc, ProviderError> {
         self.provider_instance_manager
-            .resolve_client_required(
-                instance_name,
-                create_remote_emby_client,
-                || self.client_manager.local_emby_client(),
-            )
+            .resolve_client_required(instance_name, create_remote_emby_client, || {
+                self.client_manager.local_emby_client()
+            })
             .await
     }
 

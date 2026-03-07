@@ -13,7 +13,7 @@ use axum::response::Response;
 use bytes::Bytes;
 use futures::StreamExt;
 
-use crate::{apply_provider_headers, PROXY_CLIENT};
+use crate::{apply_provider_headers, proxy_client};
 
 use super::config::is_manifest_content_type;
 use super::range::{aligned_range_for_slice, compute_needed_slices, parse_range_header};
@@ -30,7 +30,7 @@ pub async fn head_content_length(
     url: &str,
     provider_headers: &HashMap<String, String>,
 ) -> Result<u64, anyhow::Error> {
-    let mut request = PROXY_CLIENT.head(url);
+    let mut request = proxy_client()?.head(url);
     request = apply_provider_headers(request, url, provider_headers)?;
 
     let resp = request
@@ -236,7 +236,18 @@ pub(super) async fn full_body_cache_path(
             let bg_meta = cache.get_resource_meta(url, provider_headers).await;
             let bg_cache_cfg = cache.config().clone();
             tokio::spawn(async move {
-                let mut req = PROXY_CLIENT.get(&bg_url);
+                let client = match proxy_client() {
+                    Ok(client) => client,
+                    Err(error) => {
+                        tracing::warn!(
+                            url = %bg_url,
+                            error = %error,
+                            "Skipping background cache revalidation due to proxy client init failure"
+                        );
+                        return;
+                    }
+                };
+                let mut req = client.get(&bg_url);
                 req = match apply_provider_headers(req, &bg_url, &bg_headers) {
                     Ok(req) => req,
                     Err(error) => {
@@ -294,7 +305,7 @@ pub(super) async fn full_body_cache_path(
     let pre_status = cache.full_body_pre_status(url, provider_headers).await;
 
     // Fetch from upstream, with conditional headers if we have metadata.
-    let mut request = PROXY_CLIENT.get(url);
+    let mut request = proxy_client()?.get(url);
     request = apply_provider_headers(request, url, provider_headers)?;
 
     // Add conditional request headers from stored metadata to enable 304
@@ -349,7 +360,7 @@ pub(super) async fn full_body_cache_path(
         }
         // Cache entry was evicted between conditional request and now --
         // fall through to a full re-fetch without conditional headers.
-        let mut request2 = PROXY_CLIENT.get(url);
+        let mut request2 = proxy_client()?.get(url);
         request2 = apply_provider_headers(request2, url, provider_headers)?;
         let resp2 = request2
             .send()
@@ -488,7 +499,7 @@ pub(super) async fn stream_through_with_status(
     range_header: Option<&str>,
     cache_status: CacheStatus,
 ) -> Result<Response, anyhow::Error> {
-    let mut request = PROXY_CLIENT.get(url);
+    let mut request = proxy_client()?.get(url);
     request = apply_provider_headers(request, url, provider_headers)?;
 
     if let Some(range) = range_header {

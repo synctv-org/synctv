@@ -78,13 +78,14 @@ impl AlistProvider {
     }
 
     /// Get Alist client for the given instance name (remote if available, local fallback)
-    async fn get_client(&self, instance_name: Option<&str>) -> Result<AlistClientArc, ProviderError> {
+    async fn get_client(
+        &self,
+        instance_name: Option<&str>,
+    ) -> Result<AlistClientArc, ProviderError> {
         self.provider_instance_manager
-            .resolve_client_required(
-                instance_name,
-                create_remote_alist_client,
-                || self.client_manager.local_alist_client(),
-            )
+            .resolve_client_required(instance_name, create_remote_alist_client, || {
+                self.client_manager.local_alist_client()
+            })
             .await
     }
 

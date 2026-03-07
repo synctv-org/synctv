@@ -92,7 +92,10 @@ fn test_custom_referer_case_insensitive_not_overridden() {
     );
     let headers = build_and_get_headers("https://cdn.example.com/video.mp4", &provider);
     let referer = headers.get("referer").expect("Referer should exist");
-    assert_eq!(referer.to_str().unwrap(), "https://custom.example.com/lower");
+    assert_eq!(
+        referer.to_str().unwrap(),
+        "https://custom.example.com/lower"
+    );
     assert_eq!(headers.get_all("referer").iter().count(), 1);
 }
 

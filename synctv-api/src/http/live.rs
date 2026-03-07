@@ -830,13 +830,12 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         drop(rx);
 
-        let sent =
-            send_flv_chunk(
-                &tx,
-                Ok(Bytes::from_static(b"frame")),
-                std::time::Duration::from_secs(1),
-            )
-            .await;
+        let sent = send_flv_chunk(
+            &tx,
+            Ok(Bytes::from_static(b"frame")),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
 
         assert!(!sent);
     }
@@ -845,12 +844,17 @@ mod tests {
     async fn test_send_flv_chunk_succeeds_without_timeout_when_capacity_available() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 
-        let sent =
-            send_flv_chunk(&tx, Ok(Bytes::from_static(b"frame")), std::time::Duration::ZERO)
-                .await;
+        let sent = send_flv_chunk(
+            &tx,
+            Ok(Bytes::from_static(b"frame")),
+            std::time::Duration::ZERO,
+        )
+        .await;
 
         assert!(sent);
-        assert!(matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"frame")));
+        assert!(
+            matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"frame"))
+        );
     }
 
     #[tokio::test]

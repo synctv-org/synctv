@@ -600,15 +600,14 @@ mod websocket_e2e {
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::rate_limit::RateLimiter;
     // Security checks (password version, user status) handled by SecurityPipeline
-    use synctv_core_testing::postgres::docker_startup_timeout;
     use synctv_cluster::sync::{
         ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
     };
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
+    use synctv_core_testing::postgres::docker_startup_timeout;
     use synctv_proto::client::{
-        client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage,
-        WebRtcJoin,
+        client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage, WebRtcJoin,
     };
 
     use sqlx::PgPool;
@@ -844,8 +843,7 @@ mod websocket_e2e {
                 .expect("ClusterManager"),
         );
         let redis_conn_for_connections = redis::aio::ConnectionManager::new(
-            redis::Client::open(redis_url.clone())
-                .expect("Redis client for connection manager"),
+            redis::Client::open(redis_url.clone()).expect("Redis client for connection manager"),
         )
         .await
         .expect("Redis ConnectionManager for connection manager");
@@ -1876,13 +1874,21 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let (owner_id, owner_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "owner_kick_noleft").await;
+        let (owner_id, owner_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "owner_kick_noleft",
+        )
+        .await;
         let room_id =
             create_test_room(&server.room_service, &owner_id, "Kick No UserLeft Room").await;
 
-        let (user2_id, user2_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "victim_kick_noleft").await;
+        let (user2_id, user2_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "victim_kick_noleft",
+        )
+        .await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
         server
             .room_service
@@ -1943,13 +1949,25 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let (owner_id, owner_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "owner_admin_kick").await;
-        let room_id =
-            create_test_room(&server.room_service, &owner_id, "Admin Kick No UserLeft Room").await;
+        let (owner_id, owner_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "owner_admin_kick",
+        )
+        .await;
+        let room_id = create_test_room(
+            &server.room_service,
+            &owner_id,
+            "Admin Kick No UserLeft Room",
+        )
+        .await;
 
-        let (user2_id, user2_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "victim_admin_kick").await;
+        let (user2_id, user2_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "victim_admin_kick",
+        )
+        .await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
         server
             .room_service
@@ -2097,11 +2115,18 @@ mod websocket_e2e {
         let server1 = setup_e2e_server_with_node(&infra, "presence_replica_1").await;
         let server2 = setup_e2e_server_with_node(&infra, "presence_replica_2").await;
 
-        let (owner_id, owner_token) =
-            register_test_user(&server1.user_service, &server1.jwt_service, "owner_xrep_presence")
-                .await;
-        let room_id =
-            create_test_room(&server1.room_service, &owner_id, "Cross Replica Presence Room").await;
+        let (owner_id, owner_token) = register_test_user(
+            &server1.user_service,
+            &server1.jwt_service,
+            "owner_xrep_presence",
+        )
+        .await;
+        let room_id = create_test_room(
+            &server1.room_service,
+            &owner_id,
+            "Cross Replica Presence Room",
+        )
+        .await;
 
         let (user2_id, user2_token) = register_test_user(
             &server1.user_service,
@@ -2126,8 +2151,10 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws_user_replica_2, 1500),
         );
 
-        let active_user_conns_replica_1 = server1.connection_manager.get_user_connections(&user2_id);
-        let active_user_conns_replica_2 = server2.connection_manager.get_user_connections(&user2_id);
+        let active_user_conns_replica_1 =
+            server1.connection_manager.get_user_connections(&user2_id);
+        let active_user_conns_replica_2 =
+            server2.connection_manager.get_user_connections(&user2_id);
         assert_eq!(
             active_user_conns_replica_1.len(),
             1,
@@ -2146,7 +2173,9 @@ mod websocket_e2e {
 
         let maybe_user_left = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                let msg = recv_server_message(&mut ws_owner).await.expect("stream ended");
+                let msg = recv_server_message(&mut ws_owner)
+                    .await
+                    .expect("stream ended");
                 if matches!(msg.message, Some(server_message::Message::UserLeft(_))) {
                     return msg;
                 }
@@ -2202,9 +2231,12 @@ mod websocket_e2e {
         let server1 = setup_e2e_server_with_node(&infra, "join_replica_1").await;
         let server2 = setup_e2e_server_with_node(&infra, "join_replica_2").await;
 
-        let (owner_id, owner_token) =
-            register_test_user(&server1.user_service, &server1.jwt_service, "owner_xrep_join")
-                .await;
+        let (owner_id, owner_token) = register_test_user(
+            &server1.user_service,
+            &server1.jwt_service,
+            "owner_xrep_join",
+        )
+        .await;
         let room_id =
             create_test_room(&server1.room_service, &owner_id, "Cross Replica Join Room").await;
 
@@ -2234,7 +2266,9 @@ mod websocket_e2e {
 
         let duplicate_join = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                let msg = recv_server_message(&mut ws_owner).await.expect("stream ended");
+                let msg = recv_server_message(&mut ws_owner)
+                    .await
+                    .expect("stream ended");
                 if let Some(server_message::Message::UserJoined(joined)) = msg.message {
                     if joined.member.as_ref().map(|m| m.user_id.as_str()) == Some(user2_id.as_str())
                     {
@@ -2760,15 +2794,20 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let (owner_id, owner_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "owner_join_presence")
-                .await;
-        let room_id =
-            create_test_room(&server.room_service, &owner_id, "Join Presence Room").await;
+        let (owner_id, owner_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "owner_join_presence",
+        )
+        .await;
+        let room_id = create_test_room(&server.room_service, &owner_id, "Join Presence Room").await;
 
-        let (user2_id, user2_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "join_presence_user")
-                .await;
+        let (user2_id, user2_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "join_presence_user",
+        )
+        .await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
         server
             .room_service
@@ -2789,7 +2828,9 @@ mod websocket_e2e {
 
         let duplicate_join = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                let msg = recv_server_message(&mut ws_owner).await.expect("stream ended");
+                let msg = recv_server_message(&mut ws_owner)
+                    .await
+                    .expect("stream ended");
                 if let Some(server_message::Message::UserJoined(joined)) = msg.message {
                     if joined.member.as_ref().map(|m| m.user_id.as_str()) == Some(user2_id.as_str())
                     {
@@ -2820,15 +2861,21 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let (owner_id, owner_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "owner_multi_presence")
-                .await;
+        let (owner_id, owner_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "owner_multi_presence",
+        )
+        .await;
         let room_id =
             create_test_room(&server.room_service, &owner_id, "Multi Presence Room").await;
 
-        let (user2_id, user2_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "multi_presence_user")
-                .await;
+        let (user2_id, user2_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "multi_presence_user",
+        )
+        .await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
         server
             .room_service
@@ -2853,11 +2900,16 @@ mod websocket_e2e {
             "test precondition failed: expected two active room connections for user2"
         );
 
-        ws_user_a.close(None).await.expect("close first user2 connection");
+        ws_user_a
+            .close(None)
+            .await
+            .expect("close first user2 connection");
 
         let maybe_user_left = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                let msg = recv_server_message(&mut ws_owner).await.expect("stream ended");
+                let msg = recv_server_message(&mut ws_owner)
+                    .await
+                    .expect("stream ended");
                 if matches!(msg.message, Some(server_message::Message::UserLeft(_))) {
                     return msg;
                 }
@@ -2885,7 +2937,9 @@ mod websocket_e2e {
         send_client_message(&mut ws_user_b, &heartbeat).await;
         let ack = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let msg = recv_server_message(&mut ws_user_b).await.expect("stream ended");
+                let msg = recv_server_message(&mut ws_user_b)
+                    .await
+                    .expect("stream ended");
                 if matches!(msg.message, Some(server_message::Message::HeartbeatAck(_))) {
                     return msg;
                 }
@@ -2899,7 +2953,10 @@ mod websocket_e2e {
         );
 
         ws_owner.close(None).await.expect("close owner");
-        ws_user_b.close(None).await.expect("close second user2 connection");
+        ws_user_b
+            .close(None)
+            .await
+            .expect("close second user2 connection");
     }
 
     // ========================================================================
@@ -2912,9 +2969,14 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let (user_id, token) =
-            register_test_user(&server.user_service, &server.jwt_service, "multi_conn_webrtc").await;
-        let room_id = create_test_room(&server.room_service, &user_id, "Multi Conn WebRTC Room").await;
+        let (user_id, token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "multi_conn_webrtc",
+        )
+        .await;
+        let room_id =
+            create_test_room(&server.room_service, &user_id, "Multi Conn WebRTC Room").await;
         let room = synctv_core::models::RoomId::from_string(room_id.clone());
 
         let mut ws1 = ws_connect(&server.addr, &room_id, &token).await;
@@ -2970,8 +3032,7 @@ mod websocket_e2e {
             "exactly one connection should be marked rtc_joined"
         );
         assert_eq!(
-            rtc_joined_connections[0].connection_id,
-            joined_conn_id,
+            rtc_joined_connections[0].connection_id, joined_conn_id,
             "the connection marked rtc_joined must match the current WebRTC join event connection"
         );
 
@@ -2995,11 +3056,18 @@ mod websocket_e2e {
             "multi_conn_webrtc_offer",
         )
         .await;
-        let (peer_user_id, peer_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "multi_conn_webrtc_peer")
-                .await;
-        let room_id =
-            create_test_room(&server.room_service, &user_id, "Multi Conn WebRTC Offer Room").await;
+        let (peer_user_id, peer_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "multi_conn_webrtc_peer",
+        )
+        .await;
+        let room_id = create_test_room(
+            &server.room_service,
+            &user_id,
+            "Multi Conn WebRTC Offer Room",
+        )
+        .await;
         let room = synctv_core::models::RoomId::from_string(room_id.clone());
         server
             .room_service
@@ -3051,7 +3119,10 @@ mod websocket_e2e {
             })
             .await
             .is_ok();
-            assert!(ws2_closed, "one of the two connections must close after targeted disconnect");
+            assert!(
+                ws2_closed,
+                "one of the two connections must close after targeted disconnect"
+            );
 
             false
         };
@@ -3081,7 +3152,9 @@ mod websocket_e2e {
 
         let received_offer = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let msg = recv_server_message(&mut ws_peer).await.expect("stream ended");
+                let msg = recv_server_message(&mut ws_peer)
+                    .await
+                    .expect("stream ended");
                 if matches!(&msg.message, Some(server_message::Message::WebrtcOffer(_))) {
                     return msg;
                 }
@@ -3574,8 +3647,7 @@ mod websocket_connection_limit_timing {
             max_duration: std::time::Duration::from_hours(24),
         };
         let redis_conn_for_connections = redis::aio::ConnectionManager::new(
-            redis::Client::open(redis_url.clone())
-                .expect("Redis client for connection manager"),
+            redis::Client::open(redis_url.clone()).expect("Redis client for connection manager"),
         )
         .await
         .expect("Redis ConnectionManager for connection manager");
@@ -4296,5 +4368,4 @@ mod membership_cache_ttl_tests {
     }
 }
 
-mod danmu_sse_tests {
-}
+mod danmu_sse_tests {}

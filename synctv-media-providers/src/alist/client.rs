@@ -25,7 +25,15 @@ fn validate_path(path: &str) -> Result<(), AlistError> {
 
 /// Shared HTTP client for all Alist requests (connection pooling).
 /// SSRF-safe: uses the common DNS resolver and disables redirects.
-static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(synctv_common::http::build_provider_client);
+static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
+    LazyLock::new(synctv_common::http::build_provider_client);
+
+fn shared_client() -> Result<Client, AlistError> {
+    SHARED_CLIENT
+        .as_ref()
+        .map(Clone::clone)
+        .map_err(|err| AlistError::Network(err.to_string()))
+}
 
 /// Alist HTTP Client
 ///
@@ -44,7 +52,7 @@ impl AlistClient {
         Ok(Self {
             host: host.into(),
             token: None,
-            client: SHARED_CLIENT.clone(),
+            client: shared_client()?,
         })
     }
 
@@ -56,7 +64,7 @@ impl AlistClient {
         Ok(Self {
             host: host.into(),
             token: Some(token.into()),
-            client: SHARED_CLIENT.clone(),
+            client: shared_client()?,
         })
     }
 

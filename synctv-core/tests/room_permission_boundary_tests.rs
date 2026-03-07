@@ -20,7 +20,6 @@
 
 use chrono::Utc;
 use sqlx::PgPool;
-use synctv_core_testing::postgres::docker_startup_timeout;
 use synctv_core::{
     models::{
         PermissionBits, Room, RoomId, RoomMember, RoomRole, RoomStatus, User, UserId, UserRole,
@@ -33,6 +32,7 @@ use synctv_core::{
     },
     Error,
 };
+use synctv_core_testing::postgres::docker_startup_timeout;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;

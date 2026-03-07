@@ -194,7 +194,8 @@ impl ClusterManager {
         cache_invalidation: Option<synctv_core::cache::CacheInvalidationService>,
     ) -> ClusterResult<Self> {
         debug_assert!(
-            !config.cluster_enabled || (config.redis_client.is_some() && config.redis_conn.is_some()),
+            !config.cluster_enabled
+                || (config.redis_client.is_some() && config.redis_conn.is_some()),
             "cluster-enabled ClusterManager must be assembled with Redis handles"
         );
 
@@ -1345,6 +1346,73 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_critical_events_do_not_fall_back_to_droppable_normal_channel() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "test_critical_fallback".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1,
+            publish_channel_capacity: 1,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let mut manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("ClusterManager::new should succeed");
+
+        let (normal_tx, mut normal_rx) = mpsc::channel::<PublishRequest>(1);
+        normal_tx
+            .try_send(PublishRequest {
+                event: ClusterEvent::ChatMessage {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: RoomId::from_string("room-buffer".to_string()),
+                    user_id: UserId::from_string("user-buffer".to_string()),
+                    username: "buffer".to_string(),
+                    message: "fill channel".to_string(),
+                    timestamp: Utc::now(),
+                    position: None,
+                    color: None,
+                },
+            })
+            .expect("pre-fill normal channel");
+
+        manager.redis_publish_tx = Some(normal_tx);
+        manager.redis_critical_tx = None;
+
+        let critical_event = ClusterEvent::KickUser {
+            event_id: nanoid::nanoid!(16),
+            user_id: UserId::from_string("user-critical".to_string()),
+            reason: "must not drop".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        let result = manager.broadcast(critical_event.clone());
+
+        assert!(
+            result.redis_sent,
+            "critical events must still report Redis publication when only the fallback channel is wired"
+        );
+
+        let buffered = normal_rx
+            .recv()
+            .await
+            .expect("buffered message should still exist");
+        assert_eq!(buffered.event.event_type(), "chat_message");
+
+        let delivered = tokio::time::timeout(Duration::from_millis(100), normal_rx.recv())
+            .await
+            .expect("critical event should be queued instead of dropped")
+            .expect("critical event should arrive on fallback channel");
+        assert_eq!(delivered.event.event_type(), critical_event.event_type());
+    }
+
     /// Test that ClusterManager metrics include quarantine state.
     #[tokio::test]
     async fn test_cluster_metrics_includes_quarantine_state() {
@@ -1386,7 +1454,7 @@ mod tests {
     async fn test_cluster_enabled_without_redis_builds_local_only_manager_for_unit_tests() {
         let config = ClusterConfig {
             redis_client: None,
-            redis_conn: None,      // No Redis
+            redis_conn: None, // No Redis
             cluster_enabled: false,
             node_id: "test_cluster_requires_redis".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1408,7 +1476,10 @@ mod tests {
 
         let manager = result.expect("local-only ClusterManager should still initialize");
         let metrics = manager.metrics();
-        assert!(!metrics.redis_enabled, "manager should remain local-only without Redis");
+        assert!(
+            !metrics.redis_enabled,
+            "manager should remain local-only without Redis"
+        );
     }
 
     /// Test that partial Redis wiring in local-only tests does not enable distributed internals.
@@ -1441,7 +1512,10 @@ mod tests {
 
         let manager = result.expect("partial Redis wiring should degrade to local-only internals");
         let metrics = manager.metrics();
-        assert!(!metrics.redis_enabled, "partial Redis wiring must not enable distributed features");
+        assert!(
+            !metrics.redis_enabled,
+            "partial Redis wiring must not enable distributed features"
+        );
     }
 
     /// Test that non-cluster mode (cluster_enabled=false) works without Redis.

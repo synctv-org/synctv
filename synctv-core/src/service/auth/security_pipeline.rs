@@ -504,5 +504,4 @@ mod tests {
         let enforcement = BlacklistEnforcement::permissive();
         assert!(!enforcement.require_blacklist);
     }
-
 }

@@ -80,8 +80,14 @@ const MAX_REDIRECTS: usize = 10;
 /// resolved IP at TCP-connect time against the ACL blocklist. This prevents DNS
 /// rebinding attacks where a hostname resolves to a public IP during pre-request
 /// validation but rebinds to a private IP by connection time.
-static PROXY_CLIENT: LazyLock<reqwest::Client> =
+static PROXY_CLIENT: LazyLock<Result<reqwest::Client, reqwest::Error>> =
     LazyLock::new(synctv_common::http::build_proxy_client);
+
+fn proxy_client() -> Result<&'static reqwest::Client, anyhow::Error> {
+    PROXY_CLIENT
+        .as_ref()
+        .map_err(|e| anyhow::anyhow!("failed to build proxy HTTP client: {e}"))
+}
 
 /// Configuration for a single proxy fetch.
 pub struct ProxyConfig<'a> {
@@ -234,7 +240,9 @@ pub async fn proxy_fetch_and_forward(
     let elapsed = start.elapsed();
     let error_type = match &result {
         Ok(_) => None,
-        Err(e) => e.downcast_ref::<ProxyError>().map(|err| err.kind().as_str()),
+        Err(e) => e
+            .downcast_ref::<ProxyError>()
+            .map(|err| err.kind().as_str()),
     };
 
     // Derive the media type label from the Content-Type header of the proxied
@@ -286,7 +294,7 @@ const CLIENT_HEADER_ALLOWLIST: &[&str] = &[
 /// This is the single point of request construction used by both the initial
 /// fetch and retry attempts.
 fn build_proxy_request(cfg: &ProxyConfig<'_>) -> Result<reqwest::RequestBuilder, anyhow::Error> {
-    let mut request = PROXY_CLIENT.get(cfg.url);
+    let mut request = proxy_client()?.get(cfg.url);
 
     // Forward only allowlisted client headers to avoid leaking auth tokens / cookies
     for (name, value) in cfg.client_headers {
@@ -305,10 +313,9 @@ fn build_proxy_request(cfg: &ProxyConfig<'_>) -> Result<reqwest::RequestBuilder,
 async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response, anyhow::Error> {
     // Validate URL scheme to prevent SSRF via non-HTTP schemes (e.g., file://)
     if !cfg.url.starts_with("http://") && !cfg.url.starts_with("https://") {
-        return Err(ProxyError::InvalidRequest(
-            "only http and https are supported".to_string(),
-        )
-        .into());
+        return Err(
+            ProxyError::InvalidRequest("only http and https are supported".to_string()).into(),
+        );
     }
 
     let request = build_proxy_request(&cfg)?;
@@ -479,7 +486,7 @@ pub async fn proxy_m3u8_and_rewrite(
         }
     }
 
-    let request = apply_provider_headers(PROXY_CLIENT.get(url), url, provider_headers)?;
+    let request = apply_provider_headers(proxy_client()?.get(url), url, provider_headers)?;
 
     let proxy_result = send_with_redirect_validation(request).await?;
     let proxy_response = proxy_result.response;
@@ -971,7 +978,7 @@ async fn send_with_redirect_validation(
         .map(|(n, v)| (n.clone(), v.clone()))
         .collect();
 
-    let mut response = PROXY_CLIENT
+    let mut response = proxy_client()?
         .execute(built)
         .await
         .map_err(classify_reqwest_error)?;
@@ -980,7 +987,9 @@ async fn send_with_redirect_validation(
     while response.status().is_redirection() {
         hops += 1;
         if hops > MAX_REDIRECTS {
-            return Err(ProxyError::Upstream(format!("too many redirects ({MAX_REDIRECTS} max)")).into());
+            return Err(
+                ProxyError::Upstream(format!("too many redirects ({MAX_REDIRECTS} max)")).into(),
+            );
         }
 
         let current_url = response.url().clone();
@@ -1009,7 +1018,7 @@ async fn send_with_redirect_validation(
         let is_cross_origin = location.origin().ascii_serialization() != original_origin;
 
         // SSRF protection is handled by the DNS resolver at connection time
-        let mut redirect_req = PROXY_CLIENT.get(location.clone());
+        let mut redirect_req = proxy_client()?.get(location.clone());
         for (name, value) in &preserved {
             // Drop sensitive headers (e.g. Referer) on cross-origin redirects
             // to avoid leaking signed URLs to third-party hosts.
@@ -1020,10 +1029,7 @@ async fn send_with_redirect_validation(
         }
 
         drop(response);
-        response = redirect_req
-            .send()
-            .await
-            .map_err(classify_reqwest_error)?;
+        response = redirect_req.send().await.map_err(classify_reqwest_error)?;
     }
 
     Ok(ProxyResponse {
@@ -1040,7 +1046,11 @@ fn classify_reqwest_error(error: reqwest::Error) -> anyhow::Error {
         ProxyError::Connection(message)
     } else {
         let lower = message.to_ascii_lowercase();
-        if lower.contains("private") || lower.contains("loopback") || lower.contains("disallowed") || lower.contains("blocked") {
+        if lower.contains("private")
+            || lower.contains("loopback")
+            || lower.contains("disallowed")
+            || lower.contains("blocked")
+        {
             ProxyError::Ssrf(message)
         } else {
             ProxyError::Other(message)
@@ -1451,11 +1461,23 @@ mod tests {
 
     #[test]
     fn test_proxy_error_kind_mapping() {
-        assert_eq!(ProxyError::Timeout("x".into()).kind(), ProxyErrorKind::Timeout);
-        assert_eq!(ProxyError::Connection("x".into()).kind(), ProxyErrorKind::Connection);
+        assert_eq!(
+            ProxyError::Timeout("x".into()).kind(),
+            ProxyErrorKind::Timeout
+        );
+        assert_eq!(
+            ProxyError::Connection("x".into()).kind(),
+            ProxyErrorKind::Connection
+        );
         assert_eq!(ProxyError::Ssrf("x".into()).kind(), ProxyErrorKind::Ssrf);
-        assert_eq!(ProxyError::InvalidRequest("x".into()).kind(), ProxyErrorKind::InvalidRequest);
-        assert_eq!(ProxyError::Upstream("x".into()).kind(), ProxyErrorKind::Upstream);
+        assert_eq!(
+            ProxyError::InvalidRequest("x".into()).kind(),
+            ProxyErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            ProxyError::Upstream("x".into()).kind(),
+            ProxyErrorKind::Upstream
+        );
         assert_eq!(ProxyError::Other("x".into()).kind(), ProxyErrorKind::Other);
     }
 
@@ -1475,9 +1497,7 @@ mod tests {
 
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path("/start"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(302).insert_header("location", "/final"),
-            )
+            .respond_with(wiremock::ResponseTemplate::new(302).insert_header("location", "/final"))
             .mount(&server)
             .await;
 

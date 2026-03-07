@@ -183,12 +183,13 @@ mod tests {
             .sign_token(&UserId::new(), TokenType::Access, 0)
             .unwrap();
 
-        let result = revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl_secs| async {
-            Err(synctv_core::Error::Internal(
-                "Blacklist store unavailable".to_string(),
-            ))
-        })
-        .await;
+        let result =
+            revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl_secs| async {
+                Err(synctv_core::Error::Internal(
+                    "Blacklist store unavailable".to_string(),
+                ))
+            })
+            .await;
 
         match result {
             Err(ApiError::Internal(message)) => {
@@ -204,15 +205,18 @@ mod tests {
         let blacklist_called = Arc::new(AtomicBool::new(false));
         let called = Arc::clone(&blacklist_called);
 
-        let result =
-            revoke_access_token_for_logout(&jwt_service, "invalid.token.here", move |_jti, _ttl| {
+        let result = revoke_access_token_for_logout(
+            &jwt_service,
+            "invalid.token.here",
+            move |_jti, _ttl| {
                 let called = Arc::clone(&called);
                 async move {
                     called.store(true, Ordering::SeqCst);
                     Ok(())
                 }
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert!(result.is_ok());
         assert!(!blacklist_called.load(Ordering::SeqCst));

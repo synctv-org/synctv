@@ -16,4 +16,4 @@ pub use config::load_config;
 pub use database::init_database;
 pub use redis::{init_redis, RedisHandles};
 pub use services::init_services;
-pub use user::{bootstrap_root_user, has_any_users};
+pub use user::{bootstrap_root_user, has_any_admin_users, has_any_users};

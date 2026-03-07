@@ -92,13 +92,14 @@ impl BilibiliProvider {
     }
 
     /// Get Bilibili client for the given instance name (remote if available, local fallback)
-    async fn get_client(&self, instance_name: Option<&str>) -> Result<BilibiliClientArc, ProviderError> {
+    async fn get_client(
+        &self,
+        instance_name: Option<&str>,
+    ) -> Result<BilibiliClientArc, ProviderError> {
         self.provider_instance_manager
-            .resolve_client_required(
-                instance_name,
-                create_remote_bilibili_client,
-                || self.client_manager.local_bilibili_client(),
-            )
+            .resolve_client_required(instance_name, create_remote_bilibili_client, || {
+                self.client_manager.local_bilibili_client()
+            })
             .await
     }
 

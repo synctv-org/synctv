@@ -19,7 +19,6 @@
 use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
-use synctv_core_testing::postgres::docker_startup_timeout;
 use synctv_core::{
     models::{
         room_settings::MaxMembers, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
@@ -32,6 +31,7 @@ use synctv_core::{
     },
     Error,
 };
+use synctv_core_testing::postgres::docker_startup_timeout;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;

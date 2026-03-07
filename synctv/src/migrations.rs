@@ -311,7 +311,8 @@ mod tests {
 
         assert!(lock.acquire_called.load(Ordering::SeqCst));
         assert!(
-            err.to_string().contains("cluster.enabled=true requires Redis migration locking"),
+            err.to_string()
+                .contains("cluster.enabled=true requires Redis migration locking"),
             "unexpected error: {err}"
         );
     }

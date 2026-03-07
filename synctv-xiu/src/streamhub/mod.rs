@@ -601,9 +601,7 @@ impl StreamDataTransceiver {
                         }
 
                         if let Err(err) = result_sender.send(statistic_sender.clone()) {
-                            tracing::error!(
-                                "receive_event_loop:send statistic send err :{err:?} "
-                            );
+                            tracing::error!("receive_event_loop:send statistic send err :{err:?} ");
                         }
 
                         let mut statistics_data = statistics_data.lock().await;
@@ -654,7 +652,9 @@ impl StreamDataTransceiver {
                 self.statistic_data.clone(),
             );
             tasks.spawn(async move {
-                handle.await.map_err(|error| map_task_join_error("frame loop", error))
+                handle
+                    .await
+                    .map_err(|error| map_task_join_error("frame loop", error))
             });
         }
 
@@ -668,7 +668,9 @@ impl StreamDataTransceiver {
                 self.statistic_data.clone(),
             );
             tasks.spawn(async move {
-                handle.await.map_err(|error| map_task_join_error("packet loop", error))
+                handle
+                    .await
+                    .map_err(|error| map_task_join_error("packet loop", error))
             });
         }
 
@@ -1143,10 +1145,10 @@ impl StreamsHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::streamhub::define::{NotifyInfo, SubDataType, SubscribeType};
     use async_trait::async_trait;
     use std::time::Duration;
     use tokio::sync::oneshot;
-    use crate::streamhub::define::{NotifyInfo, SubDataType, SubscribeType};
 
     struct NoopHandler;
 

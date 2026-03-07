@@ -7,8 +7,10 @@
 
 use std::sync::Arc;
 use synctv_core::service::{
-    FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, TokenBlacklistStore,
+    FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, PgTokenBlacklistStore,
+    TokenBlacklistStore,
 };
+use synctv_core_testing::create_test_pool;
 
 // ============================================================================
 // InMemoryTokenBlacklistStore tests
@@ -254,6 +256,24 @@ async fn test_fallback_family_ttl_expiry() {
     assert!(
         fallback.get_family_revoked_at(key).await.is_none(),
         "Family revocation should expire after TTL"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker (PostgreSQL testcontainer)"]
+async fn test_pg_family_revocation_survives_cleanup_until_marker_expires() {
+    let (_container, pool) = create_test_pool().await;
+    let store = PgTokenBlacklistStore::new(pool);
+    let key = "family:pg_cleanup_guard";
+    let timestamp = chrono::Utc::now().timestamp();
+
+    store.set_family_revoked(key, timestamp, 120).await;
+    store.cleanup_expired().await.unwrap();
+
+    assert_eq!(
+        store.get_family_revoked_at(key).await,
+        Some(timestamp),
+        "cleanup must not delete the family revocation timestamp while the marker is still alive"
     );
 }
 

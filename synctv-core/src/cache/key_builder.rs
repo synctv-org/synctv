@@ -29,9 +29,11 @@ impl Default for KeyBuilder {
 impl KeyBuilder {
     /// Create a new `KeyBuilder` with the given prefix
     pub fn new(prefix: impl Into<String>) -> Self {
-        Self {
-            prefix: prefix.into(),
+        let mut prefix = prefix.into();
+        while prefix.ends_with(':') {
+            prefix.pop();
         }
+        Self { prefix }
     }
 
     /// Create `KeyBuilder` from configuration
@@ -435,6 +437,32 @@ mod tests {
         assert_eq!(
             builder.ws_ticket("ticket_abc"),
             "synctv:ws_ticket:ticket_abc"
+        );
+    }
+
+    #[test]
+    fn test_key_builder_trims_trailing_colon_prefix() {
+        let builder = KeyBuilder::new("synctv:");
+        assert_eq!(
+            builder.refresh_token_blacklist("jti_abc"),
+            "synctv:auth:rt_blacklist:jti_abc"
+        );
+        assert_eq!(
+            builder.ws_ticket("ticket_abc"),
+            "synctv:ws_ticket:ticket_abc"
+        );
+    }
+
+    #[test]
+    fn test_key_builder_from_config_trims_trailing_colon_prefix() {
+        let mut config = Config::default();
+        config.redis.key_prefix = "tenant-a:".to_string();
+        let builder = KeyBuilder::from_config(&config);
+
+        assert_eq!(builder.prefix(), "tenant-a");
+        assert_eq!(
+            builder.refresh_token_family_revoked("user_1"),
+            "tenant-a:auth:rt_family_revoked:user_1"
         );
     }
 

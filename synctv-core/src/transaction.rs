@@ -570,5 +570,4 @@ mod tests {
             "Uncommitted UnitOfWork should not panic in release mode"
         );
     }
-
 }

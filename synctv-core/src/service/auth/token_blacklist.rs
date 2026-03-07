@@ -267,6 +267,17 @@ impl PgTokenBlacklistStore {
         &self.pool
     }
 
+    fn family_timestamp_key(key: &str) -> String {
+        format!("_ts:{key}")
+    }
+
+    fn family_timestamp_expiry(timestamp: i64, ttl_secs: u64) -> chrono::DateTime<chrono::Utc> {
+        let base_timestamp = timestamp.max(0);
+        let ttl = ttl_secs.min(i64::MAX as u64) as i64;
+        chrono::DateTime::from_timestamp(base_timestamp.saturating_add(ttl), 0)
+            .unwrap_or_else(chrono::Utc::now)
+    }
+
     /// Clean up expired token blacklist entries.
     ///
     /// This calls the `cleanup_expired_token_blacklist()` `PostgreSQL` function
@@ -377,9 +388,6 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
-        // Family revocation timestamp is stored as the expires_at field of a
-        // special `family:<key>` entry. The actual revocation timestamp is
-        // stored by encoding it in a separate query.
         let row: Option<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(
             "SELECT expires_at FROM token_blacklist WHERE jti = $1 AND expires_at > NOW()",
         )
@@ -388,21 +396,23 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         .await
         .ok()?;
 
-        // We store family revocation as: jti = "family:<user_key>", expires_at = actual expiry.
-        // The revocation timestamp is stored as a second entry with jti = "family_ts:<user_key>".
-        let ts_key = format!("_ts:{key}");
-        let ts_row: Option<(chrono::DateTime<chrono::Utc>,)> =
-            sqlx::query_as("SELECT expires_at FROM token_blacklist WHERE jti = $1")
-                .bind(&ts_key)
-                .fetch_optional(&self.pool)
-                .await
-                .ok()?;
+        let ts_key = Self::family_timestamp_key(key);
+        let ts_row: Option<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(
+            "SELECT expires_at FROM token_blacklist WHERE jti = $1 AND expires_at > NOW()",
+        )
+        .bind(&ts_key)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()?;
 
-        // If the main family key exists (not expired) and we have a timestamp entry,
-        // return the timestamp. The ts entry stores the revoked_at as epoch seconds
-        // in the expires_at column (reusing the column for storage).
-        if row.is_some() {
-            ts_row.map(|(ts,)| ts.timestamp())
+        if let (Some((marker_expires_at,)), Some((timestamp_expires_at,))) = (row, ts_row) {
+            let ttl_remaining =
+                (marker_expires_at.timestamp() - chrono::Utc::now().timestamp()).max(0);
+            Some(
+                timestamp_expires_at
+                    .timestamp()
+                    .saturating_sub(ttl_remaining),
+            )
         } else {
             None
         }
@@ -421,11 +431,10 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         .execute(&self.pool)
         .await;
 
-        // Store the revocation timestamp in a companion entry.
-        // We encode the timestamp as a DateTime for storage.
-        let ts_key = format!("_ts:{key}");
-        let revoked_at =
-            chrono::DateTime::from_timestamp(timestamp, 0).unwrap_or_else(chrono::Utc::now);
+        // Store a companion entry that expires on the same horizon as the family
+        // marker, so cleanup_expired_token_blacklist() will delete both together.
+        let ts_key = Self::family_timestamp_key(key);
+        let revoked_at = Self::family_timestamp_expiry(timestamp, ttl_secs);
         let _ = sqlx::query(
             "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
@@ -1548,6 +1557,16 @@ mod tests {
             store.get_family_revoked_at("family:write_test").await,
             Some(ts)
         );
+    }
+
+    #[test]
+    fn test_family_timestamp_expiry_uses_marker_horizon() {
+        let ts = 1_700_000_000_i64;
+        let ttl_secs = 3_600_u64;
+
+        let expiry = PgTokenBlacklistStore::family_timestamp_expiry(ts, ttl_secs);
+
+        assert_eq!(expiry.timestamp(), ts + ttl_secs as i64);
     }
 
     #[tokio::test]

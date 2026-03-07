@@ -93,8 +93,12 @@ fn build_connection_manager(
     limits: ConnectionLimits,
     redis_conn: Option<redis::aio::ConnectionManager>,
     redis_key_prefix: &str,
+    cluster_mode: bool,
 ) -> ConnectionManager {
-    let manager = if let Some(conn) = redis_conn {
+    let manager = if cluster_mode {
+        let conn = redis_conn.expect(
+            "cluster.enabled=true requires Redis-backed ConnectionManager wiring",
+        );
         ConnectionManager::new(limits).with_redis(conn, redis_key_prefix)
     } else {
         ConnectionManager::new(limits)
@@ -414,10 +418,18 @@ impl Application {
                     info!("Using K8s Lease-based leader election");
                     // Set metrics: K8s mode (2)
                     synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(2);
-                    let pod_name =
-                        std::env::var("POD_NAME").unwrap_or_else(|_| infra.node_id.clone());
-                    let namespace =
-                        std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+                    let pod_name = std::env::var("POD_NAME").map_err(|_| {
+                        anyhow::anyhow!(
+                            "cluster.leader_election_mode='k8s_lease' requires POD_NAME; \
+                             this should have been caught by configuration validation"
+                        )
+                    })?;
+                    let namespace = std::env::var("POD_NAMESPACE").map_err(|_| {
+                        anyhow::anyhow!(
+                            "cluster.leader_election_mode='k8s_lease' requires POD_NAMESPACE; \
+                             this should have been caught by configuration validation"
+                        )
+                    })?;
 
                     match K8sLeaderElector::new(
                         pod_name.clone(),
@@ -632,6 +644,7 @@ impl Application {
             connection_limits,
             redis_conn_for_connections,
             &infra.config.redis.key_prefix,
+            cluster_runtime_enabled(&infra.config),
         );
         info!(
             max_per_user = infra.config.connection_limits.max_per_user,
@@ -872,7 +885,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker"]
-    async fn test_build_connection_manager_wires_redis_when_available() {
+    async fn test_build_connection_manager_wires_redis_in_cluster_mode() {
         use redis::AsyncCommands;
         use synctv_core::models::{RoomId, UserId};
         use testcontainers::runners::AsyncRunner;
@@ -893,8 +906,12 @@ mod tests {
             .await
             .expect("App connection manager should be created");
 
-        let manager =
-            build_connection_manager(ConnectionLimits::default(), Some(app_conn), "test-app:");
+        let manager = build_connection_manager(
+            ConnectionLimits::default(),
+            Some(app_conn),
+            "test-app:",
+            true,
+        );
 
         manager
             .register(
@@ -919,6 +936,64 @@ mod tests {
         assert_eq!(
             count, 1,
             "Distributed room counter should be written to Redis"
+        );
+
+        manager.shutdown();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn test_build_connection_manager_keeps_standalone_mode_local_even_with_redis() {
+        use redis::AsyncCommands;
+        use synctv_core::models::{RoomId, UserId};
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::redis::Redis;
+
+        let redis = tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
+            .await
+            .expect("Redis container startup timed out")
+            .expect("Failed to start Redis container");
+
+        let port = redis
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Redis port should be exposed");
+        let redis_url = format!("redis://127.0.0.1:{port}");
+        let client = redis::Client::open(redis_url).expect("Redis client should be created");
+        let app_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .expect("App connection manager should be created");
+
+        let manager = build_connection_manager(
+            ConnectionLimits::default(),
+            Some(app_conn),
+            "test-standalone:",
+            false,
+        );
+
+        manager
+            .register(
+                "conn-1".to_string(),
+                UserId::from_string("user-1".to_string()),
+            )
+            .await
+            .expect("Standalone registration should succeed");
+        manager
+            .join_room("conn-1", RoomId::from_string("room-1".to_string()))
+            .await
+            .expect("Standalone room join should succeed");
+
+        let mut verify_conn = redis::aio::ConnectionManager::new(client)
+            .await
+            .expect("Verification connection should be created");
+        let count: Option<i64> = verify_conn
+            .get("test-standalone:connections:room:room-1")
+            .await
+            .expect("Redis lookup should succeed");
+
+        assert!(
+            count.is_none(),
+            "Standalone mode must not write distributed room counters just because Redis exists"
         );
 
         manager.shutdown();

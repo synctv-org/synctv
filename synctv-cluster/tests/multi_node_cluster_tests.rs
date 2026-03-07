@@ -12,7 +12,7 @@ use chrono::Utc;
 use synctv_cluster::sync::events::ClusterEvent;
 use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
-use integration_test_helpers::{create_node, TestRedis};
+use integration_test_helpers::{broadcast_until_all_clients_receive, create_node, TestRedis};
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -26,49 +26,52 @@ async fn test_three_node_cluster() {
     let room_id = RoomId::from_string("three_node_room".to_string());
 
     // Subscribe on node A and node C
-    let (mut rx_a, conn_a) = node_a
+    let (rx_a, conn_a) = node_a
         .subscribe(room_id.clone(), UserId::from_string("user_a".to_string()))
         .await;
-    let (mut rx_c, conn_c) = node_c
+    let (rx_c, conn_c) = node_c
         .subscribe(room_id.clone(), UserId::from_string("user_c".to_string()))
         .await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let message_from_b = "Hello from B";
+    let mut clients_a = vec![(rx_a, conn_a.clone())];
+    let mut clients_c = vec![(rx_c, conn_c.clone())];
 
-    // Node B broadcasts
-    let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        user_id: UserId::from_string("user_b".to_string()),
-        username: "user_b".to_string(),
-        message: "Hello from B".to_string(),
-        timestamp: Utc::now(),
-        position: None,
-        color: None,
-    };
+    broadcast_until_all_clients_receive(
+        &node_b,
+        &mut clients_a,
+        message_from_b,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("user_b".to_string()),
+            username: "user_b".to_string(),
+            message: message_from_b.to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        "node A receiving node B broadcast",
+    )
+    .await;
 
-    node_b.broadcast(event);
-
-    // Both node A and node C should receive the message
-    let msg_a = tokio::time::timeout(Duration::from_secs(5), rx_a.recv())
-        .await
-        .expect("Timed out on node A")
-        .expect("Channel A closed");
-
-    let msg_c = tokio::time::timeout(Duration::from_secs(5), rx_c.recv())
-        .await
-        .expect("Timed out on node C")
-        .expect("Channel C closed");
-
-    assert_eq!(msg_a.event_type(), "chat_message");
-    assert_eq!(msg_c.event_type(), "chat_message");
-
-    if let ClusterEvent::ChatMessage { message, .. } = &msg_a {
-        assert_eq!(message, "Hello from B");
-    }
-    if let ClusterEvent::ChatMessage { message, .. } = &msg_c {
-        assert_eq!(message, "Hello from B");
-    }
+    broadcast_until_all_clients_receive(
+        &node_b,
+        &mut clients_c,
+        message_from_b,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("user_b".to_string()),
+            username: "user_b".to_string(),
+            message: message_from_b.to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        "node C receiving node B broadcast",
+    )
+    .await;
 
     node_a.unsubscribe(&conn_a);
     node_c.unsubscribe(&conn_c);

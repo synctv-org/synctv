@@ -2674,8 +2674,38 @@ mod tests {
         let (publish_tx1, _backpressure1, _) = pubsub1.start(10_000).await.unwrap();
         let (_publish_tx2, _backpressure2, _) = pubsub2.start(10_000).await.unwrap();
 
-        // Wait for subscriber loops to be ready
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        async fn publish_until_received(
+            publish_tx: &tokio::sync::mpsc::Sender<PublishRequest>,
+            rx: &mut tokio::sync::mpsc::Receiver<ClusterEvent>,
+            make_event: impl Fn() -> ClusterEvent,
+            timeout_label: &str,
+        ) -> ClusterEvent {
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+
+            loop {
+                publish_tx
+                    .send(PublishRequest {
+                        event: make_event(),
+                    })
+                    .await
+                    .expect("publish should succeed");
+
+                match tokio::time::timeout(tokio::time::Duration::from_millis(500), rx.recv())
+                    .await
+                {
+                    Ok(Some(event)) => return event,
+                    Ok(None) => {
+                        panic!("channel closed unexpectedly")
+                    }
+                    Err(_) if tokio::time::Instant::now() < deadline => continue,
+                    Err(_) => panic!("timeout waiting for {timeout_label} message"),
+                }
+            }
+        }
+
+        // Wait for subscriber loops to be ready. Keep a small initial pause, but
+        // rely on eventual publish+receive retries below instead of fixed sleeps.
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Subscribe a client to room1 - this activates the room
         let room1_id = RoomId::from_string("test_room_1".to_string());
@@ -2684,31 +2714,22 @@ mod tests {
             .subscribe(room1_id.clone(), user1_id.clone(), "conn1".to_string())
             .await;
 
-        // Wait for room1 subscription to propagate
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-        // Verify room1 receives events
-        let event1 = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
-            room_id: room1_id.clone(),
-            user_id: user1_id.clone(),
-            username: "testuser1".to_string(),
-            message: "Hello from room1!".to_string(),
-            timestamp: chrono::Utc::now(),
-            position: None,
-            color: None,
-        };
-        publish_tx1
-            .send(PublishRequest {
-                event: event1.clone(),
-            })
-            .await
-            .unwrap();
-
-        let received = tokio::time::timeout(tokio::time::Duration::from_secs(3), rx1.recv())
-            .await
-            .expect("timeout waiting for room1 message")
-            .expect("channel closed unexpectedly");
+        let received = publish_until_received(
+            &publish_tx1,
+            &mut rx1,
+            || ClusterEvent::ChatMessage {
+                event_id: nanoid::nanoid!(16),
+                room_id: room1_id.clone(),
+                user_id: user1_id.clone(),
+                username: "testuser1".to_string(),
+                message: "Hello from room1!".to_string(),
+                timestamp: chrono::Utc::now(),
+                position: None,
+                color: None,
+            },
+            "room1",
+        )
+        .await;
         assert_eq!(received.event_type(), "chat_message");
 
         // Now subscribe a client to room2 - this is a second room activation
@@ -2718,31 +2739,22 @@ mod tests {
             .subscribe(room2_id.clone(), user2_id.clone(), "conn2".to_string())
             .await;
 
-        // Wait for room2 subscription to propagate
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-        // Verify room2 also receives events
-        let event2 = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
-            room_id: room2_id.clone(),
-            user_id: user2_id.clone(),
-            username: "testuser2".to_string(),
-            message: "Hello from room2!".to_string(),
-            timestamp: chrono::Utc::now(),
-            position: None,
-            color: None,
-        };
-        publish_tx1
-            .send(PublishRequest {
-                event: event2.clone(),
-            })
-            .await
-            .unwrap();
-
-        let received = tokio::time::timeout(tokio::time::Duration::from_secs(3), rx2.recv())
-            .await
-            .expect("timeout waiting for room2 message")
-            .expect("channel closed unexpectedly");
+        let received = publish_until_received(
+            &publish_tx1,
+            &mut rx2,
+            || ClusterEvent::ChatMessage {
+                event_id: nanoid::nanoid!(16),
+                room_id: room2_id.clone(),
+                user_id: user2_id.clone(),
+                username: "testuser2".to_string(),
+                message: "Hello from room2!".to_string(),
+                timestamp: chrono::Utc::now(),
+                position: None,
+                color: None,
+            },
+            "room2",
+        )
+        .await;
         assert_eq!(received.event_type(), "chat_message");
 
         // The test verifies that multiple room subscriptions work correctly.

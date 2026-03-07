@@ -13,7 +13,7 @@ use synctv_cluster::sync::events::ClusterEvent;
 use synctv_cluster::{ClusterConfig, ClusterManager};
 use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
-use integration_test_helpers::{create_node, TestRedis};
+use integration_test_helpers::{broadcast_until_all_clients_receive, create_node, TestRedis};
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -205,8 +205,6 @@ async fn test_multi_replica_websocket_connections() {
         clients_c.push((rx, conn_id));
     }
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     // Verify all nodes have correct metrics
     let metrics_a = node_a.metrics();
     let metrics_b = node_b.metrics();
@@ -216,66 +214,95 @@ async fn test_multi_replica_websocket_connections() {
     assert_eq!(metrics_c.total_connections, 5);
 
     // Node A sends a broadcast message
-    let broadcast_event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        user_id: UserId::from_string("ws_client_a_0".to_string()),
-        username: "client_a_0".to_string(),
-        message: "Hello from node A!".to_string(),
-        timestamp: Utc::now(),
-        position: None,
-        color: None,
-    };
-
-    node_a.broadcast(broadcast_event.clone());
-
-    // All clients on node B and node C should receive the message
-    for (rx, _) in &mut clients_b {
-        let received = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("Node B client should receive message")
-            .expect("Channel not closed");
-        assert_eq!(received.event_type(), "chat_message");
-    }
-
-    for (rx, _) in &mut clients_c {
-        let received = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("Node C client should receive message")
-            .expect("Channel not closed");
-        assert_eq!(received.event_type(), "chat_message");
-    }
+    let message_from_a = "Hello from node A!";
+    broadcast_until_all_clients_receive(
+        &node_a,
+        &mut clients_a,
+        message_from_a,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("ws_client_a_0".to_string()),
+            username: "client_a_0".to_string(),
+            message: message_from_a.to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        "node A local clients",
+    )
+    .await;
+    broadcast_until_all_clients_receive(
+        &node_a,
+        &mut clients_b,
+        message_from_a,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("ws_client_a_0".to_string()),
+            username: "client_a_0".to_string(),
+            message: message_from_a.to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        "node B clients receiving node A broadcast",
+    )
+    .await;
+    broadcast_until_all_clients_receive(
+        &node_a,
+        &mut clients_c,
+        message_from_a,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("ws_client_a_0".to_string()),
+            username: "client_a_0".to_string(),
+            message: message_from_a.to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        "node C clients receiving node A broadcast",
+    )
+    .await;
 
     // Node C sends a broadcast message
-    let broadcast_event_c = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        user_id: UserId::from_string("ws_client_c_2".to_string()),
-        username: "client_c_2".to_string(),
-        message: "Hello from node C!".to_string(),
-        timestamp: Utc::now(),
-        position: None,
-        color: None,
-    };
-
-    node_c.broadcast(broadcast_event_c);
-
-    // All clients on node A and node B should receive the message
-    for (rx, _) in &mut clients_a {
-        let received = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("Node A client should receive message from C")
-            .expect("Channel not closed");
-        assert_eq!(received.event_type(), "chat_message");
-    }
-
-    for (rx, _) in &mut clients_b {
-        let received = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("Node B client should receive message from C")
-            .expect("Channel not closed");
-        assert_eq!(received.event_type(), "chat_message");
-    }
+    let message_from_c = "Hello from node C!";
+    broadcast_until_all_clients_receive(
+        &node_c,
+        &mut clients_a,
+        message_from_c,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("ws_client_c_2".to_string()),
+            username: "client_c_2".to_string(),
+            message: message_from_c.to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        "node A clients receiving node C broadcast",
+    )
+    .await;
+    broadcast_until_all_clients_receive(
+        &node_c,
+        &mut clients_b,
+        message_from_c,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("ws_client_c_2".to_string()),
+            username: "client_c_2".to_string(),
+            message: message_from_c.to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        "node B clients receiving node C broadcast",
+    )
+    .await;
 
     // Cleanup
     for (_, conn_id) in clients_a {

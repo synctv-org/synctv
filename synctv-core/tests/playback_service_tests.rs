@@ -870,36 +870,55 @@ async fn test_state_consistency_after_mixed_operations() {
         .unwrap();
 
     // Seek
-    playback_service
+    let seek_response = playback_service
         .seek(room.id.clone(), owner.id.clone(), 50.0)
         .await
         .unwrap();
+    assert!(seek_response.seek_applied, "Seek should be applied");
+    assert!(
+        (seek_response.state.current_time - 50.0).abs() < f64::EPSILON,
+        "Seek should set the exact requested position"
+    );
 
-    // Change speed
-    playback_service
+    // Change speed while playing: the effective position may advance slightly,
+    // but it must never move backward from the seek target.
+    let speed_state = playback_service
         .change_speed(room.id.clone(), owner.id.clone(), 1.5)
         .await
         .unwrap();
+    assert!(
+        speed_state.current_time >= 50.0,
+        "Position must not move backward after changing speed"
+    );
 
-    // Pause
-    playback_service
+    // Pause snapshots the computed playback position.
+    let paused_state = playback_service
         .set_playing(room.id.clone(), owner.id.clone(), false)
         .await
         .unwrap();
+    assert!(
+        paused_state.current_time >= speed_state.current_time,
+        "Pause should preserve or advance the effective position"
+    );
+    assert!(!paused_state.is_playing, "Pause should stop playback");
 
-    // Resume
-    playback_service
+    // Resume should preserve the paused position and flip playback back on.
+    let resumed_state = playback_service
         .set_playing(room.id.clone(), owner.id.clone(), true)
         .await
         .unwrap();
+    assert!(
+        (resumed_state.current_time - paused_state.current_time).abs() < 0.1,
+        "Resume should preserve the paused position"
+    );
 
-    // Verify final state is consistent
+    // Verify final state is consistent.
     let state = playback_service.get_state(&room.id).await.unwrap();
 
     assert_eq!(state.playing_media_id, Some(media.id));
     assert!(
-        (state.current_time - 50.0).abs() < f64::EPSILON,
-        "Position should be 50"
+        state.current_time >= paused_state.current_time,
+        "Final position should not move backward"
     );
     assert!(
         (state.speed - 1.5).abs() < f64::EPSILON,

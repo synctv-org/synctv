@@ -131,3 +131,46 @@ pub async fn create_node_with_config(
         .await
         .expect("Failed to create ClusterManager")
 }
+
+
+#[allow(dead_code)]
+/// Broadcasts until every target client has actually received the expected
+/// chat message. This avoids brittle fixed sleeps when Redis Pub/Sub room
+/// subscriptions are still propagating across replicas.
+pub async fn broadcast_until_all_clients_receive(
+    manager: &ClusterManager,
+    clients: &mut [(tokio::sync::mpsc::Receiver<synctv_cluster::sync::events::ClusterEvent>, String)],
+    expected_message: &str,
+    mut make_event: impl FnMut() -> synctv_cluster::sync::events::ClusterEvent,
+    label: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut pending = vec![true; clients.len()];
+
+    while pending.iter().any(|is_pending| *is_pending) {
+        manager.broadcast(make_event());
+
+        for (index, (rx, _conn_id)) in clients.iter_mut().enumerate() {
+            if !pending[index] {
+                continue;
+            }
+
+            match tokio::time::timeout(Duration::from_millis(750), rx.recv()).await {
+                Ok(Some(synctv_cluster::sync::events::ClusterEvent::ChatMessage {
+                    message,
+                    ..
+                })) if message == expected_message => {
+                    pending[index] = false;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("{label} channel closed unexpectedly"),
+                Err(_) => {}
+            }
+        }
+
+        if pending.iter().any(|is_pending| *is_pending) && tokio::time::Instant::now() >= deadline {
+            let missing = pending.into_iter().filter(|is_pending| *is_pending).count();
+            panic!("timed out waiting for {label}; {missing} clients still missing expected message");
+        }
+    }
+}

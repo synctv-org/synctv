@@ -481,9 +481,13 @@ const L2_TTL_MARGIN_SECS: u64 = 30;
 ///
 /// ## Atomicity for `blacklist_if_not_exists`
 ///
-/// When Redis is available, uses Redis `SET NX EX` for atomic operation.
-/// When Redis is not available, uses a per-key mutex (DashMap) to serialize
-/// concurrent operations on the same JTI, preventing TOCTOU race conditions.
+/// PostgreSQL is the authoritative store for atomic replay detection via
+/// `INSERT ... ON CONFLICT DO NOTHING`. Redis is used only as an L2 cache for
+/// read acceleration and must never become the only durable record of a
+/// blacklisted token.
+///
+/// When Redis is not available, the store still provides correct behavior via
+/// L1 (moka) + PG.
 pub struct TieredTokenBlacklistStore {
     pg: PgTokenBlacklistStore,
     /// Shared Redis connection handle that follows Sentinel failover.
@@ -710,76 +714,17 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
 
     /// Atomically blacklist the key if it doesn't already exist.
     ///
-    /// ## Redis Mode (L2 available)
-    /// Uses Redis `SET NX EX` as the atomic operation, then asynchronously
-    /// persists to PG for durability. Redis provides the atomicity guarantee.
-    ///
-    /// ## Memory-Only Mode (no L2)
-    /// Uses a per-key mutex (DashMap) to serialize concurrent operations on the
-    /// same JTI, then delegates to PG's atomic operation.
+    /// Uses PostgreSQL as the atomic source of truth, then updates Redis L2 as a
+    /// best-effort cache. This preserves correctness when Redis data is lost and
+    /// ensures `Ok(..)` is only returned after durable persistence succeeds.
     ///
     /// Returns:
     /// - `Ok(true)` if key already existed (replay detected)
     /// - `Ok(false)` if key was newly inserted (first use)
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
-        // --- Redis Mode: Use SET NX EX for atomic operation ---
-        if let Some(ref redis_conn) = self.redis_conn {
-            let redis_key = self.bl_key(key);
-            let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-
-            // SET key value NX EX ttl - atomically sets if not exists
-            // Returns Ok(true) if the key was set (first use)
-            // Returns Ok(false) if the key already existed (replay detected)
-            let set_result: redis::RedisResult<bool> = {
-                let mut conn = redis_conn.read().await.clone();
-                redis::cmd("SET")
-                    .arg(&redis_key)
-                    .arg("1")
-                    .arg("NX")
-                    .arg("EX")
-                    .arg(l2_ttl)
-                    .query_async(&mut conn)
-                    .await
-            };
-
-            let already_existed = match set_result {
-                Ok(true) => {
-                    // Key was newly set in Redis - first use
-                    // Asynchronously persist to PG (fire and forget, PG is for durability)
-                    // We don't wait for PG; Redis is the source of truth for atomicity
-                    let pg = PgTokenBlacklistStore::new(self.pg.pool.clone());
-                    let key_owned = key.to_string();
-                    tokio::spawn(async move {
-                        let _ = pg.blacklist(&key_owned, ttl_secs).await;
-                    });
-
-                    false // First use
-                }
-                Ok(false) => {
-                    // Key already existed in Redis - replay detected
-                    true // Replay detected
-                }
-                Err(e) => {
-                    // Redis error - fall back to PG atomic operation
-                    tracing::warn!(
-                        key = %key,
-                        error = %e,
-                        "Redis SET NX failed, falling back to PG atomic operation"
-                    );
-                    self.pg.blacklist_if_not_exists(key, ttl_secs).await?
-                }
-            };
-
-            // Update L1 cache (always positive after this operation)
-            self.l1_blacklist
-                .insert(key.to_string(), (true, Instant::now() + L1_POSITIVE_TTL))
-                .await;
-
-            return Ok(already_existed);
-        }
-
-        // --- Memory-Only Mode: Use per-key mutex + PG atomic operation ---
-        // Get or create a mutex for this specific key to prevent TOCTOU races
+        // Use a per-key mutex to collapse same-process concurrency and reduce
+        // duplicate PG writes, while PostgreSQL remains the cross-replica atomic
+        // source of truth.
         let mutex = self
             .blacklist_locks
             .entry(key.to_string())
@@ -799,8 +744,26 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             }
         }
 
-        // Delegate to PG's atomic operation
+        // Delegate to PG's atomic operation first. Returning `Ok` before this
+        // succeeds would violate the durable-primary architecture.
         let already_existed = self.pg.blacklist_if_not_exists(key, ttl_secs).await?;
+
+        // Best-effort L2 population after the durable PG write succeeds.
+        if let Some(ref redis_conn) = self.redis_conn {
+            let redis_key = self.bl_key(key);
+            let l2_ttl = Self::l2_positive_ttl(ttl_secs);
+            let cache_result: redis::RedisResult<()> = {
+                let mut conn = redis_conn.read().await.clone();
+                conn.set_ex(&redis_key, "1", l2_ttl).await
+            };
+            if let Err(e) = cache_result {
+                tracing::warn!(
+                    key = %key,
+                    error = %e,
+                    "Failed to populate Redis L2 blacklist cache after PG write"
+                );
+            }
+        }
 
         // Update L1 cache
         self.l1_blacklist

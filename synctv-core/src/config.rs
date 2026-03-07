@@ -1616,6 +1616,46 @@ impl Config {
             );
         }
 
+        if cluster_mode_active && self.cluster.discovery_mode == "k8s_dns" {
+            match std::env::var("HEADLESS_SERVICE_NAME") {
+                Ok(value) if !value.trim().is_empty() => {}
+                _ => errors.push(
+                    "cluster.discovery_mode='k8s_dns' requires HEADLESS_SERVICE_NAME to be set \
+                     during configuration validation."
+                        .to_string(),
+                ),
+            }
+
+            match std::env::var("POD_NAMESPACE") {
+                Ok(value) if !value.trim().is_empty() => {}
+                _ => errors.push(
+                    "cluster.discovery_mode='k8s_dns' requires POD_NAMESPACE to be set \
+                     during configuration validation."
+                        .to_string(),
+                ),
+            }
+        }
+
+        if cluster_mode_active && self.cluster.leader_election_mode == "k8s_lease" {
+            match std::env::var("POD_NAME") {
+                Ok(value) if !value.trim().is_empty() => {}
+                _ => errors.push(
+                    "cluster.leader_election_mode='k8s_lease' requires POD_NAME to be set \
+                     during configuration validation."
+                        .to_string(),
+                ),
+            }
+
+            match std::env::var("POD_NAMESPACE") {
+                Ok(value) if !value.trim().is_empty() => {}
+                _ => errors.push(
+                    "cluster.leader_election_mode='k8s_lease' requires POD_NAMESPACE to be set \
+                     during configuration validation."
+                        .to_string(),
+                ),
+            }
+        }
+
         // HLS shared storage validation in cluster mode.
         // In cluster mode, HLS segments must be on storage accessible by all replicas.
         // If segments are on local-only storage, clients will receive 404s for segments
@@ -2176,6 +2216,25 @@ impl Default for GrpcRateLimitConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn set_env_var(key: &str, value: Option<&str>) -> Option<String> {
+        let previous = std::env::var(key).ok();
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+        previous
+    }
+
+    fn restore_env_var(key: &str, previous: Option<String>) {
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
 
     #[test]
     fn test_default_config() {
@@ -2726,6 +2785,64 @@ mod tests {
                 .iter()
                 .any(|e| { e.contains("cluster.leader_election_mode") && e.contains("redis") }),
             "Expected leader_election_mode validation error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_k8s_dns_requires_env_vars_in_cluster_mode() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let old_headless = set_env_var("HEADLESS_SERVICE_NAME", None);
+        let old_namespace = set_env_var("POD_NAMESPACE", None);
+
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.cluster.discovery_mode = "k8s_dns".to_string();
+
+        let errors = config.validate().unwrap_err();
+
+        restore_env_var("HEADLESS_SERVICE_NAME", old_headless);
+        restore_env_var("POD_NAMESPACE", old_namespace);
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("HEADLESS_SERVICE_NAME") && e.contains("k8s_dns")),
+            "Expected HEADLESS_SERVICE_NAME validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("POD_NAMESPACE") && e.contains("k8s_dns")),
+            "Expected POD_NAMESPACE validation error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_k8s_lease_requires_env_vars_in_cluster_mode() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let old_pod_name = set_env_var("POD_NAME", None);
+        let old_namespace = set_env_var("POD_NAMESPACE", None);
+
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.cluster.leader_election_mode = "k8s_lease".to_string();
+
+        let errors = config.validate().unwrap_err();
+
+        restore_env_var("POD_NAME", old_pod_name);
+        restore_env_var("POD_NAMESPACE", old_namespace);
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("POD_NAME") && e.contains("k8s_lease")),
+            "Expected POD_NAME validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("POD_NAMESPACE") && e.contains("k8s_lease")),
+            "Expected POD_NAMESPACE validation error, got: {errors:?}"
         );
     }
 

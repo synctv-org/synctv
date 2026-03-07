@@ -74,6 +74,7 @@ pub struct ClientServiceConfig {
     pub config: Arc<synctv_core::Config>,
     pub client_api: Arc<crate::impls::ClientApiImpl>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
+    pub heartbeat_schedule: crate::impls::HeartbeatSchedule,
 }
 
 /// `ClientService` implementation
@@ -92,6 +93,7 @@ pub struct ClientServiceImpl {
     client_api: Arc<crate::impls::ClientApiImpl>,
     config: Arc<synctv_core::Config>,
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
+    heartbeat_schedule: crate::impls::HeartbeatSchedule,
 }
 
 impl ClientServiceImpl {
@@ -127,6 +129,7 @@ impl ClientServiceImpl {
             client_api,
             config,
             notification_service: None,
+            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
         }
     }
 
@@ -147,6 +150,7 @@ impl ClientServiceImpl {
             client_api: config.client_api,
             config: config.config,
             notification_service: config.notification_service,
+            heartbeat_schedule: config.heartbeat_schedule,
         }
     }
 
@@ -684,6 +688,7 @@ impl RoomService for ClientServiceImpl {
             self.content_filter.clone(),
             Arc::clone(&grpc_sender) as Arc<dyn MessageSender>,
         )
+        .with_heartbeat_schedule(self.heartbeat_schedule)
         .with_ws_message_rate_limit(
             self.config
                 .connection_limits

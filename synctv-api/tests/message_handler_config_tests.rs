@@ -10,7 +10,8 @@
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
-use synctv_api::impls::MessageConcurrencyConfig;
+use std::time::Duration;
+use synctv_api::impls::{HeartbeatSchedule, MessageConcurrencyConfig};
 
 #[cfg(test)]
 mod tests {
@@ -263,5 +264,31 @@ mod integration_tests {
         // Should match DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING (1000)
         assert_eq!(config.max_concurrent(), 1000);
         assert_eq!(config.available_permits(), 1000);
+    }
+
+    #[test]
+    fn test_heartbeat_schedule_can_be_configured_for_tests() {
+        let schedule =
+            HeartbeatSchedule::for_tests(Duration::from_secs(2), Duration::from_millis(250));
+
+        assert_eq!(schedule.membership_cache_ttl(), Duration::from_secs(2));
+        assert_eq!(schedule.max_jitter_secs(), 0);
+        assert_eq!(
+            schedule.period_for_user(&synctv_core::models::UserId::from_string("u1".to_string())),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn test_production_heartbeat_schedule_matches_current_contract() {
+        let schedule = HeartbeatSchedule::production();
+
+        assert_eq!(schedule.membership_cache_ttl(), Duration::from_secs(30));
+        assert_eq!(schedule.max_jitter_secs(), 10);
+        let period = schedule.period_for_user(&synctv_core::models::UserId::from_string(
+            "stable-user".to_string(),
+        ));
+        assert!(period >= Duration::from_secs(25));
+        assert!(period <= Duration::from_secs(35));
     }
 }

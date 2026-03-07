@@ -107,10 +107,10 @@ impl ShutdownCoordinator {
                 "Waiting for {} background task(s) to finish...",
                 self.tasks.len()
             );
-            for (i, (name, handle)) in self.tasks.into_iter().enumerate() {
+            for (i, (name, mut handle)) in self.tasks.into_iter().enumerate() {
                 let remaining = remaining_items - i;
                 let per_item = Self::budget_per_item(deadline, remaining);
-                match tokio::time::timeout(per_item, handle).await {
+                match tokio::time::timeout(per_item, &mut handle).await {
                     Ok(Ok(())) => {
                         info!("Background task '{name}' finished");
                     }
@@ -119,9 +119,19 @@ impl ShutdownCoordinator {
                     }
                     Err(_) => {
                         warn!(
-                            "Background task '{name}' did not finish within {}s, proceeding",
+                            "Background task '{name}' did not finish within {}s, aborting",
                             per_item.as_secs()
                         );
+                        handle.abort();
+                        match handle.await {
+                            Ok(()) => info!("Background task '{name}' aborted cleanly"),
+                            Err(e) if e.is_cancelled() => {
+                                info!("Background task '{name}' aborted")
+                            }
+                            Err(e) => {
+                                warn!("Background task '{name}' failed after abort: {e}");
+                            }
+                        }
                     }
                 }
             }
@@ -302,5 +312,42 @@ mod tests {
 
         // Should complete quickly (tasks respond to cancel)
         assert!(elapsed < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_coordinator_aborts_timed_out_tasks() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let budget = Duration::from_secs(1);
+        let mut coord = ShutdownCoordinator::new(budget);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_for_task = Arc::clone(&dropped);
+
+        let handle = tokio::spawn(async move {
+            let _drop_flag = DropFlag(dropped_for_task);
+            std::future::pending::<()>().await;
+        });
+        coord.register_task("stuck_task", handle);
+
+        coord.shutdown().await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while !dropped.load(Ordering::SeqCst) && tokio::time::Instant::now() < deadline {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "timed-out background task should be aborted so its future is dropped"
+        );
     }
 }

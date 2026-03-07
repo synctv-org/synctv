@@ -392,6 +392,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         config: Arc::new(config.clone()),
         client_api: client_api.clone(),
         notification_service: notification_service.clone(),
+        heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
     });
 
     // Build the shared AdminApiImpl for gRPC handlers (same impls layer used by HTTP)
@@ -669,6 +670,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             turn_health_checker: None,
             credential_encryption: credential_encryption.clone(),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
+            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: Some(Arc::clone(&_providers_mgr)),
         });
 
@@ -677,6 +679,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             router_config: provider_router_config,
             rate_limit_config: Arc::new(config.http_rate_limits.clone()),
             messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
+            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             jwt_validator: provider_jwt_validator,
             security_pipeline: Arc::new(
                 synctv_core::service::SecurityPipeline::new(user_service.clone())

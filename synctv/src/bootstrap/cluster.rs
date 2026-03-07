@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 #[cfg(feature = "k8s")]
@@ -113,6 +114,7 @@ pub async fn init_cluster_discovery(
     redis_handles: &RedisHandles,
     cm: &Arc<ClusterManager>,
     connection_manager: &ConnectionManager,
+    shutdown_token: CancellationToken,
 ) -> Result<
     (
         Option<Arc<NodeRegistry>>,
@@ -150,7 +152,7 @@ pub async fn init_cluster_discovery(
             );
 
             // Start background refresh loop (re-resolve every 10 seconds)
-            let dns_refresh_handle = k8s_discovery.start_refresh_loop(10).await;
+            let dns_refresh_handle = k8s_discovery.start_refresh_loop(10, shutdown_token);
 
             let (registry, hm, lb) =
                 init_cluster_components(redis_handles, cm, config, connection_manager).await?;

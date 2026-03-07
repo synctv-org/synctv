@@ -3,6 +3,7 @@
 use super::convert::user_to_proto;
 use super::ClientApiImpl;
 use crate::impls::ApiError;
+use std::future::Future;
 
 /// Outcome of a logout operation.
 ///
@@ -106,38 +107,114 @@ impl ClientApiImpl {
     /// and adds it to the token blacklist. The token will be rejected by the
     /// security pipeline on subsequent requests.
     ///
-    /// Returns a `LogoutOutcome` indicating whether the blacklist operation
-    /// succeeded. The logout itself always succeeds (the user's intent to
-    /// log out is respected), but the client is informed if token invalidation
-    /// may be delayed.
+    /// Returns an error when token revocation fails so callers never treat a
+    /// non-revoked token as successfully logged out.
     pub async fn logout(&self, raw_token: &str) -> Result<LogoutOutcome, ApiError> {
-        match self.jwt_service.verify_access_token(raw_token) {
-            Ok(claims) => {
-                if !claims.jti.is_empty() {
-                    let now = chrono::Utc::now().timestamp();
-                    let remaining_ttl = (claims.exp - now).max(0) as u64;
-                    if remaining_ttl > 0 {
-                        if let Err(e) = self
-                            .user_service
-                            .blacklist_access_token(&claims.jti, remaining_ttl)
-                            .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                jti = %claims.jti,
-                                "Failed to blacklist access token on logout; token will expire naturally",
-                            );
-                            return Ok(LogoutOutcome::blacklist_failed());
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                // Token may be expired or malformed. Still succeed; the client
-                // is logging out and the token is no longer useful anyway.
-                tracing::debug!(error = %e, "Could not parse token during logout; skipping blacklist");
-            }
-        }
+        revoke_access_token_for_logout(&self.jwt_service, raw_token, |jti, ttl_secs| async move {
+            self.user_service
+                .blacklist_access_token(&jti, ttl_secs)
+                .await
+        })
+        .await?;
         Ok(LogoutOutcome::success())
+    }
+}
+
+async fn revoke_access_token_for_logout<F, Fut>(
+    jwt_service: &synctv_core::service::JwtService,
+    raw_token: &str,
+    blacklist: F,
+) -> Result<(), ApiError>
+where
+    F: FnOnce(String, u64) -> Fut,
+    Fut: Future<Output = synctv_core::Result<()>>,
+{
+    match jwt_service.verify_access_token(raw_token) {
+        Ok(claims) => {
+            if claims.jti.is_empty() {
+                return Ok(());
+            }
+
+            let now = chrono::Utc::now().timestamp();
+            let remaining_ttl = (claims.exp - now).max(0) as u64;
+            if remaining_ttl == 0 {
+                return Ok(());
+            }
+
+            blacklist(claims.jti.clone(), remaining_ttl)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(
+                        error = %error,
+                        jti = %claims.jti,
+                        "Failed to blacklist access token during logout"
+                    );
+                    ApiError::from(error)
+                })
+        }
+        Err(error) => {
+            tracing::debug!(error = %error, "Could not parse token during logout; skipping blacklist");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::revoke_access_token_for_logout;
+    use crate::impls::ApiError;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use synctv_core::{
+        models::UserId,
+        service::{JwtService, TokenType},
+    };
+
+    fn create_test_jwt_service() -> JwtService {
+        JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_logout_blacklist_failure_is_propagated() {
+        let jwt_service = create_test_jwt_service();
+        let token = jwt_service
+            .sign_token(&UserId::new(), TokenType::Access, 0)
+            .unwrap();
+
+        let result = revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl_secs| async {
+            Err(synctv_core::Error::Internal(
+                "Blacklist store unavailable".to_string(),
+            ))
+        })
+        .await;
+
+        match result {
+            Err(ApiError::Internal(message)) => {
+                assert!(message.contains("Blacklist store unavailable"));
+            }
+            other => panic!("expected propagated internal error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_logout_invalid_token_skips_blacklist() {
+        let jwt_service = create_test_jwt_service();
+        let blacklist_called = Arc::new(AtomicBool::new(false));
+        let called = Arc::clone(&blacklist_called);
+
+        let result =
+            revoke_access_token_for_logout(&jwt_service, "invalid.token.here", move |_jti, _ttl| {
+                let called = Arc::clone(&called);
+                async move {
+                    called.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            })
+            .await;
+
+        assert!(result.is_ok());
+        assert!(!blacklist_called.load(Ordering::SeqCst));
     }
 }

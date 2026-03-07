@@ -17,7 +17,7 @@ use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::broadcast;
 
 mod integration_test_helpers;
-use integration_test_helpers::{create_node, TestRedis};
+use integration_test_helpers::{broadcast_until_all_clients_receive, create_node, TestRedis};
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -336,32 +336,34 @@ async fn test_redis_reconnection_event_preservation() {
     let room_id = RoomId::from_string("reconnect_room".to_string());
 
     // Subscribe on node B
-    let (mut rx_b, conn_b) = node_b
+    let (rx_b, conn_b) = node_b
         .subscribe(
             room_id.clone(),
             UserId::from_string("reconnect_listener".to_string()),
         )
         .await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Send a baseline event to verify connection is working
-    let baseline_event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        user_id: UserId::from_string("reconnect_sender".to_string()),
-        username: "sender".to_string(),
-        message: "Baseline message".to_string(),
-        timestamp: Utc::now(),
-        position: None,
-        color: None,
-    };
-
-    node_a.broadcast(baseline_event);
-
-    let _ = tokio::time::timeout(Duration::from_secs(5), rx_b.recv())
-        .await
-        .expect("Should receive baseline message");
+    // Establish the cross-replica subscription path before asserting on burst delivery.
+    // This avoids flakiness from Redis pub/sub room registration still converging.
+    let mut baseline_clients = vec![(rx_b, conn_b.clone())];
+    broadcast_until_all_clients_receive(
+        &node_a,
+        &mut baseline_clients,
+        "Baseline message",
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("reconnect_sender".to_string()),
+            username: "sender".to_string(),
+            message: "Baseline message".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        "baseline reconnect message",
+    )
+    .await;
+    let (mut rx_b, _conn_b_again) = baseline_clients.pop().expect("baseline client");
 
     // Test rapid message sending (simulating high-throughput scenario)
     let mut event_ids = Vec::new();
@@ -383,9 +385,10 @@ async fn test_redis_reconnection_event_preservation() {
         node_a.broadcast(rapid_event);
     }
 
-    // Count received messages
+    // Count received messages. Allow a longer deadline because Redis pub/sub
+    // subscription propagation can lag under highly parallel workspace runs.
     let mut received_count = 0;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     while received_count < 20 {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
@@ -399,10 +402,11 @@ async fn test_redis_reconnection_event_preservation() {
         }
     }
 
-    // We should receive most if not all messages (allowing for some network loss)
+    // Once the baseline connection is established, buffered publish + stream catch-up
+    // should preserve all events. Treat any missing events as a correctness bug.
     assert!(
-        received_count >= 18,
-        "Should receive at least 18 out of 20 messages, got {received_count}"
+        received_count == 20,
+        "Should receive all 20 rapid messages after connection establishment, got {received_count}"
     );
 
     // Cleanup

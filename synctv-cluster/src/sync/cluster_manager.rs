@@ -145,6 +145,8 @@ pub struct ClusterManager {
     cancel_token: CancellationToken,
     /// Node registry + heartbeat handle (behind Mutex for async shutdown from &self)
     heartbeat_state: tokio::sync::Mutex<HeartbeatState>,
+    #[cfg(test)]
+    heartbeat_shutdown_timeout: Duration,
     /// Capacity for the critical event channel (for logging)
     critical_channel_capacity: usize,
     /// Capacity for the publish channel (for logging)
@@ -305,6 +307,8 @@ impl ClusterManager {
                 grpc_address: String::new(),
                 http_address: String::new(),
             }),
+            #[cfg(test)]
+            heartbeat_shutdown_timeout: Duration::from_secs(10),
             connection_manager: None,
             heartbeat_failure_count: Arc::new(AtomicU64::new(0)),
             epoch_mismatch_count: Arc::new(AtomicU64::new(0)),
@@ -605,7 +609,20 @@ impl ClusterManager {
                 }
             }
             if let Some(handle) = state.handle.take() {
-                let _ = handle.await;
+                match tokio::time::timeout(self.heartbeat_shutdown_timeout(), handle).await {
+                    Ok(Ok(())) => {
+                        info!("Heartbeat task completed cleanly during shutdown");
+                    }
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "Heartbeat task panicked during shutdown");
+                    }
+                    Err(_) => {
+                        warn!(
+                            "Heartbeat task did not finish within {}s timeout during shutdown; proceeding",
+                            self.heartbeat_shutdown_timeout().as_secs()
+                        );
+                    }
+                }
             }
         }
 
@@ -822,6 +839,29 @@ impl ClusterManager {
     #[must_use]
     pub fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
         self.message_hub.get_room_subscribers(room_id)
+    }
+
+    fn heartbeat_shutdown_timeout(&self) -> Duration {
+        #[cfg(test)]
+        {
+            self.heartbeat_shutdown_timeout
+        }
+        #[cfg(not(test))]
+        {
+            Duration::from_secs(10)
+        }
+    }
+
+    #[cfg(test)]
+    pub async fn test_set_heartbeat_handle(&self, handle: tokio::task::JoinHandle<()>) {
+        let mut state = self.heartbeat_state.lock().await;
+        state.handle = Some(handle);
+    }
+
+    #[cfg(test)]
+    pub fn test_with_heartbeat_shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.heartbeat_shutdown_timeout = timeout;
+        self
     }
 }
 
@@ -1151,6 +1191,43 @@ mod tests {
         assert_eq!(received.event_type(), "chat_message");
 
         manager.unsubscribe(&conn_id);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_times_out_non_cooperative_heartbeat_handle() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "stuck-heartbeat-node".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let manager = ClusterManager::new(config, None, None)
+            .await
+            .unwrap()
+            .test_with_heartbeat_shutdown_timeout(Duration::from_millis(50));
+
+        let stuck = tokio::spawn(async {
+            futures::future::pending::<()>().await;
+        });
+        manager.test_set_heartbeat_handle(stuck).await;
+
+        let start = std::time::Instant::now();
+        manager.shutdown().await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Shutdown should time out stuck heartbeat handle quickly, took {elapsed:?}"
+        );
     }
 
     /// Test that ClusterManager tracks epoch mismatch state and quarantine.

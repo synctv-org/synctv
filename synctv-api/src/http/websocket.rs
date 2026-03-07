@@ -583,6 +583,7 @@ async fn handle_socket(
         content_filter,
         ws_sender_for_handler,
     )
+    .with_heartbeat_schedule(state.heartbeat_schedule)
     .with_ws_message_rate_limit(
         state
             .config

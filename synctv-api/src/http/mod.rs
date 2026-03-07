@@ -87,6 +87,9 @@ pub struct RouterConfig {
     /// Rate limit configuration for WebSocket messaging (chat/danmaku).
     /// This is separate from the HTTP rate limit config used by middleware.
     pub messaging_rate_limit_config: synctv_core::service::RateLimitConfig,
+    /// Heartbeat/cache timing for real-time messaging. Production defaults are
+    /// conservative; tests may inject a shorter schedule.
+    pub heartbeat_schedule: crate::impls::HeartbeatSchedule,
     /// Providers manager for playback generation (media provider lookup)
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
 }
@@ -105,6 +108,7 @@ pub struct AppState {
     pub rate_limit_config: Arc<middleware::RateLimitConfig>,
     /// Shared messaging rate limit config for WebSocket (chat/danmaku rate limits)
     pub messaging_rate_limit_config: Arc<synctv_core::service::RateLimitConfig>,
+    pub heartbeat_schedule: crate::impls::HeartbeatSchedule,
     /// Shared JWT validator (created once at startup, not per-request)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
     /// Shared security pipeline for post-JWT checks (password, user status)
@@ -314,10 +318,13 @@ fn build_app_state(config: RouterConfig) -> AppState {
         synctv_proxy::slice_cache::SliceCacheConfig::default(),
     ));
 
+    let heartbeat_schedule = config.heartbeat_schedule;
+
     AppState {
         router_config: Arc::new(config),
         rate_limit_config,
         messaging_rate_limit_config,
+        heartbeat_schedule,
         jwt_validator,
         security_pipeline,
         guest_token_validator,

@@ -623,6 +623,7 @@ impl SyncTvServer {
                     danmaku_per_second: self.config.messaging_rate_limits.danmaku_per_second,
                     window_seconds: self.config.messaging_rate_limits.window_seconds,
                 },
+                heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
                 providers_manager: Some(self.services.providers_manager.clone()),
             });
         let proxy_slice_cache = http_state.proxy_slice_cache.clone();

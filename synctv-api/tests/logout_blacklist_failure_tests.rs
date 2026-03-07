@@ -445,3 +445,13 @@ fn test_logout_must_propagate_blacklist_errors() {
         "Logout must propagate blacklist errors. See test documentation for details."
     );
 }
+
+#[test]
+fn test_logout_internal_error_maps_to_http_500() {
+    let app_error =
+        synctv_api::http::error::map_api_error(synctv_api::impls::ApiError::Internal(
+            "Blacklist store unavailable".to_string(),
+        ));
+    let response = axum::response::IntoResponse::into_response(app_error);
+    assert_eq!(response.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+}

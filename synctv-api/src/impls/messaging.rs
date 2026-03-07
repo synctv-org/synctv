@@ -65,6 +65,62 @@ const MEMBERSHIP_CACHE_TTL: Duration = Duration::from_secs(30);
 /// When exceeded, new messages receive a `ResourceExhausted` error.
 pub const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeartbeatSchedule {
+    membership_cache_ttl: Duration,
+    base_interval: Duration,
+    max_jitter_secs: u64,
+}
+
+impl HeartbeatSchedule {
+    #[must_use]
+    pub const fn production() -> Self {
+        Self {
+            membership_cache_ttl: MEMBERSHIP_CACHE_TTL,
+            base_interval: Duration::from_secs(25),
+            max_jitter_secs: 10,
+        }
+    }
+
+    #[must_use]
+    pub const fn for_tests(membership_cache_ttl: Duration, base_interval: Duration) -> Self {
+        Self {
+            membership_cache_ttl,
+            base_interval,
+            max_jitter_secs: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn membership_cache_ttl(self) -> Duration {
+        self.membership_cache_ttl
+    }
+
+    #[must_use]
+    pub const fn max_jitter_secs(self) -> u64 {
+        self.max_jitter_secs
+    }
+
+    #[must_use]
+    pub fn period_with_random_jitter(self) -> Duration {
+        self.base_interval + Duration::from_secs(rand::rng().random_range(0u64..=self.max_jitter_secs))
+    }
+
+    #[must_use]
+    pub fn period_for_user(self, user_id: &UserId) -> Duration {
+        let jitter_secs = if self.max_jitter_secs == 0 {
+            0
+        } else {
+            user_id
+                .as_str()
+                .bytes()
+                .fold(0u64, |acc, byte| acc.wrapping_add(u64::from(byte)))
+                % (self.max_jitter_secs + 1)
+        };
+        self.base_interval + Duration::from_secs(jitter_secs)
+    }
+}
+
 // ============================================================================
 // MessageConcurrencyConfig - Instance-level concurrency configuration
 // ============================================================================
@@ -292,6 +348,7 @@ pub struct StreamMessageHandler {
     /// Stores the (last_written_position, last_write_time) to avoid
     /// writing to the DB on every progress heartbeat.
     last_progress_write: Arc<tokio::sync::Mutex<Option<(f64, tokio::time::Instant)>>>,
+    heartbeat_schedule: HeartbeatSchedule,
 }
 
 impl Clone for StreamMessageHandler {
@@ -316,6 +373,7 @@ impl Clone for StreamMessageHandler {
             membership_cache: Arc::clone(&self.membership_cache),
             concurrency_config: Arc::clone(&self.concurrency_config),
             last_progress_write: Arc::clone(&self.last_progress_write),
+            heartbeat_schedule: self.heartbeat_schedule,
         }
     }
 }
@@ -376,7 +434,7 @@ impl StreamMessageHandler {
         // This reduces database queries from every heartbeat (25-35s) to at most once per TTL (30s).
         let membership_cache = Arc::new(
             moka::sync::Cache::builder()
-                .time_to_live(MEMBERSHIP_CACHE_TTL)
+                .time_to_live(HeartbeatSchedule::production().membership_cache_ttl())
                 .build(),
         );
         Self {
@@ -399,6 +457,7 @@ impl StreamMessageHandler {
             membership_cache,
             concurrency_config,
             last_progress_write: Arc::new(tokio::sync::Mutex::new(None)),
+            heartbeat_schedule: HeartbeatSchedule::production(),
         }
     }
 
@@ -430,6 +489,17 @@ impl StreamMessageHandler {
     #[must_use]
     pub fn with_concurrency(mut self, config: Arc<MessageConcurrencyConfig>) -> Self {
         self.concurrency_config = config;
+        self
+    }
+
+    #[must_use]
+    pub fn with_heartbeat_schedule(mut self, schedule: HeartbeatSchedule) -> Self {
+        self.membership_cache = Arc::new(
+            moka::sync::Cache::builder()
+                .time_to_live(schedule.membership_cache_ttl())
+                .build(),
+        );
+        self.heartbeat_schedule = schedule;
         self
     }
 
@@ -546,15 +616,14 @@ impl StreamMessageHandler {
         stream.send(self.create_user_joined_message(&room_id_str, member_data.as_ref()))?;
 
         // Broadcast UserJoined event to other replicas
-        self.broadcast_user_joined(member_data.as_ref());
+        self.broadcast_user_joined(member_data.as_ref()).await;
 
         // Create heartbeat interval OUTSIDE the loop so it doesn't reset
         // when other select! branches fire.
         // Add random jitter (±5 s around the 30 s base) so that 1000 concurrent
         // connections do not all fire their DB membership checks in the same
         // one-second window (thundering-herd protection).
-        let heartbeat_jitter_secs = rand::rng().random_range(0u64..=10); // 0..=10
-        let heartbeat_period = std::time::Duration::from_secs(25 + heartbeat_jitter_secs);
+        let heartbeat_period = self.heartbeat_schedule.period_with_random_jitter();
         let mut heartbeat_interval = tokio::time::interval(heartbeat_period);
         heartbeat_interval.tick().await; // Skip the immediate first tick
 
@@ -679,6 +748,8 @@ impl StreamMessageHandler {
                                     user_id = %self.user_id.as_str(),
                                     "Received disconnect signal for this user (ban/kick)"
                                 );
+                                self.skip_cleanup_user_left
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
                                 break;
                             }
                         }
@@ -728,6 +799,8 @@ impl StreamMessageHandler {
                                             room_id = %self.room_id.as_str(),
                                             "User is banned (detected after disconnect signal lag), disconnecting"
                                         );
+                                        self.skip_cleanup_user_left
+                                            .store(true, std::sync::atomic::Ordering::Relaxed);
                                         break;
                                     }
                                 }
@@ -737,6 +810,8 @@ impl StreamMessageHandler {
                                         room_id = %self.room_id.as_str(),
                                         "User is no longer a member (detected after disconnect signal lag), disconnecting"
                                     );
+                                    self.skip_cleanup_user_left
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
                                     break;
                                 }
                                 Err(e) => {
@@ -770,6 +845,10 @@ impl StreamMessageHandler {
                                     reason = %reason,
                                     "Received cross-replica KickUser event, disconnecting"
                                 );
+                                self.skip_cleanup_user_left.store(
+                                    true,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
                                 break;
                             }
                         }
@@ -785,6 +864,10 @@ impl StreamMessageHandler {
                                     room_id = %self.room_id.as_str(),
                                     reason = %reason,
                                     "Received cross-replica KickUserFromRoom event, disconnecting"
+                                );
+                                self.skip_cleanup_user_left.store(
+                                    true,
+                                    std::sync::atomic::Ordering::Relaxed,
                                 );
                                 break;
                             }
@@ -854,6 +937,8 @@ impl StreamMessageHandler {
                                             room_id = %self.room_id.as_str(),
                                             "User is banned (detected after admin event lag), disconnecting"
                                         );
+                                        self.skip_cleanup_user_left
+                                            .store(true, std::sync::atomic::Ordering::Relaxed);
                                         break;
                                     }
                                 }
@@ -863,6 +948,8 @@ impl StreamMessageHandler {
                                         room_id = %self.room_id.as_str(),
                                         "User is no longer a member (detected after admin event lag), disconnecting"
                                     );
+                                    self.skip_cleanup_user_left
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
                                     break;
                                 }
                                 Err(e) => {
@@ -965,6 +1052,8 @@ impl StreamMessageHandler {
                                 room_id = %self.room_id.as_str(),
                                 "Periodic check (cached): user is banned, disconnecting"
                             );
+                            self.skip_cleanup_user_left
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
                             break;
                         }
                         if !cached.is_member {
@@ -973,6 +1062,8 @@ impl StreamMessageHandler {
                                 room_id = %self.room_id.as_str(),
                                 "Periodic check (cached): user is no longer a member, disconnecting"
                             );
+                            self.skip_cleanup_user_left
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
                             break;
                         }
                         // Cache hit with valid member status -- skip DB query
@@ -990,6 +1081,8 @@ impl StreamMessageHandler {
                                     room_id = %self.room_id.as_str(),
                                     "Periodic check: user is banned, disconnecting"
                                 );
+                                self.skip_cleanup_user_left
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
                                 break;
                             }
                         }
@@ -1001,6 +1094,8 @@ impl StreamMessageHandler {
                                 room_id = %self.room_id.as_str(),
                                 "Periodic check: user is no longer a member, disconnecting"
                             );
+                            self.skip_cleanup_user_left
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
                             break;
                         }
                         Err(e) => {
@@ -1089,7 +1184,38 @@ impl StreamMessageHandler {
     /// Broadcast `UserJoined` event to cluster replicas.
     ///
     /// E6 fix: Accepts pre-fetched member data to avoid a redundant DB query.
-    fn broadcast_user_joined(&self, member: Option<&synctv_core::models::RoomMember>) {
+    async fn broadcast_user_joined(&self, member: Option<&synctv_core::models::RoomMember>) {
+        match self
+            .connection_manager
+            .has_existing_presence_for_user_in_room_distributed(
+                &self.user_id,
+                &self.room_id,
+                &self.connection_id,
+            )
+            .await
+        {
+            Ok(true) => {
+                tracing::debug!(
+                    room_id = %self.room_id.as_str(),
+                    user_id = %self.user_id.as_str(),
+                    connection_id = %self.connection_id,
+                    "Skipping UserJoined broadcast because the user is already present in the room on another connection"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %self.room_id.as_str(),
+                    user_id = %self.user_id.as_str(),
+                    connection_id = %self.connection_id,
+                    "Distributed same-user presence lookup failed during join; skipping UserJoined broadcast to avoid false online signal"
+                );
+                return;
+            }
+            Ok(false) => {}
+        }
+
         let (role_proto, permissions) = match member {
             Some(member) => {
                 let effective = member.effective_permissions(member.role.permissions());
@@ -1220,6 +1346,41 @@ impl StreamMessageHandler {
             return;
         }
 
+        let should_broadcast_user_left = match self
+            .connection_manager
+            .has_other_connection_for_user_in_room_distributed(
+                &self.user_id,
+                &self.room_id,
+                &self.connection_id,
+            )
+            .await
+        {
+            Ok(has_other_connection) => !has_other_connection,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    user = %self.username,
+                    room = %room_id,
+                    connection = %self.connection_id,
+                    "Distributed same-user presence lookup failed during cleanup; skipping UserLeft broadcast to avoid false offline signal"
+                );
+                false
+            }
+        };
+
+        if !should_broadcast_user_left {
+            tracing::debug!(
+                user = %self.username,
+                room = %room_id,
+                connection = %self.connection_id,
+                "Skipping UserLeft broadcast in cleanup because another connection for the same user remains in the room"
+            );
+            self.connection_manager
+                .unregister(&self.connection_id)
+                .await;
+            return;
+        }
+
         // Broadcast UserLeft BEFORE unregistering from the connection manager.
         // This order prevents state divergence: if the broadcast reaches subscribers
         // while this connection is still registered, they see a consistent view.
@@ -1234,7 +1395,7 @@ impl StreamMessageHandler {
         };
         let result = self.cluster_manager.broadcast(event);
 
-        if result.local_sent == 0 && !result.redis_sent {
+        if should_retry_user_left_broadcast(result.clone(), self.cluster_manager.metrics().redis_enabled) {
             // Critical UserLeft event failed to reach any destination.
             // This can happen when Redis is temporarily unavailable.
             // Spawn a background task to retry the broadcast with exponential backoff.
@@ -1398,7 +1559,7 @@ impl StreamMessageHandler {
         }
 
         // Broadcast UserJoined event to other replicas (mirrors run() behavior)
-        self.broadcast_user_joined(member_data.as_ref());
+        self.broadcast_user_joined(member_data.as_ref()).await;
 
         // Use bounded channel to prevent memory exhaustion from fast clients
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(256);
@@ -1532,6 +1693,7 @@ impl StreamMessageHandler {
             let cluster_manager = Arc::clone(&self.cluster_manager);
             let connection_manager = self.connection_manager.clone();
             let admin_sender = self.sender.clone();
+            let skip_cleanup_user_left = Arc::clone(&self.skip_cleanup_user_left);
 
             spawn_monitored("messaging_disconnect_monitor", async move {
                 loop {
@@ -1565,15 +1727,21 @@ impl StreamMessageHandler {
                                 disconnect_rx = connection_manager.subscribe_disconnect();
                                 // Verify membership after lag
                                 let is_removed = match room_service.member_service().get_member(&room_id, &user_id).await {
-                                    Ok(Some(member)) => member.status == synctv_core::models::MemberStatus::Banned,
-                                    Ok(None) => true,
+                                    Ok(Some(member)) => membership_invalidation_requires_skip_cleanup(Some(&member)),
+                                    Ok(None) => membership_invalidation_requires_skip_cleanup(None),
                                     _ => false,
                                 };
                                 if is_removed {
+                                    skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                     disconnect_token.cancel();
                                     break;
                                 }
                             } else if should_disconnect {
+                                if let Ok(signal) = &signal {
+                                    if disconnect_signal_requires_skip_cleanup(signal, &user_id, &room_id, &connection_id) {
+                                        skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
                                 tracing::info!(
                                     connection_id = %connection_id,
                                     "Disconnect signal received in start(), cancelling"
@@ -1637,15 +1805,21 @@ impl StreamMessageHandler {
                                 admin_rx = cluster_manager.subscribe_admin_events();
                                 // Verify membership after lag
                                 let is_removed = match room_service.member_service().get_member(&room_id, &user_id).await {
-                                    Ok(Some(member)) => member.status == synctv_core::models::MemberStatus::Banned,
-                                    Ok(None) => true,
+                                    Ok(Some(member)) => membership_invalidation_requires_skip_cleanup(Some(&member)),
+                                    Ok(None) => membership_invalidation_requires_skip_cleanup(None),
                                     _ => false,
                                 };
                                 if is_removed {
+                                    skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                     disconnect_token.cancel();
                                     break;
                                 }
                             } else if should_disconnect {
+                                if let Ok(event) = &admin_event {
+                                    if admin_event_requires_skip_cleanup(event, &user_id, &room_id) {
+                                        skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
                                 tracing::info!(
                                     connection_id = %connection_id,
                                     "Admin event triggered disconnect in start(), cancelling"
@@ -1670,15 +1844,12 @@ impl StreamMessageHandler {
             let heartbeat_user_id = self.user_id.clone();
             let heartbeat_room_service = Arc::clone(&self.room_service);
             let heartbeat_sender = Arc::clone(&self.sender);
+            let heartbeat_schedule = self.heartbeat_schedule;
+            let skip_cleanup_user_left = Arc::clone(&self.skip_cleanup_user_left);
             spawn_monitored("messaging_heartbeat", async move {
                 // Derive jitter from the user_id bytes so each connection gets a
                 // stable-but-different offset within the 25–35 s window.
-                let jitter_secs = heartbeat_user_id
-                    .as_str()
-                    .bytes()
-                    .fold(0u64, |a, b| a.wrapping_add(u64::from(b)))
-                    % 11; // 0..=10
-                let period = std::time::Duration::from_secs(25 + jitter_secs);
+                let period = heartbeat_schedule.period_for_user(&heartbeat_user_id);
                 let mut interval = tokio::time::interval(period);
                 interval.tick().await; // Skip the immediate first tick
                 loop {
@@ -1705,6 +1876,7 @@ impl StreamMessageHandler {
                                             room_id = %heartbeat_room_id.as_str(),
                                             "start() periodic check: user is banned, disconnecting"
                                         );
+                                        skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                         heartbeat_token.cancel();
                                         break;
                                     }
@@ -1715,6 +1887,7 @@ impl StreamMessageHandler {
                                         room_id = %heartbeat_room_id.as_str(),
                                         "start() periodic check: user is no longer a member, disconnecting"
                                     );
+                                    skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                     heartbeat_token.cancel();
                                     break;
                                 }
@@ -1967,11 +2140,11 @@ impl StreamMessageHandler {
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
-        // Get connection ID from ConnectionManager
-        let conn_id = self
-            .connection_manager
-            .get_connection_id(&self.room_id, &self.user_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
+        let conn_id = self.connection_id.clone();
+
+        if self.connection_manager.get_connection(&conn_id).is_none() {
+            return Err("Connection not found".to_string());
+        }
 
         // Issue #64: validate the target conn_id is still active so stale offers
         // are rejected early rather than silently dropped.
@@ -2043,11 +2216,11 @@ impl StreamMessageHandler {
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
-        // Get connection ID
-        let conn_id = self
-            .connection_manager
-            .get_connection_id(&self.room_id, &self.user_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
+        let conn_id = self.connection_id.clone();
+
+        if self.connection_manager.get_connection(&conn_id).is_none() {
+            return Err("Connection not found".to_string());
+        }
 
         // Create event with server-set 'from' field
         let event = ClusterEvent::WebRTCSignaling {
@@ -2090,11 +2263,11 @@ impl StreamMessageHandler {
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
-        // Get connection ID
-        let conn_id = self
-            .connection_manager
-            .get_connection_id(&self.room_id, &self.user_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
+        let conn_id = self.connection_id.clone();
+
+        if self.connection_manager.get_connection(&conn_id).is_none() {
+            return Err("Connection not found".to_string());
+        }
 
         // P2P relay path: forward ICE candidate to target peer via cluster
         let event = ClusterEvent::WebRTCSignaling {
@@ -2129,11 +2302,25 @@ impl StreamMessageHandler {
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
-        // Get connection ID
-        let conn_id = self
-            .connection_manager
-            .get_connection_id(&self.room_id, &self.user_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
+        let conn_id = self.connection_id.clone();
+
+        let should_join = should_transition_webrtc_membership(
+            self.connection_manager
+                .get_connection(&conn_id)
+                .map(|conn| conn.rtc_joined),
+            true,
+        )
+        .map_err(std::string::ToString::to_string)?;
+
+        if !should_join {
+            tracing::debug!(
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                connection_id = %conn_id,
+                "Ignoring duplicate WebRTC join for already-joined connection"
+            );
+            return Ok(());
+        }
 
         // Mark this connection as joined WebRTC session
         self.connection_manager
@@ -2174,11 +2361,27 @@ impl StreamMessageHandler {
         &self,
         _leave: &crate::proto::client::WebRtcLeave,
     ) -> Result<(), String> {
-        // Get connection ID
-        let conn_id = self
-            .connection_manager
-            .get_connection_id(&self.room_id, &self.user_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
+        let conn_id = self.connection_id.clone();
+
+        let should_leave = should_transition_webrtc_membership(
+            self.connection_manager
+                .get_connection(&conn_id)
+                .map(|conn| conn.rtc_joined),
+            false,
+        )
+        .map_err(std::string::ToString::to_string)?;
+
+        if !should_leave {
+            tracing::debug!(
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                connection_id = %conn_id,
+                "Ignoring duplicate WebRTC leave for already-left connection"
+            );
+            self.has_webrtc_session
+                .store(false, std::sync::atomic::Ordering::Release);
+            return Ok(());
+        }
 
         // Mark this connection as left WebRTC session
         self.connection_manager
@@ -2773,6 +2976,74 @@ fn cluster_event_to_server_messages(
         }
     }
 }
+
+fn should_retry_user_left_broadcast(
+    result: synctv_cluster::sync::BroadcastResult,
+    cluster_redis_enabled: bool,
+) -> bool {
+    if cluster_redis_enabled {
+        !result.redis_sent
+    } else {
+        result.local_sent == 0
+    }
+}
+
+fn should_transition_webrtc_membership(
+    current_rtc_joined: Option<bool>,
+    target_joined: bool,
+) -> Result<bool, &'static str> {
+    match current_rtc_joined {
+        Some(current) => Ok(current != target_joined),
+        None => Err("Connection not found"),
+    }
+}
+
+#[inline]
+fn membership_invalidation_requires_skip_cleanup(
+    member: Option<&synctv_core::models::RoomMember>,
+) -> bool {
+    match member {
+        Some(member) => member.status == synctv_core::models::MemberStatus::Banned,
+        None => true,
+    }
+}
+
+#[inline]
+fn disconnect_signal_requires_skip_cleanup(
+    signal: &synctv_cluster::sync::DisconnectSignal,
+    user_id: &UserId,
+    room_id: &RoomId,
+    connection_id: &str,
+) -> bool {
+    match signal {
+        synctv_cluster::sync::DisconnectSignal::Connection(conn_id) => conn_id == connection_id,
+        synctv_cluster::sync::DisconnectSignal::User(uid) => uid == user_id,
+        synctv_cluster::sync::DisconnectSignal::Room(rid) => rid == room_id,
+        synctv_cluster::sync::DisconnectSignal::UserFromRoom {
+            user_id: uid,
+            room_id: rid,
+        } => uid == user_id && rid == room_id,
+    }
+}
+
+#[inline]
+fn admin_event_requires_skip_cleanup(event: &ClusterEvent, user_id: &UserId, room_id: &RoomId) -> bool {
+    match event {
+        ClusterEvent::KickUser { user_id: uid, .. } => uid == user_id,
+        ClusterEvent::KickUserFromRoom {
+            user_id: uid,
+            room_id: rid,
+            ..
+        }
+        | ClusterEvent::UserLeft {
+            user_id: uid,
+            room_id: rid,
+            ..
+        } => uid == user_id && rid == room_id,
+        _ => false,
+    }
+}
+
 
 /// Validate danmaku color format.
 ///
@@ -3761,6 +4032,170 @@ mod tests {
         let retry = semaphore.try_acquire_owned();
         assert!(retry.is_ok(), "Should succeed after a permit is released");
     }
+
+    #[test]
+    fn test_user_left_requires_retry_when_cluster_redis_enabled_but_publish_fails() {
+        let result = synctv_cluster::sync::BroadcastResult {
+            local_sent: 1,
+            redis_sent: false,
+        };
+
+        let should_retry = super::should_retry_user_left_broadcast(result, true);
+
+        assert!(
+            should_retry,
+            "when cluster Redis fan-out is configured, local delivery alone is insufficient for UserLeft consistency"
+        );
+    }
+
+    #[test]
+    fn test_user_left_does_not_retry_in_single_node_mode_after_local_delivery() {
+        let result = synctv_cluster::sync::BroadcastResult {
+            local_sent: 1,
+            redis_sent: false,
+        };
+
+        let should_retry = super::should_retry_user_left_broadcast(result, false);
+
+        assert!(
+            !should_retry,
+            "single-node mode should not spawn retries when the local subscriber already received UserLeft"
+        );
+    }
+
+    #[test]
+    fn test_webrtc_membership_transition_requires_existing_connection() {
+        let result = super::should_transition_webrtc_membership(None, true);
+        assert_eq!(result, Err("Connection not found"));
+    }
+
+    #[test]
+    fn test_webrtc_membership_transition_detects_join_state_change() {
+        let result = super::should_transition_webrtc_membership(Some(false), true);
+        assert_eq!(result, Ok(true));
+    }
+
+    #[test]
+    fn test_webrtc_membership_transition_ignores_duplicate_join() {
+        let result = super::should_transition_webrtc_membership(Some(true), true);
+        assert_eq!(result, Ok(false));
+    }
+
+    #[test]
+    fn test_webrtc_membership_transition_detects_leave_state_change() {
+        let result = super::should_transition_webrtc_membership(Some(true), false);
+        assert_eq!(result, Ok(true));
+    }
+
+    #[test]
+    fn test_webrtc_membership_transition_ignores_duplicate_leave() {
+        let result = super::should_transition_webrtc_membership(Some(false), false);
+        assert_eq!(result, Ok(false));
+    }
+
+    #[test]
+    fn test_membership_invalidation_requires_skip_cleanup_for_banned_member() {
+        let mut member = synctv_core::models::RoomMember::new(
+            room_id(),
+            user_id(),
+            synctv_core::models::RoomRole::Member,
+        );
+        member.status = synctv_core::models::MemberStatus::Banned;
+
+        assert!(super::membership_invalidation_requires_skip_cleanup(Some(&member)));
+    }
+
+    #[test]
+    fn test_membership_invalidation_requires_skip_cleanup_for_missing_member() {
+        assert!(super::membership_invalidation_requires_skip_cleanup(None));
+    }
+
+    #[test]
+    fn test_membership_invalidation_keeps_cleanup_for_active_member() {
+        let member = synctv_core::models::RoomMember::new(
+            room_id(),
+            user_id(),
+            synctv_core::models::RoomRole::Member,
+        );
+
+        assert!(!super::membership_invalidation_requires_skip_cleanup(Some(&member)));
+    }
+
+    #[test]
+    fn test_disconnect_signal_requires_skip_cleanup_for_targeted_server_disconnects() {
+        let rid = room_id();
+        let uid = user_id();
+        let connection_id = "conn-123";
+
+        assert!(super::disconnect_signal_requires_skip_cleanup(
+            &synctv_cluster::sync::DisconnectSignal::Connection(connection_id.to_string()),
+            &uid,
+            &rid,
+            connection_id,
+        ));
+        assert!(super::disconnect_signal_requires_skip_cleanup(
+            &synctv_cluster::sync::DisconnectSignal::User(uid.clone()),
+            &uid,
+            &rid,
+            connection_id,
+        ));
+        assert!(super::disconnect_signal_requires_skip_cleanup(
+            &synctv_cluster::sync::DisconnectSignal::Room(rid.clone()),
+            &uid,
+            &rid,
+            connection_id,
+        ));
+        assert!(super::disconnect_signal_requires_skip_cleanup(
+            &synctv_cluster::sync::DisconnectSignal::UserFromRoom {
+                user_id: uid.clone(),
+                room_id: rid.clone(),
+            },
+            &uid,
+            &rid,
+            connection_id,
+        ));
+    }
+
+    #[test]
+    fn test_admin_event_requires_skip_cleanup_for_forced_exit_events() {
+        let rid = room_id();
+        let uid = user_id();
+        let now = chrono::Utc::now();
+
+        assert!(super::admin_event_requires_skip_cleanup(
+            &ClusterEvent::KickUser {
+                event_id: "evt-1".to_string(),
+                user_id: uid.clone(),
+                reason: "ban".to_string(),
+                timestamp: now,
+            },
+            &uid,
+            &rid,
+        ));
+        assert!(super::admin_event_requires_skip_cleanup(
+            &ClusterEvent::KickUserFromRoom {
+                event_id: "evt-2".to_string(),
+                room_id: rid.clone(),
+                user_id: uid.clone(),
+                reason: "kick".to_string(),
+                timestamp: now,
+            },
+            &uid,
+            &rid,
+        ));
+        assert!(super::admin_event_requires_skip_cleanup(
+            &ClusterEvent::UserLeft {
+                event_id: "evt-3".to_string(),
+                room_id: rid.clone(),
+                user_id: uid.clone(),
+                username: "tester".to_string(),
+                timestamp: now,
+            },
+            &uid,
+            &rid,
+        ));
+    }
+
 
     // ========== Connection Reservation Tests (P1#6) ==========
 

@@ -640,7 +640,7 @@ impl Application {
             key_prefix: infra.config.redis.key_prefix.clone(),
             catchup_window_secs: infra.config.cluster.catchup_window_secs,
             stream_max_length: infra.config.cluster.stream_max_length,
-            parent_cancel_token: Some(cluster_cancel),
+            parent_cancel_token: Some(cluster_cancel.clone()),
         };
         let mut cluster_manager = match ClusterManager::new(
             cluster_config,
@@ -680,6 +680,7 @@ impl Application {
                 redis_handles,
                 &cluster_manager,
                 &connection_manager,
+                cluster_cancel.clone(),
             )
             .await?;
 

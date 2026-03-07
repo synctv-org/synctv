@@ -594,6 +594,7 @@ mod websocket_e2e {
     use synctv_core::service::{RoomService, UserService};
     use synctv_proto::client::{
         client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage,
+        WebRtcJoin,
     };
 
     use sqlx::PgPool;
@@ -692,6 +693,7 @@ mod websocket_e2e {
         room_service: Arc<RoomService>,
         user_service: Arc<UserService>,
         connection_manager: Arc<ConnectionManager>,
+        cluster_manager: Arc<ClusterManager>,
     }
 
     /// Create a minimal `ChatService` for tests.
@@ -827,7 +829,16 @@ mod websocket_e2e {
                 .await
                 .expect("ClusterManager"),
         );
-        let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+        let redis_conn_for_connections = redis::aio::ConnectionManager::new(
+            redis::Client::open(redis_url.clone())
+                .expect("Redis client for connection manager"),
+        )
+        .await
+        .expect("Redis ConnectionManager for connection manager");
+        let connection_manager = Arc::new(
+            ConnectionManager::new(ConnectionLimits::default())
+                .with_redis(redis_conn_for_connections, "test:"),
+        );
         let connection_manager_ret = connection_manager.clone();
 
         // Rate limiter (in-memory only for tests)
@@ -900,7 +911,7 @@ mod websocket_e2e {
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
             providers: providers.clone(),
-            cluster_manager: Some(cluster_manager),
+            cluster_manager: Some(cluster_manager.clone()),
             connection_manager,
             jwt_service: jwt_service.clone(),
             redis_publish_tx: None,
@@ -928,6 +939,10 @@ mod websocket_e2e {
             builtin_stun_url: None,
             credential_encryption: None,
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
+            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_millis(200),
+            ),
             providers_manager: None,
         };
 
@@ -943,6 +958,10 @@ mod websocket_e2e {
             router_config: Arc::new(router_config),
             rate_limit_config,
             messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
+            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_millis(200),
+            ),
             jwt_validator,
             security_pipeline: Arc::new(
                 synctv_core::service::SecurityPipeline::new(user_service.clone())
@@ -1006,6 +1025,7 @@ mod websocket_e2e {
             room_service,
             user_service,
             connection_manager: connection_manager_ret,
+            cluster_manager,
         }
     }
 
@@ -1833,6 +1853,149 @@ mod websocket_e2e {
     }
 
     // ========================================================================
+    // Test: Forced kick disconnect must not emit voluntary UserLeft
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout"]
+    async fn test_ws_forced_disconnect_via_kick_does_not_broadcast_user_left() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (owner_id, owner_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "owner_kick_noleft").await;
+        let room_id =
+            create_test_room(&server.room_service, &owner_id, "Kick No UserLeft Room").await;
+
+        let (user2_id, user2_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "victim_kick_noleft").await;
+        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        server
+            .room_service
+            .join_room(rid.clone(), user2_id.clone(), None)
+            .await
+            .expect("join");
+
+        let mut ws1 = ws_connect(&server.addr, &room_id, &owner_token).await;
+        let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
+        tokio::join!(
+            drain_until_quiet(&mut ws1, 1500),
+            drain_until_quiet(&mut ws2, 1500),
+        );
+
+        server
+            .connection_manager
+            .disconnect_user_from_room(&user2_id, &rid);
+
+        let disconnect_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match ws2.next().await {
+                    Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => return true,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        })
+        .await;
+        assert!(
+            disconnect_result.is_ok(),
+            "kicked connection should be terminated promptly"
+        );
+
+        let unexpected_user_left = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let msg = recv_server_message(&mut ws1).await.expect("stream ended");
+                if matches!(msg.message, Some(server_message::Message::UserLeft(_))) {
+                    return msg;
+                }
+            }
+        })
+        .await;
+
+        assert!(
+            unexpected_user_left.is_err(),
+            "forced kick disconnect must not be re-labeled as voluntary UserLeft"
+        );
+
+        let _ = ws1.close(None).await;
+    }
+
+    // ========================================================================
+    // Test: Admin KickUserFromRoom must not degrade into UserLeft on cleanup
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout"]
+    async fn test_ws_admin_kick_event_does_not_broadcast_user_left() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (owner_id, owner_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "owner_admin_kick").await;
+        let room_id =
+            create_test_room(&server.room_service, &owner_id, "Admin Kick No UserLeft Room").await;
+
+        let (user2_id, user2_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "victim_admin_kick").await;
+        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        server
+            .room_service
+            .join_room(rid.clone(), user2_id.clone(), None)
+            .await
+            .expect("join");
+
+        let mut ws1 = ws_connect(&server.addr, &room_id, &owner_token).await;
+        let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
+        tokio::join!(
+            drain_until_quiet(&mut ws1, 1500),
+            drain_until_quiet(&mut ws2, 1500),
+        );
+
+        let event = synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
+            event_id: nanoid::nanoid!(16),
+            room_id: rid.clone(),
+            user_id: user2_id.clone(),
+            reason: "admin kick".to_string(),
+            timestamp: chrono::Utc::now(),
+        };
+        server
+            .cluster_manager
+            .admin_event_tx()
+            .send(event)
+            .expect("admin event send");
+
+        let disconnect_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match ws2.next().await {
+                    Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => return true,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        })
+        .await;
+        assert!(
+            disconnect_result.is_ok(),
+            "admin kick should disconnect the targeted connection"
+        );
+
+        let unexpected_user_left = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let msg = recv_server_message(&mut ws1).await.expect("stream ended");
+                if matches!(msg.message, Some(server_message::Message::UserLeft(_))) {
+                    return msg;
+                }
+            }
+        })
+        .await;
+
+        assert!(
+            unexpected_user_left.is_err(),
+            "admin kick should not be re-labeled as voluntary UserLeft during cleanup"
+        );
+
+        let _ = ws1.close(None).await;
+    }
+
+    // ========================================================================
     // Test: Cross-replica messaging via Redis Pub/Sub
     // ========================================================================
 
@@ -1906,6 +2069,182 @@ mod websocket_e2e {
 
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
+    }
+
+    // ========================================================================
+    // Test: Cross-replica same-user partial disconnect must not emit UserLeft
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout"]
+    async fn test_ws_cross_replica_same_user_partial_disconnect_does_not_emit_user_left() {
+        let infra = TestInfra::new().await;
+
+        let server1 = setup_e2e_server_with_node(&infra, "presence_replica_1").await;
+        let server2 = setup_e2e_server_with_node(&infra, "presence_replica_2").await;
+
+        let (owner_id, owner_token) =
+            register_test_user(&server1.user_service, &server1.jwt_service, "owner_xrep_presence")
+                .await;
+        let room_id =
+            create_test_room(&server1.room_service, &owner_id, "Cross Replica Presence Room").await;
+
+        let (user2_id, user2_token) = register_test_user(
+            &server1.user_service,
+            &server1.jwt_service,
+            "multi_presence_xrep_user",
+        )
+        .await;
+        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        server1
+            .room_service
+            .join_room(rid.clone(), user2_id.clone(), None)
+            .await
+            .expect("join");
+
+        let mut ws_owner = ws_connect(&server1.addr, &room_id, &owner_token).await;
+        let mut ws_user_replica_1 = ws_connect(&server1.addr, &room_id, &user2_token).await;
+        let mut ws_user_replica_2 = ws_connect(&server2.addr, &room_id, &user2_token).await;
+
+        tokio::join!(
+            drain_until_quiet(&mut ws_owner, 1500),
+            drain_until_quiet(&mut ws_user_replica_1, 1500),
+            drain_until_quiet(&mut ws_user_replica_2, 1500),
+        );
+
+        let active_user_conns_replica_1 = server1.connection_manager.get_user_connections(&user2_id);
+        let active_user_conns_replica_2 = server2.connection_manager.get_user_connections(&user2_id);
+        assert_eq!(
+            active_user_conns_replica_1.len(),
+            1,
+            "test precondition failed: expected one same-user connection on replica 1"
+        );
+        assert_eq!(
+            active_user_conns_replica_2.len(),
+            1,
+            "test precondition failed: expected one same-user connection on replica 2"
+        );
+
+        ws_user_replica_1
+            .close(None)
+            .await
+            .expect("close replica-1 connection");
+
+        let maybe_user_left = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let msg = recv_server_message(&mut ws_owner).await.expect("stream ended");
+                if matches!(msg.message, Some(server_message::Message::UserLeft(_))) {
+                    return msg;
+                }
+            }
+        })
+        .await;
+
+        assert!(
+            maybe_user_left.is_err(),
+            "disconnecting one of multiple cross-replica same-user connections must not emit UserLeft while another connection remains"
+        );
+
+        let heartbeat = ClientMessage {
+            message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })),
+        };
+        send_client_message(&mut ws_user_replica_2, &heartbeat).await;
+        let ack = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let msg = recv_server_message(&mut ws_user_replica_2)
+                    .await
+                    .expect("stream ended");
+                if matches!(msg.message, Some(server_message::Message::HeartbeatAck(_))) {
+                    return msg;
+                }
+            }
+        })
+        .await
+        .expect("timeout waiting for surviving cross-replica connection heartbeat ack");
+        assert!(
+            matches!(ack.message, Some(server_message::Message::HeartbeatAck(_))),
+            "surviving cross-replica same-user connection should remain functional"
+        );
+
+        ws_owner.close(None).await.expect("close owner");
+        ws_user_replica_2
+            .close(None)
+            .await
+            .expect("close remaining replica-2 connection");
+    }
+
+    // ========================================================================
+    // Test: Cross-replica same-user second connection must not emit duplicate UserJoined
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout"]
+    async fn test_ws_cross_replica_same_user_second_connection_does_not_emit_duplicate_user_joined()
+    {
+        let infra = TestInfra::new().await;
+
+        let server1 = setup_e2e_server_with_node(&infra, "join_replica_1").await;
+        let server2 = setup_e2e_server_with_node(&infra, "join_replica_2").await;
+
+        let (owner_id, owner_token) =
+            register_test_user(&server1.user_service, &server1.jwt_service, "owner_xrep_join")
+                .await;
+        let room_id =
+            create_test_room(&server1.room_service, &owner_id, "Cross Replica Join Room").await;
+
+        let (user2_id, user2_token) = register_test_user(
+            &server1.user_service,
+            &server1.jwt_service,
+            "multi_join_xrep_user",
+        )
+        .await;
+        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        server1
+            .room_service
+            .join_room(rid.clone(), user2_id.clone(), None)
+            .await
+            .expect("join");
+
+        let mut ws_owner = ws_connect(&server1.addr, &room_id, &owner_token).await;
+        let mut ws_user_replica_1 = ws_connect(&server1.addr, &room_id, &user2_token).await;
+
+        tokio::join!(
+            drain_until_quiet(&mut ws_owner, 1500),
+            drain_until_quiet(&mut ws_user_replica_1, 1500),
+        );
+
+        let mut ws_user_replica_2 = ws_connect(&server2.addr, &room_id, &user2_token).await;
+        drain_until_quiet(&mut ws_user_replica_2, 1500).await;
+
+        let duplicate_join = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let msg = recv_server_message(&mut ws_owner).await.expect("stream ended");
+                if let Some(server_message::Message::UserJoined(joined)) = msg.message {
+                    if joined.member.as_ref().map(|m| m.user_id.as_str()) == Some(user2_id.as_str())
+                    {
+                        return joined;
+                    }
+                }
+            }
+        })
+        .await;
+
+        assert!(
+            duplicate_join.is_err(),
+            "opening a second cross-replica connection for the same user must not emit duplicate UserJoined while the user is already online"
+        );
+
+        ws_owner.close(None).await.expect("close owner");
+        ws_user_replica_1
+            .close(None)
+            .await
+            .expect("close replica-1 user");
+        ws_user_replica_2
+            .close(None)
+            .await
+            .expect("close replica-2 user");
     }
 
     // ========================================================================
@@ -2398,6 +2737,362 @@ mod websocket_e2e {
     }
 
     // ========================================================================
+    // Test: Same-user second connection must not emit duplicate UserJoined
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout"]
+    async fn test_ws_same_user_second_connection_does_not_emit_duplicate_user_joined() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (owner_id, owner_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "owner_join_presence")
+                .await;
+        let room_id =
+            create_test_room(&server.room_service, &owner_id, "Join Presence Room").await;
+
+        let (user2_id, user2_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "join_presence_user")
+                .await;
+        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        server
+            .room_service
+            .join_room(rid.clone(), user2_id.clone(), None)
+            .await
+            .expect("join");
+
+        let mut ws_owner = ws_connect(&server.addr, &room_id, &owner_token).await;
+        let mut ws_user_a = ws_connect(&server.addr, &room_id, &user2_token).await;
+
+        tokio::join!(
+            drain_until_quiet(&mut ws_owner, 1500),
+            drain_until_quiet(&mut ws_user_a, 1500),
+        );
+
+        let mut ws_user_b = ws_connect(&server.addr, &room_id, &user2_token).await;
+        drain_until_quiet(&mut ws_user_b, 1500).await;
+
+        let duplicate_join = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let msg = recv_server_message(&mut ws_owner).await.expect("stream ended");
+                if let Some(server_message::Message::UserJoined(joined)) = msg.message {
+                    if joined.member.as_ref().map(|m| m.user_id.as_str()) == Some(user2_id.as_str())
+                    {
+                        return joined;
+                    }
+                }
+            }
+        })
+        .await;
+
+        assert!(
+            duplicate_join.is_err(),
+            "opening a second connection for the same user must not emit duplicate UserJoined while the user is already online"
+        );
+
+        ws_owner.close(None).await.expect("close owner");
+        ws_user_a.close(None).await.expect("close user a");
+        ws_user_b.close(None).await.expect("close user b");
+    }
+
+    // ========================================================================
+    // Test: Same-user partial disconnect must not emit UserLeft
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout"]
+    async fn test_ws_same_user_one_of_multiple_connections_disconnect_does_not_emit_user_left() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (owner_id, owner_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "owner_multi_presence")
+                .await;
+        let room_id =
+            create_test_room(&server.room_service, &owner_id, "Multi Presence Room").await;
+
+        let (user2_id, user2_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "multi_presence_user")
+                .await;
+        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        server
+            .room_service
+            .join_room(rid.clone(), user2_id.clone(), None)
+            .await
+            .expect("join");
+
+        let mut ws_owner = ws_connect(&server.addr, &room_id, &owner_token).await;
+        let mut ws_user_a = ws_connect(&server.addr, &room_id, &user2_token).await;
+        let mut ws_user_b = ws_connect(&server.addr, &room_id, &user2_token).await;
+
+        tokio::join!(
+            drain_until_quiet(&mut ws_owner, 1500),
+            drain_until_quiet(&mut ws_user_a, 1500),
+            drain_until_quiet(&mut ws_user_b, 1500),
+        );
+
+        let active_connections = server.connection_manager.get_user_connections(&user2_id);
+        assert_eq!(
+            active_connections.len(),
+            2,
+            "test precondition failed: expected two active room connections for user2"
+        );
+
+        ws_user_a.close(None).await.expect("close first user2 connection");
+
+        let maybe_user_left = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let msg = recv_server_message(&mut ws_owner).await.expect("stream ended");
+                if matches!(msg.message, Some(server_message::Message::UserLeft(_))) {
+                    return msg;
+                }
+            }
+        })
+        .await;
+
+        assert!(
+            maybe_user_left.is_err(),
+            "disconnecting one of multiple same-user connections must not emit UserLeft while another connection remains"
+        );
+
+        let remaining_connections = server.connection_manager.get_user_connections(&user2_id);
+        assert_eq!(
+            remaining_connections.len(),
+            1,
+            "exactly one connection should remain after closing the first connection"
+        );
+
+        let heartbeat = ClientMessage {
+            message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })),
+        };
+        send_client_message(&mut ws_user_b, &heartbeat).await;
+        let ack = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let msg = recv_server_message(&mut ws_user_b).await.expect("stream ended");
+                if matches!(msg.message, Some(server_message::Message::HeartbeatAck(_))) {
+                    return msg;
+                }
+            }
+        })
+        .await
+        .expect("timeout waiting for surviving connection heartbeat ack");
+        assert!(
+            matches!(ack.message, Some(server_message::Message::HeartbeatAck(_))),
+            "surviving same-user connection should remain functional"
+        );
+
+        ws_owner.close(None).await.expect("close owner");
+        ws_user_b.close(None).await.expect("close second user2 connection");
+    }
+
+    // ========================================================================
+    // Test: WebRTC join uses the current connection ID for same-user multi-conn
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout"]
+    async fn test_ws_webrtc_join_marks_current_connection_for_same_user_multi_conn() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "multi_conn_webrtc").await;
+        let room_id = create_test_room(&server.room_service, &user_id, "Multi Conn WebRTC Room").await;
+        let room = synctv_core::models::RoomId::from_string(room_id.clone());
+
+        let mut ws1 = ws_connect(&server.addr, &room_id, &token).await;
+        let mut ws2 = ws_connect(&server.addr, &room_id, &token).await;
+
+        tokio::join!(
+            drain_until_quiet(&mut ws1, 1500),
+            drain_until_quiet(&mut ws2, 1500),
+        );
+
+        let rtc_join = ClientMessage {
+            message: Some(client_message::Message::WebrtcJoin(WebRtcJoin {
+                user_id: String::new(),
+                conn_id: String::new(),
+                username: String::new(),
+            })),
+        };
+        send_client_message(&mut ws2, &rtc_join).await;
+
+        let join_event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let msg = recv_server_message(&mut ws1).await.expect("stream ended");
+                if matches!(&msg.message, Some(server_message::Message::WebrtcJoin(_))) {
+                    return msg;
+                }
+            }
+        })
+        .await
+        .expect("timeout waiting for WebRTC join");
+
+        let joined_conn_id = match join_event.message {
+            Some(server_message::Message::WebrtcJoin(joined)) => joined.conn_id,
+            other => panic!("Expected WebrtcJoin, got: {other:?}"),
+        };
+
+        let same_user_connections = server.connection_manager.get_user_connections(&user_id);
+        assert_eq!(
+            same_user_connections.len(),
+            2,
+            "test precondition failed: expected two active connections for same user"
+        );
+
+        let rtc_joined_connections: Vec<_> = server
+            .connection_manager
+            .get_room_connections(&room)
+            .into_iter()
+            .filter(|conn| conn.user_id == user_id && conn.rtc_joined)
+            .collect();
+
+        assert_eq!(
+            rtc_joined_connections.len(),
+            1,
+            "exactly one connection should be marked rtc_joined"
+        );
+        assert_eq!(
+            rtc_joined_connections[0].connection_id,
+            joined_conn_id,
+            "the connection marked rtc_joined must match the current WebRTC join event connection"
+        );
+
+        ws1.close(None).await.expect("close ws1");
+        ws2.close(None).await.expect("close ws2");
+    }
+
+    // ========================================================================
+    // Test: WebRTC offer from same-user second connection uses its own conn_id
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout"]
+    async fn test_ws_webrtc_offer_uses_current_connection_id_for_same_user_multi_conn() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (user_id, token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "multi_conn_webrtc_offer",
+        )
+        .await;
+        let (peer_user_id, peer_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "multi_conn_webrtc_peer")
+                .await;
+        let room_id =
+            create_test_room(&server.room_service, &user_id, "Multi Conn WebRTC Offer Room").await;
+        let room = synctv_core::models::RoomId::from_string(room_id.clone());
+        server
+            .room_service
+            .join_room(room.clone(), peer_user_id.clone(), None)
+            .await
+            .expect("peer joins room");
+
+        let mut ws1 = ws_connect(&server.addr, &room_id, &token).await;
+        let mut ws2 = ws_connect(&server.addr, &room_id, &token).await;
+        let mut ws_peer = ws_connect(&server.addr, &room_id, &peer_token).await;
+
+        tokio::join!(
+            drain_until_quiet(&mut ws1, 1500),
+            drain_until_quiet(&mut ws2, 1500),
+            drain_until_quiet(&mut ws_peer, 1500),
+        );
+
+        let mut user_connections = server.connection_manager.get_user_connections(&user_id);
+        user_connections.sort_by(|left, right| left.connection_id.cmp(&right.connection_id));
+        assert_eq!(
+            user_connections.len(),
+            2,
+            "test precondition failed: expected two active connections for same user"
+        );
+        let conn_a = user_connections[0].connection_id.clone();
+
+        server.connection_manager.disconnect_connection(&conn_a);
+        let ws1_closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match ws1.next().await {
+                    Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => return true,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        })
+        .await
+        .is_ok();
+
+        let sender_is_ws2 = if ws1_closed {
+            true
+        } else {
+            let ws2_closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    match ws2.next().await {
+                        Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => return true,
+                        Some(Ok(_)) => continue,
+                    }
+                }
+            })
+            .await
+            .is_ok();
+            assert!(ws2_closed, "one of the two connections must close after targeted disconnect");
+
+            false
+        };
+
+        let active_sender_connections = server.connection_manager.get_user_connections(&user_id);
+        assert_eq!(
+            active_sender_connections.len(),
+            1,
+            "after targeted disconnect exactly one sender connection should remain"
+        );
+        let sender_conn_id = active_sender_connections[0].connection_id.clone();
+
+        let offer = ClientMessage {
+            message: Some(client_message::Message::WebrtcOffer(
+                synctv_proto::client::WebRtcOffer {
+                    to: peer_user_id.as_str().to_string(),
+                    from: String::new(),
+                    data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
+                },
+            )),
+        };
+        if sender_is_ws2 {
+            send_client_message(&mut ws2, &offer).await;
+        } else {
+            send_client_message(&mut ws1, &offer).await;
+        }
+
+        let received_offer = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let msg = recv_server_message(&mut ws_peer).await.expect("stream ended");
+                if matches!(&msg.message, Some(server_message::Message::WebrtcOffer(_))) {
+                    return msg;
+                }
+            }
+        })
+        .await
+        .expect("timeout waiting for WebRTC offer");
+
+        let from = match received_offer.message {
+            Some(server_message::Message::WebrtcOffer(offer)) => offer.from,
+            other => panic!("Expected WebrtcOffer, got: {other:?}"),
+        };
+
+        assert_eq!(
+            from,
+            format!("{}|{}", user_id.as_str(), sender_conn_id),
+            "WebRTC signaling must use the sender connection's own conn_id"
+        );
+
+        let _ = ws1.close(None).await;
+        let _ = ws2.close(None).await;
+        let _ = ws_peer.close(None).await;
+    }
+
+    // ========================================================================
     // Test (#73): WebSocket connection with invalid ticket is rejected
     // ========================================================================
 
@@ -2863,7 +3558,16 @@ mod websocket_connection_limit_timing {
             idle_timeout: std::time::Duration::from_mins(5),
             max_duration: std::time::Duration::from_hours(24),
         };
-        let connection_manager = Arc::new(ConnectionManager::new(connection_limits));
+        let redis_conn_for_connections = redis::aio::ConnectionManager::new(
+            redis::Client::open(redis_url.clone())
+                .expect("Redis client for connection manager"),
+        )
+        .await
+        .expect("Redis ConnectionManager for connection manager");
+        let connection_manager = Arc::new(
+            ConnectionManager::new(connection_limits)
+                .with_redis(redis_conn_for_connections, "test:"),
+        );
         let connection_manager_ret = connection_manager.clone();
 
         let rate_limiter = RateLimiter::in_memory_only("test_ws:".to_string());
@@ -2954,6 +3658,10 @@ mod websocket_connection_limit_timing {
             builtin_stun_url: None,
             credential_encryption: None,
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
+            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_millis(200),
+            ),
             providers_manager: None,
         };
 
@@ -2969,6 +3677,10 @@ mod websocket_connection_limit_timing {
             router_config: Arc::new(router_config),
             rate_limit_config,
             messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
+            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_millis(200),
+            ),
             jwt_validator,
             security_pipeline: Arc::new(
                 synctv_core::service::SecurityPipeline::new(user_service.clone())

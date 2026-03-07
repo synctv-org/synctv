@@ -53,8 +53,6 @@ pub struct K8sDnsDiscovery {
     self_ip: String,
     /// Cached list of discovered peers
     peers: Arc<RwLock<Vec<DnsPeer>>>,
-    /// Cancellation token for the background refresh loop
-    cancel_token: CancellationToken,
     /// Optional reference to NodeRegistry for syncing discovered peers.
     /// When set, `refresh()` will register new peers and unregister
     /// disappeared peers via `NodeRegistry::register_remote()` /
@@ -63,9 +61,6 @@ pub struct K8sDnsDiscovery {
     /// Tracks the registration epoch for each peer IP so that
     /// `unregister_remote` can pass the correct epoch for validation.
     peer_epochs: Arc<RwLock<HashMap<String, u64>>>,
-    /// JoinHandle for the background refresh loop, stored so it can be
-    /// awaited during shutdown.
-    refresh_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl K8sDnsDiscovery {
@@ -120,10 +115,8 @@ impl K8sDnsDiscovery {
             http_port,
             self_ip,
             peers: Arc::new(RwLock::new(Vec::new())),
-            cancel_token: CancellationToken::new(),
             node_registry: None,
             peer_epochs: Arc::new(RwLock::new(HashMap::new())),
-            refresh_handle: Arc::new(tokio::sync::Mutex::new(None)),
         })
     }
 
@@ -135,10 +128,8 @@ impl K8sDnsDiscovery {
             http_port,
             self_ip,
             peers: Arc::new(RwLock::new(Vec::new())),
-            cancel_token: CancellationToken::new(),
             node_registry: None,
             peer_epochs: Arc::new(RwLock::new(HashMap::new())),
-            refresh_handle: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -320,18 +311,23 @@ impl K8sDnsDiscovery {
     /// Start a background loop that periodically re-resolves DNS to track
     /// scaling events (pod additions/removals).
     ///
-    /// Returns a proxy `JoinHandle` for the caller to register with the
-    /// shutdown manager. The real task handle is stored internally so
-    /// [`shutdown`](Self::shutdown) can await its completion.
-    pub async fn start_refresh_loop(&self, interval_secs: u64) -> tokio::task::JoinHandle<()> {
+    /// Returns the real `JoinHandle` of the spawned refresh task.
+    ///
+    /// Shutdown ownership stays with the caller: pass in the parent
+    /// cancellation token that governs application shutdown, and await or
+    /// abort the returned task via the caller's own shutdown coordinator.
+    pub fn start_refresh_loop(
+        &self,
+        interval_secs: u64,
+        shutdown_token: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         let this = self.clone();
-
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             let mut timer = interval(Duration::from_secs(interval_secs));
 
             loop {
                 tokio::select! {
-                    () = this.cancel_token.cancelled() => {
+                    () = shutdown_token.cancelled() => {
                         tracing::info!("K8s DNS discovery refresh loop shutting down");
                         return;
                     }
@@ -340,30 +336,7 @@ impl K8sDnsDiscovery {
                     }
                 }
             }
-        });
-
-        // Store the real handle internally so shutdown() can await it
-        *self.refresh_handle.lock().await = Some(handle);
-
-        // Return a proxy handle that completes when the cancel token fires,
-        // for the caller to register with the shutdown manager
-        let cancel = self.cancel_token.clone();
-        tokio::spawn(async move { cancel.cancelled().await })
-    }
-
-    /// Gracefully shut down the background refresh loop.
-    ///
-    /// Cancels the refresh task and awaits its completion (with a timeout).
-    pub async fn shutdown(&self) {
-        self.cancel_token.cancel();
-        let handle = self.refresh_handle.lock().await.take();
-        if let Some(handle) = handle {
-            match tokio::time::timeout(Duration::from_secs(5), handle).await {
-                Ok(Ok(())) => tracing::info!("K8s DNS refresh loop completed"),
-                Ok(Err(e)) => tracing::warn!("K8s DNS refresh loop panicked: {}", e),
-                Err(_) => tracing::warn!("K8s DNS refresh loop did not finish within 5s timeout"),
-            }
-        }
+        })
     }
 
     /// Get the DNS name being resolved.
@@ -435,5 +408,25 @@ mod tests {
         );
         let map = disc.get_peer_map().await;
         assert!(map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_loop_stops_when_parent_shutdown_token_is_cancelled() {
+        let disc = K8sDnsDiscovery::new(
+            "test.default.svc.cluster.local".to_string(),
+            50051,
+            8080,
+            "10.0.0.1".to_string(),
+        );
+        let shutdown_token = CancellationToken::new();
+
+        let handle = disc.start_refresh_loop(60, shutdown_token.clone());
+
+        shutdown_token.cancel();
+
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("refresh loop should stop promptly when parent shutdown token is cancelled")
+            .expect("refresh loop should exit cleanly");
     }
 }

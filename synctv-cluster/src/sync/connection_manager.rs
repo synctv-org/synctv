@@ -959,12 +959,8 @@ impl ConnectionManager {
             let persistent = ConnectionInfoPersistent::from(&conn_info);
             let mut conn_clone = conn.clone();
             let connection_id_clone = connection_id.clone();
-
-            tokio::spawn(async move {
-                // Store connection metadata as JSON with TTL for crash-safety.
-                // If the node crashes without calling unregister(), the key
-                // auto-expires instead of leaking indefinitely.
-                if let Ok(json) = serde_json::to_string(&persistent) {
+            match serde_json::to_string(&persistent) {
+                Ok(json) => {
                     let result: Result<(), _> = redis::cmd("SET")
                         .arg(&conn_key)
                         .arg(&json)
@@ -976,19 +972,20 @@ impl ConnectionManager {
                         warn!("Failed to persist connection metadata to Redis: {e}");
                     }
                 }
-
-                // Add to user's connection set for distributed queries
-                if let Err(e) = conn_clone
-                    .sadd::<_, _, ()>(&user_index_key, &connection_id_clone)
-                    .await
-                {
-                    warn!("Failed to add connection to user index: {e}");
+                Err(e) => {
+                    warn!("Failed to serialize connection metadata for Redis: {e}");
                 }
-                // Set TTL on user index set
-                let _: Result<(), _> = conn_clone
-                    .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
-                    .await;
-            });
+            }
+
+            if let Err(e) = conn_clone
+                .sadd::<_, _, ()>(&user_index_key, &connection_id_clone)
+                .await
+            {
+                warn!("Failed to add connection to user index: {e}");
+            }
+            let _: Result<(), _> = conn_clone
+                .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
+                .await;
         }
 
         // Update metrics
@@ -1143,10 +1140,8 @@ impl ConnectionManager {
             let persistent = ConnectionInfoPersistent::from(&info);
             let mut conn_clone = conn.clone();
             let connection_id_clone = connection_id.to_string();
-
-            tokio::spawn(async move {
-                // Update connection metadata with new room_id (with TTL for crash-safety)
-                if let Ok(json) = serde_json::to_string(&persistent) {
+            match serde_json::to_string(&persistent) {
+                Ok(json) => {
                     let result: Result<(), _> = redis::cmd("SET")
                         .arg(&conn_key)
                         .arg(&json)
@@ -1158,19 +1153,20 @@ impl ConnectionManager {
                         warn!("Failed to update connection metadata in Redis: {e}");
                     }
                 }
-
-                // Add to room's connection set
-                if let Err(e) = conn_clone
-                    .sadd::<_, _, ()>(&room_index_key, &connection_id_clone)
-                    .await
-                {
-                    warn!("Failed to add connection to room index: {e}");
+                Err(e) => {
+                    warn!("Failed to serialize updated connection metadata for Redis: {e}");
                 }
-                // Set TTL on room index set
-                let _: Result<(), _> = conn_clone
-                    .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
-                    .await;
-            });
+            }
+
+            if let Err(e) = conn_clone
+                .sadd::<_, _, ()>(&room_index_key, &connection_id_clone)
+                .await
+            {
+                warn!("Failed to add connection to room index: {e}");
+            }
+            let _: Result<(), _> = conn_clone
+                .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
+                .await;
         }
 
         synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS.set(self.room_connections.len() as i64);
@@ -2465,6 +2461,85 @@ impl ConnectionManager {
             .collect())
     }
 
+    /// Returns true if the user still has another active connection in the same room,
+    /// potentially on another replica.
+    ///
+    /// In Redis-backed cluster mode this reads connection metadata from Redis so the
+    /// answer reflects all replicas. When Redis is not configured, it falls back to
+    /// local in-memory state.
+    pub async fn has_other_connection_for_user_in_room_distributed(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+        excluding_connection_id: &str,
+    ) -> Result<bool, String> {
+        if let Some(ref conn) = self.redis_conn {
+            let conn_ids = self.get_user_connections_distributed(user_id).await?;
+            let other_conn_ids: Vec<String> = conn_ids
+                .into_iter()
+                .filter(|conn_id| conn_id != excluding_connection_id)
+                .collect();
+
+            if other_conn_ids.is_empty() {
+                return Ok(false);
+            }
+
+            let metadata_keys: Vec<String> = other_conn_ids
+                .iter()
+                .map(|conn_id| format!("{}conn_mgr:conn:{conn_id}", self.redis_key_prefix))
+                .collect();
+
+            let mut conn_clone = conn.clone();
+            let metadata: Vec<Option<String>> = conn_clone
+                .mget(metadata_keys)
+                .await
+                .map_err(|e| format!("Failed to fetch distributed connection metadata: {e}"))?;
+
+            for entry in metadata.into_iter().flatten() {
+                match serde_json::from_str::<ConnectionInfoPersistent>(&entry) {
+                    Ok(info) => {
+                        if info.room_id.as_deref() == Some(room_id.as_str()) {
+                            return Ok(true);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            user_id = %user_id.as_str(),
+                            room_id = %room_id.as_str(),
+                            "Failed to deserialize distributed connection metadata"
+                        );
+                    }
+                }
+            }
+
+            return Ok(false);
+        }
+
+        Ok(self
+            .get_user_connections(user_id)
+            .into_iter()
+            .any(|conn| {
+                conn.connection_id != excluding_connection_id && conn.room_id.as_ref() == Some(room_id)
+            }))
+    }
+
+    /// Returns true if the user already has at least one active connection in the same room,
+    /// excluding the provided connection id.
+    pub async fn has_existing_presence_for_user_in_room_distributed(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+        excluding_connection_id: &str,
+    ) -> Result<bool, String> {
+        self.has_other_connection_for_user_in_room_distributed(
+            user_id,
+            room_id,
+            excluding_connection_id,
+        )
+        .await
+    }
+
     /// Atomically increment a Redis counter, set its TTL, and check if the new
     /// value exceeds the limit.
     ///
@@ -2617,6 +2692,88 @@ mod tests {
 
         let conn = manager.get_connection("conn1").unwrap();
         assert_eq!(conn.room_id.as_ref().unwrap().as_str(), "room1");
+    }
+
+    #[tokio::test]
+    async fn test_has_other_connection_for_user_in_room_distributed_uses_local_state_without_redis() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("user1".to_string());
+        let room_id = RoomId::from_string("room1".to_string());
+
+        manager
+            .register("conn1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .register("conn2".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager.join_room("conn1", room_id.clone()).await.unwrap();
+        manager.join_room("conn2", room_id.clone()).await.unwrap();
+
+        let has_other = manager
+            .has_other_connection_for_user_in_room_distributed(&user_id, &room_id, "conn1")
+            .await
+            .unwrap();
+
+        assert!(has_other, "second local room connection should be detected");
+    }
+
+    #[tokio::test]
+    async fn test_has_other_connection_for_user_in_room_distributed_ignores_other_rooms() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("user1".to_string());
+        let room_id = RoomId::from_string("room1".to_string());
+        let other_room_id = RoomId::from_string("room2".to_string());
+
+        manager
+            .register("conn1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .register("conn2".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager.join_room("conn1", room_id.clone()).await.unwrap();
+        manager.join_room("conn2", other_room_id).await.unwrap();
+
+        let has_other = manager
+            .has_other_connection_for_user_in_room_distributed(&user_id, &room_id, "conn1")
+            .await
+            .unwrap();
+
+        assert!(
+            !has_other,
+            "connection in another room must not keep room presence alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_has_existing_presence_for_user_in_room_distributed_uses_same_logic() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("user1".to_string());
+        let room_id = RoomId::from_string("room1".to_string());
+
+        manager
+            .register("conn1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .register("conn2".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager.join_room("conn1", room_id.clone()).await.unwrap();
+        manager.join_room("conn2", room_id.clone()).await.unwrap();
+
+        let has_existing_presence = manager
+            .has_existing_presence_for_user_in_room_distributed(&user_id, &room_id, "conn2")
+            .await
+            .unwrap();
+
+        assert!(
+            has_existing_presence,
+            "existing same-user room presence should be detected before broadcasting UserJoined"
+        );
     }
 
     #[tokio::test]

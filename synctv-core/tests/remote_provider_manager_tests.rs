@@ -126,6 +126,26 @@ impl TestInfra {
     }
 }
 
+async fn wait_until<F, Fut>(timeout: Duration, interval: Duration, mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if check().await {
+            return;
+        }
+        let now = tokio::time::Instant::now();
+        assert!(
+            now < deadline,
+            "condition not satisfied within {:?}",
+            timeout
+        );
+        tokio::time::sleep(interval.min(deadline - now)).await;
+    }
+}
+
 /// Create a test provider instance
 fn make_test_instance(name: &str) -> ProviderInstance {
     let now = Utc::now();
@@ -298,8 +318,11 @@ async fn test_redis_pubsub_invalidation() {
     let instance = make_test_instance("test-instance-4");
     manager1.add(instance.clone()).await.unwrap();
 
-    // Wait for Pub/Sub message to propagate
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until(Duration::from_secs(3), Duration::from_millis(50), || {
+        let manager2 = &manager2;
+        async move { manager2.list().await.contains(&"test-instance-4".to_string()) }
+    })
+    .await;
 
     // Verify both managers can see the instance
     let instances1 = manager1.list().await;
@@ -370,8 +393,11 @@ async fn test_redis_invalidation_on_delete() {
     // Delete via manager1
     manager1.delete("test-instance-5").await.unwrap();
 
-    // Wait for invalidation
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until(Duration::from_secs(3), Duration::from_millis(50), || {
+        let manager2 = &manager2;
+        async move { manager2.get("test-instance-5").await.is_none() }
+    })
+    .await;
 
     // Verify manager2 no longer lists the instance
     let instances2 = manager2.list().await;

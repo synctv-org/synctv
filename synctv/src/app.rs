@@ -11,7 +11,7 @@ use anyhow::Result;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 
-use synctv_cluster::leader::LeaderElector;
+use synctv_cluster::leader::{LeaderElector, LeaderRuntime};
 #[cfg(feature = "k8s")]
 use synctv_cluster::leader::{K8sLeaderElector, K8sLeaderElectorConfig};
 use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
@@ -51,7 +51,7 @@ struct CoreState {
 
 /// Leader election and singleton background tasks.
 struct LeaderState {
-    leader_check: Arc<dyn synctv_core::service::LeaderCheck>,
+    leader_runtime: Arc<dyn LeaderRuntime>,
 }
 
 /// Cluster infrastructure.
@@ -162,7 +162,7 @@ impl Application {
         Self::start_singleton_tasks(&infra, &core, &leader, &mut shutdown);
 
         // Phase 6: Cluster infrastructure
-        let cluster = match Self::init_cluster(&infra, &core, &mut shutdown).await {
+        let cluster = match Self::init_cluster(&infra, &core, &leader, &mut shutdown).await {
             Ok(cluster) => cluster,
             Err(e) => {
                 shutdown.shutdown().await;
@@ -390,7 +390,7 @@ impl Application {
             synctv_core::metrics::cluster::LEADER_ELECTION_EPOCH.set(0);
             synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(0);
             return Ok(LeaderState {
-                leader_check: Arc::new(synctv_core::service::AlwaysLeader),
+                leader_runtime: Arc::new(synctv_core::service::AlwaysLeader),
             });
         }
 
@@ -534,8 +534,7 @@ impl Application {
 
         // leader_elector is guaranteed to be Some here because we return early on error.
         // This eliminates the unsafe AlwaysLeader fallback that could cause split-brain.
-        let leader_check: Arc<dyn synctv_core::service::LeaderCheck> =
-            if let Some(elector) = &leader_elector {
+        let leader_runtime: Arc<dyn LeaderRuntime> = if let Some(elector) = &leader_elector {
                 Arc::new(elector.clone())
             } else {
                 // This branch should never be reached because all code paths either
@@ -550,7 +549,7 @@ impl Application {
                 ));
             };
 
-        Ok(LeaderState { leader_check })
+        Ok(LeaderState { leader_runtime })
     }
 
     // -- Phase 5: Singleton background tasks ------------------------------------
@@ -565,7 +564,7 @@ impl Application {
 
         let audit_manager = synctv_core::service::AuditPartitionManager::new(
             infra.pool.clone(),
-            leader.leader_check.clone(),
+            leader.leader_runtime.clone(),
         );
         shutdown.register_task(
             "audit_partition",
@@ -576,7 +575,7 @@ impl Application {
         let chat_partition_manager = synctv_core::service::ChatPartitionManager::new(
             infra.pool.clone(),
             core.services.settings_registry.clone(),
-            leader.leader_check.clone(),
+            leader.leader_runtime.clone(),
         );
         shutdown.register_task(
             "chat_partition",
@@ -587,7 +586,7 @@ impl Application {
         let notification_partition_manager =
             synctv_core::service::NotificationPartitionManager::new(
                 infra.pool.clone(),
-                leader.leader_check.clone(),
+                leader.leader_runtime.clone(),
             );
         shutdown.register_task(
             "notification_partition",
@@ -598,7 +597,7 @@ impl Application {
         let cleanup_service = synctv_core::service::CleanupService::new(
             infra.pool.clone(),
             synctv_core::service::cleanup::CleanupConfig::default(),
-            leader.leader_check.clone(),
+            leader.leader_runtime.clone(),
         )
         .with_settings_registry(core.services.settings_registry.clone());
         shutdown.register_task(
@@ -609,7 +608,7 @@ impl Application {
 
         let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new(
             infra.pool.clone(),
-            leader.leader_check.clone(),
+            leader.leader_runtime.clone(),
         )
         .with_settings_registry(core.services.settings_registry.clone());
         shutdown.register_task(
@@ -624,6 +623,7 @@ impl Application {
     async fn init_cluster(
         infra: &Infrastructure,
         core: &CoreState,
+        leader: &LeaderState,
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<ClusterState> {
         // Connection manager
@@ -696,7 +696,7 @@ impl Application {
             stream_max_length: infra.config.cluster.stream_max_length,
             parent_cancel_token: Some(cluster_cancel),
         };
-        let cluster_manager = match ClusterManager::new(
+        let mut cluster_manager = match ClusterManager::new(
             cluster_config,
             permission_service,
             Some((*core.cache_invalidation).clone()),
@@ -705,7 +705,7 @@ impl Application {
         {
             Ok(manager) => {
                 info!("ClusterManager initialized with cross-replica cache invalidation");
-                Arc::new(manager)
+                manager
             }
             Err(e) => {
                 return Err(anyhow::anyhow!(
@@ -714,6 +714,9 @@ impl Application {
                 ));
             }
         };
+        cluster_manager.set_connection_manager(connection_manager.clone());
+        cluster_manager.set_leader_elector(leader.leader_runtime.clone());
+        let cluster_manager = Arc::new(cluster_manager);
 
         // Wire cluster broadcaster into PlaybackService
         core.services
@@ -881,6 +884,65 @@ mod tests {
         config.cluster.enabled = true;
         assert!(!should_start_cache_invalidation_listener(&config, false));
         assert!(should_start_cache_invalidation_listener(&config, true));
+    }
+
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn test_init_cluster_injects_runtime_dependencies_into_cluster_manager() {
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::redis::Redis;
+
+        let redis = tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
+            .await
+            .expect("Redis container startup timed out")
+            .expect("Failed to start Redis container");
+
+        let port = redis
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Redis port should be exposed");
+        let redis_url = format!("redis://127.0.0.1:{port}");
+        let client = redis::Client::open(redis_url).expect("Redis client should be created");
+        let conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .expect("Redis connection manager should be created");
+
+        let connection_manager = build_connection_manager(
+            ConnectionLimits::default(),
+            Some(conn.clone()),
+            "test-cluster:",
+            true,
+        );
+
+        let cluster_config = ClusterConfig {
+            redis_client: Some(client),
+            redis_conn: Some(conn),
+            cluster_enabled: true,
+            node_id: "test-node".to_string(),
+            dedup_window: Duration::from_secs(30),
+            cleanup_interval: Duration::from_secs(30),
+            critical_channel_capacity: 100,
+            publish_channel_capacity: 100,
+            key_prefix: "test-cluster:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 1000,
+            parent_cancel_token: None,
+        };
+
+        let mut cluster_manager = ClusterManager::new(cluster_config, None, None)
+            .await
+            .expect("ClusterManager should initialize");
+        let metrics = cluster_manager.metrics();
+        assert!(!metrics.has_connection_manager);
+        assert!(!metrics.has_leader_elector);
+
+        cluster_manager.set_connection_manager(connection_manager);
+        cluster_manager.set_leader_elector(Arc::new(synctv_cluster::leader::AnyLeaderElector::Disabled));
+
+        let metrics = cluster_manager.metrics();
+        assert!(metrics.has_connection_manager);
+        assert!(metrics.has_leader_elector);
     }
 
     #[tokio::test]

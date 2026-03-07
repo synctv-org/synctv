@@ -160,8 +160,10 @@ pub struct ClusterManager {
     /// Flag indicating node is quarantined due to epoch mismatch (split-brain).
     /// When true, fan-out requests are rejected and leadership is resigned.
     is_quarantined: Arc<AtomicBool>,
+    /// Ensures shutdown work only runs once even if called multiple times.
+    shutdown_started: Arc<AtomicBool>,
     /// Leader elector for resigning leadership on epoch mismatch
-    leader_elector: Option<Arc<crate::leader::AnyLeaderElector>>,
+    leader_elector: Option<Arc<dyn crate::leader::LeaderRuntime>>,
 }
 
 /// State for the background heartbeat loop, guarded by Mutex for async shutdown
@@ -317,6 +319,7 @@ impl ClusterManager {
             heartbeat_failure_count: Arc::new(AtomicU64::new(0)),
             epoch_mismatch_count: Arc::new(AtomicU64::new(0)),
             is_quarantined: Arc::new(AtomicBool::new(false)),
+            shutdown_started: Arc::new(AtomicBool::new(false)),
             leader_elector: None,
         })
     }
@@ -357,7 +360,7 @@ impl ClusterManager {
     ///
     /// When epoch mismatch is detected, this node will resign leadership if
     /// it's currently the leader to prevent split-brain scenarios.
-    pub fn set_leader_elector(&mut self, elector: Arc<crate::leader::AnyLeaderElector>) {
+    pub fn set_leader_elector(&mut self, elector: Arc<dyn crate::leader::LeaderRuntime>) {
         self.leader_elector = Some(elector);
     }
 
@@ -589,6 +592,11 @@ impl ClusterManager {
     /// 5. Shuts down the deduplicator cleanup task
     /// 6. Awaits background task completion
     pub async fn shutdown(&self) {
+        if self.shutdown_started.swap(true, Ordering::AcqRel) {
+            debug!("ClusterManager shutdown already completed or in progress");
+            return;
+        }
+
         info!("Shutting down ClusterManager");
 
         // Cancel heartbeat loop
@@ -815,6 +823,8 @@ impl ClusterManager {
             tracked_events: self.deduplicator.len(),
             redis_enabled: self.redis_publish_tx.is_some(),
             is_quarantined: self.is_quarantined(),
+            has_connection_manager: self.connection_manager.is_some(),
+            has_leader_elector: self.leader_elector.is_some(),
         }
     }
 
@@ -857,11 +867,16 @@ pub struct ClusterMetrics {
     pub redis_enabled: bool,
     /// Whether this node is quarantined due to epoch mismatch (split-brain)
     pub is_quarantined: bool,
+    /// Whether a coordinated `ConnectionManager` was injected.
+    pub has_connection_manager: bool,
+    /// Whether a leader elector was injected for quarantine-triggered resign.
+    pub has_leader_elector: bool,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::ConnectionLimits;
     use chrono::Utc;
 
     #[tokio::test]
@@ -1217,6 +1232,52 @@ mod tests {
         );
 
         manager.unsubscribe(&conn_id);
+    }
+
+    #[tokio::test]
+    async fn test_cluster_metrics_reports_dependency_injection_state() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "test_metrics_injection".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let mut manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("ClusterManager::new should succeed");
+
+        let metrics = manager.metrics();
+        assert!(
+            !metrics.has_connection_manager,
+            "fresh manager should not report an injected ConnectionManager"
+        );
+        assert!(
+            !metrics.has_leader_elector,
+            "fresh manager should not report an injected leader elector"
+        );
+
+        let cm = ConnectionManager::new(ConnectionLimits::default());
+        manager.set_connection_manager(cm);
+        manager.set_leader_elector(Arc::new(crate::leader::AnyLeaderElector::Disabled));
+
+        let metrics = manager.metrics();
+        assert!(
+            metrics.has_connection_manager,
+            "metrics should reflect injected ConnectionManager"
+        );
+        assert!(
+            metrics.has_leader_elector,
+            "metrics should reflect injected leader elector"
+        );
     }
 
     /// Test that ClusterManager metrics include quarantine state.

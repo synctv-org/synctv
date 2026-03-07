@@ -255,7 +255,7 @@ pub async fn init_services(
         let redis_handles = redis_handles.as_ref().expect(
             "cluster mode requires Redis handles; this invariant is validated before init_services",
         );
-        user_service.set_refresh_rate_limiter_redis(
+        user_service.set_refresh_rate_limiter_redis_strict(
             redis_handles.conn.clone(),
             format!("{}refresh_rl:", config.redis.key_prefix),
         );

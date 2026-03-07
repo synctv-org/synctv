@@ -550,6 +550,7 @@ pub struct RateLimiter {
     /// In-memory governor for sync operations (always present)
     sync_limiter: InMemoryGovernorLimiter,
     key_prefix: String,
+    strict_distributed: bool,
 }
 
 impl RateLimiter {
@@ -559,6 +560,7 @@ impl RateLimiter {
             backend,
             sync_limiter: InMemoryGovernorLimiter::new(),
             key_prefix,
+            strict_distributed: false,
         }
     }
 
@@ -587,6 +589,13 @@ impl RateLimiter {
     pub fn in_memory_only(key_prefix: String) -> Self {
         let backend = Arc::new(InMemoryRateLimitBackend::new(key_prefix.clone()));
         Self::from_backend(backend, key_prefix)
+    }
+
+    /// Enable strict distributed checks for operations that must fail closed.
+    #[must_use]
+    pub fn with_strict_distributed(mut self) -> Self {
+        self.strict_distributed = true;
+        self
     }
 
     /// Check if Redis is connected and responding
@@ -619,7 +628,13 @@ impl RateLimiter {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
-        self.backend.check(key, max_requests, window_seconds).await
+        if self.strict_distributed {
+            self.backend
+                .check_strict(key, max_requests, window_seconds)
+                .await
+        } else {
+            self.backend.check(key, max_requests, window_seconds).await
+        }
     }
 
     /// Distributed rate limit check that fails closed when Redis is unavailable.
@@ -926,6 +941,27 @@ mod tests {
     /// Test that InMemoryRateLimitBackend::check_strict fails closed when Redis is not configured.
     /// For security-critical operations, all requests should be denied when Redis is unavailable
     /// to ensure global limits are never exceeded.
+
+    #[tokio::test]
+    async fn test_strict_distributed_flag_makes_check_rate_limit_fail_closed() {
+        let limiter = RateLimiter::in_memory_only("strict_switch:".to_string())
+            .with_strict_distributed();
+
+        let result = limiter.check_rate_limit("key", 5, 60).await;
+        assert!(
+            matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+            "strict distributed mode should fail closed through check_rate_limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_strict_in_memory_check_rate_limit_still_allows_requests() {
+        let limiter = RateLimiter::in_memory_only("non_strict_switch:".to_string());
+
+        let result = limiter.check_rate_limit("key", 5, 60).await;
+        assert!(result.is_ok(), "non-strict mode should preserve in-memory behavior");
+    }
+
     #[tokio::test]
     async fn test_in_memory_check_strict_fails_closed() {
         let limiter = RateLimiter::in_memory_only("strict_test:".to_string());

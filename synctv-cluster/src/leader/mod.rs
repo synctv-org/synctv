@@ -201,7 +201,44 @@ impl synctv_core::service::LeaderCheck for AnyLeaderElector {
     }
 }
 
+impl LeaderElect for synctv_core::service::AlwaysLeader {
+    fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
+        let (_tx, rx) = broadcast::channel(1);
+        rx
+    }
+}
+
+#[async_trait]
+impl LeaderRuntime for synctv_core::service::AlwaysLeader {
+    fn current_leader_identity(&self) -> Option<String> {
+        Some("standalone".to_string())
+    }
+
+    fn leader_epoch(&self) -> u64 {
+        0
+    }
+
+    async fn resign(&self) {}
+}
+
+#[async_trait]
+impl LeaderRuntime for AnyLeaderElector {
+    fn current_leader_identity(&self) -> Option<String> {
+        Self::current_leader_identity(self)
+    }
+
+    fn leader_epoch(&self) -> u64 {
+        Self::leader_epoch(self)
+    }
+
+    async fn resign(&self) {
+        Self::resign(self).await;
+    }
+}
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -228,6 +265,18 @@ pub enum LeadershipEvent {
 /// Provides a default [`leader_guard`](Self::leader_guard) implementation
 /// built on top of [`subscribe`](Self::subscribe), eliminating duplicated
 /// fencing-guard logic across each concrete elector.
+#[async_trait]
+pub trait LeaderRuntime: LeaderElect + synctv_core::service::LeaderCheck + Send + Sync {
+    /// Returns the identity of this node if it currently holds leadership.
+    fn current_leader_identity(&self) -> Option<String>;
+
+    /// Returns the current leader epoch (fencing token).
+    fn leader_epoch(&self) -> u64;
+
+    /// Gracefully resign leadership.
+    async fn resign(&self);
+}
+
 pub trait LeaderElect {
     /// Subscribe to leadership change events.
     fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent>;
@@ -1061,6 +1110,27 @@ mod tests {
 
         // Clean up
         handle.abort();
+    }
+
+
+    #[tokio::test]
+    async fn test_always_leader_implements_unified_runtime_trait() {
+        let leader: std::sync::Arc<dyn LeaderRuntime> =
+            std::sync::Arc::new(synctv_core::service::AlwaysLeader);
+
+        assert!(leader.is_leader(), "AlwaysLeader should report leader=true");
+        assert_eq!(leader.leader_epoch(), 0, "standalone epoch should be zero");
+        assert_eq!(
+            leader.current_leader_identity().as_deref(),
+            Some("standalone"),
+            "standalone leader identity should be stable"
+        );
+
+        leader.resign().await;
+        assert!(
+            leader.is_leader(),
+            "resign() on AlwaysLeader should remain a no-op in standalone mode"
+        );
     }
 
     #[test]

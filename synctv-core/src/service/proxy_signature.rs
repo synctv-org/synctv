@@ -252,9 +252,9 @@ mod tests {
         let key = test_key();
         let claims = test_claims();
         let mut sig = key.sign(&claims);
-        // Tamper with last character
-        sig.pop();
-        sig.push('0');
+        let last = sig.pop().expect("signature should not be empty");
+        let tampered = if last == '0' { '1' } else { '0' };
+        sig.push(tampered);
         assert!(matches!(
             key.verify(&claims, &sig),
             Err(ProxySignatureError::InvalidSignature)

@@ -114,6 +114,20 @@ impl UserService {
         self.refresh_rate_limiter = RateLimiter::new(Some(redis_conn), key_prefix);
     }
 
+    pub fn set_refresh_rate_limiter_redis_strict(
+        &mut self,
+        redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: String,
+    ) {
+        self.refresh_rate_limiter =
+            RateLimiter::new(Some(redis_conn), key_prefix).with_strict_distributed();
+    }
+
+    #[cfg(test)]
+    pub fn set_refresh_rate_limiter_redis_fail_closed_for_tests(&mut self) {
+        self.refresh_rate_limiter = RateLimiter::in_memory_only("test-refresh:".to_string()).with_strict_distributed();
+    }
+
     /// Validate that a user is allowed to access the system.
     ///
     /// Checks for banned, pending, or soft-deleted status, and optionally
@@ -1521,6 +1535,84 @@ mod tests {
     // ========== Integration Tests ==========
 
     // ========== Refresh Rate Limiter Backend Tests ==========
+
+
+    #[tokio::test]
+    async fn test_refresh_token_uses_fail_closed_distributed_rate_limiter() {
+        let pool = PgPool::connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid").unwrap();
+        let jwt_service = crate::service::JwtService::new("test_secret_key_that_is_at_least_32_bytes_long").unwrap();
+        let username_cache = crate::cache::UsernameCache::new(
+            std::sync::Arc::new(crate::cache::NoopCacheL2),
+            "test:username:".to_string(),
+            100,
+            60,
+        );
+        let token_blacklist: std::sync::Arc<dyn crate::service::TokenBlacklistStore> =
+            std::sync::Arc::new(crate::service::InMemoryTokenBlacklistStore::new(100, 3600, 86400));
+        let key_builder = crate::cache::KeyBuilder::default();
+        let brute_force = crate::service::BruteForceProtection::in_memory("test:".to_string());
+
+        let mut user_service = UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            crate::config::PasswordComplexityConfig::default(),
+            token_blacklist,
+            key_builder,
+            brute_force,
+        );
+
+        user_service.set_refresh_rate_limiter_redis_fail_closed_for_tests();
+
+        let result = user_service.refresh_rate_limiter.check_rate_limit_distributed(
+            "refresh:user-1",
+            1,
+            60,
+        ).await;
+        assert!(
+            result.is_err(),
+            "distributed refresh limit should fail closed when Redis is unavailable"
+        );
+    }
+
+
+    #[tokio::test]
+    async fn test_refresh_rate_limiter_redis_non_strict_preserves_best_effort_behavior() {
+        let pool = PgPool::connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid").unwrap();
+        let jwt_service = crate::service::auth::JwtService::new(
+            "test-secret-key-minimum-length-32-chars-required",
+        )
+        .unwrap();
+        let username_cache = crate::cache::UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            100,
+            0,
+        );
+        let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(
+            crate::service::InMemoryTokenBlacklistStore::new(100, 3600, 86400),
+        );
+        let key_builder = crate::cache::KeyBuilder::new("test");
+        let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+        let mut user_service = super::UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            PasswordComplexityConfig::default(),
+            token_blacklist,
+            key_builder,
+            brute_force,
+        );
+        user_service.refresh_rate_limiter =
+            RateLimiter::in_memory_only("refresh-nonstrict:".to_string());
+
+        let result = user_service
+            .refresh_rate_limiter
+            .check_rate_limit("refresh:user-1", 1, 60)
+            .await;
+        assert!(result.is_ok(), "non-strict mode should allow normal in-memory checks");
+    }
 
     #[tokio::test]
     async fn test_refresh_rate_limiter_default_is_in_memory() {

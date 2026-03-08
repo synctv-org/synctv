@@ -910,7 +910,6 @@ impl OAuth2Service {
     pub async fn delete_all_for_user(&self, user_id: &UserId) -> Result<u64> {
         self.repository.delete_all_for_user(user_id).await
     }
-
 }
 
 #[cfg(test)]

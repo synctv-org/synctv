@@ -2,7 +2,7 @@
 
 use crate::impls::ApiError;
 use std::str::FromStr;
-use synctv_core::models::{ProviderType, RoomId, UserId};
+use synctv_core::models::{ProviderType, UserId};
 
 use super::convert::{media_to_proto, playlist_to_proto};
 use super::ClientApiImpl;
@@ -37,11 +37,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::AddMediaRequest,
     ) -> Result<crate::proto::client::AddMediaResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         let provider = if req.provider.is_empty() {
             ProviderType::DirectUrl
@@ -155,13 +152,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::DeleteMediaRequest,
     ) -> Result<crate::proto::client::DeleteMediaResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.media_id, "media_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let media_id_str = req.media_id.clone();
         let mid = synctv_core::models::MediaId::from_string(req.media_id);
 
@@ -211,13 +206,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::EditMediaRequest,
     ) -> Result<crate::proto::client::EditMediaResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.media_id, "media_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let mid = synctv_core::models::MediaId::from_string(req.media_id);
 
         let title = if req.title.is_empty() {
@@ -249,11 +242,8 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
     ) -> Result<crate::proto::client::ClearPlaylistResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check permission
         self.room_service
@@ -329,9 +319,6 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::AddMediaBatchRequest,
     ) -> Result<crate::proto::client::AddMediaBatchResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         if req.items.is_empty() {
             return Err(ApiError::InvalidInput(
                 "items array cannot be empty".to_string(),
@@ -344,7 +331,7 @@ impl ClientApiImpl {
         }
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check total playlist size limit to prevent unbounded growth
         let root_playlist = self
@@ -447,9 +434,6 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::DeleteMediaBatchRequest,
     ) -> Result<crate::proto::client::DeleteMediaBatchResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         if req.media_ids.is_empty() {
             return Err(ApiError::InvalidInput(
                 "media_ids array cannot be empty".to_string(),
@@ -467,7 +451,7 @@ impl ClientApiImpl {
         }
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let media_id_strings: Vec<String> = req.media_ids.clone();
         let mids: Vec<synctv_core::models::MediaId> = req
             .media_ids
@@ -532,9 +516,6 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::ReorderMediaBatchRequest,
     ) -> Result<crate::proto::client::ReorderMediaBatchResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         if req.updates.is_empty() {
             return Err(ApiError::InvalidInput(
                 "updates array cannot be empty".to_string(),
@@ -552,7 +533,7 @@ impl ClientApiImpl {
         }
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Defense-in-depth: check REORDER_PLAYLIST permission at the API layer
         // (the service layer also checks, but checking here provides early rejection
@@ -596,11 +577,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::ListPlaylistRequest,
     ) -> Result<crate::proto::client::ListPlaylistResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -674,13 +652,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id.clone());
 
         // Check membership
@@ -852,15 +828,13 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::SwapMediaRequest,
     ) -> Result<crate::proto::client::SwapMediaResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.media_id1, "media_id1")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id1: {e}")))?;
         crate::http::validation::validate_id(&req.media_id2, "media_id2")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id2: {e}")))?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Defense-in-depth: check REORDER_PLAYLIST permission at the API layer
         // (the service layer also checks, but checking here provides early rejection
@@ -895,13 +869,11 @@ impl ClientApiImpl {
         room_id: &str,
         media_id: &str,
     ) -> Result<crate::proto::client::Media, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(media_id, "media_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let mid = synctv_core::models::MediaId::from_string(media_id.to_string());
 
         // Check VIEW_PLAYLIST permission

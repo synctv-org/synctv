@@ -46,7 +46,7 @@ async fn send_flv_chunk(
     chunk: Result<Bytes, std::io::Error>,
     write_timeout: std::time::Duration,
 ) -> bool {
-    if write_timeout.as_secs() > 0 {
+    if !write_timeout.is_zero() {
         matches!(
             tokio::time::timeout(write_timeout, tx.send(chunk)).await,
             Ok(Ok(()))
@@ -910,7 +910,7 @@ mod tests {
         let sent = send_flv_chunk(
             &tx,
             Ok(Bytes::from_static(b"second")),
-            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(50),
         )
         .await;
 

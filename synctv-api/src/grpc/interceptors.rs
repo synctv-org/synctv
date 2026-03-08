@@ -126,7 +126,7 @@ impl AuthInterceptor {
     ///
     /// The room_id is validated against the same rules as HTTP endpoints:
     /// - Must not be empty
-    /// - Must not exceed 64 characters (ID_MAX limit)
+    /// - Must be exactly 12 characters
     /// - Must contain only alphanumeric characters, underscores, and hyphens
     #[allow(clippy::result_large_err)]
     pub fn inject_room<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
@@ -549,7 +549,7 @@ mod tests {
             .insert("authorization", format!("Bearer {token}").parse().unwrap());
         request
             .metadata_mut()
-            .insert("x-room-id", "test-room-123".parse().unwrap());
+            .insert("x-room-id", "room1234_abx".parse().unwrap());
 
         // Clone jwt_service before moving to AuthInterceptor
         let interceptor = AuthInterceptor::new(jwt_service);
@@ -592,7 +592,7 @@ mod tests {
             .insert("authorization", format!("Bearer {token}").parse().unwrap());
         request
             .metadata_mut()
-            .insert("x-room-id", "test-room-123".parse().unwrap());
+            .insert("x-room-id", "room1234_abx".parse().unwrap());
 
         // Clone jwt_service before moving to AuthInterceptor
         let interceptor = AuthInterceptor::new(jwt_service);

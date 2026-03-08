@@ -1,7 +1,7 @@
 //! Member operations: `get_room_members`, `update_member_permissions`, kick, ban, unban
 
 use crate::impls::ApiError;
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::UserId;
 
 use super::convert::{members_to_proto, proto_role_to_room_role, room_member_to_proto};
 use super::ClientApiImpl;
@@ -17,11 +17,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -67,13 +64,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::UpdateMemberPermissionsRequest,
     ) -> Result<crate::proto::client::UpdateMemberPermissionsResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.user_id, "user_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let target_uid = UserId::from_string(req.user_id.clone());
 
         // Handle role update if provided (non-zero = specified).
@@ -217,13 +212,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::KickMemberRequest,
     ) -> Result<crate::proto::client::KickMemberResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.user_id, "user_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let target_uid = UserId::from_string(req.user_id.clone());
 
         self.room_service
@@ -268,8 +261,6 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::BanMemberRequest,
     ) -> Result<crate::proto::client::BanMemberResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.user_id, "user_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
 
@@ -281,7 +272,7 @@ impl ClientApiImpl {
         }
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let target_uid = UserId::from_string(req.user_id.clone());
         let reason = if req.reason.is_empty() {
             None
@@ -329,13 +320,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::UnbanMemberRequest,
     ) -> Result<crate::proto::client::UnbanMemberResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.user_id, "user_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let target_uid = UserId::from_string(req.user_id.clone());
 
         self.room_service

@@ -89,7 +89,7 @@ workspace = true
 [dev-dependencies]
 wiremock.workspace = true
 serde_urlencoded.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 tower = { workspace = true, features = ["util"] }
 http-body-util = { workspace = true }
 futures.workspace = true

@@ -906,9 +906,9 @@ mod tests {
 
     #[test]
     fn test_validate_room_id() {
-        assert!(validate_room_id("room123").is_ok());
-        assert!(validate_room_id("room_123").is_ok());
-        assert!(validate_room_id("room-123").is_ok());
+        assert!(validate_room_id("room1234_abx").is_ok());
+        assert!(validate_room_id("room_123-xyz").is_ok());
+        assert!(validate_room_id("room-123_abc").is_ok());
         assert!(validate_room_id("room@123").is_err()); // Invalid character
         assert!(validate_room_id("").is_err()); // Empty
     }

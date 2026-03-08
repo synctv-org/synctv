@@ -1,7 +1,7 @@
 //! Live streaming operations: `publish_key`, `validate_live_token`, `stream_info`, live proxy
 
 use std::sync::Arc;
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::UserId;
 
 use super::ClientApiImpl;
 use crate::impls::ApiError;
@@ -13,16 +13,12 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::CreatePublishKeyRequest,
     ) -> Result<crate::proto::client::CreatePublishKeyResponse, ApiError> {
-        // Validate room_id format
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         // Validate media ID format
         crate::http::validation::validate_id(&req.id, "media_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let media_id = synctv_core::models::MediaId::from_string(req.id.clone());
 
         // Verify media exists and belongs to this room
@@ -102,7 +98,7 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Authentication(format!("Invalid token: {e}")))?;
 
         // Verify room membership
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let is_member = self
             .room_service
             .member_service()
@@ -127,7 +123,7 @@ impl ClientApiImpl {
         media_id: &str,
     ) -> Result<crate::proto::client::GetStreamInfoResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership before returning stream info
         self.room_service
@@ -172,7 +168,7 @@ impl ClientApiImpl {
         room_id: &str,
     ) -> Result<crate::proto::client::ListRoomStreamsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership before listing streams
         self.room_service

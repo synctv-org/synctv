@@ -101,8 +101,8 @@ mod tests {
         let err = parse_room_id("").unwrap_err();
         assert!(matches!(err, ValidationError::Required(_)));
 
-        // Invalid format
-        let err = parse_room_id("room@123").unwrap_err();
+        // Invalid format at correct length
+        let err = parse_room_id("room@1234567").unwrap_err();
         assert!(matches!(err, ValidationError::InvalidFormat { .. }));
 
         // Too long

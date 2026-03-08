@@ -278,6 +278,21 @@ const fn is_critical_message(message: &ServerMessage) -> bool {
     }
 }
 
+const fn requires_state_resync(message: &ServerMessage) -> bool {
+    use crate::proto::client::server_message::Message;
+    matches!(
+        &message.message,
+        Some(Message::UserJoined(_))
+            | Some(Message::UserLeft(_))
+            | Some(Message::MediaAdded(_))
+            | Some(Message::MediaRemoved(_))
+            | Some(Message::PlaylistCreated(_))
+            | Some(Message::PlaylistUpdated(_))
+            | Some(Message::PlaylistDeleted(_))
+            | Some(Message::Notification(_))
+    )
+}
+
 /// Returns a human-readable message type name for logging purposes.
 const fn message_type_name(message: &ServerMessage) -> &'static str {
     use crate::proto::client::server_message::Message;
@@ -362,6 +377,7 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 let drops = self.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
                 let msg_type = message_type_name(&message);
+                let requires_resync = requires_state_resync(&message);
                 warn!(
                     consecutive_drops = drops,
                     message_type = msg_type,
@@ -370,10 +386,10 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
                 synctv_core::metrics::http::WEBSOCKET_ERRORS_TOTAL
                     .with_label_values(&["message_dropped"])
                     .inc();
-                if drops >= SLOW_CLIENT_DROP_THRESHOLD {
+                if requires_resync || drops >= SLOW_CLIENT_DROP_THRESHOLD {
                     // Too many consecutive drops: disconnect the slow client gracefully
                     Err(format!(
-                        "Slow client disconnected: {drops} consecutive message drops (last dropped: {msg_type})"
+                        "Slow client disconnected: dropped stateful message (type={msg_type}) after {drops} consecutive drops"
                     ))
                 } else {
                     // Still within threshold: log and drop the non-critical message
@@ -919,5 +935,32 @@ mod tests {
             manager.reserve_user_slot(&user_id).is_ok(),
             "cleanup should release the leaked user reservation"
         );
+    }
+
+    #[test]
+    fn test_state_resync_messages_disconnect_slow_client_immediately() {
+        use crate::impls::messaging::MessageSender;
+        use crate::proto::client::{server_message::Message, ServerMessage, UserJoinedRoom};
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let sender = WebSocketMessageSender::new(tx.clone());
+
+        tx.try_send(axum::extract::ws::Message::Text("occupied".into()))
+            .expect("fill the channel");
+
+        let result = sender.send(ServerMessage {
+            message: Some(Message::UserJoined(UserJoinedRoom {
+                room_id: "room12345678".to_string(),
+                member: None,
+            })),
+        });
+
+        assert!(
+            result.is_err(),
+            "stateful join messages must disconnect slow clients instead of being silently dropped"
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("stateful message"));
+        assert!(err.contains("UserJoined"));
     }
 }

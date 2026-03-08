@@ -1210,9 +1210,8 @@ impl StreamMessageHandler {
                     room_id = %self.room_id.as_str(),
                     user_id = %self.user_id.as_str(),
                     connection_id = %self.connection_id,
-                    "Distributed same-user presence lookup failed during join; skipping UserJoined broadcast to avoid false online signal"
+                    "Distributed same-user presence lookup failed during join; continuing with UserJoined broadcast to avoid missing online signal"
                 );
-                return;
             }
             Ok(false) => {}
         }

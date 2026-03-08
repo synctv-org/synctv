@@ -287,7 +287,7 @@ fn test_auth_interceptor_inject_room_with_room_id() {
         .insert("authorization", format!("Bearer {token}").parse().unwrap());
     request
         .metadata_mut()
-        .insert("x-room-id", "room_abc123".parse().unwrap());
+        .insert("x-room-id", "room1234_abx".parse().unwrap());
 
     let result = interceptor.inject_room(request);
     assert!(result.is_ok(), "Valid token + room_id should pass");

@@ -1187,7 +1187,10 @@ mod tests {
         let response = Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .header(axum::http::header::CONTENT_LENGTH, original_bytes.len().to_string())
+            .header(
+                axum::http::header::CONTENT_LENGTH,
+                original_bytes.len().to_string(),
+            )
             .body(axum::body::Body::from(original_bytes.clone()))
             .unwrap();
 

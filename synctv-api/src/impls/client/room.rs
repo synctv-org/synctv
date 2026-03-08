@@ -19,10 +19,8 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
     ) -> Result<Option<crate::proto::client::Media>, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership before returning playing media
         self.room_service
@@ -217,11 +215,8 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
     ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -262,11 +257,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::JoinRoomRequest,
     ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         let password = if req.password.is_empty() {
             None
@@ -325,11 +317,8 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
     ) -> Result<crate::proto::client::LeaveRoomResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Resolve username for the UserLeft event before performing the leave
         let username = self
@@ -375,11 +364,8 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
     ) -> Result<crate::proto::client::DeleteRoomResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // 1. Delete the DB record first. If this fails, no cluster event is
         //    published and no connections are dropped -- the room remains intact.
@@ -417,11 +403,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::UpdateRoomSettingsRequest,
     ) -> Result<crate::proto::client::UpdateRoomSettingsResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         if req.settings.is_empty() {
             // SECURITY: Return success with None room instead of room details.
@@ -492,10 +475,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::SetRoomPasswordRequest,
     ) -> Result<crate::proto::client::SetRoomPasswordResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Validate password length
         if !req.password.is_empty() {
@@ -551,7 +532,7 @@ impl ClientApiImpl {
         req: crate::proto::client::CheckRoomPasswordRequest,
         client_ip: &str,
     ) -> Result<crate::proto::client::CheckRoomPasswordResponse, ApiError> {
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Validate password length
         validate_password_for_verify(&req.password)?;
@@ -613,7 +594,7 @@ impl ClientApiImpl {
         room_id: &str,
     ) -> Result<crate::proto::client::GetRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership before returning settings
         self.room_service
@@ -642,7 +623,7 @@ impl ClientApiImpl {
         room_id: &str,
     ) -> Result<crate::proto::client::ResetRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         let settings_json = self
             .room_service
@@ -878,7 +859,7 @@ impl ClientApiImpl {
         req: crate::proto::client::GetChatHistoryRequest,
     ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership before returning chat history
         self.room_service

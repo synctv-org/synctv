@@ -2,7 +2,7 @@
 //!
 //! Note: Real-time playback control (play/pause/seek/speed) is handled via WebSocket messages
 
-use synctv_core::models::{MediaId, RoomId, UserId};
+use synctv_core::models::{MediaId, UserId};
 use synctv_core::provider::ProviderContext;
 
 use super::convert::{
@@ -20,13 +20,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::StartPlaybackRequest,
     ) -> Result<crate::proto::client::StartPlaybackResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.media_id, "media_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let media_id = MediaId::from_string(req.media_id);
 
         // Permission check (SWITCH_MEDIA) is handled by PlaybackService::switch_media()
@@ -50,11 +48,8 @@ impl ClientApiImpl {
         room_id: &str,
         _req: crate::proto::client::StopPlaybackRequest,
     ) -> Result<crate::proto::client::StopPlaybackResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::reset()
         self.room_service
@@ -77,11 +72,8 @@ impl ClientApiImpl {
         room_id: &str,
         _req: crate::proto::client::GetPlaybackRequest,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -190,7 +182,7 @@ impl ClientApiImpl {
     /// Handle Play command from WebSocket
     pub async fn handle_play_command(&self, user_id: &str, room_id: &str) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
         self.room_service
@@ -206,7 +198,7 @@ impl ClientApiImpl {
     /// Handle Pause command from WebSocket
     pub async fn handle_pause_command(&self, user_id: &str, room_id: &str) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
         self.room_service
@@ -227,7 +219,7 @@ impl ClientApiImpl {
         current_time: f64,
     ) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Permission check (SEEK) is handled by PlaybackService::seek()
         let response = self
@@ -261,7 +253,7 @@ impl ClientApiImpl {
         speed: f64,
     ) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()
         self.room_service

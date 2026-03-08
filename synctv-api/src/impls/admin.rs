@@ -2491,12 +2491,8 @@ impl AdminApiImpl {
                     if let Some(infra) = &self.live_streaming_infrastructure {
                         let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
                         for media_id in &media_ids {
-                            self.kick_stream_cluster(
-                                rid.as_str(),
-                                media_id,
-                                "room_batch_banned",
-                            )
-                            .await;
+                            self.kick_stream_cluster(rid.as_str(), media_id, "room_batch_banned")
+                                .await;
                         }
                         infra.kick_room_publishers(rid.as_str()).await;
                     }
@@ -2589,12 +2585,8 @@ impl AdminApiImpl {
                     if let Some(infra) = &self.live_streaming_infrastructure {
                         let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
                         for media_id in &media_ids {
-                            self.kick_stream_cluster(
-                                rid.as_str(),
-                                media_id,
-                                "room_batch_deleted",
-                            )
-                            .await;
+                            self.kick_stream_cluster(rid.as_str(), media_id, "room_batch_deleted")
+                                .await;
                         }
                         infra.kick_room_publishers(rid.as_str()).await;
                     }

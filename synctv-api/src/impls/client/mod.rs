@@ -46,6 +46,11 @@ use synctv_core::validation::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 
 use crate::impls::ApiError;
 
+fn parse_external_room_id(room_id: &str) -> Result<RoomId, ApiError> {
+    crate::room_id_validation::parse_room_id(room_id)
+        .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))
+}
+
 /// Validate a password that is being **set** (create room, set password, update settings).
 fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
     // Issue #72: Reject passwords that are purely whitespace. A password of e.g. "   "
@@ -131,6 +136,10 @@ pub struct ClientApiImpl {
 }
 
 impl ClientApiImpl {
+    fn parse_room_id(&self, room_id: &str) -> Result<RoomId, ApiError> {
+        parse_external_room_id(room_id)
+    }
+
     /// Create a new `ClientApiImpl` from individual parameters.
     ///
     /// Prefer [`ClientApiImpl::from_config`] for new code.
@@ -436,13 +445,13 @@ impl ClientApiImpl {
             if crate::impls::try_publish_cluster_event(tx, request).await {
                 true
             } else {
-                    tracing::warn!(
-                        room_id = %room_id.as_str(),
-                        target_user_id = %target_user_id.as_str(),
-                        "Failed to publish permission change event after bounded retry, \
-                         other replicas may serve stale permissions"
-                    );
-                    false
+                tracing::warn!(
+                    room_id = %room_id.as_str(),
+                    target_user_id = %target_user_id.as_str(),
+                    "Failed to publish permission change event after bounded retry, \
+                     other replicas may serve stale permissions"
+                );
+                false
             }
         }
     }

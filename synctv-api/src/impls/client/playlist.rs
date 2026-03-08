@@ -1,6 +1,6 @@
 //! Playlist operations: create, update, delete, list playlists
 
-use synctv_core::models::{PermissionBits, RoomId, UserId};
+use synctv_core::models::{PermissionBits, UserId};
 
 use super::convert::playlist_to_proto;
 use super::ClientApiImpl;
@@ -13,10 +13,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::CreatePlaylistRequest,
     ) -> Result<crate::proto::client::CreatePlaylistResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership and playlist management permission
         self.room_service
@@ -70,12 +68,10 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::UpdatePlaylistRequest,
     ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership and playlist management permission
         self.room_service
@@ -130,12 +126,10 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::DeletePlaylistRequest,
     ) -> Result<crate::proto::client::DeletePlaylistResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership and playlist management permission
         self.room_service
@@ -164,12 +158,10 @@ impl ClientApiImpl {
         room_id: &str,
         playlist_id: &str,
     ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         crate::http::validation::validate_id(playlist_id, "playlist_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
         let pid = synctv_core::models::PlaylistId::from_string(playlist_id.to_string());
 
         // Check membership
@@ -219,14 +211,12 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::ListPlaylistsRequest,
     ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
-        crate::http::validation::validate_id(room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         if !req.parent_id.is_empty() {
             crate::http::validation::validate_id(&req.parent_id, "parent_id")
                 .map_err(|e| ApiError::InvalidInput(format!("Invalid parent_id: {e}")))?;
         }
         let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership before returning playlist data
         self.room_service

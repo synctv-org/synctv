@@ -354,14 +354,16 @@ mod tests {
 
         assert_eq!(lock.acquire_calls.load(Ordering::SeqCst), 2);
         assert!(
-            err.to_string().contains("refusing PostgreSQL advisory lock fallback")
+            err.to_string()
+                .contains("refusing PostgreSQL advisory lock fallback")
                 || err
                     .to_string()
                     .contains("requires the same Redis migration lock to remain healthy"),
             "unexpected error: {err}"
         );
         assert!(
-            err.to_string().contains("while waiting for Redis migration lock"),
+            err.to_string()
+                .contains("while waiting for Redis migration lock"),
             "wait-path error should clearly describe the failing phase: {err}"
         );
     }

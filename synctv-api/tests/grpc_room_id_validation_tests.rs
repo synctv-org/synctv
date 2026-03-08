@@ -43,12 +43,12 @@ async fn test_valid_room_id_format_should_pass() {
     // Test various valid room_id formats
     let exact_len_room_id = "a".repeat(12);
     let valid_room_ids = vec![
-        "room1234_abx",   // alphanumeric + underscore
-        "ROOM1234-XYZ",   // uppercase + hyphen
-        "room_123-xyz",   // underscore + hyphen
-        "AbCdEf123456",   // mixed case alphanumeric
+        "room1234_abx", // alphanumeric + underscore
+        "ROOM1234-XYZ", // uppercase + hyphen
+        "room_123-xyz", // underscore + hyphen
+        "AbCdEf123456", // mixed case alphanumeric
         &exact_len_room_id,
-        "123456789012",   // numbers only
+        "123456789012", // numbers only
     ];
 
     for room_id in valid_room_ids {
@@ -157,7 +157,7 @@ async fn test_invalid_characters_in_room_id_should_be_rejected() {
 
     // Test various invalid room_id formats
     let invalid_room_ids = vec![
-        "room123",  // too short
+        "room123",   // too short
         "room@123",  // @ symbol
         "room#123",  // # symbol
         "room$123",  // $ symbol
@@ -233,10 +233,7 @@ async fn test_unicode_characters_in_room_id_should_be_rejected() {
 
         let result = interceptor.inject_room(request);
         if room_id.contains("é") || room_id == "room_cafe" {
-            assert!(
-                result.is_err(),
-                "Room_id '{room_id}' should be rejected"
-            );
+            assert!(result.is_err(), "Room_id '{room_id}' should be rejected");
 
             let status = result.unwrap_err();
             assert_eq!(
@@ -252,8 +249,8 @@ async fn test_unicode_characters_in_room_id_should_be_rejected() {
 }
 
 #[tokio::test]
-async fn test_exactly_64_char_room_id_should_pass() {
-    // Room_id exactly at the boundary (64 chars) should pass
+async fn test_exactly_12_char_room_id_should_pass() {
+    // Room_id exactly at the fixed 12-char boundary should pass
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
     let token = jwt_service
@@ -261,8 +258,8 @@ async fn test_exactly_64_char_room_id_should_pass() {
         .unwrap();
     let interceptor = AuthInterceptor::new(jwt_service);
 
-    let boundary_room_id = "a".repeat(64);
-    assert_eq!(boundary_room_id.len(), 64);
+    let boundary_room_id = "a".repeat(12);
+    assert_eq!(boundary_room_id.len(), 12);
 
     let mut request = Request::new(());
     // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
@@ -272,7 +269,7 @@ async fn test_exactly_64_char_room_id_should_pass() {
     let result = interceptor.inject_room(request);
     assert!(
         result.is_ok(),
-        "Room_id exactly 64 chars should pass validation, got error: {:?}",
+        "Room_id exactly 12 chars should pass validation, got error: {:?}",
         result.err()
     );
 }
@@ -291,13 +288,13 @@ async fn test_consistency_with_http_validation() {
     let interceptor = AuthInterceptor::new(jwt_service);
 
     // Test cases that should have consistent behavior between HTTP and gRPC
-    let max_len_room_id = "a".repeat(64);
-    let too_long_room_id = "a".repeat(65);
+    let exact_len_room_id = "a".repeat(12);
+    let too_long_room_id = "a".repeat(13);
     let test_cases: Vec<(&str, bool)> = vec![
-        ("valid_room-123", true),
+        ("validroom_12", true),
         ("", false),
         ("room@invalid", false),
-        (&max_len_room_id, true),
+        (&exact_len_room_id, true),
         (&too_long_room_id, false),
         ("room with space", false),
     ];

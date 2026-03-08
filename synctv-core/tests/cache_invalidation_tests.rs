@@ -12,15 +12,17 @@ use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
     models::{RoomId, UserId},
 };
-use synctv_core_testing::postgres::docker_startup_timeout;
-use synctv_core_testing::start_redis_url as start_test_redis_url;
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::postgres::Postgres;
+use synctv_core_testing::{
+    create_test_pool_with_options_and_label, start_redis_url as start_test_redis_url,
+};
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (synctv_core_testing::RedisContainer, String) {
     start_test_redis_url().await
+}
+
+fn unique_stream_key() -> String {
+    format!("test:cache:invalidate:{}", nanoid::nanoid!(8))
 }
 
 #[tokio::test]
@@ -43,18 +45,19 @@ async fn test_cache_invalidation_message_serialization() {
 async fn test_cache_invalidation_broadcast_received() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_stream_key();
 
     // Create two invalidation services (simulating two replicas)
     let service1 = Arc::new(CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node1".to_string(),
-        "test:cache:invalidate".to_string(),
+        stream_key.clone(),
     ));
 
     let service2 = Arc::new(CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node2".to_string(),
-        "test:cache:invalidate".to_string(),
+        stream_key,
     ));
 
     // Start listeners
@@ -96,17 +99,18 @@ async fn test_cache_invalidation_broadcast_received() {
 async fn test_cache_invalidation_all_message() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_stream_key();
 
     let service1 = Arc::new(CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node1".to_string(),
-        "test:cache:invalidate".to_string(),
+        stream_key.clone(),
     ));
 
     let service2 = Arc::new(CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node2".to_string(),
-        "test:cache:invalidate".to_string(),
+        stream_key,
     ));
 
     service1.start().await.expect("Failed to start service1");
@@ -136,17 +140,18 @@ async fn test_cache_invalidation_all_message() {
 async fn test_cache_invalidation_room_permission() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_stream_key();
 
     let service1 = CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node1".to_string(),
-        "test:cache:invalidate".to_string(),
+        stream_key.clone(),
     );
 
     let service2 = CacheInvalidationService::new(
         Some(redis_client),
         "node2".to_string(),
-        "test:cache:invalidate".to_string(),
+        stream_key,
     );
 
     service1.start().await.expect("Failed to start service1");
@@ -181,17 +186,18 @@ async fn test_cache_invalidation_room_permission() {
 async fn test_cache_invalidation_multiple_messages() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_stream_key();
 
     let service1 = Arc::new(CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node1".to_string(),
-        "test:cache:invalidate".to_string(),
+        stream_key.clone(),
     ));
 
     let service2 = Arc::new(CacheInvalidationService::new(
         Some(redis_client),
         "node2".to_string(),
-        "test:cache:invalidate".to_string(),
+        stream_key,
     ));
 
     service1.start().await.expect("Failed to start service1");
@@ -248,7 +254,7 @@ async fn test_cache_invalidation_without_redis() {
     let service = CacheInvalidationService::new(
         None,
         "node1".to_string(),
-        "test:cache:invalidate".to_string(),
+        unique_stream_key(),
     );
 
     // Start should succeed even without Redis (no-op for local-only)
@@ -346,17 +352,18 @@ async fn test_cache_invalidation_broadcast_local() {
 async fn test_cache_invalidation_playback_state() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_stream_key();
 
     let service1 = CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node1".to_string(),
-        "test:cache:invalidate".to_string(),
+        stream_key.clone(),
     );
 
     let service2 = CacheInvalidationService::new(
         Some(redis_client),
         "node2".to_string(),
-        "test:cache:invalidate".to_string(),
+        stream_key,
     );
 
     service1.start().await.expect("Failed to start service1");
@@ -410,7 +417,6 @@ async fn test_cache_invalidation_playback_state() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_before_commit() {
-    use sqlx::postgres::PgPoolOptions;
     use synctv_core::{
         cache::{KeyBuilder, NoopCacheL2, UsernameCache},
         config::PasswordComplexityConfig,
@@ -419,51 +425,13 @@ async fn test_cache_invalidation_before_commit() {
         service::auth::{BruteForceProtection, JwtService},
         service::{InMemoryTokenBlacklistStore, RoomService, UserService},
     };
-    // Start PostgreSQL
-    let postgres = tokio::time::timeout(
-        docker_startup_timeout(),
-        Postgres::default()
-            .with_db_name("synctv_test")
-            .with_user("synctv")
-            .with_password("synctv_test")
-            .with_tag("16-alpine")
-            .start(),
+    let (_postgres, pool) = create_test_pool_with_options_and_label(
+        "synctv_test",
+        "cache-invalidation-before-commit",
+        5,
+        std::time::Duration::from_secs(2),
     )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Postgres container");
-
-    let connection_string = format!(
-        "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
-        postgres
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("Failed to get port")
-    );
-
-    let pool = {
-        let mut retries = 0u32;
-        loop {
-            match PgPoolOptions::new()
-                .acquire_timeout(std::time::Duration::from_secs(2))
-                .max_connections(5)
-                .connect(&connection_string)
-                .await
-            {
-                Ok(p) => break p,
-                Err(_) if retries < 60 => {
-                    retries += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
-            }
-        }
-    };
-
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
+    .await;
 
     // Create user service
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
@@ -601,7 +569,6 @@ async fn test_cache_invalidation_before_commit() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_rollback_safety() {
-    use sqlx::postgres::PgPoolOptions;
     use sqlx::Transaction;
     use synctv_core::{
         cache::{KeyBuilder, NoopCacheL2, UsernameCache},
@@ -611,51 +578,13 @@ async fn test_cache_invalidation_rollback_safety() {
         service::auth::{BruteForceProtection, JwtService},
         service::{InMemoryTokenBlacklistStore, RoomService, UserService},
     };
-    // Start PostgreSQL
-    let postgres = tokio::time::timeout(
-        docker_startup_timeout(),
-        Postgres::default()
-            .with_db_name("synctv_test")
-            .with_user("synctv")
-            .with_password("synctv_test")
-            .with_tag("16-alpine")
-            .start(),
+    let (_postgres, pool) = create_test_pool_with_options_and_label(
+        "synctv_test",
+        "cache-invalidation-rollback",
+        5,
+        std::time::Duration::from_secs(2),
     )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Postgres container");
-
-    let connection_string = format!(
-        "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
-        postgres
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("Failed to get port")
-    );
-
-    let pool = {
-        let mut retries = 0u32;
-        loop {
-            match PgPoolOptions::new()
-                .acquire_timeout(std::time::Duration::from_secs(2))
-                .max_connections(5)
-                .connect(&connection_string)
-                .await
-            {
-                Ok(p) => break p,
-                Err(_) if retries < 60 => {
-                    retries += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
-            }
-        }
-    };
-
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
+    .await;
 
     // Create user service
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";

@@ -51,12 +51,12 @@ async fn redis_connection(redis_url: &str) -> redis::aio::ConnectionManager {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_register_rejects_when_distributed_user_limit_state_unavailable() {
-    let redis = TestRedis::start().await;
+    let mut redis = TestRedis::start().await;
     let conn = redis_connection(&redis.redis_url).await;
     let manager = ConnectionManager::new(ConnectionLimits::default())
         .with_redis(conn, "fail_closed_register:");
 
-    drop(redis._redis);
+    redis.terminate_container().await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let result = tokio::time::timeout(
@@ -74,7 +74,7 @@ async fn test_register_rejects_when_distributed_user_limit_state_unavailable() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() {
-    let redis = TestRedis::start().await;
+    let mut redis = TestRedis::start().await;
     let conn = redis_connection(&redis.redis_url).await;
     let manager =
         ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "fail_closed_join:");
@@ -88,7 +88,7 @@ async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() 
         .await
         .expect("initial room join should succeed while Redis is healthy");
 
-    drop(redis._redis);
+    redis.terminate_container().await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let target_room = rid("room_b");
@@ -116,7 +116,7 @@ async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_distributed_connection_queries_fail_closed_when_redis_is_unavailable() {
-    let redis = TestRedis::start().await;
+    let mut redis = TestRedis::start().await;
     let conn = redis_connection(&redis.redis_url).await;
     let manager =
         ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "fail_closed_get:");
@@ -130,7 +130,7 @@ async fn test_distributed_connection_queries_fail_closed_when_redis_is_unavailab
         .await
         .expect("initial room join should succeed while Redis is healthy");
 
-    drop(redis._redis);
+    redis.terminate_container().await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let user_err = tokio::time::timeout(

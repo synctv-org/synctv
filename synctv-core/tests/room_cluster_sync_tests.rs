@@ -30,13 +30,9 @@ use synctv_core::{
 use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
-use synctv_core_testing::postgres::docker_startup_timeout;
-use synctv_core_testing::start_redis_url as start_test_redis_url;
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::redis::Redis;
+use synctv_core_testing::{
+    create_test_pool_with_db_and_label, start_redis_url_with_label, RedisContainer, TestContainer,
+};
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
@@ -45,66 +41,37 @@ use testcontainers_modules::redis::Redis;
 pub struct TestInfra {
     pub pool: PgPool,
     pub redis_url: String,
-    _postgres: ContainerAsync<Postgres>,
-    _redis: ContainerAsync<Redis>,
+    #[allow(dead_code)]
+    postgres: Option<TestContainer>,
+    #[allow(dead_code)]
+    redis: Option<RedisContainer>,
+}
+
+fn unique_invalidation_key(prefix: &str) -> String {
+    format!("{prefix}:{}", nanoid::nanoid!(8))
 }
 
 async fn create_test_infra() -> TestInfra {
-    // Start PostgreSQL
-    let postgres = tokio::time::timeout(
-        docker_startup_timeout(),
-        Postgres::default()
-            .with_db_name("synctv_test")
-            .with_user("synctv")
-            .with_password("synctv_test")
-            .with_tag("16-alpine")
-            .start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Postgres container");
-
-    let pg_host = postgres.get_host().await.expect("Failed to get host");
-    let pg_port = postgres
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get port");
-
-    let database_url = format!("postgres://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
-
-    let pool = {
-        let mut retries = 0u32;
-        loop {
-            match sqlx::postgres::PgPoolOptions::new()
-                .max_connections(10)
-                .acquire_timeout(std::time::Duration::from_secs(2))
-                .connect(&database_url)
-                .await
-            {
-                Ok(p) => break p,
-                Err(_) if retries < 60 => {
-                    retries += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
-            }
-        }
-    };
-
-    // Run migrations
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    // Start Redis
-    let (redis, redis_url) = start_test_redis_url().await;
+    let (postgres, pool) = create_test_pool_with_db_and_label("synctv_test", "room-cluster-sync").await;
+    let (redis, redis_url) = start_redis_url_with_label("room-cluster-sync").await;
 
     TestInfra {
         pool,
         redis_url,
-        _postgres: postgres,
-        _redis: redis,
+        postgres: Some(postgres),
+        redis: Some(redis),
+    }
+}
+
+impl TestInfra {
+    #[allow(dead_code)]
+    async fn cleanup(mut self) {
+        if let Some(redis) = self.redis.take() {
+            redis.cleanup().await;
+        }
+        if let Some(postgres) = self.postgres.take() {
+            postgres.cleanup().await;
+        }
     }
 }
 
@@ -581,17 +548,18 @@ async fn test_operations_work_without_redis() {
 async fn test_room_invalidation_message_delivery() {
     let (_postgres, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_invalidation_key("test:room:invalidate");
 
     // Create two cache invalidation services
     let service_a = Arc::new(CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node_a".to_string(),
-        "test:room:invalidate".to_string(),
+        stream_key.clone(),
     ));
     let service_b = Arc::new(CacheInvalidationService::new(
         Some(redis_client),
         "node_b".to_string(),
-        "test:room:invalidate".to_string(),
+        stream_key,
     ));
 
     service_a.start().await.expect("Failed to start service_a");
@@ -631,16 +599,17 @@ async fn test_room_invalidation_message_delivery() {
 async fn test_user_invalidation_message_delivery() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_invalidation_key("test:user:invalidate");
 
     let service_a = Arc::new(CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node_a".to_string(),
-        "test:user:invalidate".to_string(),
+        stream_key.clone(),
     ));
     let service_b = Arc::new(CacheInvalidationService::new(
         Some(redis_client),
         "node_b".to_string(),
-        "test:user:invalidate".to_string(),
+        stream_key,
     ));
 
     service_a.start().await.expect("Failed to start service_a");
@@ -677,16 +646,17 @@ async fn test_user_invalidation_message_delivery() {
 async fn test_room_permission_invalidation_message_delivery() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_invalidation_key("test:perm:invalidate");
 
     let service_a = Arc::new(CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node_a".to_string(),
-        "test:perm:invalidate".to_string(),
+        stream_key.clone(),
     ));
     let service_b = Arc::new(CacheInvalidationService::new(
         Some(redis_client),
         "node_b".to_string(),
-        "test:perm:invalidate".to_string(),
+        stream_key,
     ));
 
     service_a.start().await.expect("Failed to start service_a");
@@ -723,16 +693,17 @@ async fn test_room_permission_invalidation_message_delivery() {
 async fn test_concurrent_invalidation_messages_ordered() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_invalidation_key("test:concurrent:invalidate");
 
     let service_a = Arc::new(CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node_a".to_string(),
-        "test:concurrent:invalidate".to_string(),
+        stream_key.clone(),
     ));
     let service_b = Arc::new(CacheInvalidationService::new(
         Some(redis_client),
         "node_b".to_string(),
-        "test:concurrent:invalidate".to_string(),
+        stream_key,
     ));
 
     service_a.start().await.expect("Failed to start service_a");
@@ -925,6 +896,6 @@ async fn test_ban_visible_across_replicas() {
 // Helper Functions
 // ============================================================================
 
-async fn start_redis() -> (ContainerAsync<Redis>, String) {
-    start_test_redis_url().await
+async fn start_redis() -> (RedisContainer, String) {
+    start_redis_url_with_label("room-cluster-sync").await
 }

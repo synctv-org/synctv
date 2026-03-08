@@ -6,8 +6,7 @@
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use std::time::Duration;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
+use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
 
 use synctv_cluster::discovery::node_registry::NodeRegistry;
 use synctv_cluster::HeartbeatResult;
@@ -26,22 +25,13 @@ fn docker_startup_timeout() -> Duration {
 }
 
 /// Helper to create a Redis container and client.
-async fn setup_redis() -> (testcontainers::ContainerAsync<Redis>, redis::Client, String) {
-    let redis_container = tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
-        .await
-        .expect("Docker container startup timed out (is Docker running?)")
-        .expect("Failed to start Redis container");
-
-    let redis_host = redis_container
-        .get_host()
-        .await
-        .expect("Failed to get Redis host");
-    let redis_port = redis_container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-
-    let redis_url = format!("redis://{redis_host}:{redis_port}");
+async fn setup_redis() -> (RedisContainer, redis::Client, String) {
+    let (redis_container, redis_url) = tokio::time::timeout(
+        docker_startup_timeout(),
+        start_redis_url_with_label("node-registry-heartbeat"),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)");
     let redis_client =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
@@ -72,7 +62,7 @@ async fn setup_redis() -> (testcontainers::ContainerAsync<Redis>, redis::Client,
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_heartbeat_reregisters_after_key_deletion() {
-    let (_container, redis_client, _url) = setup_redis().await;
+    let (_redis_container, redis_client, _url) = setup_redis().await;
 
     let registry = Arc::new(
         NodeRegistry::new(
@@ -145,7 +135,7 @@ async fn test_heartbeat_reregisters_after_key_deletion() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_heartbeat_auto_retries_on_epoch_mismatch() {
-    let (_container, redis_client, _url) = setup_redis().await;
+    let (_redis_container, redis_client, _url) = setup_redis().await;
 
     let registry = Arc::new(
         NodeRegistry::new(

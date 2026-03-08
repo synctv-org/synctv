@@ -31,40 +31,7 @@ use synctv_core::{
     },
     Error, KeyBuilder,
 };
-use synctv_core_testing::{create_test_pool, start_redis_url, RedisContainer, TestContainer};
-use tokio::sync::OnceCell;
-
-// ============================================================================
-// Test Infrastructure
-// ============================================================================
-
-async fn create_test_infra() -> (TestContainer, RedisContainer, PgPool, String) {
-    let (postgres, pool) = create_test_pool().await;
-    let (redis, redis_url) = start_redis_url().await;
-
-    (postgres, redis, pool, redis_url)
-}
-
-struct SharedTestInfra {
-    _postgres: TestContainer,
-    _redis: RedisContainer,
-    pool: PgPool,
-}
-
-static TEST_INFRA: OnceCell<SharedTestInfra> = OnceCell::const_new();
-
-async fn shared_test_infra() -> &'static SharedTestInfra {
-    TEST_INFRA
-        .get_or_init(|| async {
-            let (postgres, redis, pool, _redis_url) = create_test_infra().await;
-            SharedTestInfra {
-                _postgres: postgres,
-                _redis: redis,
-                pool,
-            }
-        })
-        .await
-}
+use synctv_core_testing::create_test_pool;
 
 fn create_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-integration-tests-minimum-length-32-chars")
@@ -95,8 +62,8 @@ fn create_user_service(pool: PgPool) -> UserService {
 // ============================================================================
 
 async fn scenario_password_change_invalidates_old_tokens() {
-    let infra = shared_test_infra().await;
-    let user_service = Arc::new(create_user_service(infra.pool.clone()));
+    let (_postgres, pool) = create_test_pool().await;
+    let user_service = Arc::new(create_user_service(pool));
     let jwt_service = create_jwt_service();
 
     // 1. Register user
@@ -179,8 +146,8 @@ async fn scenario_password_change_invalidates_old_tokens() {
 // ============================================================================
 
 async fn scenario_ban_user_invalidates_tokens() {
-    let infra = shared_test_infra().await;
-    let user_service = Arc::new(create_user_service(infra.pool.clone()));
+    let (_postgres, pool) = create_test_pool().await;
+    let user_service = Arc::new(create_user_service(pool.clone()));
     let jwt_service = create_jwt_service();
 
     // 1. Register and login user
@@ -211,7 +178,7 @@ async fn scenario_ban_user_invalidates_tokens() {
     assert!(auth_result.is_ok(), "Token should work before ban");
 
     // 3. Admin bans user (simulate via DB update)
-    let user_repo = UserRepository::new(infra.pool.clone());
+    let user_repo = UserRepository::new(pool);
     let user = user_repo
         .get_by_username(&username)
         .await
@@ -238,8 +205,8 @@ async fn scenario_ban_user_invalidates_tokens() {
 // ============================================================================
 
 async fn scenario_blacklisted_access_token_rejected() {
-    let infra = shared_test_infra().await;
-    let user_service = Arc::new(create_user_service(infra.pool.clone()));
+    let (_postgres, pool) = create_test_pool().await;
+    let user_service = Arc::new(create_user_service(pool));
     let jwt_service = create_jwt_service();
 
     // 1. Register and login user
@@ -288,8 +255,8 @@ async fn scenario_blacklisted_access_token_rejected() {
 }
 
 async fn scenario_refresh_token_validation() {
-    let infra = shared_test_infra().await;
-    let user_service = Arc::new(create_user_service(infra.pool.clone()));
+    let (_postgres, pool) = create_test_pool().await;
+    let user_service = Arc::new(create_user_service(pool));
 
     // Register and login user
     let username = format!("refresh_user_{}", nanoid::nanoid!(8));
@@ -324,8 +291,8 @@ async fn scenario_refresh_token_validation() {
 // ============================================================================
 
 async fn scenario_complete_authentication_flow() {
-    let infra = shared_test_infra().await;
-    let user_service = Arc::new(create_user_service(infra.pool.clone()));
+    let (_postgres, pool) = create_test_pool().await;
+    let user_service = Arc::new(create_user_service(pool));
     let jwt_service = create_jwt_service();
 
     // Step 1: Register new user
@@ -389,8 +356,8 @@ async fn scenario_complete_authentication_flow() {
 }
 
 async fn scenario_login_wrong_password_fails() {
-    let infra = shared_test_infra().await;
-    let user_service = Arc::new(create_user_service(infra.pool.clone()));
+    let (_postgres, pool) = create_test_pool().await;
+    let user_service = Arc::new(create_user_service(pool));
 
     // Register user
     let username = format!("wrong_pwd_user_{}", nanoid::nanoid!(8));
@@ -413,8 +380,8 @@ async fn scenario_login_wrong_password_fails() {
 }
 
 async fn scenario_deleted_user_cannot_authenticate() {
-    let infra = shared_test_infra().await;
-    let user_service = Arc::new(create_user_service(infra.pool.clone()));
+    let (_postgres, pool) = create_test_pool().await;
+    let user_service = Arc::new(create_user_service(pool.clone()));
     let jwt_service = create_jwt_service();
 
     // Register and login user
@@ -436,7 +403,7 @@ async fn scenario_deleted_user_cannot_authenticate() {
         .expect("Failed to verify token");
 
     // Delete user
-    let user_repo = UserRepository::new(infra.pool.clone());
+    let user_repo = UserRepository::new(pool);
     user_repo
         .delete(&user.id)
         .await

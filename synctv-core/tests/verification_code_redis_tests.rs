@@ -9,13 +9,13 @@
 use std::sync::Arc;
 use synctv_core::service::email::VerificationCode;
 use synctv_core::service::{EmailService, RedisVerificationCodeStore, VerificationCodeStore};
-use synctv_core_testing::start_redis_shared as start_test_redis_shared;
+use synctv_core_testing::start_redis_handle as start_test_redis_handle;
 
 async fn start_redis() -> (
     synctv_core_testing::RedisContainer,
     Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
 ) {
-    start_test_redis_shared().await
+    start_test_redis_handle().await
 }
 
 #[tokio::test]

@@ -605,96 +605,51 @@ mod websocket_e2e {
     };
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
-    use synctv_core_testing::postgres::docker_startup_timeout;
+    use synctv_core_testing::{
+        create_test_pool_with_db_and_label, start_redis_url_with_label, RedisContainer,
+        TestContainer,
+    };
     use synctv_proto::client::{
         client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage, WebRtcJoin,
     };
 
     use sqlx::PgPool;
-    use testcontainers::core::ImageExt;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::ContainerAsync;
-    use testcontainers_modules::postgres::Postgres;
-    use testcontainers_modules::redis::Redis;
 
     const TEST_JWT_SECRET: &str =
         "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
-
-    /// Default `PostgreSQL` version for test containers
-    const POSTGRES_VERSION: &str = "16-alpine";
-    /// Default Redis version for test containers
-    const REDIS_VERSION: &str = "7-alpine";
 
     /// Lightweight test infrastructure for E2E tests.
     /// Starts Postgres and Redis containers, runs migrations, and provides connections.
     struct TestInfra {
         pool: PgPool,
         redis_url: String,
-        _postgres: ContainerAsync<Postgres>,
-        _redis: ContainerAsync<Redis>,
+        #[allow(dead_code)]
+        postgres: Option<TestContainer>,
+        #[allow(dead_code)]
+        redis: Option<RedisContainer>,
     }
 
     impl TestInfra {
-        /// Applies the shared Docker startup timeout budget so workspace-scale
-        /// `nextest -j20` runs don't fail spuriously under daemon contention.
         async fn new() -> Self {
-            let (pg_container, redis_container) =
-                tokio::time::timeout(docker_startup_timeout(), async {
-                    tokio::join!(
-                        Postgres::default()
-                            .with_db_name("synctv_test")
-                            .with_user("synctv")
-                            .with_password("synctv_test")
-                            .with_tag(POSTGRES_VERSION)
-                            .start(),
-                        Redis::default().with_tag(REDIS_VERSION).start(),
-                    )
-                })
-                .await
-                .expect("Docker container startup timed out (is Docker running?)");
-            let pg_container = pg_container.expect("Failed to start Postgres");
-            let redis_container = redis_container.expect("Failed to start Redis");
-
-            let pg_host = pg_container.get_host().await.expect("pg host");
-            let pg_port = pg_container
-                .get_host_port_ipv4(5432)
-                .await
-                .expect("pg port");
-            let redis_host = redis_container.get_host().await.expect("redis host");
-            let redis_port = redis_container
-                .get_host_port_ipv4(6379)
-                .await
-                .expect("redis port");
-
-            let database_url =
-                format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
-            let redis_url = format!("redis://{redis_host}:{redis_port}");
-
-            // Wait for PostgreSQL to be ready (testcontainer port may be mapped
-            // before PG is fully accepting connections).
-            let pool = {
-                let mut retries = 0u32;
-                loop {
-                    match PgPool::connect(&database_url).await {
-                        Ok(p) => break p,
-                        Err(_) if retries < 60 => {
-                            retries += 1;
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                        Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
-                    }
-                }
-            };
-            sqlx::migrate!("../migrations")
-                .run(&pool)
-                .await
-                .expect("migrations");
+            let (postgres, pool) =
+                create_test_pool_with_db_and_label("synctv_test", "api-ws-rate-limiter").await;
+            let (redis, redis_url) = start_redis_url_with_label("api-ws-rate-limiter").await;
 
             Self {
                 pool,
                 redis_url,
-                _postgres: pg_container,
-                _redis: redis_container,
+                postgres: Some(postgres),
+                redis: Some(redis),
+            }
+        }
+
+        #[allow(dead_code)]
+        async fn cleanup(mut self) {
+            if let Some(redis) = self.redis.take() {
+                redis.cleanup().await;
+            }
+            if let Some(postgres) = self.postgres.take() {
+                postgres.cleanup().await;
             }
         }
     }
@@ -3455,19 +3410,15 @@ mod websocket_connection_limit_timing {
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::rate_limit::RateLimiter;
     use synctv_core::service::{RoomService, UserService};
-    use synctv_core_testing::postgres::docker_startup_timeout;
+    use synctv_core_testing::{
+        create_test_pool_with_db_and_label, start_redis_url_with_label, RedisContainer,
+        TestContainer,
+    };
 
     use sqlx::PgPool;
-    use testcontainers::core::ImageExt;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::ContainerAsync;
-    use testcontainers_modules::postgres::Postgres;
-    use testcontainers_modules::redis::Redis;
 
     const TEST_JWT_SECRET: &str =
         "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
-    const POSTGRES_VERSION: &str = "16-alpine";
-    const REDIS_VERSION: &str = "7-alpine";
 
     /// Create a minimal `ChatService` for tests.
     /// Create a minimal `ChatService` for tests.
@@ -3506,71 +3457,36 @@ mod websocket_connection_limit_timing {
     struct TestInfra {
         pool: PgPool,
         redis_url: String,
-        _postgres: ContainerAsync<Postgres>,
-        _redis: ContainerAsync<Redis>,
+        #[allow(dead_code)]
+        postgres: Option<TestContainer>,
+        #[allow(dead_code)]
+        redis: Option<RedisContainer>,
     }
 
     impl TestInfra {
-        /// Applies the shared Docker startup timeout budget so workspace-scale
-        /// `nextest -j20` runs don't fail spuriously under daemon contention.
         async fn new() -> Self {
-            let (pg_container, redis_container) =
-                tokio::time::timeout(docker_startup_timeout(), async {
-                    tokio::join!(
-                        Postgres::default()
-                            .with_db_name("synctv_test")
-                            .with_user("synctv")
-                            .with_password("synctv_test")
-                            .with_tag(POSTGRES_VERSION)
-                            .start(),
-                        Redis::default().with_tag(REDIS_VERSION).start(),
-                    )
-                })
-                .await
-                .expect("Docker container startup timed out (is Docker running?)");
-            let pg_container = pg_container.expect("Failed to start Postgres");
-            let redis_container = redis_container.expect("Failed to start Redis");
-
-            let pg_host = pg_container.get_host().await.expect("pg host");
-            let pg_port = pg_container
-                .get_host_port_ipv4(5432)
-                .await
-                .expect("pg port");
-            let redis_host = redis_container.get_host().await.expect("redis host");
-            let redis_port = redis_container
-                .get_host_port_ipv4(6379)
-                .await
-                .expect("redis port");
-
-            let database_url =
-                format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
-            let redis_url = format!("redis://{redis_host}:{redis_port}");
-
-            // Wait for PostgreSQL to be ready (testcontainer port may be mapped
-            // before PG is fully accepting connections).
-            let pool = {
-                let mut retries = 0u32;
-                loop {
-                    match PgPool::connect(&database_url).await {
-                        Ok(p) => break p,
-                        Err(_) if retries < 60 => {
-                            retries += 1;
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                        Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
-                    }
-                }
-            };
-            sqlx::migrate!("../migrations")
-                .run(&pool)
-                .await
-                .expect("migrations");
+            let (postgres, pool) = create_test_pool_with_db_and_label(
+                "synctv_test",
+                "api-ws-connection-limit",
+            )
+            .await;
+            let (redis, redis_url) = start_redis_url_with_label("api-ws-connection-limit").await;
 
             Self {
                 pool,
                 redis_url,
-                _postgres: pg_container,
-                _redis: redis_container,
+                postgres: Some(postgres),
+                redis: Some(redis),
+            }
+        }
+
+        #[allow(dead_code)]
+        async fn cleanup(mut self) {
+            if let Some(redis) = self.redis.take() {
+                redis.cleanup().await;
+            }
+            if let Some(postgres) = self.postgres.take() {
+                postgres.cleanup().await;
             }
         }
     }

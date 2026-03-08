@@ -487,7 +487,14 @@ impl RedisPubSub {
                             backoff_secs = backoff_secs,
                             "Failed to get Redis connection for publishing, retrying"
                         );
-                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                        let cancelled = tokio::select! {
+                            () = cancel_publisher.cancelled() => true,
+                            () = tokio::time::sleep(Duration::from_secs(backoff_secs)) => false,
+                        };
+                        if cancelled {
+                            info!("Redis publisher task cancelled while waiting to reconnect");
+                            return;
+                        }
                         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                         continue;
                     }
@@ -496,7 +503,14 @@ impl RedisPubSub {
                             backoff_secs = backoff_secs,
                             "Timed out getting Redis connection for publishing, retrying"
                         );
-                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                        let cancelled = tokio::select! {
+                            () = cancel_publisher.cancelled() => true,
+                            () = tokio::time::sleep(Duration::from_secs(backoff_secs)) => false,
+                        };
+                        if cancelled {
+                            info!("Redis publisher task cancelled while waiting to reconnect");
+                            return;
+                        }
                         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                         continue;
                     }
@@ -832,7 +846,7 @@ impl RedisPubSub {
 
         // Clone for the subscriber task
         let subscriber_handle_ref = Arc::clone(&self);
-        let self_clone = self;
+        let self_clone = Arc::clone(&self);
         let cancel_subscriber = self_clone.cancel_token.clone();
 
         // Spawn task to handle subscribing with exponential backoff on reconnection.
@@ -927,13 +941,35 @@ impl RedisPubSub {
         // Store subscriber handle so shutdown() can await it
         *subscriber_handle_ref.subscriber_handle.lock().await = Some(subscriber_jh);
 
-        timeout(
+        let ready_result = timeout(
             Duration::from_secs(SUBSCRIBER_READY_TIMEOUT_SECS),
             subscriber_ready_rx,
         )
-        .await
-        .map_err(|_| anyhow::anyhow!("Redis subscriber did not become ready within timeout"))?
-        .map_err(|_| anyhow::anyhow!("Redis subscriber exited before reporting readiness"))?;
+        .await;
+
+        match ready_result {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                self.cancel_token.cancel();
+                if let Some(handle) = self.subscriber_handle.lock().await.take() {
+                    let _ = handle.await;
+                }
+                let _ = publisher_handle.await;
+                return Err(anyhow::anyhow!(
+                    "Redis subscriber exited before reporting readiness"
+                ));
+            }
+            Err(_) => {
+                self.cancel_token.cancel();
+                if let Some(handle) = self.subscriber_handle.lock().await.take() {
+                    let _ = handle.await;
+                }
+                let _ = publisher_handle.await;
+                return Err(anyhow::anyhow!(
+                    "Redis subscriber did not become ready within timeout"
+                ));
+            }
+        }
 
         Ok((publish_tx, backpressure, publisher_handle))
     }
@@ -2404,6 +2440,46 @@ mod tests {
         // cause Redis connections to fail and the spawned tasks to terminate.
         // The JoinHandle returned by start() is dropped here (via _publish_tx2),
         // but the tasks run until cancelled via the cancel_token or Redis disconnects.
+    }
+
+    #[tokio::test]
+    async fn test_start_failure_cancels_background_tasks() {
+        let message_hub = Arc::new(RoomMessageHub::new());
+        let (admin_tx, _) = broadcast::channel(256);
+        let dedup = Arc::new(MessageDeduplicator::with_defaults());
+        let pubsub = Arc::new(
+            RedisPubSub::with_key_prefix(
+                RedisClient::open("redis://127.0.0.1:1").expect("redis url should parse"),
+                message_hub,
+                "start-failure-node".to_string(),
+                "synctv:test:",
+                admin_tx,
+                None,
+                None,
+                dedup,
+                300,
+                1000,
+            )
+            .expect("pubsub should construct"),
+        );
+
+        let result = tokio::time::timeout(Duration::from_secs(15), pubsub.clone().start(8))
+            .await
+            .expect("start failure path should complete quickly instead of hanging")
+            ;
+
+        assert!(
+            result.is_err(),
+            "unreachable redis should make start fail instead of reporting readiness"
+        );
+        assert!(
+            pubsub.cancel_token().is_cancelled(),
+            "start failure must cancel spawned background tasks to avoid leaks"
+        );
+        assert!(
+            pubsub.subscriber_handle.lock().await.is_none(),
+            "failed start should not leave a subscriber task registered"
+        );
     }
 
     /// Test that catchup_start_id generates a valid Redis Stream ID format.

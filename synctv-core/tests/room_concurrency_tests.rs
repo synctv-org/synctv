@@ -31,11 +31,7 @@ use synctv_core::{
     },
     Error,
 };
-use synctv_core_testing::postgres::docker_startup_timeout;
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
+use synctv_core_testing::{create_test_pool_with_options_and_label, TestContainer};
 use tokio::sync::Barrier;
 // ============================================================================
 // Test Infrastructure
@@ -44,59 +40,22 @@ use tokio::sync::Barrier;
 /// Test container wrapper for Postgres
 pub struct TestPostgres {
     pub pool: PgPool,
-    _container: ContainerAsync<Postgres>,
+    #[allow(dead_code)]
+    container: TestContainer,
 }
 
 async fn create_test_pool() -> TestPostgres {
-    let container = tokio::time::timeout(
-        docker_startup_timeout(),
-        Postgres::default()
-            .with_db_name("synctv_test")
-            .with_user("synctv")
-            .with_password("synctv_test")
-            .with_tag("16-alpine")
-            .start(),
+    let (container, pool) = create_test_pool_with_options_and_label(
+        "synctv_test",
+        "room-concurrency",
+        64,
+        std::time::Duration::from_secs(10),
     )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Postgres container");
-
-    let host = container.get_host().await.expect("Failed to get host");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get port");
-
-    let database_url = format!("postgres://synctv:synctv_test@{host}:{port}/synctv_test");
-
-    let pool = {
-        let mut retries = 0u32;
-        loop {
-            match sqlx::postgres::PgPoolOptions::new()
-                .max_connections(64) // Higher for concurrent tests with serialized room-row locking
-                .acquire_timeout(std::time::Duration::from_secs(10))
-                .connect(&database_url)
-                .await
-            {
-                Ok(p) => break p,
-                Err(_) if retries < 60 => {
-                    retries += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
-            }
-        }
-    };
-
-    // Run migrations
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
+    .await;
 
     TestPostgres {
         pool,
-        _container: container,
+        container,
     }
 }
 

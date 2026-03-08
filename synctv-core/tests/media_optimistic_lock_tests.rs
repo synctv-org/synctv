@@ -15,10 +15,8 @@ use synctv_core::{
     },
     repository::{MediaRepository, PlaylistRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::create_test_pool;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
-/// Default `PostgreSQL` version for test containers
+use synctv_core_testing::{create_test_pool, TestContainer};
+
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -40,7 +38,8 @@ fn make_user(username: &str) -> User {
 }
 
 struct TestContext {
-    _container: ContainerAsync<Postgres>,
+    #[allow(dead_code)]
+    container: TestContainer,
     pool: PgPool,
     #[allow(dead_code)]
     owner: User,
@@ -97,7 +96,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
         .unwrap();
 
     TestContext {
-        _container: container,
+        container,
         pool,
         owner,
         room,

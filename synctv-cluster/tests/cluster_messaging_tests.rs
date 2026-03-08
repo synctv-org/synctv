@@ -206,6 +206,10 @@ async fn test_cross_node_broadcast() {
     // Cleanup
     manager1.shutdown().await;
     manager2.shutdown().await;
+    container
+        .rm()
+        .await
+        .expect("redis test container should be removed");
 }
 
 // ============================================================================
@@ -525,19 +529,16 @@ async fn test_critical_event_delivery() {
         .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
         .await;
 
-    // Publish a kick event (critical)
-    let kick_event = ClusterEvent::KickUserFromRoom {
-        event_id: nanoid::nanoid!(16),
-        room_id: room.clone(),
-        user_id: user.clone(),
-        reason: "test_kick".to_string(),
-        timestamp: chrono::Utc::now(),
-    };
-
     let room_received = broadcast_until_room_event(
         &manager2,
         &mut room_rx,
-        || kick_event.clone(),
+        || ClusterEvent::KickUserFromRoom {
+            event_id: nanoid::nanoid!(16),
+            room_id: room.clone(),
+            user_id: user.clone(),
+            reason: "test_kick".to_string(),
+            timestamp: chrono::Utc::now(),
+        },
         |event| matches!(event, ClusterEvent::KickUserFromRoom { user_id, .. } if user_id.as_str() == "user1"),
         "critical event on remote room channel",
     )
@@ -547,7 +548,13 @@ async fn test_critical_event_delivery() {
     let admin_received = broadcast_until_admin_event(
         &manager2,
         &mut admin_rx,
-        || kick_event.clone(),
+        || ClusterEvent::KickUserFromRoom {
+            event_id: nanoid::nanoid!(16),
+            room_id: room.clone(),
+            user_id: user.clone(),
+            reason: "test_kick".to_string(),
+            timestamp: chrono::Utc::now(),
+        },
         |event| matches!(event, ClusterEvent::KickUserFromRoom { user_id, .. } if user_id.as_str() == "user1"),
         "critical event on remote admin channel",
     )

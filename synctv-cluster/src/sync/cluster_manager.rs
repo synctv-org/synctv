@@ -749,7 +749,8 @@ impl ClusterManager {
             let _ = self.admin_event_tx.send(event.clone());
         }
 
-        if self.shutdown_started.load(Ordering::Acquire) {
+        let is_critical = event.is_critical();
+        if self.shutdown_started.load(Ordering::Acquire) && !is_critical {
             debug!(
                 event_type = %event_type,
                 "Skipping Redis publish because ClusterManager shutdown is in progress"
@@ -763,7 +764,6 @@ impl ClusterManager {
         // Publish to Redis for cross-node sync.
         // Critical events (KickPublisher, KickUser, PermissionChanged) use a
         // separate high-priority channel that never drops events.
-        let is_critical = event.is_critical();
         if is_critical {
             if let Some(tx) = &self.redis_critical_tx {
                 match tx.try_send(PublishRequest { event }) {
@@ -1366,6 +1366,96 @@ mod tests {
         assert!(
             finished.load(Ordering::SeqCst),
             "tracked critical retry task should finish before shutdown returns"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_still_allows_critical_events_to_reach_redis_channels() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "shutdown-critical-event-node".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 4,
+            publish_channel_capacity: 4,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let mut manager = ClusterManager::new(config, None, None).await.unwrap();
+        let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(4);
+        manager.redis_critical_tx = Some(critical_tx);
+        manager.shutdown_started.store(true, Ordering::Release);
+
+        let event = ClusterEvent::KickUser {
+            event_id: nanoid::nanoid!(16),
+            user_id: UserId::from_string("shutdown-user".to_string()),
+            reason: "must propagate during draining".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        let result = manager.broadcast(event.clone());
+
+        assert!(
+            result.redis_sent,
+            "critical events must still be enqueued for Redis while shutdown drains in-flight work"
+        );
+
+        let published = tokio::time::timeout(Duration::from_millis(100), critical_rx.recv())
+            .await
+            .expect("critical event should reach Redis queue during shutdown")
+            .expect("critical channel should stay open");
+        assert_eq!(published.event.event_type(), event.event_type());
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_still_blocks_non_critical_events_from_redis_channels() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "shutdown-noncritical-event-node".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 4,
+            publish_channel_capacity: 4,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let mut manager = ClusterManager::new(config, None, None).await.unwrap();
+        let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
+        manager.redis_publish_tx = Some(publish_tx);
+        manager.shutdown_started.store(true, Ordering::Release);
+
+        let event = ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: RoomId::from_string("shutdown-room".to_string()),
+            user_id: UserId::from_string("shutdown-user".to_string()),
+            username: "shutdown".to_string(),
+            message: "non critical".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        };
+
+        let result = manager.broadcast(event);
+
+        assert!(
+            !result.redis_sent,
+            "non-critical events should not enter Redis publish queues after shutdown starts"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), publish_rx.recv())
+                .await
+                .is_err(),
+            "non-critical event must not be queued during shutdown"
         );
     }
 

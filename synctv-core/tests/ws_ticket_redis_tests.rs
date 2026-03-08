@@ -14,14 +14,14 @@ use redis::AsyncCommands;
 use std::sync::Arc;
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::WsTicketService;
-use synctv_core_testing::start_redis_shared as start_test_redis_shared;
+use synctv_core_testing::start_redis_handle as start_test_redis_handle;
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (
     synctv_core_testing::RedisContainer,
     Arc<RwLock<redis::aio::ConnectionManager>>,
 ) {
-    start_test_redis_shared().await
+    start_test_redis_handle().await
 }
 
 fn user_id(id: &str) -> UserId {

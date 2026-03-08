@@ -7,9 +7,8 @@
 use std::time::Duration;
 use synctv_cluster::{ClusterConfig, ClusterManager};
 use synctv_core::cache::InvalidationMessage;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::redis::Redis;
+use synctv_core_testing::redis::RedisContainer;
+use synctv_core_testing::start_redis_url_with_label;
 
 /// Default Redis version for test containers
 #[allow(dead_code)]
@@ -37,7 +36,7 @@ fn docker_startup_timeout() -> Duration {
 #[allow(dead_code)]
 pub struct TestRedis {
     pub redis_url: String,
-    pub _redis: ContainerAsync<Redis>,
+    pub redis_container: Option<RedisContainer>,
 }
 
 impl TestRedis {
@@ -47,28 +46,26 @@ impl TestRedis {
     /// Docker is unavailable, while still tolerating slower CI/container hosts.
     #[allow(dead_code)]
     pub async fn start() -> Self {
-        let redis_container =
-            tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
-                .await
-                .expect("Docker container startup timed out (is Docker running?)")
-                .expect("Failed to start Redis container");
-
-        let redis_host = redis_container
-            .get_host()
-            .await
-            .expect("Failed to get Redis host");
-        let redis_port = redis_container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get Redis port");
-
-        let redis_url = format!("redis://{redis_host}:{redis_port}");
-
+        let (redis_container, redis_url) = start_redis_url_with_label("cluster-integration").await;
         Self::wait_until_ready(&redis_url).await;
 
         Self {
             redis_url,
-            _redis: redis_container,
+            redis_container: Some(redis_container),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub async fn cleanup(mut self) {
+        if let Some(redis) = self.redis_container.take() {
+            redis.cleanup().await;
+        }
+    }
+
+    #[allow(dead_code)]
+    pub async fn terminate_container(&mut self) {
+        if let Some(redis) = self.redis_container.take() {
+            redis.cleanup().await;
         }
     }
 

@@ -3,6 +3,8 @@
 //! Provides `TestInfra` which automatically starts Postgres and Redis containers,
 //! runs migrations, and provides ready-to-use connections.
 
+use std::process::Command;
+
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use testcontainers::core::ImageExt;
@@ -10,11 +12,143 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
+use tokio::sync::Semaphore;
 
 /// Default `PostgreSQL` version for test containers
 const POSTGRES_VERSION: &str = "16-alpine";
 /// Default Redis version for test containers
 const REDIS_VERSION: &str = "7-alpine";
+static POSTGRES_START_SERIALIZER: std::sync::LazyLock<Semaphore> =
+    std::sync::LazyLock::new(|| Semaphore::new(1));
+
+fn sanitize_container_name(raw: &str) -> String {
+    let mut name: String = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    name.truncate(48);
+    while name.ends_with('-') {
+        name.pop();
+    }
+    if name.is_empty() {
+        "test".to_string()
+    } else {
+        name
+    }
+}
+
+fn current_test_label() -> String {
+    std::env::var("NEXTEST_TEST_NAME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::thread::current().name().map(str::to_owned))
+        .map(|value| sanitize_container_name(&value))
+        .unwrap_or_else(|| "unknown-test".to_string())
+}
+
+fn postgres_container_name(label: &str) -> String {
+    format!(
+        "synctv-core-pg-{}-{}-{}",
+        current_test_label(),
+        sanitize_container_name(label),
+        nanoid::nanoid!(6).to_lowercase()
+    )
+}
+
+fn redis_container_name(label: &str) -> String {
+    format!(
+        "synctv-core-redis-{}-{}-{}",
+        current_test_label(),
+        sanitize_container_name(label),
+        nanoid::nanoid!(6).to_lowercase()
+    )
+}
+
+fn force_remove_container(name: &str) {
+    let _ = Command::new("docker")
+        .args(["rm", "-f", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+struct ManagedPostgres {
+    inner: Option<ContainerAsync<Postgres>>,
+    name: String,
+}
+
+impl ManagedPostgres {
+    fn new(inner: ContainerAsync<Postgres>, name: String) -> Self {
+        Self {
+            inner: Some(inner),
+            name,
+        }
+    }
+
+    async fn host_port(&self) -> (String, u16) {
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("postgres test container should still exist");
+        let host = inner.get_host().await.expect("Failed to get Postgres host");
+        let port = inner
+            .get_host_port_ipv4(5432)
+            .await
+            .expect("Failed to get Postgres port");
+        (host.to_string(), port)
+    }
+}
+
+impl Drop for ManagedPostgres {
+    fn drop(&mut self) {
+        if let Some(container) = self.inner.take() {
+            drop(container);
+        }
+        force_remove_container(&self.name);
+    }
+}
+
+struct ManagedRedis {
+    inner: Option<ContainerAsync<Redis>>,
+    name: String,
+}
+
+impl ManagedRedis {
+    fn new(inner: ContainerAsync<Redis>, name: String) -> Self {
+        Self {
+            inner: Some(inner),
+            name,
+        }
+    }
+
+    async fn host_port(&self) -> (String, u16) {
+        let inner = self
+            .inner
+            .as_ref()
+            .expect("redis test container should still exist");
+        let host = inner.get_host().await.expect("Failed to get Redis host");
+        let port = inner
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Failed to get Redis port");
+        (host.to_string(), port)
+    }
+}
+
+impl Drop for ManagedRedis {
+    fn drop(&mut self) {
+        if let Some(container) = self.inner.take() {
+            drop(container);
+        }
+        force_remove_container(&self.name);
+    }
+}
 
 /// Test infrastructure that manages Postgres and Redis containers.
 ///
@@ -31,49 +165,41 @@ pub struct TestInfra {
     pub pool: PgPool,
     pub redis_client: redis::Client,
     pub redis_url: String,
-    // Keep containers alive for the lifetime of the test
-    _postgres: ContainerAsync<Postgres>,
-    _redis: ContainerAsync<Redis>,
+    #[allow(dead_code)]
+    postgres: ManagedPostgres,
+    #[allow(dead_code)]
+    redis: ManagedRedis,
 }
 
 impl TestInfra {
     /// Start Postgres and Redis containers, run migrations, and return connections.
     pub async fn new() -> Self {
-        // Start containers in parallel
-        // Use PostgreSQL 16-alpine which has gen_random_uuid() built-in and supports
-        // BEFORE ROW triggers on partitioned tables
-        // Use Redis 7-alpine for modern features and performance
+        let _postgres_start_permit = POSTGRES_START_SERIALIZER
+            .acquire()
+            .await
+            .expect("Postgres startup guard should not be closed");
+        let postgres_name = postgres_container_name("infra");
+        let redis_name = redis_container_name("infra");
         let (pg_container, redis_container) = tokio::join!(
             Postgres::default()
                 .with_db_name("synctv_test")
                 .with_user("synctv")
                 .with_password("synctv_test")
                 .with_tag(POSTGRES_VERSION)
+                .with_container_name(postgres_name.clone())
                 .start(),
-            Redis::default().with_tag(REDIS_VERSION).start(),
+            Redis::default()
+                .with_tag(REDIS_VERSION)
+                .with_container_name(redis_name.clone())
+                .start(),
         );
 
-        let pg_container = pg_container.expect("Failed to start Postgres container");
-        let redis_container = redis_container.expect("Failed to start Redis container");
-
-        // Get mapped ports
-        let pg_host = pg_container
-            .get_host()
-            .await
-            .expect("Failed to get Postgres host");
-        let pg_port = pg_container
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("Failed to get Postgres port");
-
-        let redis_host = redis_container
-            .get_host()
-            .await
-            .expect("Failed to get Redis host");
-        let redis_port = redis_container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get Redis port");
+        let pg_container =
+            ManagedPostgres::new(pg_container.expect("Failed to start Postgres container"), postgres_name);
+        let redis_container =
+            ManagedRedis::new(redis_container.expect("Failed to start Redis container"), redis_name);
+        let (pg_host, pg_port) = pg_container.host_port().await;
+        let (redis_host, redis_port) = redis_container.host_port().await;
 
         // Build connection URLs
         let database_url =
@@ -126,8 +252,8 @@ impl TestInfra {
             pool,
             redis_client,
             redis_url,
-            _postgres: pg_container,
-            _redis: redis_container,
+            postgres: pg_container,
+            redis: redis_container,
         }
     }
 
@@ -140,25 +266,22 @@ impl TestInfra {
 
     /// Start only Postgres (no Redis). Useful for DB-only tests.
     pub async fn postgres_only() -> TestPostgres {
-        // Use PostgreSQL 16-alpine which has gen_random_uuid() built-in and supports
-        // BEFORE ROW triggers on partitioned tables
+        let _postgres_start_permit = POSTGRES_START_SERIALIZER
+            .acquire()
+            .await
+            .expect("Postgres startup guard should not be closed");
+        let postgres_name = postgres_container_name("postgres-only");
         let pg_container = Postgres::default()
             .with_db_name("synctv_test")
             .with_user("synctv")
             .with_password("synctv_test")
             .with_tag(POSTGRES_VERSION)
+            .with_container_name(postgres_name.clone())
             .start()
             .await
             .expect("Failed to start Postgres container");
-
-        let pg_host = pg_container
-            .get_host()
-            .await
-            .expect("Failed to get Postgres host");
-        let pg_port = pg_container
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("Failed to get Postgres port");
+        let pg_container = ManagedPostgres::new(pg_container, postgres_name);
+        let (pg_host, pg_port) = pg_container.host_port().await;
 
         let database_url =
             format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
@@ -189,27 +312,21 @@ impl TestInfra {
 
         TestPostgres {
             pool,
-            _postgres: pg_container,
+            postgres: pg_container,
         }
     }
 
     /// Start only Redis (no Postgres). Useful for Redis-only tests.
     pub async fn redis_only() -> TestRedis {
-        // Use Redis 7-alpine for modern features and performance
+        let redis_name = redis_container_name("redis-only");
         let redis_container = Redis::default()
             .with_tag(REDIS_VERSION)
+            .with_container_name(redis_name.clone())
             .start()
             .await
             .expect("Failed to start Redis container");
-
-        let redis_host = redis_container
-            .get_host()
-            .await
-            .expect("Failed to get Redis host");
-        let redis_port = redis_container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get Redis port");
+        let redis_container = ManagedRedis::new(redis_container, redis_name);
+        let (redis_host, redis_port) = redis_container.host_port().await;
 
         let redis_url = format!("redis://{redis_host}:{redis_port}");
 
@@ -219,7 +336,7 @@ impl TestInfra {
         TestRedis {
             redis_client,
             redis_url,
-            _redis: redis_container,
+            redis: redis_container,
         }
     }
 }
@@ -227,14 +344,16 @@ impl TestInfra {
 /// Postgres-only test infrastructure.
 pub struct TestPostgres {
     pub pool: PgPool,
-    _postgres: ContainerAsync<Postgres>,
+    #[allow(dead_code)]
+    postgres: ManagedPostgres,
 }
 
 /// Redis-only test infrastructure.
 pub struct TestRedis {
     pub redis_client: redis::Client,
     pub redis_url: String,
-    _redis: ContainerAsync<Redis>,
+    #[allow(dead_code)]
+    redis: ManagedRedis,
 }
 
 impl TestRedis {

@@ -31,13 +31,10 @@ use synctv_core::{
     },
     service::{permission::PermissionService, playback::PlaybackService},
 };
-use synctv_core_testing::postgres::docker_startup_timeout;
-use synctv_core_testing::start_redis_url as start_test_redis_url;
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::redis::Redis;
+use synctv_core_testing::{
+    create_test_pool_with_options_and_label, start_redis_url_with_label, RedisContainer,
+    TestContainer,
+};
 
 // ============================================================================
 // Test Infrastructure
@@ -47,66 +44,39 @@ use testcontainers_modules::redis::Redis;
 pub struct TestInfra {
     pub pool: PgPool,
     pub redis_url: String,
-    _postgres: ContainerAsync<Postgres>,
-    _redis: ContainerAsync<Redis>,
+    #[allow(dead_code)]
+    postgres: Option<TestContainer>,
+    #[allow(dead_code)]
+    redis: Option<RedisContainer>,
 }
 
 async fn create_test_infra() -> TestInfra {
-    // Start PostgreSQL
-    let postgres = tokio::time::timeout(
-        docker_startup_timeout(),
-        Postgres::default()
-            .with_db_name("synctv_test")
-            .with_user("synctv")
-            .with_password("synctv_test")
-            .with_tag("16-alpine")
-            .start(),
+    let (postgres, pool) = create_test_pool_with_options_and_label(
+        "synctv_test",
+        "cluster-consistency",
+        10,
+        std::time::Duration::from_secs(2),
     )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Postgres container");
-
-    let pg_host = postgres.get_host().await.expect("Failed to get host");
-    let pg_port = postgres
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get port");
-
-    let database_url = format!("postgres://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
-
-    let pool = {
-        let mut retries = 0u32;
-        loop {
-            match sqlx::postgres::PgPoolOptions::new()
-                .max_connections(10)
-                .acquire_timeout(std::time::Duration::from_secs(2))
-                .connect(&database_url)
-                .await
-            {
-                Ok(p) => break p,
-                Err(_) if retries < 60 => {
-                    retries += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
-            }
-        }
-    };
-
-    // Run migrations
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    // Start Redis
-    let (redis, redis_url) = start_test_redis_url().await;
+    .await;
+    let (redis, redis_url) = start_redis_url_with_label("cluster-consistency").await;
 
     TestInfra {
         pool,
         redis_url,
-        _postgres: postgres,
-        _redis: redis,
+        postgres: Some(postgres),
+        redis: Some(redis),
+    }
+}
+
+impl TestInfra {
+    #[allow(dead_code)]
+    async fn cleanup(mut self) {
+        if let Some(redis) = self.redis.take() {
+            redis.cleanup().await;
+        }
+        if let Some(postgres) = self.postgres.take() {
+            postgres.cleanup().await;
+        }
     }
 }
 
@@ -851,15 +821,6 @@ async fn test_cache_consistency_without_redis() {
 // Helper Functions
 // ============================================================================
 
-async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
-    let container = tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
-        .await
-        .expect("Docker container startup timed out (is Docker running?)")
-        .expect("Failed to start Redis");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{port}");
-    (container, redis_url)
+async fn start_redis() -> (RedisContainer, String) {
+    start_redis_url_with_label("cluster-consistency").await
 }

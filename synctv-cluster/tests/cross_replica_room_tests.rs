@@ -16,7 +16,6 @@ use integration_test_helpers::{
     broadcast_until_admin_event, broadcast_until_room_event, create_node, wait_until, TestRedis,
 };
 
-
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn test_cross_replica_kick_user() {
@@ -146,8 +145,10 @@ async fn test_cross_replica_kick_publisher() {
             reason: "room_deleted".to_string(),
             timestamp: Utc::now(),
         },
-        |event| matches!(event, ClusterEvent::KickPublisher { room_id, media_id, .. }
-            if room_id.as_str() == "stream_room" && media_id.as_str() == "live_stream_1"),
+        |event| {
+            matches!(event, ClusterEvent::KickPublisher { room_id, media_id, .. }
+            if room_id.as_str() == "stream_room" && media_id.as_str() == "live_stream_1")
+        },
         "KickPublisher on node A",
     )
     .await;
@@ -207,10 +208,14 @@ async fn test_cross_replica_room_deleted() {
 
     assert_eq!(received.event_type(), "room_deleted");
 
-    wait_until("room cleanup after RoomDeleted", Duration::from_secs(5), || {
-        let metrics = node_a.metrics();
-        metrics.total_rooms == 0 && metrics.total_connections == 0
-    })
+    wait_until(
+        "room cleanup after RoomDeleted",
+        Duration::from_secs(5),
+        || {
+            let metrics = node_a.metrics();
+            metrics.total_rooms == 0 && metrics.total_connections == 0
+        },
+    )
     .await;
 
     let metrics = node_a.metrics();

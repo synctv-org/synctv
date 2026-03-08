@@ -318,6 +318,26 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
         );
     }
 
+    let parsed_url = url::Url::parse(cfg.url)
+        .map_err(|e| ProxyError::InvalidRequest(format!("invalid URL: {e}")))?;
+    let host = parsed_url
+        .host_str()
+        .ok_or_else(|| ProxyError::InvalidRequest("URL host is required".to_string()))?;
+
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if synctv_common::ssrf::is_ip_blocked(&ip) {
+            return Err(ProxyError::InvalidRequest(format!(
+                "target host `{host}` is blocked by SSRF policy"
+            ))
+            .into());
+        }
+    } else if synctv_common::ssrf::is_host_blocked(host) {
+        return Err(ProxyError::InvalidRequest(format!(
+            "target host `{host}` is blocked by SSRF policy"
+        ))
+        .into());
+    }
+
     let request = build_proxy_request(&cfg)?;
     let proxy_result = send_with_redirect_validation(request).await?;
 

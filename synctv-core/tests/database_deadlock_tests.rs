@@ -33,10 +33,7 @@ async fn create_test_pool() -> TestPostgres {
     )
     .await;
 
-    TestPostgres {
-        pool,
-        container,
-    }
+    TestPostgres { pool, container }
 }
 
 /// Create a test user in the database (required for FK constraints)

@@ -188,7 +188,8 @@ impl RoomMessageHub {
         }
 
         if tokio::runtime::Handle::try_current().is_err() {
-            self.background_tasks_started.store(false, Ordering::Release);
+            self.background_tasks_started
+                .store(false, Ordering::Release);
             warn!("RoomMessageHub::start() called without Tokio runtime; deferring background task startup");
             return;
         }
@@ -198,10 +199,8 @@ impl RoomMessageHub {
         let refresh_interval_secs =
             (self.redis_key_ttl_secs as f64 * 0.4).clamp(30.0, 120.0) as u64;
         let stale_cancel = (*self.stale_cleanup_cancel).clone();
-        let _handle = self.spawn_ttl_refresh_task(
-            Duration::from_secs(refresh_interval_secs),
-            ttl_cancel,
-        );
+        let _handle =
+            self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), ttl_cancel);
         let _cleanup_handle =
             self.spawn_stale_subscription_cleanup_task(Duration::from_mins(1), stale_cancel);
     }

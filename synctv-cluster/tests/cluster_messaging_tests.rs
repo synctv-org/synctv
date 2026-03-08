@@ -165,10 +165,18 @@ async fn test_cross_node_broadcast() {
     // Create two cluster managers (simulating two nodes) with separate Redis clients
     // but the same key prefix so they participate in the same logical cluster.
     let shared_prefix = format!("test_{}:", nanoid::nanoid!(8));
-    let config1 =
-        make_cluster_config_with_prefix(redis_client1.clone(), _conn1.clone(), "node1", shared_prefix.clone());
-    let config2 =
-        make_cluster_config_with_prefix(redis_client2.clone(), conn2.clone(), "node2", shared_prefix);
+    let config1 = make_cluster_config_with_prefix(
+        redis_client1.clone(),
+        _conn1.clone(),
+        "node1",
+        shared_prefix.clone(),
+    );
+    let config2 = make_cluster_config_with_prefix(
+        redis_client2.clone(),
+        conn2.clone(),
+        "node2",
+        shared_prefix,
+    );
 
     let manager1 = ClusterManager::new(config1, None, None)
         .await
@@ -506,10 +514,18 @@ async fn test_critical_event_delivery() {
         .expect("Failed to create Redis ConnectionManager 2");
 
     let shared_prefix = format!("test_{}:", nanoid::nanoid!(8));
-    let config1 =
-        make_cluster_config_with_prefix(redis_client1.clone(), conn1.clone(), "node1", shared_prefix.clone());
-    let config2 =
-        make_cluster_config_with_prefix(redis_client2.clone(), conn2.clone(), "node2", shared_prefix);
+    let config1 = make_cluster_config_with_prefix(
+        redis_client1.clone(),
+        conn1.clone(),
+        "node1",
+        shared_prefix.clone(),
+    );
+    let config2 = make_cluster_config_with_prefix(
+        redis_client2.clone(),
+        conn2.clone(),
+        "node2",
+        shared_prefix,
+    );
 
     let manager1 = ClusterManager::new(config1, None, None)
         .await

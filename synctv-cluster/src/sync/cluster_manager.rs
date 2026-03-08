@@ -228,85 +228,82 @@ impl ClusterManager {
             redis_pubsub,
             publisher_handle,
             critical_forwarder_handle,
-        ) =
-            if let (Some(redis_client), Some(redis_conn)) =
-                (config.redis_client.clone(), config.redis_conn.clone())
-            {
-                // Reuse the shared connection for the message hub's distributed
-                // subscription state and TTL refresh background task.
-                let hub =
-                    Arc::new(RoomMessageHub::new().with_redis(redis_conn, &config.key_prefix));
+        ) = if let (Some(redis_client), Some(redis_conn)) =
+            (config.redis_client.clone(), config.redis_conn.clone())
+        {
+            // Reuse the shared connection for the message hub's distributed
+            // subscription state and TTL refresh background task.
+            let hub = Arc::new(RoomMessageHub::new().with_redis(redis_conn, &config.key_prefix));
 
-                let redis_pubsub = Arc::new(RedisPubSub::with_key_prefix(
-                    redis_client,
-                    hub.clone(),
-                    config.node_id.clone(),
-                    &config.key_prefix,
-                    admin_event_tx.clone(),
-                    permission_service,
-                    cache_invalidation,
-                    deduplicator.clone(),
-                    config.catchup_window_secs,
-                    config.stream_max_length,
-                )?);
+            let redis_pubsub = Arc::new(RedisPubSub::with_key_prefix(
+                redis_client,
+                hub.clone(),
+                config.node_id.clone(),
+                &config.key_prefix,
+                admin_event_tx.clone(),
+                permission_service,
+                cache_invalidation,
+                deduplicator.clone(),
+                config.catchup_window_secs,
+                config.stream_max_length,
+            )?);
 
-                let (tx, _backpressure, publisher_handle) = redis_pubsub
-                    .clone()
-                    .start(config.publish_channel_capacity)
-                    .await?;
-                // Critical events share the same Redis publisher but use a separate
-                // bounded channel so they are never dropped when the normal channel is full.
-                let critical_capacity = config.critical_channel_capacity;
-                let (critical_tx, mut critical_rx) =
-                    mpsc::channel::<PublishRequest>(critical_capacity);
-                // Forward critical events into the normal publish channel using `.send().await`
-                // (blocks until space available, never drops).
-                let normal_tx = tx.clone();
-                let cancel_critical = manager_cancel_token.clone();
-                let critical_forwarder_handle = tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            () = cancel_critical.cancelled() => {
-                                // Drain remaining critical events before exiting
-                                while let Ok(req) = critical_rx.try_recv() {
-                                    let _ = normal_tx.send(req).await;
-                                }
-                                return;
+            let (tx, _backpressure, publisher_handle) = redis_pubsub
+                .clone()
+                .start(config.publish_channel_capacity)
+                .await?;
+            // Critical events share the same Redis publisher but use a separate
+            // bounded channel so they are never dropped when the normal channel is full.
+            let critical_capacity = config.critical_channel_capacity;
+            let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(critical_capacity);
+            // Forward critical events into the normal publish channel using `.send().await`
+            // (blocks until space available, never drops).
+            let normal_tx = tx.clone();
+            let cancel_critical = manager_cancel_token.clone();
+            let critical_forwarder_handle = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        () = cancel_critical.cancelled() => {
+                            // Drain remaining critical events before exiting
+                            while let Ok(req) = critical_rx.try_recv() {
+                                let _ = normal_tx.send(req).await;
                             }
-                            req = critical_rx.recv() => {
-                                if let Some(req) = req {
-                                    if let Err(e) = normal_tx.send(req).await {
-                                        error!("Critical event publish channel closed: {e}");
-                                        return;
-                                    }
-                                } else {
+                            return;
+                        }
+                        req = critical_rx.recv() => {
+                            if let Some(req) = req {
+                                if let Err(e) = normal_tx.send(req).await {
+                                    error!("Critical event publish channel closed: {e}");
                                     return;
                                 }
+                            } else {
+                                return;
                             }
                         }
                     }
-                });
+                }
+            });
 
-                (
-                    hub,
-                    Some(tx),
-                    Some(critical_tx),
-                    Some(redis_pubsub),
-                    Some(publisher_handle),
-                    Some(critical_forwarder_handle),
-                )
-            } else {
-                warn!("Redis not provided, running in single-node mode");
-                if cache_invalidation.is_some() {
-                    warn!(
-                        "cache_invalidation service provided but Redis is not available; \
+            (
+                hub,
+                Some(tx),
+                Some(critical_tx),
+                Some(redis_pubsub),
+                Some(publisher_handle),
+                Some(critical_forwarder_handle),
+            )
+        } else {
+            warn!("Redis not provided, running in single-node mode");
+            if cache_invalidation.is_some() {
+                warn!(
+                    "cache_invalidation service provided but Redis is not available; \
                      cache invalidation will be local-only (no cross-replica invalidation). \
                      In a multi-replica deployment, this may lead to stale caches on other nodes."
-                    );
-                }
-                let hub = Arc::new(RoomMessageHub::new());
-                (hub, None, None, None, None, None)
-            };
+                );
+            }
+            let hub = Arc::new(RoomMessageHub::new());
+            (hub, None, None, None, None, None)
+        };
 
         Ok(Self {
             message_hub,

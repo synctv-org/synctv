@@ -194,10 +194,14 @@ impl TestInfra {
                 .start(),
         );
 
-        let pg_container =
-            ManagedPostgres::new(pg_container.expect("Failed to start Postgres container"), postgres_name);
-        let redis_container =
-            ManagedRedis::new(redis_container.expect("Failed to start Redis container"), redis_name);
+        let pg_container = ManagedPostgres::new(
+            pg_container.expect("Failed to start Postgres container"),
+            postgres_name,
+        );
+        let redis_container = ManagedRedis::new(
+            redis_container.expect("Failed to start Redis container"),
+            redis_name,
+        );
         let (pg_host, pg_port) = pg_container.host_port().await;
         let (redis_host, redis_port) = redis_container.host_port().await;
 

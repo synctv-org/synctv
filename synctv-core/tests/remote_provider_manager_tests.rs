@@ -106,7 +106,7 @@ fn make_test_instance(name: &str) -> ProviderInstance {
         comment: Some("test instance".to_string()),
         jwt_secret: None,
         custom_ca: None,
-        timeout: "10s".to_string(),
+        timeout: "1s".to_string(),
         tls: false,
         insecure_tls: false,
         providers: vec!["bilibili".to_string()],
@@ -125,7 +125,7 @@ fn make_test_instance_tls(name: &str, insecure: bool) -> ProviderInstance {
         comment: Some("test TLS instance".to_string()),
         jwt_secret: None,
         custom_ca: None,
-        timeout: "10s".to_string(),
+        timeout: "1s".to_string(),
         tls: true,
         insecure_tls: insecure,
         providers: vec!["emby".to_string()],
@@ -271,10 +271,14 @@ async fn scenario_redis_invalidation_on_delete() {
     // Delete via manager1
     manager1.delete("test-instance-5").await.unwrap();
 
-    wait_until(REDIS_INVALIDATION_WAIT_TIMEOUT, REDIS_INVALIDATION_WAIT_INTERVAL, || {
-        let manager2 = &manager2;
-        async move { manager2.get("test-instance-5").await.is_none() }
-    })
+    wait_until(
+        REDIS_INVALIDATION_WAIT_TIMEOUT,
+        REDIS_INVALIDATION_WAIT_INTERVAL,
+        || {
+            let manager2 = &manager2;
+            async move { manager2.get("test-instance-5").await.is_none() }
+        },
+    )
     .await;
 
     // Verify manager2 no longer lists the instance
@@ -995,7 +999,8 @@ async fn scenario_provider_instance_parse_timeout() {
     flush_provider_instances(&infra).await;
 
     // Test valid timeout formats
-    let instance1 = make_test_instance("test-26a");
+    let mut instance1 = make_test_instance("test-26a");
+    instance1.timeout = "10s".to_string();
     assert_eq!(instance1.parse_timeout().unwrap(), Duration::from_secs(10));
 
     let mut instance2 = make_test_instance("test-26b");
@@ -1016,9 +1021,8 @@ async fn scenario_provider_instance_parse_timeout() {
 }
 
 fn install_rustls_provider_once() {
-    let _ = rustls::crypto::CryptoProvider::install_default(
-        rustls::crypto::ring::default_provider(),
-    );
+    let _ =
+        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

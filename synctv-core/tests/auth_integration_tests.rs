@@ -425,12 +425,42 @@ async fn scenario_deleted_user_cannot_authenticate() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_auth_integration_scenarios() {
+async fn test_password_change_invalidates_old_tokens() {
     scenario_password_change_invalidates_old_tokens().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_ban_user_invalidates_tokens() {
     scenario_ban_user_invalidates_tokens().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_blacklisted_access_token_rejected() {
     scenario_blacklisted_access_token_rejected().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_refresh_token_validation() {
     scenario_refresh_token_validation().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_complete_authentication_flow() {
     scenario_complete_authentication_flow().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_login_wrong_password_fails() {
     scenario_login_wrong_password_fails().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_deleted_user_cannot_authenticate() {
     scenario_deleted_user_cannot_authenticate().await;
 }

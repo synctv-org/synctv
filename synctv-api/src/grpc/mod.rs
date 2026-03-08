@@ -509,7 +509,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let notification_service_registered = notification_service.is_some();
     let oauth2_service_registered = oauth2_service.is_some();
     let provider_services_registered = providers_manager.is_some();
-    let cluster_service_registered = should_mark_cluster_service_serving(config, node_registry.is_some());
+    let cluster_service_registered =
+        should_mark_cluster_service_serving(config, node_registry.is_some());
 
     let mut router = server_builder
         // AuthService (public: register, login, refresh_token)
@@ -985,10 +986,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 mod tests {
     use super::{
         should_mark_cluster_service_serving, should_mark_livestream_relay_serving,
-        should_mark_notification_service_serving,
-        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
-        should_register_cluster_grpc_service, should_register_livestream_relay_service,
-        validate_cluster_grpc_runtime_requirements,
+        should_mark_notification_service_serving, should_mark_oauth2_service_serving,
+        should_mark_provider_services_serving, should_register_cluster_grpc_service,
+        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
     };
 
     #[test]

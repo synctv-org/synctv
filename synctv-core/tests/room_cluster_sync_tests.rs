@@ -52,7 +52,8 @@ fn unique_invalidation_key(prefix: &str) -> String {
 }
 
 async fn create_test_infra() -> TestInfra {
-    let (postgres, pool) = create_test_pool_with_db_and_label("synctv_test", "room-cluster-sync").await;
+    let (postgres, pool) =
+        create_test_pool_with_db_and_label("synctv_test", "room-cluster-sync").await;
     let (redis, redis_url) = start_redis_url_with_label("room-cluster-sync").await;
 
     TestInfra {

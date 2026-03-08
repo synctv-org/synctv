@@ -17,7 +17,7 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::UserId,
     service::{
-        auth::jwt::JwtService, BruteForceProtection, InMemoryTokenBlacklistStore,
+        auth::jwt::JwtService, BruteForceProtection, InMemoryTokenBlacklistStore, RateLimiter,
         TokenBlacklistStore, UserService,
     },
     Error,
@@ -74,11 +74,7 @@ impl TokenBlacklistStore for FamilyRevocationFailingStore {
         self.inner.blacklist(key, ttl_secs).await
     }
 
-    async fn blacklist_if_not_exists(
-        &self,
-        key: &str,
-        ttl_secs: u64,
-    ) -> synctv_core::Result<bool> {
+    async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> synctv_core::Result<bool> {
         self.inner.blacklist_if_not_exists(key, ttl_secs).await
     }
 
@@ -1344,7 +1340,11 @@ async fn test_refresh_token_concurrent_refresh_family_revocation() {
 #[ignore = "Requires Docker"]
 async fn test_refresh_token_rate_limit_recovers() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let mut service = create_user_service(pool.clone());
+    service.set_refresh_rate_limiter_for_tests(RateLimiter::in_memory_only(
+        "test-refresh-recover-short-window:".to_string(),
+    ));
+    service.set_refresh_rate_limit_config_for_tests(1, 1);
 
     let (_user, _access, Some(refresh_token)) = service
         .register(
@@ -1362,9 +1362,11 @@ async fn test_refresh_token_rate_limit_recovers() {
         panic!("Expected tokens from registration");
     };
 
-    // Exhaust rate limit, keeping track of the latest token
+    // Exhaust a short window rate limit, keeping track of the latest token.
+    // Using 1 request / 1 second preserves the recovery semantics while
+    // avoiding a real 7 second sleep in the test.
     let mut current_token = refresh_token;
-    for _ in 0..20 {
+    for _ in 0..2 {
         match service.refresh_token(current_token.clone()).await {
             Ok((_access, new_refresh)) => {
                 current_token = new_refresh;
@@ -1373,12 +1375,15 @@ async fn test_refresh_token_rate_limit_recovers() {
         }
     }
 
-    // Wait for one rate limit cell to replenish.
-    // GCRA with 10 requests / 60s window replenishes one cell every 6 seconds.
-    // We wait 7 seconds (6s + 1s buffer) rather than the full 61s window reset.
-    tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+    let result = service.refresh_token(current_token.clone()).await;
+    assert!(
+        result.is_err(),
+        "Refresh should be rate limited before the short window resets"
+    );
 
-    // Should be able to refresh again after reset using the latest token
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    // Should be able to refresh again after the short window resets.
     let result = service.refresh_token(current_token).await;
     assert!(
         result.is_ok(),

@@ -3473,10 +3473,7 @@ mod tests {
         let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
-        let total_count: i64 = redis_conn
-            .get("test4:connections:total")
-            .await
-            .unwrap_or(0);
+        let total_count: i64 = redis_conn.get("test4:connections:total").await.unwrap_or(0);
         let user_count: i64 = redis_conn
             .get("test4:connections:user:user-total-rollback")
             .await

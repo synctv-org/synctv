@@ -23,6 +23,21 @@ use crate::{
 const REFRESH_RATE_LIMIT_REQUESTS: u32 = 10;
 const REFRESH_RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
+#[derive(Debug, Clone, Copy)]
+struct RefreshRateLimitConfig {
+    requests: u32,
+    window_secs: u64,
+}
+
+impl Default for RefreshRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            requests: REFRESH_RATE_LIMIT_REQUESTS,
+            window_secs: REFRESH_RATE_LIMIT_WINDOW_SECS,
+        }
+    }
+}
+
 /// User service for business logic
 #[derive(Clone)]
 pub struct UserService {
@@ -43,6 +58,7 @@ pub struct UserService {
     key_builder: KeyBuilder,
     /// Rate limiter for refresh token endpoint (prevents abuse/stolen token `DoS`)
     refresh_rate_limiter: RateLimiter,
+    refresh_rate_limit_config: RefreshRateLimitConfig,
     /// Optional settings registry for reading signup_need_review and email_whitelist
     settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
 }
@@ -81,6 +97,7 @@ impl UserService {
             token_blacklist,
             key_builder,
             refresh_rate_limiter,
+            refresh_rate_limit_config: RefreshRateLimitConfig::default(),
             settings_registry: None,
         }
     }
@@ -129,6 +146,17 @@ impl UserService {
     pub fn set_refresh_rate_limiter_redis_fail_closed_for_tests(&mut self) {
         self.refresh_rate_limiter =
             RateLimiter::in_memory_only("test-refresh:".to_string()).with_strict_distributed();
+    }
+
+    pub fn set_refresh_rate_limiter_for_tests(&mut self, limiter: RateLimiter) {
+        self.refresh_rate_limiter = limiter;
+    }
+
+    pub fn set_refresh_rate_limit_config_for_tests(&mut self, requests: u32, window_secs: u64) {
+        self.refresh_rate_limit_config = RefreshRateLimitConfig {
+            requests,
+            window_secs,
+        };
     }
 
     /// Validate that a user is allowed to access the system.
@@ -257,6 +285,24 @@ impl UserService {
                         ));
                     }
                 }
+            }
+        }
+
+        // Fast-path duplicate checks before Argon2 hashing.
+        //
+        // We still rely on the database UNIQUE constraints for atomic race-safe
+        // enforcement. This pre-check only avoids expensive hashing for requests
+        // that are already known to fail with `AlreadyExists`.
+        if self.repository.get_by_username(&username).await?.is_some() {
+            return Err(Error::AlreadyExists(
+                "Username or email already taken".to_string(),
+            ));
+        }
+        if let Some(ref email_addr) = email {
+            if self.repository.get_by_email(email_addr).await?.is_some() {
+                return Err(Error::AlreadyExists(
+                    "Username or email already taken".to_string(),
+                ));
             }
         }
 
@@ -609,8 +655,8 @@ impl UserService {
         self.refresh_rate_limiter
             .check_rate_limit(
                 &rate_limit_key,
-                REFRESH_RATE_LIMIT_REQUESTS,
-                REFRESH_RATE_LIMIT_WINDOW_SECS,
+                self.refresh_rate_limit_config.requests,
+                self.refresh_rate_limit_config.window_secs,
             )
             .await
             .map_err(|e| {

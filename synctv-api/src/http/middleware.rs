@@ -182,7 +182,11 @@ struct ResponseBodyPreservationError {
 
 impl std::fmt::Display for ResponseBodyPreservationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "failed to deserialize JSON body for request_id injection: {}", self.source)
+        write!(
+            f,
+            "failed to deserialize JSON body for request_id injection: {}",
+            self.source
+        )
     }
 }
 

@@ -2465,8 +2465,7 @@ mod tests {
 
         let result = tokio::time::timeout(Duration::from_secs(15), pubsub.clone().start(8))
             .await
-            .expect("start failure path should complete quickly instead of hanging")
-            ;
+            .expect("start failure path should complete quickly instead of hanging");
 
         assert!(
             result.is_err(),

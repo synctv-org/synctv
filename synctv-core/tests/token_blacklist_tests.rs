@@ -160,7 +160,10 @@ async fn test_in_memory_family_revoked_set_and_get() {
     assert!(store.get_family_revoked_at(key).await.is_none());
 
     // Set family revocation
-    store.set_family_revoked(key, timestamp, 86400).await.unwrap();
+    store
+        .set_family_revoked(key, timestamp, 86400)
+        .await
+        .unwrap();
 
     // Should be retrievable
     let revoked_at = store.get_family_revoked_at(key).await;
@@ -270,14 +273,17 @@ async fn test_fallback_family_ttl_expiry() {
 async fn test_pg_family_revocation_survives_cleanup_until_marker_expires() {
     let (_container, pool) = create_test_pool().await;
     let store = PgTokenBlacklistStore::new(pool);
-    let key = "family:pg_cleanup_guard";
+    let key = format!("family:pg_cleanup_guard:{}", nanoid::nanoid!(8));
     let timestamp = chrono::Utc::now().timestamp();
 
-    store.set_family_revoked(key, timestamp, 120).await.unwrap();
+    store
+        .set_family_revoked(&key, timestamp, 120)
+        .await
+        .unwrap();
     store.cleanup_expired().await.unwrap();
 
     assert_eq!(
-        store.get_family_revoked_at(key).await,
+        store.get_family_revoked_at(&key).await,
         Some(timestamp),
         "cleanup must not delete the family revocation timestamp while the marker is still alive"
     );

@@ -1063,7 +1063,9 @@ impl TokenBlacklistStore for FallbackTokenBlacklistStore {
             .await?;
 
         // Try to write to primary
-        self.primary.set_family_revoked(key, timestamp, ttl_secs).await
+        self.primary
+            .set_family_revoked(key, timestamp, ttl_secs)
+            .await
     }
 }
 
@@ -1410,7 +1412,11 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
             .set_family_revoked(key, timestamp, ttl_secs)
             .await?;
 
-        match self.primary.set_family_revoked(key, timestamp, ttl_secs).await {
+        match self
+            .primary
+            .set_family_revoked(key, timestamp, ttl_secs)
+            .await
+        {
             Ok(()) => Ok(()),
             Err(e) => {
                 let pending = PendingFamilyWrite {
@@ -1583,14 +1589,13 @@ mod tests {
         // tiered store must return an error and must not populate L1 as if the
         // revocation were durably committed.
         let ts = 1700000000_i64;
-        let result = store.set_family_revoked("family:write_test", ts, 3600).await;
+        let result = store
+            .set_family_revoked("family:write_test", ts, 3600)
+            .await;
         assert!(result.is_err());
 
         // L1 should remain empty because the durable write failed.
-        assert_eq!(
-            store.get_family_revoked_at("family:write_test").await,
-            None
-        );
+        assert_eq!(store.get_family_revoked_at("family:write_test").await, None);
     }
 
     #[test]
@@ -1654,7 +1659,10 @@ mod tests {
         let timestamp = 1700000000_i64;
 
         assert!(store.get_family_revoked_at(key).await.is_none());
-        store.set_family_revoked(key, timestamp, 86400).await.unwrap();
+        store
+            .set_family_revoked(key, timestamp, 86400)
+            .await
+            .unwrap();
         assert_eq!(store.get_family_revoked_at(key).await, Some(timestamp));
     }
 

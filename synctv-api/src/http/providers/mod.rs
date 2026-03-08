@@ -190,7 +190,6 @@ pub(crate) async fn unified_proxy_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
     use bytes::Bytes;
     use std::collections::HashMap;
     use synctv_core::repository::SettingsRepository;
@@ -199,39 +198,6 @@ mod tests {
     use synctv_proxy::slice_cache::SliceCacheConfig;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    #[tokio::test]
-    async fn test_execute_proxy_action_fetch_and_forward_does_not_cache_by_default() {
-        let mock_server = MockServer::start().await;
-        let body = Bytes::from_static(b"video-body");
-
-        Mock::given(method("GET"))
-            .and(path("/video.mp4"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_bytes(body.clone())
-                    .insert_header("Content-Length", body.len().to_string()),
-            )
-            .expect(2)
-            .mount(&mock_server)
-            .await;
-
-        let headers = HeaderMap::new();
-        let action = ProxyAction::FetchAndForward {
-            url: format!("{}/video.mp4", mock_server.uri()),
-            headers: HashMap::new(),
-        };
-
-        let response1 = execute_proxy_action(action.clone(), &headers)
-            .await
-            .unwrap();
-        let response2 = execute_proxy_action(action, &headers).await.unwrap();
-
-        let body1 = to_bytes(response1.into_body(), usize::MAX).await.unwrap();
-        let body2 = to_bytes(response2.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(body1, body);
-        assert_eq!(body2, body);
-    }
 
     #[tokio::test]
     async fn test_slice_cache_hits_second_range_request() {

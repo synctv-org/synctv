@@ -214,13 +214,8 @@ pub async fn create_test_pool_with_db_and_label(
     db_name: &str,
     label: &str,
 ) -> (TestContainer, PgPool) {
-    create_test_pool_with_options_and_label(
-        db_name,
-        label,
-        20,
-        std::time::Duration::from_secs(5),
-    )
-    .await
+    create_test_pool_with_options_and_label(db_name, label, 20, std::time::Duration::from_secs(5))
+        .await
 }
 
 /// Creates a `PostgreSQL` test pool with a custom database name

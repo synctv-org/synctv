@@ -142,10 +142,13 @@ async fn build_local_cluster_manager(
         parent_cancel_token: None,
     };
 
-    let mut cluster_manager =
-        ClusterManager::new(cluster_config, permission_service, Some((*cache_invalidation).clone()))
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create local ClusterManager: {e}"))?;
+    let mut cluster_manager = ClusterManager::new(
+        cluster_config,
+        permission_service,
+        Some((*cache_invalidation).clone()),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create local ClusterManager: {e}"))?;
     cluster_manager.set_connection_manager(connection_manager.clone());
 
     Ok(Arc::new(cluster_manager))

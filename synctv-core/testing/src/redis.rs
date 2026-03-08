@@ -1,10 +1,10 @@
-use std::sync::Arc;
 use std::process::Command;
+use std::sync::Arc;
 
 use redis::AsyncCommands;
+use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
-use testcontainers::core::ImageExt;
 use testcontainers_modules::redis::Redis;
 use tokio::sync::RwLock;
 
@@ -120,7 +120,11 @@ async fn start_redis_inner(label: &str) -> (RedisContainer, String, redis::Clien
     let redis_url = format!("redis://127.0.0.1:{port}");
     let client = redis::Client::open(redis_url.clone()).expect("Failed to create Redis client");
     wait_for_redis_ready(&client).await;
-    (RedisContainer::new(container, container_name), redis_url, client)
+    (
+        RedisContainer::new(container, container_name),
+        redis_url,
+        client,
+    )
 }
 
 pub async fn start_redis_with_client() -> (RedisContainer, redis::Client) {

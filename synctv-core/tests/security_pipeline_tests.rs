@@ -131,14 +131,13 @@ async fn test_db_error_propagates_not_swallowed() {
         "NotFound should become Authentication('User not found'), got: {err}"
     );
 
-    // Now close the pool to simulate a DB error (not NotFound)
-    pool.close().await;
-
     let fake_id2 = UserId::new();
     let claims2 = make_claims(&fake_id2, 0);
-    let user_service2 = Arc::new(create_user_service(
-        PgPool::connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid").unwrap(),
-    ));
+    // Now close the pool to simulate a DB error (not NotFound).
+    // Using a closed real pool fails immediately and avoids slow network
+    // connection timeouts from an invalid DSN.
+    pool.close().await;
+    let user_service2 = Arc::new(create_user_service(pool.clone()));
     let pipeline2 = SecurityPipeline::new(user_service2)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 

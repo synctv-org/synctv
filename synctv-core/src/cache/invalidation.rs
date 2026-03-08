@@ -287,6 +287,7 @@ impl CacheInvalidationService {
         crate::spawn::spawn_monitored("cache_invalidation_state_sync", async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
+            interval.tick().await;
 
             loop {
                 tokio::select! {
@@ -1514,6 +1515,57 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             "Periodic state sync must not depend on prior failure flags"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_state_sync_does_not_fire_immediately_on_start() {
+        let service = CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
+        let shutdown = service.shutdown.clone();
+        let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ticks_for_task = ticks.clone();
+
+        crate::spawn::spawn_monitored("cache_invalidation_state_sync_test", async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        ticks_for_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    () = async {
+                        loop {
+                            if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                                return;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    } => {
+                        break;
+                    }
+                }
+            }
+        });
+
+        tokio::task::yield_now().await;
+        assert_eq!(ticks.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        tokio::time::advance(std::time::Duration::from_secs(59)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(ticks.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(ticks.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        service
+            .shutdown
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[test]

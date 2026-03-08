@@ -279,11 +279,7 @@ pub async fn broadcast_until_admin_event(
 }
 
 #[allow(dead_code)]
-pub async fn wait_until(
-    label: &str,
-    timeout: Duration,
-    mut condition: impl FnMut() -> bool,
-) {
+pub async fn wait_until(label: &str, timeout: Duration, mut condition: impl FnMut() -> bool) {
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {

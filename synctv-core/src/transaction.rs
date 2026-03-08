@@ -582,9 +582,15 @@ mod tests {
         }));
 
         if cfg!(debug_assertions) {
-            assert!(result.is_err(), "debug builds should panic on unhandled UnitOfWork drop");
+            assert!(
+                result.is_err(),
+                "debug builds should panic on unhandled UnitOfWork drop"
+            );
         } else {
-            assert!(result.is_ok(), "release builds should only warn on unhandled UnitOfWork drop");
+            assert!(
+                result.is_ok(),
+                "release builds should only warn on unhandled UnitOfWork drop"
+            );
         }
     }
 }

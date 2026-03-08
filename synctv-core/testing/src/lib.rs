@@ -19,8 +19,7 @@ pub use postgres::{
 };
 pub use redis::{
     start_redis, start_redis_handle, start_redis_url, start_redis_url_with_label,
-    start_redis_with_client,
-    RedisConnectionHandle, RedisConnectionManager, RedisContainer,
+    start_redis_with_client, RedisConnectionHandle, RedisConnectionManager, RedisContainer,
 };
 pub use services::{
     create_test_attempt_tracker, create_test_brute_force_protection, create_test_jwt_service,

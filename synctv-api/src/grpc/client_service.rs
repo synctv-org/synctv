@@ -1439,5 +1439,4 @@ mod tests {
         const { assert!(MESSAGE_STREAM_BUFFER_SIZE >= 10) };
         const { assert!(MESSAGE_STREAM_BUFFER_SIZE <= 1000) };
     }
-
 }

@@ -255,6 +255,14 @@ pub fn is_ip_blocked(ip: &IpAddr) -> bool {
     DEFAULT_GUARD.is_ip_blocked(ip)
 }
 
+/// Check if a hostname is blocked by the default SSRF policy.
+///
+/// Equivalent to `SsrfGuard::default_policy().is_host_blocked(host)`.
+#[must_use]
+pub fn is_host_blocked(host: &str) -> bool {
+    DEFAULT_GUARD.is_host_blocked(host)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -212,7 +212,10 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         },
         |msg| match msg {
             InvalidationMessage::User { user_id } => {
-                assert_eq!(user_id, "perm_changed_user", "Should invalidate the correct user");
+                assert_eq!(
+                    user_id, "perm_changed_user",
+                    "Should invalidate the correct user"
+                );
                 received_target = true;
                 true
             }
@@ -222,7 +225,10 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
     )
     .await;
 
-    assert!(received_target, "Should receive permission cache invalidation");
+    assert!(
+        received_target,
+        "Should receive permission cache invalidation"
+    );
 
     node_a.shutdown().await;
     node_b.shutdown().await;

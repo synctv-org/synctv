@@ -438,7 +438,10 @@ mod tests {
     use testcontainers::{runners::AsyncRunner, ContainerAsync};
     use testcontainers_modules::redis::Redis;
 
-    async fn start_redis() -> (ContainerAsync<Redis>, Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) {
+    async fn start_redis() -> (
+        ContainerAsync<Redis>,
+        Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    ) {
         let container = Redis::default()
             .start()
             .await

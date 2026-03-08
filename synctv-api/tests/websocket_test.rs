@@ -19,7 +19,7 @@ where
         if check() {
             return;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(check(), "condition was not satisfied within {timeout:?}");
 }
@@ -908,8 +908,8 @@ mod websocket_e2e {
             credential_encryption: None,
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_millis(200),
+                std::time::Duration::from_millis(400),
+                std::time::Duration::from_millis(100),
             ),
             providers_manager: None,
         };
@@ -928,8 +928,8 @@ mod websocket_e2e {
             messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
             content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_millis(200),
+                std::time::Duration::from_millis(400),
+                std::time::Duration::from_millis(100),
             ),
             jwt_validator,
             security_pipeline: Arc::new(
@@ -3465,11 +3465,8 @@ mod websocket_connection_limit_timing {
 
     impl TestInfra {
         async fn new() -> Self {
-            let (postgres, pool) = create_test_pool_with_db_and_label(
-                "synctv_test",
-                "api-ws-connection-limit",
-            )
-            .await;
+            let (postgres, pool) =
+                create_test_pool_with_db_and_label("synctv_test", "api-ws-connection-limit").await;
             let (redis, redis_url) = start_redis_url_with_label("api-ws-connection-limit").await;
 
             Self {
@@ -3665,8 +3662,8 @@ mod websocket_connection_limit_timing {
             credential_encryption: None,
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_millis(200),
+                std::time::Duration::from_millis(400),
+                std::time::Duration::from_millis(100),
             ),
             providers_manager: None,
         };
@@ -3685,8 +3682,8 @@ mod websocket_connection_limit_timing {
             messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
             content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_millis(200),
+                std::time::Duration::from_millis(400),
+                std::time::Duration::from_millis(100),
             ),
             jwt_validator,
             security_pipeline: Arc::new(

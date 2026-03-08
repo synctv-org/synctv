@@ -148,11 +148,8 @@ async fn test_cache_invalidation_room_permission() {
         stream_key.clone(),
     );
 
-    let service2 = CacheInvalidationService::new(
-        Some(redis_client),
-        "node2".to_string(),
-        stream_key,
-    );
+    let service2 =
+        CacheInvalidationService::new(Some(redis_client), "node2".to_string(), stream_key);
 
     service1.start().await.expect("Failed to start service1");
     service2.start().await.expect("Failed to start service2");
@@ -251,11 +248,7 @@ async fn test_cache_invalidation_without_redis() {
     // Note: invalidate_* methods only broadcast remotely via Redis.
     // Without Redis, they are no-ops. The local_sender channel is used
     // only when receiving messages FROM Redis (via the consumer task).
-    let service = CacheInvalidationService::new(
-        None,
-        "node1".to_string(),
-        unique_stream_key(),
-    );
+    let service = CacheInvalidationService::new(None, "node1".to_string(), unique_stream_key());
 
     // Start should succeed even without Redis (no-op for local-only)
     service
@@ -360,11 +353,8 @@ async fn test_cache_invalidation_playback_state() {
         stream_key.clone(),
     );
 
-    let service2 = CacheInvalidationService::new(
-        Some(redis_client),
-        "node2".to_string(),
-        stream_key,
-    );
+    let service2 =
+        CacheInvalidationService::new(Some(redis_client), "node2".to_string(), stream_key);
 
     service1.start().await.expect("Failed to start service1");
     service2.start().await.expect("Failed to start service2");

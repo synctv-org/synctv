@@ -471,10 +471,8 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
     assert_eq!(before_cleanup[0].1, "conn_b");
 
     let cancel = tokio_util::sync::CancellationToken::new();
-    let cleanup_task = hub_a.spawn_stale_subscription_cleanup_task(
-        Duration::from_millis(10),
-        cancel.clone(),
-    );
+    let cleanup_task =
+        hub_a.spawn_stale_subscription_cleanup_task(Duration::from_millis(10), cancel.clone());
     tokio::time::sleep(Duration::from_millis(50)).await;
     cancel.cancel();
     let _ = cleanup_task.await;

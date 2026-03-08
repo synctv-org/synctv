@@ -127,7 +127,7 @@ impl ClientApiImpl {
                 .await
                 .map(|u| u.username)
                 .unwrap_or_default();
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::MediaAdded {
@@ -140,7 +140,8 @@ impl ClientApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         Ok(crate::proto::client::AddMediaResponse {
@@ -177,7 +178,7 @@ impl ClientApiImpl {
                 .await
                 .map(|u| u.username)
                 .unwrap_or_default();
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
@@ -189,14 +190,16 @@ impl ClientApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         // Note: playback cache invalidation is handled by TTL-based expiry
         // in the provider's internal ProviderStore. No explicit invalidation needed.
 
         // Kick active stream for deleted media (local + cluster-wide)
-        self.kick_stream_cluster(room_id, &media_id_str, "media_deleted");
+        self.kick_stream_cluster(room_id, &media_id_str, "media_deleted")
+            .await;
 
         Ok(crate::proto::client::DeleteMediaResponse { success: true })
     }
@@ -233,7 +236,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas so they see updated metadata
-        self.publish_room_cache_invalidation(&rid);
+        self.publish_room_cache_invalidation(&rid).await;
 
         Ok(crate::proto::client::EditMediaResponse {
             media: Some(media_to_proto(&media)),
@@ -287,7 +290,7 @@ impl ClientApiImpl {
                     .unwrap_or_default();
                 let media_ids: Vec<synctv_core::models::MediaId> =
                     media_items.iter().map(|m| m.id.clone()).collect();
-                crate::impls::try_publish_cluster_event(
+                let _ = crate::impls::try_publish_cluster_event(
                     tx,
                     synctv_cluster::sync::PublishRequest {
                         event: synctv_cluster::sync::ClusterEvent::MediaRemovedBatch {
@@ -299,7 +302,8 @@ impl ClientApiImpl {
                             timestamp: chrono::Utc::now(),
                         },
                     },
-                );
+                )
+                .await;
             }
         }
 
@@ -408,7 +412,7 @@ impl ClientApiImpl {
                 .map(|u| u.username)
                 .unwrap_or_default();
             for media in &media_list {
-                crate::impls::try_publish_cluster_event(
+                let _ = crate::impls::try_publish_cluster_event(
                     tx,
                     synctv_cluster::sync::PublishRequest {
                         event: synctv_cluster::sync::ClusterEvent::MediaAdded {
@@ -421,7 +425,8 @@ impl ClientApiImpl {
                             timestamp: chrono::Utc::now(),
                         },
                     },
-                );
+                )
+                .await;
             }
         }
 
@@ -490,7 +495,7 @@ impl ClientApiImpl {
                 .iter()
                 .map(|id| synctv_core::models::MediaId::from_string(id.clone()))
                 .collect();
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::MediaRemovedBatch {
@@ -502,7 +507,8 @@ impl ClientApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         // Note: playback cache invalidation is handled by TTL-based expiry
@@ -510,7 +516,8 @@ impl ClientApiImpl {
 
         // Kick active streams for deleted media (local + cluster-wide)
         for media_id in &media_id_strings {
-            self.kick_stream_cluster(room_id, media_id, "media_deleted");
+            self.kick_stream_cluster(room_id, media_id, "media_deleted")
+                .await;
         }
 
         Ok(crate::proto::client::DeleteMediaBatchResponse {
@@ -577,7 +584,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas so they refresh playlist order
-        self.publish_room_cache_invalidation(&rid);
+        self.publish_room_cache_invalidation(&rid).await;
 
         Ok(crate::proto::client::ReorderMediaBatchResponse { success: true })
     }
@@ -876,7 +883,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas so they refresh playlist order
-        self.publish_room_cache_invalidation(&rid);
+        self.publish_room_cache_invalidation(&rid).await;
 
         Ok(crate::proto::client::SwapMediaResponse { success: true })
     }

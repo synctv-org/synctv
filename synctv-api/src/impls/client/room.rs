@@ -184,7 +184,7 @@ impl ClientApiImpl {
 
         // Publish RoomCreated cluster event for cross-replica propagation (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::RoomCreated {
@@ -195,7 +195,8 @@ impl ClientApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         let member_count = self
@@ -351,7 +352,7 @@ impl ClientApiImpl {
         // Using UserLeft (not KickUserFromRoom) to correctly distinguish voluntary
         // departure from administrative kicks in audit logs. (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::UserLeft {
@@ -362,7 +363,8 @@ impl ClientApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         Ok(crate::proto::client::LeaveRoomResponse { success: true })
@@ -389,7 +391,7 @@ impl ClientApiImpl {
         // 2. Publish RoomDeleted cluster event so other replicas disconnect
         //    their users. Only reached after successful DB deletion. (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::RoomDeleted {
@@ -399,7 +401,8 @@ impl ClientApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         // 3. Force disconnect all local connections in the deleted room
@@ -444,7 +447,7 @@ impl ClientApiImpl {
                 .map(|u| u.username)
                 .unwrap_or_default();
 
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
@@ -456,7 +459,8 @@ impl ClientApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         // Get updated room
@@ -524,7 +528,7 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Internal(format!("Failed to update password: {e}")))?;
 
         // Invalidate room cache on other replicas so password check uses fresh data
-        self.publish_room_cache_invalidation(&rid);
+        self.publish_room_cache_invalidation(&rid).await;
 
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
     }
@@ -655,7 +659,7 @@ impl ClientApiImpl {
                 .map(|u| u.username)
                 .unwrap_or_default();
 
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
@@ -667,7 +671,8 @@ impl ClientApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         Ok(crate::proto::client::ResetRoomSettingsResponse {

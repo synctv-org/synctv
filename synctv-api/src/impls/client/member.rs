@@ -237,7 +237,7 @@ impl ClientApiImpl {
 
         // Broadcast KickUserFromRoom cluster event so other replicas also disconnect this user (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
@@ -248,7 +248,8 @@ impl ClientApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         // Notify other replicas to invalidate permission cache
@@ -300,7 +301,7 @@ impl ClientApiImpl {
 
         // Broadcast KickUserFromRoom cluster event so other replicas also disconnect this user (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
@@ -311,7 +312,8 @@ impl ClientApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         // Notify other replicas to invalidate permission cache

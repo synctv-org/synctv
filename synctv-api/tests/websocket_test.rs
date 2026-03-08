@@ -51,6 +51,16 @@ mod ws_query {
         let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
         assert_eq!(query.ticket.as_deref(), Some("tix"));
     }
+
+    #[test]
+    fn test_deserialize_ignores_legacy_token_param() {
+        let params = "token=legacy_jwt_value";
+        let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
+        assert!(
+            query.ticket.is_none(),
+            "legacy ?token= must not be treated as a valid websocket credential"
+        );
+    }
 }
 
 // ============================================================================

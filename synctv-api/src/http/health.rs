@@ -156,9 +156,9 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     // Check WebSocket ticket service (if configured)
     // In cluster mode, memory-backed ticket storage causes cross-replica auth failures.
     let ws_ticket_status = state.ws_ticket_service.as_ref().map(|svc| {
-        let is_cluster_mode = state.cluster_manager.is_some();
+        let is_cluster_mode = state.config.cluster_runtime_enabled();
         let health = check_ws_ticket_health(svc);
-        if is_cluster_mode && svc.backend_name() != "redis" {
+        if !ws_ticket_backend_is_safe_for_mode(svc, is_cluster_mode) {
             error_messages.push(
                 "WsTicketService: memory mode is not safe in cluster mode (tickets created on one node cannot be validated on another)".to_string()
             );
@@ -253,6 +253,9 @@ async fn check_database_health(state: &AppState) -> Result<(), String> {
 /// Returns `Some(Ok(()))` if the cluster manager is healthy.
 /// Returns `Some(Err(...))` if the cluster manager reports issues.
 fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
+    if !state.config.cluster_runtime_enabled() {
+        return None;
+    }
     let cm = state.cluster_manager.as_ref()?;
     let metrics = cm.metrics();
 
@@ -329,6 +332,13 @@ async fn check_redis_health_from_conn(
 /// memory-backed (single-replica only) storage.
 fn check_ws_ticket_health(svc: &synctv_core::service::WsTicketService) -> String {
     format!("healthy ({})", svc.backend_name())
+}
+
+fn ws_ticket_backend_is_safe_for_mode(
+    svc: &synctv_core::service::WsTicketService,
+    cluster_mode: bool,
+) -> bool {
+    !cluster_mode || svc.backend_name() == "redis"
 }
 
 /// Check email service health
@@ -830,6 +840,52 @@ mod tests {
         assert!(
             result.is_ok(),
             "missing redis should be treated as not configured"
+        );
+    }
+
+    #[test]
+    fn test_ws_ticket_memory_backend_is_only_unhealthy_when_cluster_enabled() {
+        let memory_tickets = synctv_core::service::WsTicketService::with_memory(None);
+        assert!(
+            ws_ticket_backend_is_safe_for_mode(&memory_tickets, false),
+            "standalone mode should allow memory-backed ws tickets"
+        );
+        assert!(
+            !ws_ticket_backend_is_safe_for_mode(&memory_tickets, true),
+            "cluster mode must reject memory-backed ws tickets"
+        );
+
+        let redis = synctv_core::service::WsTicketService::with_memory(None);
+        let mut standalone = synctv_core::Config::default();
+        standalone.cluster.enabled = false;
+        assert!(
+            !standalone.cluster_runtime_enabled(),
+            "standalone config should not be treated as cluster mode"
+        );
+
+        let mut clustered = synctv_core::Config::default();
+        clustered.cluster.enabled = true;
+        clustered.server.cluster_secret = "shared-secret".to_string();
+        assert!(
+            clustered.cluster_runtime_enabled(),
+            "cluster-enabled config should be treated as cluster mode"
+        );
+        assert!(
+            check_ws_ticket_health(&redis).contains("memory"),
+            "health helper should expose backend mode"
+        );
+    }
+
+    #[test]
+    fn test_cluster_health_is_skipped_when_distributed_cluster_disabled() {
+        let memory_tickets = synctv_core::service::WsTicketService::with_memory(None);
+        assert!(
+            ws_ticket_backend_is_safe_for_mode(&memory_tickets, false),
+            "helper should treat standalone mode as safe"
+        );
+        assert!(
+            !ws_ticket_backend_is_safe_for_mode(&memory_tickets, true),
+            "helper should treat distributed cluster mode as unsafe for memory tickets"
         );
     }
 

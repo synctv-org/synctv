@@ -1363,24 +1363,27 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
 
     /// Atomically blacklist if not exists, with pending sync buffer on primary failure.
     ///
-    /// Uses the fallback's atomic operation (since it's always available and reliable),
-    /// then attempts to sync to primary. If primary fails, the write is buffered.
+    /// Uses the primary's atomic operation first because it is authoritative for
+    /// replay detection. The fallback mirrors successful writes for fast-path
+    /// checks and outage resilience. If the primary is unavailable, the fallback
+    /// becomes the temporary source of truth and the write is buffered for sync.
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
-        // Use fallback's atomic operation (it's always available and has proper atomicity)
-        let already_existed = self.fallback.blacklist_if_not_exists(key, ttl_secs).await?;
-
-        // Try to sync to primary
         match self.primary.blacklist_if_not_exists(key, ttl_secs).await {
-            Ok(_) => {
-                // Remove from pending if it was there
+            Ok(already_existed) => {
+                // Mirror to fallback for fast-path checks, but keep the
+                // authoritative replay decision from primary.
+                let _ = self.fallback.blacklist(key, ttl_secs).await;
                 self.pending_blacklist.remove(key).await;
+                Ok(already_existed)
             }
             Err(e) => {
                 tracing::warn!(
                     key = %key,
                     error = %e,
-                    "Primary atomic blacklist failed, token tracked in fallback, added to pending sync buffer"
+                    "Primary atomic blacklist failed, using fallback atomic operation and adding to pending sync buffer"
                 );
+
+                let already_existed = self.fallback.blacklist_if_not_exists(key, ttl_secs).await?;
 
                 // Add to pending writes for later sync
                 let pending = PendingWrite {
@@ -1391,10 +1394,10 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
                 self.pending_blacklist
                     .insert(key.to_string(), pending)
                     .await;
+
+                Ok(already_existed)
             }
         }
-
-        Ok(already_existed)
     }
 
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {

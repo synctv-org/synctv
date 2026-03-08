@@ -129,14 +129,15 @@ impl AdminApiImpl {
     }
 
     /// Kick a stream both locally and cluster-wide via Redis Pub/Sub
-    fn kick_stream_cluster(&self, room_id: &str, media_id: &str, reason: &str) {
+    async fn kick_stream_cluster(&self, room_id: &str, media_id: &str, reason: &str) {
         crate::impls::kick_stream_cluster(
             self.live_streaming_infrastructure.as_ref(),
             self.redis_publish_tx.as_ref(),
             room_id,
             media_id,
             reason,
-        );
+        )
+        .await;
     }
 
     /// Best-effort admin audit log helper.
@@ -324,7 +325,7 @@ impl AdminApiImpl {
 
         // Publish RoomDeleted cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
-            super::try_publish_cluster_event(
+            let _ = super::try_publish_cluster_event(
                 tx,
                 PublishRequest {
                     event: ClusterEvent::RoomDeleted {
@@ -334,7 +335,8 @@ impl AdminApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         // Force disconnect all connections in the deleted room
@@ -345,7 +347,8 @@ impl AdminApiImpl {
             let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
 
             for media_id in &media_ids {
-                self.kick_stream_cluster(rid.as_str(), media_id, "room_deleted");
+                self.kick_stream_cluster(rid.as_str(), media_id, "room_deleted")
+                    .await;
             }
 
             infra.kick_room_publishers(rid.as_str()).await;
@@ -755,7 +758,7 @@ impl AdminApiImpl {
 
         // Broadcast CacheInvalidate so other replicas refresh their settings caches
         if let Some(ref tx) = self.redis_publish_tx {
-            super::try_publish_cluster_event(
+            let _ = super::try_publish_cluster_event(
                 tx,
                 PublishRequest {
                     event: ClusterEvent::CacheInvalidate {
@@ -764,7 +767,8 @@ impl AdminApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         // Audit log for settings update (best-effort)
@@ -1204,7 +1208,8 @@ impl AdminApiImpl {
             let streams = infra.user_stream_tracker.get_user_streams(uid.as_str());
 
             for (room_id, media_id) in &streams {
-                self.kick_stream_cluster(room_id, media_id, "user_deleted");
+                self.kick_stream_cluster(room_id, media_id, "user_deleted")
+                    .await;
             }
 
             infra.kick_user_publishers(uid.as_str()).await;
@@ -1353,7 +1358,7 @@ impl AdminApiImpl {
         }
         // 2. Cluster-wide broadcast so other replicas kick their local streams for this user
         if let Some(tx) = &self.redis_publish_tx {
-            super::try_publish_cluster_event(
+            let _ = super::try_publish_cluster_event(
                 tx,
                 PublishRequest {
                     event: ClusterEvent::KickUser {
@@ -1363,7 +1368,8 @@ impl AdminApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         // Audit log: ban_user is a critical operation (best-effort)
@@ -1598,7 +1604,7 @@ impl AdminApiImpl {
 
         // Broadcast cache invalidation for the banned room
         if let Some(ref tx) = self.redis_publish_tx {
-            super::try_publish_cluster_event(
+            let _ = super::try_publish_cluster_event(
                 tx,
                 PublishRequest {
                     event: ClusterEvent::CacheInvalidate {
@@ -1609,7 +1615,8 @@ impl AdminApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         // Force disconnect all connections in the banned room
@@ -1620,7 +1627,8 @@ impl AdminApiImpl {
             let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
 
             for media_id in &media_ids {
-                self.kick_stream_cluster(rid.as_str(), media_id, "room_banned");
+                self.kick_stream_cluster(rid.as_str(), media_id, "room_banned")
+                    .await;
             }
 
             infra.kick_room_publishers(rid.as_str()).await;
@@ -1794,7 +1802,7 @@ impl AdminApiImpl {
 
         // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
-            super::try_publish_cluster_event(
+            let _ = super::try_publish_cluster_event(
                 tx,
                 PublishRequest {
                     event: ClusterEvent::RoomSettingsChanged {
@@ -1806,7 +1814,8 @@ impl AdminApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         let room = self
@@ -1863,7 +1872,7 @@ impl AdminApiImpl {
         // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
             let settings_json = serde_json::to_vec(&settings).unwrap_or_default();
-            super::try_publish_cluster_event(
+            let _ = super::try_publish_cluster_event(
                 tx,
                 PublishRequest {
                     event: ClusterEvent::RoomSettingsChanged {
@@ -1875,7 +1884,8 @@ impl AdminApiImpl {
                         timestamp: chrono::Utc::now(),
                     },
                 },
-            );
+            )
+            .await;
         }
 
         Ok(crate::proto::admin::ResetRoomSettingsResponse {
@@ -2274,7 +2284,7 @@ impl AdminApiImpl {
                         }
 
                         if let Some(tx) = &self.redis_publish_tx {
-                            super::try_publish_cluster_event(
+                            let _ = super::try_publish_cluster_event(
                                 tx,
                                 PublishRequest {
                                     event: ClusterEvent::KickUser {
@@ -2284,7 +2294,8 @@ impl AdminApiImpl {
                                         timestamp: chrono::Utc::now(),
                                     },
                                 },
-                            );
+                            )
+                            .await;
                         }
                     }
                     Err(e) => {
@@ -2394,7 +2405,7 @@ impl AdminApiImpl {
                         }
 
                         if let Some(tx) = &self.redis_publish_tx {
-                            super::try_publish_cluster_event(
+                            let _ = super::try_publish_cluster_event(
                                 tx,
                                 PublishRequest {
                                     event: ClusterEvent::KickUser {
@@ -2404,7 +2415,8 @@ impl AdminApiImpl {
                                         timestamp: chrono::Utc::now(),
                                     },
                                 },
-                            );
+                            )
+                            .await;
                         }
                     }
                     Err(e) => {
@@ -2479,13 +2491,18 @@ impl AdminApiImpl {
                     if let Some(infra) = &self.live_streaming_infrastructure {
                         let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
                         for media_id in &media_ids {
-                            self.kick_stream_cluster(rid.as_str(), media_id, "room_batch_banned");
+                            self.kick_stream_cluster(
+                                rid.as_str(),
+                                media_id,
+                                "room_batch_banned",
+                            )
+                            .await;
                         }
                         infra.kick_room_publishers(rid.as_str()).await;
                     }
 
                     if let Some(tx) = &self.redis_publish_tx {
-                        super::try_publish_cluster_event(
+                        let _ = super::try_publish_cluster_event(
                             tx,
                             PublishRequest {
                                 event: ClusterEvent::CacheInvalidate {
@@ -2496,7 +2513,8 @@ impl AdminApiImpl {
                                     timestamp: chrono::Utc::now(),
                                 },
                             },
-                        );
+                        )
+                        .await;
                     }
                 }
                 Err(e) => {
@@ -2571,13 +2589,18 @@ impl AdminApiImpl {
                     if let Some(infra) = &self.live_streaming_infrastructure {
                         let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
                         for media_id in &media_ids {
-                            self.kick_stream_cluster(rid.as_str(), media_id, "room_batch_deleted");
+                            self.kick_stream_cluster(
+                                rid.as_str(),
+                                media_id,
+                                "room_batch_deleted",
+                            )
+                            .await;
                         }
                         infra.kick_room_publishers(rid.as_str()).await;
                     }
 
                     if let Some(tx) = &self.redis_publish_tx {
-                        super::try_publish_cluster_event(
+                        let _ = super::try_publish_cluster_event(
                             tx,
                             PublishRequest {
                                 event: ClusterEvent::RoomDeleted {
@@ -2587,7 +2610,8 @@ impl AdminApiImpl {
                                     timestamp: chrono::Utc::now(),
                                 },
                             },
-                        );
+                        )
+                        .await;
                     }
                 }
                 Err(e) => {

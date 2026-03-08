@@ -10,7 +10,7 @@ use synctv_core::models::RoomId;
 ///
 /// This function validates the room ID format according to the rules:
 /// - Must not be empty
-/// - Must not exceed `ID_MAX` length
+/// - Must be exactly 12 characters long
 /// - Must contain only alphanumeric characters, underscores, and hyphens
 ///
 /// # Arguments
@@ -25,9 +25,9 @@ use synctv_core::models::RoomId;
 /// use synctv_api::room_id_validation::parse_room_id;
 ///
 /// // Valid room IDs
-/// assert!(parse_room_id("room123").is_ok());
-/// assert!(parse_room_id("room_123").is_ok());
-/// assert!(parse_room_id("room-123").is_ok());
+/// assert!(parse_room_id("room1234_abx").is_ok());
+/// assert!(parse_room_id("room_123-xyz").is_ok());
+/// assert!(parse_room_id("ROOM-123_abC").is_ok());
 ///
 /// // Invalid room IDs
 /// assert!(parse_room_id("room@123").is_err());
@@ -45,13 +45,11 @@ mod tests {
 
     #[test]
     fn test_parse_room_id_valid_formats() {
-        assert!(parse_room_id("room123").is_ok());
-        assert!(parse_room_id("room_123").is_ok());
-        assert!(parse_room_id("room-123").is_ok());
-        assert!(parse_room_id("Room123").is_ok()); // Case sensitive
-        assert!(parse_room_id("ROOM123").is_ok()); // All caps
-        assert!(parse_room_id("a").is_ok()); // Single char
-        assert!(parse_room_id("123").is_ok()); // Numbers only
+        assert!(parse_room_id("room1234_abx").is_ok());
+        assert!(parse_room_id("room_123-xyz").is_ok());
+        assert!(parse_room_id("Room1234_Abc").is_ok());
+        assert!(parse_room_id("ROOM1234-XYZ").is_ok());
+        assert!(parse_room_id("123456789012").is_ok());
     }
 
     #[test]
@@ -82,19 +80,19 @@ mod tests {
 
     #[test]
     fn test_parse_room_id_length_limits() {
-        // Valid length (1-64 chars)
-        assert!(parse_room_id("a").is_ok());
-        assert!(parse_room_id(&"a".repeat(64)).is_ok());
+        assert!(parse_room_id(&"a".repeat(12)).is_ok());
 
-        // Too long (>64 chars)
-        let too_long = "a".repeat(65);
+        let too_short = "a".repeat(11);
+        assert!(parse_room_id(&too_short).is_err());
+
+        let too_long = "a".repeat(13);
         assert!(parse_room_id(&too_long).is_err());
     }
 
     #[test]
     fn test_parse_room_id_returns_valid_roomid() {
-        let room_id = parse_room_id("test-room_123").unwrap();
-        assert_eq!(room_id.as_str(), "test-room_123");
+        let room_id = parse_room_id("test-room_12").unwrap();
+        assert_eq!(room_id.as_str(), "test-room_12");
     }
 
     #[test]
@@ -108,7 +106,7 @@ mod tests {
         assert!(matches!(err, ValidationError::InvalidFormat { .. }));
 
         // Too long
-        let too_long = "a".repeat(65);
+        let too_long = "a".repeat(13);
         let err = parse_room_id(&too_long).unwrap_err();
         assert!(matches!(err, ValidationError::TooLong { .. }));
     }

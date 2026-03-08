@@ -269,6 +269,23 @@ async fn test_fallback_family_ttl_expiry() {
 }
 
 #[tokio::test]
+async fn test_fallback_blacklist_if_not_exists_respects_authoritative_primary_replay() {
+    let primary = std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
+        as std::sync::Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary.clone());
+
+    let key = "jti:primary_replay_only";
+    primary.blacklist(key, 3600).await.unwrap();
+
+    let already_existed = fallback.blacklist_if_not_exists(key, 3600).await.unwrap();
+    assert!(
+        already_existed,
+        "Primary already contained the JTI, so this must be treated as replay"
+    );
+    assert!(fallback.is_blacklisted(key).await);
+}
+
+#[tokio::test]
 #[ignore = "requires Docker (PostgreSQL testcontainer)"]
 async fn test_pg_family_revocation_survives_cleanup_until_marker_expires() {
     let (_container, pool) = create_test_pool().await;
@@ -779,4 +796,21 @@ async fn test_sync_is_idempotent() {
         count_after_first,
         "Second sync should not call primary again"
     );
+}
+
+#[tokio::test]
+async fn test_redis_syncable_blacklist_if_not_exists_respects_authoritative_primary_replay() {
+    let primary = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
+        as Arc<dyn TokenBlacklistStore>;
+    let fallback = RedisSyncableTokenBlacklistStore::with_defaults(primary.clone());
+
+    let key = "jti:redis_syncable_primary_replay_only";
+    primary.blacklist(key, 3600).await.unwrap();
+
+    let already_existed = fallback.blacklist_if_not_exists(key, 3600).await.unwrap();
+    assert!(
+        already_existed,
+        "Primary already contained the JTI, so redis-syncable wrapper must report replay"
+    );
+    assert!(fallback.is_blacklisted(key).await);
 }

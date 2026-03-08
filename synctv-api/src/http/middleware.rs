@@ -14,6 +14,8 @@ use synctv_core::{
 
 use super::{AppError, AppState};
 
+const MAX_ERROR_RESPONSE_INJECTION_BYTES: usize = 64 * 1024;
+
 /// Request ID extracted from request extensions
 ///
 /// This is set by the `request_id_middleware` and can be used in handlers
@@ -99,6 +101,21 @@ async fn inject_request_id_into_error_response(response: Response, request_id: &
         return response;
     }
 
+    if response
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        .is_some_and(|len| len > MAX_ERROR_RESPONSE_INJECTION_BYTES)
+    {
+        tracing::debug!(
+            request_id = %request_id,
+            max_bytes = MAX_ERROR_RESPONSE_INJECTION_BYTES,
+            "Skipping request_id injection for oversized error response body"
+        );
+        return response;
+    }
+
     // Try to extract and modify the JSON body
     // Note: This requires buffering the body, which has performance implications.
     // For high-traffic endpoints, consider alternative approaches.
@@ -144,7 +161,7 @@ async fn try_inject_request_id_async(
 
     // Split response into parts and body
     let (parts, body) = response.into_parts();
-    let bytes = to_bytes(body, usize::MAX).await?;
+    let bytes = to_bytes(body, MAX_ERROR_RESPONSE_INJECTION_BYTES).await?;
 
     // Try to parse as JSON and check if it's an error response
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|source| {
@@ -1156,6 +1173,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body_bytes, "bad request");
+    }
+
+    #[tokio::test]
+    async fn test_inject_request_id_skips_large_error_body() {
+        let original_json = serde_json::json!({
+            "error": "payload too large",
+            "status": 400,
+            "detail": "x".repeat(70 * 1024),
+        });
+        let original_bytes = serde_json::to_vec(&original_json).unwrap();
+
+        let response = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header(axum::http::header::CONTENT_LENGTH, original_bytes.len().to_string())
+            .body(axum::body::Body::from(original_bytes.clone()))
+            .unwrap();
+
+        let result = inject_request_id_into_error_response(response, "oversized-req").await;
+        let body_bytes = axum::body::to_bytes(result.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body_bytes, original_bytes);
+        assert!(json.get("request_id").is_none());
     }
 
     // === Provider Routes Security Headers Tests ===

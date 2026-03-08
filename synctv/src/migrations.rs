@@ -248,17 +248,14 @@ async fn wait_for_lock_and_migrate(
                 ));
             }
             Err(e) => {
-                if cluster_mode {
-                    return Err(anyhow::anyhow!(
-                        "cluster.enabled=true requires Redis migration locking; refusing PostgreSQL advisory lock fallback while waiting for Redis migration lock: {e}"
-                    ));
-                }
-                warn!(
-                    "Redis error while waiting for migration lock: {}. \
-                     Falling back to PostgreSQL advisory lock.",
-                    e
-                );
-                return run_migrations_with_pg_advisory_lock(pool).await;
+                let mode_message = if cluster_mode {
+                    "cluster.enabled=true requires Redis migration locking"
+                } else {
+                    "standalone startup requires the same Redis migration lock to remain healthy once another node already owns it"
+                };
+                return Err(anyhow::anyhow!(
+                    "{mode_message}; refusing PostgreSQL advisory lock fallback while waiting for Redis migration lock: {e}"
+                ));
             }
         }
     }
@@ -277,10 +274,14 @@ mod tests {
     use super::run_migrations_with_mode;
     use anyhow::anyhow;
     use sqlx::postgres::PgPoolOptions;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct FailingMigrationLock {
         acquire_called: AtomicBool,
+    }
+
+    struct WaitThenFailMigrationLock {
+        acquire_calls: AtomicUsize,
     }
 
     #[async_trait::async_trait]
@@ -288,6 +289,22 @@ mod tests {
         async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
             self.acquire_called.store(true, Ordering::SeqCst);
             Err(anyhow!("redis unavailable"))
+        }
+
+        async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl synctv_core::service::MigrationLock for WaitThenFailMigrationLock {
+        async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
+            let call = self.acquire_calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Ok(None)
+            } else {
+                Err(anyhow!("redis unavailable while waiting"))
+            }
         }
 
         async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
@@ -314,6 +331,38 @@ mod tests {
             err.to_string()
                 .contains("cluster.enabled=true requires Redis migration locking"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn standalone_mode_rejects_pg_advisory_fallback_after_waiting_lock_error() {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
+            .expect("connect_lazy should succeed");
+        let lock = WaitThenFailMigrationLock {
+            acquire_calls: AtomicUsize::new(0),
+        };
+
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            run_migrations_with_mode(&pool, &lock, "test:", false),
+        )
+        .await
+        .expect("wait path should complete within a single poll interval")
+        .expect_err("must not fall back to PG advisory lock after Redis wait-path error");
+
+        assert_eq!(lock.acquire_calls.load(Ordering::SeqCst), 2);
+        assert!(
+            err.to_string().contains("refusing PostgreSQL advisory lock fallback")
+                || err
+                    .to_string()
+                    .contains("requires the same Redis migration lock to remain healthy"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("while waiting for Redis migration lock"),
+            "wait-path error should clearly describe the failing phase: {err}"
         );
     }
 }

@@ -541,35 +541,6 @@ impl PlaylistRepository {
         }
     }
 
-    /// Update playlist (legacy method without optimistic locking).
-    ///
-    /// **Warning:** This method does not check version and always succeeds.
-    /// Prefer `update_with_version` for concurrent access patterns.
-    pub async fn update(&self, playlist: &Playlist) -> Result<Playlist> {
-        let source_provider_str = playlist.source_provider.as_deref();
-        let row = sqlx::query(
-            r"
-            UPDATE playlists
-            SET name = $2, position = $3, source_provider = $4, source_config = $5,
-                provider_instance_name = $6, version = version + 1
-            WHERE id = $1
-            RETURNING id, room_id, creator_id, name, parent_id, position,
-                      source_provider, source_config, provider_instance_name,
-                      created_at, updated_at, version
-            ",
-        )
-        .bind(playlist.id.as_str())
-        .bind(&playlist.name)
-        .bind(playlist.position)
-        .bind(source_provider_str)
-        .bind(&playlist.source_config)
-        .bind(&playlist.provider_instance_name)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(Playlist::from_row(&row)?)
-    }
-
     /// Delete playlist (cascade to children and media)
     pub async fn delete(&self, id: &PlaylistId) -> Result<bool> {
         let result = sqlx::query("DELETE FROM playlists WHERE id = $1")
@@ -889,10 +860,10 @@ mod tests {
         assert!(child_ids.contains(&created_child2.id));
     }
 
-    /// Integration test: Update playlist
+    /// Integration test: Update playlist with optimistic locking
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_update() {
+    async fn test_update_with_current_version() {
         use crate::repository::room::RoomRepository;
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
@@ -928,7 +899,10 @@ mod tests {
         updated.name = "Updated Name".to_string();
         updated.position = 5;
 
-        let result = playlist_repo.update(&updated).await.unwrap();
+        let result = playlist_repo
+            .update_with_version(&updated, created.version)
+            .await
+            .unwrap();
         assert_eq!(result.name, "Updated Name");
         assert_eq!(result.position, 5);
         assert!(result.version > created.version); // Version should increment

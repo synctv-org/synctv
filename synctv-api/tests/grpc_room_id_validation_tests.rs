@@ -3,7 +3,7 @@
 //! These tests verify that the gRPC interceptors properly validate room_id format
 //! to match HTTP layer validation rules:
 //! - Must not be empty
-//! - Must not exceed 64 characters (ID_MAX limit)
+//! - Must be exactly 12 characters
 //! - Must contain only alphanumeric characters, underscores, and hyphens
 
 use synctv_api::grpc::interceptors::{AuthInterceptor, RoomContext, SecurityCheckPassed};
@@ -41,18 +41,14 @@ async fn test_valid_room_id_format_should_pass() {
     let interceptor = AuthInterceptor::new(jwt_service);
 
     // Test various valid room_id formats
-    let max_len_room_id = "a".repeat(64);
+    let exact_len_room_id = "a".repeat(12);
     let valid_room_ids = vec![
-        "room123",          // alphanumeric
-        "ROOM123",          // uppercase
-        "room_123",         // with underscore
-        "room-123",         // with hyphen
-        "Room_123-Test",    // mixed case with underscore and hyphen
-        "a",                // single character
-        "123",              // numbers only
-        &max_len_room_id,   // max length (64 chars)
-        "AbCdEf123456",     // mixed case alphanumeric
-        "test_room-id-123", // multiple underscores and hyphens
+        "room1234_abx",   // alphanumeric + underscore
+        "ROOM1234-XYZ",   // uppercase + hyphen
+        "room_123-xyz",   // underscore + hyphen
+        "AbCdEf123456",   // mixed case alphanumeric
+        &exact_len_room_id,
+        "123456789012",   // numbers only
     ];
 
     for room_id in valid_room_ids {
@@ -111,7 +107,7 @@ async fn test_empty_room_id_should_be_rejected() {
 
 #[tokio::test]
 async fn test_too_long_room_id_should_be_rejected() {
-    // Room_id exceeding 64 characters should be rejected
+    // Room_id exceeding 12 characters should be rejected
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
     let token = jwt_service
@@ -119,8 +115,7 @@ async fn test_too_long_room_id_should_be_rejected() {
         .unwrap();
     let interceptor = AuthInterceptor::new(jwt_service);
 
-    // Create a room_id with 65 characters (exceeds ID_MAX = 64)
-    let too_long_room_id = "a".repeat(65);
+    let too_long_room_id = "a".repeat(13);
 
     let mut request = Request::new(());
     // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
@@ -130,7 +125,7 @@ async fn test_too_long_room_id_should_be_rejected() {
     let result = interceptor.inject_room(request);
     assert!(
         result.is_err(),
-        "Room_id with {} chars should be rejected (max 64)",
+        "Room_id with {} chars should be rejected (max 12)",
         too_long_room_id.len()
     );
 
@@ -162,6 +157,7 @@ async fn test_invalid_characters_in_room_id_should_be_rejected() {
 
     // Test various invalid room_id formats
     let invalid_room_ids = vec![
+        "room123",  // too short
         "room@123",  // @ symbol
         "room#123",  // # symbol
         "room$123",  // $ symbol
@@ -226,7 +222,7 @@ async fn test_unicode_characters_in_room_id_should_be_rejected() {
 
     let unicode_room_ids = vec![
         "roomééé",   // Accented characters (ASCII-compatible for gRPC metadata)
-        "room_cafe", // This should actually pass - it's ASCII
+        "room_cafe", // still too short and should fail under fixed-length IDs
     ];
 
     for room_id in unicode_room_ids {
@@ -236,19 +232,17 @@ async fn test_unicode_characters_in_room_id_should_be_rejected() {
         *request.metadata_mut() = create_metadata(&token, room_id);
 
         let result = interceptor.inject_room(request);
-        // For "roomééé", the non-ASCII characters should be rejected
-        // For "room_cafe", it should pass (valid ASCII)
-        if room_id.contains("é") {
+        if room_id.contains("é") || room_id == "room_cafe" {
             assert!(
                 result.is_err(),
-                "Room_id '{room_id}' with non-ASCII characters should be rejected"
+                "Room_id '{room_id}' should be rejected"
             );
 
             let status = result.unwrap_err();
             assert_eq!(
                 status.code(),
                 tonic::Code::InvalidArgument,
-                "Non-ASCII room_id should return INVALID_ARGUMENT"
+                "Invalid room_id should return INVALID_ARGUMENT"
             );
         }
     }

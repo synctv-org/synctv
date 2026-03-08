@@ -50,7 +50,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist structure change
-        self.publish_room_cache_invalidation(&rid);
+        self.publish_room_cache_invalidation(&rid).await;
 
         let item_count = self
             .room_service
@@ -110,7 +110,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist update
-        self.publish_room_cache_invalidation(&rid);
+        self.publish_room_cache_invalidation(&rid).await;
 
         let item_count = self
             .room_service
@@ -152,7 +152,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist deletion
-        self.publish_room_cache_invalidation(&rid);
+        self.publish_room_cache_invalidation(&rid).await;
 
         Ok(crate::proto::client::DeletePlaylistResponse { success: true })
     }

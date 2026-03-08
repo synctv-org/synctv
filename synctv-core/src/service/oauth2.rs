@@ -911,15 +911,6 @@ impl OAuth2Service {
         self.repository.delete_all_for_user(user_id).await
     }
 
-    /// Clean up expired `OAuth2` states (maintenance task)
-    ///
-    /// Note: Redis handles TTL automatically via SETEX.
-    /// This method is now a no-op but kept for API compatibility.
-    pub async fn cleanup_expired_states(&self, _max_age_seconds: i64) -> Result<()> {
-        // Redis handles its own TTL via SETEX
-        // This method is kept for API compatibility but is now a no-op
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -1693,14 +1684,6 @@ mod tests {
         // OAuth2Service takes Arc<dyn OAuthStateStore>, not a concrete Redis type.
         // This verifies the abstraction compiles with the in-memory implementation.
         let _service = create_test_service();
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_expired_states_is_noop() {
-        let service = create_test_service();
-        // Should not error even though it does nothing
-        let result = service.cleanup_expired_states(300).await;
-        assert!(result.is_ok());
     }
 
     #[tokio::test]

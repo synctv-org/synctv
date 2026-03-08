@@ -35,6 +35,7 @@ use synctv_livestream::api::{FlvStreamingApi, HlsStreamingApi};
 #[derive(Debug, Deserialize)]
 pub struct LiveQuery {
     /// Room ID (required for most endpoints)
+    #[serde(alias = "roomId")]
     room_id: Option<String>,
     /// Authentication token
     token: Option<String>,
@@ -51,7 +52,7 @@ async fn send_flv_chunk(
             Ok(Ok(()))
         )
     } else {
-        tx.try_send(chunk).is_ok()
+        tx.send(chunk).await.is_ok()
     }
 }
 
@@ -754,6 +755,15 @@ mod tests {
         assert!(query.token.is_none());
     }
 
+    #[test]
+    fn test_query_parameter_extraction_accepts_legacy_room_id_casing() {
+        let query: LiveQuery = serde_urlencoded::from_str("roomId=room123&token=test_token")
+            .expect("camelCase query should deserialize");
+
+        assert_eq!(query.room_id, Some("room123".to_string()));
+        assert_eq!(query.token, Some("test_token".to_string()));
+    }
+
     /// Test `media_id` in path and `room_id` in query
     #[test]
     fn test_media_in_path_room_in_query() {
@@ -854,6 +864,39 @@ mod tests {
         assert!(sent);
         assert!(
             matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"frame"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_flv_chunk_waits_without_timeout_when_capacity_frees() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(Ok(Bytes::from_static(b"first")))
+            .await
+            .expect("initial send should fill channel");
+
+        let sender = tx.clone();
+        let send_task = tokio::spawn(async move {
+            send_flv_chunk(
+                &sender,
+                Ok(Bytes::from_static(b"second")),
+                std::time::Duration::ZERO,
+            )
+            .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(
+            matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"first"))
+        );
+
+        let sent = tokio::time::timeout(std::time::Duration::from_secs(1), send_task)
+            .await
+            .expect("send task should complete")
+            .expect("send task should not panic");
+
+        assert!(sent, "write_timeout=0 should wait instead of dropping");
+        assert!(
+            matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"second"))
         );
     }
 

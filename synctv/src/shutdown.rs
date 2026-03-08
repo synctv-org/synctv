@@ -25,7 +25,10 @@ pub trait ShutdownHook: Send + Sync {
     fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 }
 
-/// Minimum per-task timeout when dividing global budget.
+/// Preferred minimum per-task timeout when dividing global budget.
+///
+/// This is only used when the remaining total budget can still afford it for
+/// every pending item. The overall shutdown budget always takes precedence.
 const MIN_PER_TASK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Centralized collection of all shutdown resources.
@@ -37,7 +40,7 @@ const MIN_PER_TASK_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// The `total_budget` limits the overall shutdown duration to stay within
 /// K8s `terminationGracePeriodSeconds`. The remaining budget is divided
-/// among pending tasks and hooks, with a per-item minimum of 5 seconds.
+/// among pending tasks and hooks without ever exceeding the total budget.
 pub struct ShutdownCoordinator {
     tokens: Vec<(&'static str, CancellationToken)>,
     tasks: Vec<(&'static str, JoinHandle<()>)>,
@@ -168,16 +171,30 @@ impl ShutdownCoordinator {
 
     /// Compute the timeout for a single item given the remaining budget.
     ///
-    /// Divides the time remaining until `deadline` equally among `remaining_items`,
-    /// with a minimum of `MIN_PER_TASK_TIMEOUT` seconds per item.
+    /// Divides the time remaining until `deadline` equally among
+    /// `remaining_items`.
+    ///
+    /// When the remaining budget is large enough to still afford
+    /// `MIN_PER_TASK_TIMEOUT` for every pending item, the returned timeout is at
+    /// least that preferred minimum. Otherwise the equal-share budget is used so
+    /// the coordinator never exceeds the total shutdown budget.
     fn budget_per_item(deadline: tokio::time::Instant, remaining_items: usize) -> Duration {
         let now = tokio::time::Instant::now();
         if now >= deadline || remaining_items == 0 {
-            return MIN_PER_TASK_TIMEOUT;
+            return Duration::ZERO;
         }
+
         let remaining_budget = deadline - now;
-        let per_item = remaining_budget / remaining_items as u32;
-        per_item.max(MIN_PER_TASK_TIMEOUT)
+        let equal_share = remaining_budget / remaining_items as u32;
+        let preferred_total = MIN_PER_TASK_TIMEOUT
+            .checked_mul(remaining_items as u32)
+            .unwrap_or(Duration::MAX);
+
+        if remaining_budget >= preferred_total {
+            equal_share.max(MIN_PER_TASK_TIMEOUT)
+        } else {
+            equal_share
+        }
     }
 }
 
@@ -282,16 +299,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_budget_per_item_respects_minimum() {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        let per = ShutdownCoordinator::budget_per_item(deadline, 100);
-        assert_eq!(per, MIN_PER_TASK_TIMEOUT);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let per = ShutdownCoordinator::budget_per_item(deadline, 2);
+        assert!(per >= MIN_PER_TASK_TIMEOUT);
     }
 
     #[tokio::test]
     async fn test_budget_per_item_past_deadline() {
         let deadline = tokio::time::Instant::now() - Duration::from_secs(1);
         let per = ShutdownCoordinator::budget_per_item(deadline, 5);
-        assert_eq!(per, MIN_PER_TASK_TIMEOUT);
+        assert_eq!(per, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_budget_per_item_never_exceeds_total_budget() {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let per = ShutdownCoordinator::budget_per_item(deadline, 100);
+
+        assert!(
+            per < Duration::from_secs(1),
+            "per-item budget should shrink with constrained total budget, got {per:?}"
+        );
     }
 
     #[tokio::test]

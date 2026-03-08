@@ -4,6 +4,7 @@
 //! Both HTTP and gRPC handlers are thin wrappers that call these implementations.
 //!
 //! All methods use grpc-generated types for parameters and return values.
+use std::time::Duration;
 
 pub mod admin;
 pub mod client;
@@ -25,29 +26,51 @@ pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
 pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl};
 
+const CLUSTER_EVENT_SEND_TIMEOUT: Duration = Duration::from_millis(250);
+
+fn record_cluster_event_publish_failure(reason: &'static str, message: &str) {
+    synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+        .with_label_values(&[reason])
+        .inc();
+    tracing::warn!(reason, "{message}");
+}
+
 /// Try to publish a cluster event via the Redis publish channel.
 ///
-/// On success, the event is queued for publication. On failure (channel full
-/// or closed), a warning is logged and the `CLUSTER_EVENTS_DROPPED` metric
-/// is incremented so operators can detect state drift.
-pub fn try_publish_cluster_event(
+/// On success, the event is queued for publication. When the channel is
+/// temporarily full, wait briefly for capacity instead of dropping immediately.
+/// Returns `true` on success, `false` on timeout or closed channel.
+pub async fn try_publish_cluster_event(
     tx: &tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>,
     request: synctv_cluster::sync::PublishRequest,
-) {
-    if let Err(err) = tx.try_send(request) {
-        match err {
-            tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
-                    .with_label_values(&["channel_full"])
-                    .inc();
-                tracing::warn!("Cluster event publish channel full, event dropped");
+) -> bool {
+    match tx.try_send(request) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(request)) => {
+            match tokio::time::timeout(CLUSTER_EVENT_SEND_TIMEOUT, tx.send(request)).await {
+                Ok(Ok(())) => true,
+                Ok(Err(_)) => {
+                    record_cluster_event_publish_failure(
+                        "channel_closed",
+                        "Cluster event publish channel closed, event dropped",
+                    );
+                    false
+                }
+                Err(_) => {
+                    record_cluster_event_publish_failure(
+                        "channel_timeout",
+                        "Cluster event publish channel remained full until timeout, event dropped",
+                    );
+                    false
+                }
             }
-            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
-                    .with_label_values(&["channel_closed"])
-                    .inc();
-                tracing::warn!("Cluster event publish channel closed, event dropped");
-            }
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            record_cluster_event_publish_failure(
+                "channel_closed",
+                "Cluster event publish channel closed, event dropped",
+            );
+            false
         }
     }
 }
@@ -56,7 +79,7 @@ pub fn try_publish_cluster_event(
 ///
 /// Shared utility used by both `ClientApiImpl` and `AdminApiImpl` after media
 /// deletion to terminate any active RTMP stream.
-pub fn kick_stream_cluster(
+pub async fn kick_stream_cluster(
     live_streaming_infrastructure: Option<
         &std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
     >,
@@ -77,8 +100,9 @@ pub fn kick_stream_cluster(
 
     // 2. Cluster-wide via Redis
     if let Some(tx) = redis_publish_tx {
-        if tx
-            .try_send(PublishRequest {
+        if !try_publish_cluster_event(
+            tx,
+            PublishRequest {
                 event: ClusterEvent::KickPublisher {
                     event_id: nanoid::nanoid!(16),
                     room_id: Rid::from_string(room_id.to_string()),
@@ -86,13 +110,14 @@ pub fn kick_stream_cluster(
                     reason: reason.to_string(),
                     timestamp: chrono::Utc::now(),
                 },
-            })
-            .is_err()
+            },
+        )
+        .await
         {
             tracing::warn!(
                 room_id,
                 media_id,
-                "Failed to send cluster-wide kick event (Redis channel closed or full)"
+                "Failed to send cluster-wide kick event after bounded retry"
             );
         }
     }
@@ -701,6 +726,58 @@ mod tests {
                 check(&classified),
                 "ApiError '{as_string}' misclassified after Display roundtrip"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_try_publish_cluster_event_waits_for_capacity_instead_of_dropping() {
+        use synctv_cluster::sync::{CacheTarget, ClusterEvent, PublishRequest};
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(PublishRequest {
+            event: ClusterEvent::CacheInvalidate {
+                event_id: "existing_event_1".to_string(),
+                targets: vec![CacheTarget::Room {
+                    room_id: "room12345678".to_string(),
+                }],
+                timestamp: chrono::Utc::now(),
+            },
+        })
+        .await
+        .unwrap();
+
+        let publish_request = PublishRequest {
+            event: ClusterEvent::CacheInvalidate {
+                event_id: "delayed_event_1".to_string(),
+                targets: vec![CacheTarget::Room {
+                    room_id: "room87654321".to_string(),
+                }],
+                timestamp: chrono::Utc::now(),
+            },
+        };
+
+        let sender = tx.clone();
+        let publish_task = tokio::spawn(async move {
+            super::try_publish_cluster_event(&sender, publish_request).await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let first = rx.recv().await.expect("buffered message should exist");
+        match first.event {
+            ClusterEvent::CacheInvalidate { event_id, .. } => {
+                assert_eq!(event_id, "existing_event_1");
+            }
+            other => panic!("unexpected first event: {other:?}"),
+        }
+
+        assert!(publish_task.await.unwrap());
+
+        let second = rx.recv().await.expect("second message should be delivered");
+        match second.event {
+            ClusterEvent::CacheInvalidate { event_id, .. } => {
+                assert_eq!(event_id, "delayed_event_1");
+            }
+            other => panic!("unexpected second event: {other:?}"),
         }
     }
 

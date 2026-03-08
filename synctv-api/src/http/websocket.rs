@@ -11,7 +11,6 @@
 //! Authentication can be provided via:
 //! 1. Authorization header: `Authorization: Bearer <jwt>` (preferred, more secure)
 //! 2. Query parameter: `?ticket=<ticket>` (recommended for browser clients, short-lived one-time-use)
-//! 3. Query parameter: `?token=<jwt>` (legacy fallback, appears in logs/history)
 //!
 //! For browser clients, the ticket system is recommended:
 //! - First call POST /api/tickets to get a short-lived ticket
@@ -737,7 +736,7 @@ mod tests {
     // ========== Auth Priority Logic Tests ==========
     // extract_user_id is async and requires AppState, so we test the priority
     // logic via the documented contract:
-    // 1. Header > 2. Ticket > 3. Token query
+    // 1. Header > 2. Ticket
     // These tests verify the query parsing that feeds into extract_user_id.
 
     #[test]

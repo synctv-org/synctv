@@ -24,8 +24,10 @@ pub mod limits {
     pub const URL_MAX: usize = 2048;
     /// Maximum email length
     pub const EMAIL_MAX: usize = 254;
-    /// Maximum ID length (`room_id`, `user_id`, `media_id`)
+    /// Maximum generic external ID length (`user_id`, `media_id`, playlist refs, etc.)
     pub const ID_MAX: usize = 64;
+    /// Fixed room ID length. `RoomId` is stored as `CHAR(12)` in PostgreSQL.
+    pub const ROOM_ID_LEN: usize = synctv_core::models::id::ID_LENGTH;
     /// Maximum `OAuth2` redirect URL length
     pub const OAUTH2_REDIRECT_URL_MAX: usize = 2048;
     /// Maximum `OAuth2` provider user ID length
@@ -281,10 +283,17 @@ pub fn validate_room_id(id: &str) -> ValidationResult<String> {
     if len == 0 {
         return Err(ValidationError::Required("room_id"));
     }
-    if len > limits::ID_MAX {
+    if len > limits::ROOM_ID_LEN {
         return Err(ValidationError::TooLong {
             field: "room_id",
-            max: limits::ID_MAX,
+            max: limits::ROOM_ID_LEN,
+            actual: len,
+        });
+    }
+    if len < limits::ROOM_ID_LEN {
+        return Err(ValidationError::TooShort {
+            field: "room_id",
+            min: limits::ROOM_ID_LEN,
             actual: len,
         });
     }

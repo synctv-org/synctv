@@ -309,26 +309,28 @@ impl ClientApiImpl {
     ///
     /// Uses non-blocking `try_publish_cluster_event` internally (D8).
     /// No-op when Redis is not configured.
-    fn publish_room_cache_invalidation(&self, room_id: &synctv_core::models::RoomId) {
+    async fn publish_room_cache_invalidation(&self, room_id: &synctv_core::models::RoomId) {
         if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
+            let _ = crate::impls::try_publish_cluster_event(
                 tx,
                 Self::build_room_cache_invalidation_request(room_id),
-            );
+            )
+            .await;
         }
     }
 
     /// Kick a stream both locally and cluster-wide via Redis Pub/Sub.
     ///
     /// Used after media deletion to terminate any active RTMP stream.
-    fn kick_stream_cluster(&self, room_id: &str, media_id: &str, reason: &str) {
+    async fn kick_stream_cluster(&self, room_id: &str, media_id: &str, reason: &str) {
         super::kick_stream_cluster(
             self.live_streaming_infrastructure.as_ref(),
             self.redis_publish_tx.as_ref(),
             room_id,
             media_id,
             reason,
-        );
+        )
+        .await;
     }
 
     /// Publish a permission change event to other cluster replicas.
@@ -431,29 +433,16 @@ impl ClientApiImpl {
                     timestamp: chrono::Utc::now(),
                 },
             };
-            match tx.try_send(request) {
-                Ok(()) => true,
-                Err(err) => {
-                    match &err {
-                        tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
-                                .with_label_values(&["channel_full"])
-                                .inc();
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
-                                .with_label_values(&["channel_closed"])
-                                .inc();
-                        }
-                    }
+            if crate::impls::try_publish_cluster_event(tx, request).await {
+                true
+            } else {
                     tracing::warn!(
                         room_id = %room_id.as_str(),
                         target_user_id = %target_user_id.as_str(),
-                        "Failed to publish permission change event: {err}, \
+                        "Failed to publish permission change event after bounded retry, \
                          other replicas may serve stale permissions"
                     );
                     false
-                }
             }
         }
     }

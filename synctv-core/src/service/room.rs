@@ -244,6 +244,7 @@ impl RoomService {
             provider_instance_repo,
             None,
             None,
+            "",
         ));
         let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
 
@@ -311,6 +312,11 @@ impl RoomService {
     #[cfg(test)]
     pub(crate) fn has_brute_force_service(&self) -> bool {
         self.brute_force_service.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_distributed_lock(&self) -> bool {
+        self.distributed_lock.is_some()
     }
 
     /// Inject the settings registry for reading `create_room_need_review` and other global settings.

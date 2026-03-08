@@ -21,7 +21,7 @@ fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderM
         pool,
     ));
     Arc::new(synctv_core::service::RemoteProviderManager::new(
-        repo, None, None,
+        repo, None, None, "",
     ))
 }
 

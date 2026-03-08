@@ -34,6 +34,11 @@ pub struct ClusterConfig {
     /// Pre-built Redis connection manager (shared across the process).
     /// `None` for local-only / single-node mode (used in tests).
     pub redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Shared Redis connection handle used by long-lived background components.
+    /// When present, components should prefer this over `redis_conn` so Sentinel
+    /// failover hot-swaps are observed without rebuilding the cluster manager.
+    pub shared_redis_conn:
+        Option<std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     /// Whether cluster mode is explicitly enabled.
     /// When `true`, `ClusterManager::new` will return an error if Redis is not configured.
     /// When `false`, missing Redis is allowed (single-node mode).
@@ -79,6 +84,13 @@ impl std::fmt::Debug for ClusterConfig {
                 "redis_conn",
                 &self.redis_conn.as_ref().map(|_| "ConnectionManager { .. }"),
             )
+            .field(
+                "shared_redis_conn",
+                &self
+                    .shared_redis_conn
+                    .as_ref()
+                    .map(|_| "Arc<RwLock<ConnectionManager>>"),
+            )
             .field("cluster_enabled", &self.cluster_enabled)
             .field("node_id", &self.node_id)
             .field("dedup_window", &self.dedup_window)
@@ -101,6 +113,7 @@ impl Default for ClusterConfig {
         Self {
             redis_client: None,
             redis_conn: None,
+            shared_redis_conn: None,
             cluster_enabled: false,
             node_id: format!("node_{}", nanoid::nanoid!(8)),
             dedup_window: Duration::from_mins(15),
@@ -203,7 +216,8 @@ impl ClusterManager {
     ) -> ClusterResult<Self> {
         debug_assert!(
             !config.cluster_enabled
-                || (config.redis_client.is_some() && config.redis_conn.is_some()),
+                || (config.redis_client.is_some()
+                    && (config.redis_conn.is_some() || config.shared_redis_conn.is_some())),
             "cluster-enabled ClusterManager must be assembled with Redis handles"
         );
 
@@ -228,12 +242,21 @@ impl ClusterManager {
             redis_pubsub,
             publisher_handle,
             critical_forwarder_handle,
-        ) = if let (Some(redis_client), Some(redis_conn)) =
-            (config.redis_client.clone(), config.redis_conn.clone())
-        {
+        ) = if let Some(redis_client) = config.redis_client.clone() {
             // Reuse the shared connection for the message hub's distributed
             // subscription state and TTL refresh background task.
-            let hub = Arc::new(RoomMessageHub::new().with_redis(redis_conn, &config.key_prefix));
+            let hub = if let Some(shared_redis_conn) = config.shared_redis_conn.clone() {
+                Arc::new(RoomMessageHub::new().with_shared_redis(
+                    shared_redis_conn,
+                    &config.key_prefix,
+                ))
+            } else if let Some(redis_conn) = config.redis_conn.clone() {
+                Arc::new(RoomMessageHub::new().with_redis(redis_conn, &config.key_prefix))
+            } else {
+                return Err(crate::error::Error::Configuration(
+                    "cluster.enabled=true requires Redis connection manager".to_string(),
+                ));
+            };
 
             let redis_pubsub = Arc::new(RedisPubSub::with_key_prefix(
                 redis_client,
@@ -1005,6 +1028,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1068,6 +1092,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1120,6 +1145,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1174,6 +1200,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1241,6 +1268,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1289,6 +1317,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1326,6 +1355,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1380,6 +1410,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1423,6 +1454,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1477,6 +1509,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1539,6 +1572,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1585,6 +1619,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1653,6 +1688,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1689,6 +1725,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1725,6 +1762,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1758,6 +1796,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 

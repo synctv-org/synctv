@@ -111,6 +111,7 @@ fn make_cluster_config_with_prefix(
     ClusterConfig {
         redis_client: Some(redis_client),
         redis_conn: Some(redis_conn),
+        shared_redis_conn: None,
         cluster_enabled: true,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_mins(1),
@@ -372,6 +373,7 @@ async fn test_single_node_mode_without_redis() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        shared_redis_conn: None,
         node_id: "standalone".to_string(),
         ..Default::default()
     };
@@ -738,6 +740,7 @@ async fn test_broadcast_recipient_count() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        shared_redis_conn: None,
         node_id: "standalone".to_string(),
         ..Default::default()
     };
@@ -917,6 +920,7 @@ async fn test_get_room_subscribers() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        shared_redis_conn: None,
         node_id: "standalone".to_string(),
         ..Default::default()
     };
@@ -950,6 +954,7 @@ async fn test_cluster_metrics() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        shared_redis_conn: None,
         node_id: "test_node".to_string(),
         ..Default::default()
     };

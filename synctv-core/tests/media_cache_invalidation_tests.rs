@@ -205,6 +205,7 @@ async fn test_edit_media_sends_notification() {
         Arc::new(provider_instance_repo),
         None, // No Redis
         None, // No cluster manager
+        "",
     );
     let providers_manager = Arc::new(ProvidersManager::new(Arc::new(remote_provider_manager)));
 
@@ -396,6 +397,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
         Arc::new(provider_instance_repo),
         None, // No Redis
         None, // No cluster manager
+        "",
     );
     let providers_manager = Arc::new(ProvidersManager::new(Arc::new(remote_provider_manager)));
 

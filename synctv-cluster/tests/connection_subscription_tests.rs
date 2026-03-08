@@ -32,6 +32,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        shared_redis_conn: None,
         parent_cancel_token: None,
     };
 
@@ -133,6 +134,7 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        shared_redis_conn: None,
         cluster_enabled: false,
         node_id: "test_node".to_string(),
         dedup_window: Duration::from_secs(1),

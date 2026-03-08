@@ -668,6 +668,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             )),
             emby: Arc::new(EmbyProvider::new(provider_instance_manager_for_provider)),
             direct_url: Arc::new(DirectUrlProvider::new()),
+            rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
+            live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
         };
 
         let provider_jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
@@ -748,6 +750,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             )),
             provider_stores: Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
                 redis_conn.clone(),
+                config.redis.key_prefix.clone(),
             )),
             proxy_provider_registry: Arc::new(providers.build_proxy_registry()),
             proxy_services: std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {

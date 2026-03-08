@@ -6,12 +6,13 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use std::{future::Future, pin::Pin};
 
 use anyhow::Result;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 
-use synctv_cluster::leader::{LeaderRuntime, LeaderRuntimeBuilder};
+use synctv_cluster::leader::{LeaderRuntime, LeaderRuntimeBuilder, LeadershipEvent};
 use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
 use synctv_core::{
     bootstrap::{
@@ -70,6 +71,9 @@ struct ServerComponents {
     providers: synctv_core::provider::ProviderSet,
 }
 
+type AsyncOnceTaskFactory =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
 /// The assembled application, ready to be started.
 pub struct Application {
     config: Config,
@@ -93,6 +97,46 @@ fn should_run_startup_partition_initialization(config: &Config) -> bool {
 
 const fn should_continue_startup_after_root_bootstrap_failure(has_admin_user: bool) -> bool {
     has_admin_user
+}
+
+fn spawn_on_first_leadership_gain(
+    name: &'static str,
+    leader_runtime: Arc<dyn LeaderRuntime>,
+    cancel: tokio_util::sync::CancellationToken,
+    task_factory: AsyncOnceTaskFactory,
+) -> tokio::task::JoinHandle<()> {
+    synctv_core::spawn::spawn_monitored(name, async move {
+        if leader_runtime.is_leader() {
+            return;
+        }
+
+        let mut rx = leader_runtime.subscribe();
+
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    info!("{name} cancelled before leadership was gained");
+                    return;
+                }
+                event = rx.recv() => {
+                    match event {
+                        Ok(LeadershipEvent::Gained { .. }) => {
+                            task_factory().await;
+                            return;
+                        }
+                        Ok(LeadershipEvent::Lost | LeadershipEvent::Vacancy) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            if leader_runtime.is_leader() {
+                                task_factory().await;
+                                return;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn build_connection_manager(
@@ -139,6 +183,7 @@ async fn build_local_cluster_manager(
         key_prefix: config.redis.key_prefix.clone(),
         catchup_window_secs: config.cluster.catchup_window_secs,
         stream_max_length: config.cluster.stream_max_length,
+        shared_redis_conn: None,
         parent_cancel_token: None,
     };
 
@@ -610,6 +655,76 @@ impl Application {
             db_maintenance.spawn_maintenance_loop(singleton_cancel),
         );
         info!("Database maintenance service started (leader-gated: partitions every 12h, cleanups every 1h)");
+
+        if cluster_runtime_enabled(&infra.config) {
+            let pool = infra.pool.clone();
+            let settings_registry = core.services.settings_registry.clone();
+            let leader_runtime = leader.leader_runtime.clone();
+            let cancel = shutdown.register_token("cluster_leader_startup_work");
+            let task_factory: AsyncOnceTaskFactory = Arc::new(move || {
+                let pool = pool.clone();
+                let settings_registry = settings_registry.clone();
+                Box::pin(async move {
+                    info!("Leadership gained after startup; running deferred singleton initialization");
+
+                    if let Err(err) = synctv_core::service::ensure_audit_partitions_on_startup(&pool).await {
+                        error!(error = %err, "Deferred audit partition initialization failed");
+                    }
+
+                    if let Err(err) = synctv_core::service::ensure_chat_partitions_on_startup(
+                        &pool,
+                        settings_registry.clone(),
+                    )
+                    .await
+                    {
+                        error!(error = %err, "Deferred chat partition initialization failed");
+                    }
+
+                    if let Err(err) =
+                        synctv_core::service::ensure_notification_partitions_on_startup(&pool).await
+                    {
+                        error!(error = %err, "Deferred notification partition initialization failed");
+                    }
+
+                    let cleanup_service = synctv_core::service::CleanupService::new(
+                        pool.clone(),
+                        synctv_core::service::cleanup::CleanupConfig::default(),
+                        Arc::new(synctv_core::service::AlwaysLeader),
+                    )
+                    .with_settings_registry(settings_registry.clone());
+                    let cleanup_result = cleanup_service.run_all().await;
+                    info!(
+                        users_purged = cleanup_result.users_purged,
+                        rooms_purged = cleanup_result.rooms_purged,
+                        rooms_expired = cleanup_result.rooms_expired,
+                        tokens_deleted = cleanup_result.tokens_deleted,
+                        credentials_deleted = cleanup_result.credentials_deleted,
+                        notifications_deleted = cleanup_result.notifications_deleted,
+                        chat_messages_deleted = cleanup_result.chat_messages_deleted,
+                        token_blacklist_deleted = cleanup_result.token_blacklist_deleted,
+                        "Deferred cleanup completed after leadership gain"
+                    );
+
+                    let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new(
+                        pool,
+                        Arc::new(synctv_core::service::AlwaysLeader),
+                    )
+                    .with_settings_registry(settings_registry);
+                    db_maintenance.run_all_maintenance().await;
+                    info!("Deferred database maintenance completed after leadership gain");
+                })
+            });
+
+            shutdown.register_task(
+                "cluster_leader_startup_work",
+                spawn_on_first_leadership_gain(
+                    "cluster_leader_startup_work",
+                    leader_runtime,
+                    cancel,
+                    task_factory,
+                ),
+            );
+        }
     }
 
     // -- Phase 6: Cluster infrastructure ----------------------------------------
@@ -683,6 +798,7 @@ impl Application {
         let cluster_config = ClusterConfig {
             redis_client: Some(redis_handles.client.clone()),
             redis_conn: Some(redis_handles.conn_snapshot().await),
+            shared_redis_conn: Some(redis_handles.conn.clone()),
             cluster_enabled: infra.config.cluster.enabled,
             node_id: infra.node_id.clone(),
             dedup_window: Duration::from_secs(
@@ -802,6 +918,8 @@ impl Application {
             bilibili: Arc::new(BilibiliProvider::new(pim.clone())),
             emby: Arc::new(EmbyProvider::new(pim)),
             direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
+            rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
+            live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
         };
 
         Ok(ServerComponents {
@@ -877,6 +995,7 @@ mod tests {
         HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
         OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig, WebRTCConfig,
     };
+    use tokio::sync::broadcast;
 
     fn minimal_valid_startup_config() -> Config {
         Config {
@@ -929,6 +1048,62 @@ mod tests {
             messaging_rate_limits: synctv_core::config::MessagingRateLimitConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),
+        }
+    }
+
+    struct TestLeaderRuntime {
+        is_leader: std::sync::atomic::AtomicBool,
+        tx: broadcast::Sender<LeadershipEvent>,
+    }
+
+    impl TestLeaderRuntime {
+        fn new(is_leader: bool) -> Self {
+            let (tx, _rx) = broadcast::channel(8);
+            Self {
+                is_leader: std::sync::atomic::AtomicBool::new(is_leader),
+                tx,
+            }
+        }
+
+        fn gain_leadership(&self) {
+            self.is_leader
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = self.tx.send(LeadershipEvent::Gained { epoch: 1 });
+        }
+    }
+
+    impl synctv_cluster::leader::LeaderElect for TestLeaderRuntime {
+        fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
+            self.tx.subscribe()
+        }
+    }
+
+    impl synctv_core::service::LeaderCheck for TestLeaderRuntime {
+        fn is_leader(&self) -> bool {
+            self.is_leader.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl synctv_cluster::leader::LeaderRuntime for TestLeaderRuntime {
+        fn current_leader_identity(&self) -> Option<String> {
+            self.is_leader
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .then(|| "test-node".to_string())
+        }
+
+        fn leader_epoch(&self) -> u64 {
+            if self.is_leader.load(std::sync::atomic::Ordering::SeqCst) {
+                1
+            } else {
+                0
+            }
+        }
+
+        async fn resign(&self) {
+            self.is_leader
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = self.tx.send(LeadershipEvent::Lost);
         }
     }
 
@@ -1072,6 +1247,7 @@ mod tests {
         let cluster_config = ClusterConfig {
             redis_client: Some(client),
             redis_conn: Some(conn),
+            shared_redis_conn: None,
             cluster_enabled: true,
             node_id: "test-node".to_string(),
             dedup_window: Duration::from_secs(30),
@@ -1257,5 +1433,30 @@ mod tests {
                 .contains("startup invariant violated: cluster runtime reached without Redis connection wiring"),
             "unexpected error: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn deferred_startup_work_runs_once_when_leadership_is_gained() {
+        let leader_runtime = Arc::new(TestLeaderRuntime::new(false));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ran_clone = ran.clone();
+
+        let handle = spawn_on_first_leadership_gain(
+            "test_leadership_gain",
+            leader_runtime.clone(),
+            cancel,
+            Arc::new(move || {
+                let ran = ran_clone.clone();
+                Box::pin(async move {
+                    ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })
+            }),
+        );
+
+        leader_runtime.gain_leadership();
+        handle.await.expect("task should join");
+
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

@@ -4,6 +4,7 @@
 //! URLs point to synctv's own HTTP-FLV and HLS endpoints.
 
 use super::{
+    proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
     store::{ProviderStoreExt, VersionedPlayback},
     MediaProvider, PlaybackResult, ProviderContext, ProviderError,
 };
@@ -25,27 +26,26 @@ const FORBIDDEN_URL_FIELDS: &[&str] = &[
 
 /// RTMP `MediaProvider`
 pub struct RtmpProvider {
-    base_url: String,
 }
 
 impl RtmpProvider {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self {
-            base_url: base_url.into(),
-        }
+    pub const NAME: &'static str = "rtmp";
+
+    pub const fn new() -> Self {
+        Self {}
     }
 }
 
 impl Default for RtmpProvider {
     fn default() -> Self {
-        Self::new("https://localhost:8080")
+        Self::new()
     }
 }
 
 #[async_trait]
 impl MediaProvider for RtmpProvider {
     fn name(&self) -> &'static str {
-        "rtmp"
+        Self::NAME
     }
 
     async fn generate_playback(
@@ -63,9 +63,8 @@ impl MediaProvider for RtmpProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing room_id".to_string()))?;
 
-        let result = super::build_live_playback(&self.base_url, media_id, room_id);
+        let result = super::build_live_playback(media_id, room_id);
 
-        // Store with version for proxy URL identity
         let store = _ctx.store.as_ref();
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5); // 5 minutes for live
@@ -82,7 +81,13 @@ impl MediaProvider for RtmpProvider {
                 .await;
         }
 
-        Ok(result)
+        Ok(super::maybe_sign_versioned_playback(
+            result,
+            Self::NAME,
+            &version,
+            versioned.expires_at,
+            _ctx,
+        ))
     }
 
     async fn validate_source_config(
@@ -114,6 +119,58 @@ impl MediaProvider for RtmpProvider {
 
         Ok(())
     }
+
+    fn as_provider_proxy(&self) -> Option<&dyn ProviderProxy> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl ProviderProxy for RtmpProvider {
+    async fn resolve_proxy(
+        &self,
+        ctx: &ProxyRequestContext<'_>,
+    ) -> Result<ProxyAction, ProviderError> {
+        let (version, rest) = ctx.sub_path.split_once('/').ok_or(ProviderError::NotFound)?;
+        let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+        let room_id = versioned
+            .result
+            .metadata
+            .get("room_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ProviderError::ApiError("Live playback missing room_id".into()))?;
+        let media_id = versioned
+            .result
+            .metadata
+            .get("media_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
+
+        match rest {
+            "stream" => Ok(ProxyAction::LiveFlv {
+                provider_name: Self::NAME.to_string(),
+                room_id: room_id.to_string(),
+                media_id: media_id.to_string(),
+            }),
+            "m3u8" => Ok(ProxyAction::LiveHlsPlaylist {
+                provider_name: Self::NAME.to_string(),
+                room_id: room_id.to_string(),
+                media_id: media_id.to_string(),
+                version: version.to_string(),
+            }),
+            segment if segment.starts_with("segment/") => {
+                let segment_name = segment.trim_start_matches("segment/");
+                let disguised_as_png = segment_name.ends_with(".png");
+                Ok(ProxyAction::LiveHlsSegment {
+                    room_id: room_id.to_string(),
+                    media_id: media_id.to_string(),
+                    segment_name: segment_name.to_string(),
+                    disguised_as_png,
+                })
+            }
+            _ => Err(ProviderError::NotFound),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -129,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_source_config_rejects_url_fields() {
-        let provider = RtmpProvider::new("https://example.com");
+        let provider = RtmpProvider::new();
         let ctx = create_context();
 
         let configs_with_urls = vec![
@@ -149,7 +206,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_source_config_accepts_valid_config() {
-        let provider = RtmpProvider::new("https://example.com");
+        let provider = RtmpProvider::new();
         let ctx = create_context();
 
         let valid_config = json!({
@@ -163,5 +220,67 @@ mod tests {
             "validate_source_config should accept valid config: {:?}",
             result.err()
         );
+    }
+
+    #[tokio::test]
+    async fn generate_playback_signs_urls_with_provider_proxy_prefix() {
+        use crate::provider::store::InMemoryProviderStore;
+        use crate::service::ProxySigningKey;
+        use std::sync::Arc;
+
+        let provider = RtmpProvider::new();
+        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let ctx = ProviderContext::new("synctv")
+            .with_user_id("user1")
+            .with_room_id("room1")
+            .with_signing_key(&signing_key)
+            .with_store(Arc::new(InMemoryProviderStore::new(16)));
+        let result = provider
+            .generate_playback(&ctx, &json!({"room_id": "room1", "media_id": "media1"}))
+            .await
+            .unwrap();
+
+        let hls = result.playback_infos.get("hls").unwrap().urls.first().unwrap();
+        let flv = result.playback_infos.get("flv").unwrap().urls.first().unwrap();
+        assert!(hls.starts_with("/api/providers/proxy/rtmp/"));
+        assert!(hls.contains("/m3u8?"));
+        assert!(flv.starts_with("/api/providers/proxy/rtmp/"));
+        assert!(flv.contains("/stream?"));
+    }
+
+    #[tokio::test]
+    async fn cached_playback_is_resigned_for_current_identity() {
+        use crate::provider::store::InMemoryProviderStore;
+        use crate::service::ProxySigningKey;
+        use std::sync::Arc;
+
+        let provider = RtmpProvider::new();
+        let store = Arc::new(InMemoryProviderStore::new(16));
+        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+
+        let ctx1 = ProviderContext::new("synctv")
+            .with_user_id("user1")
+            .with_room_id("room1")
+            .with_signing_key(&signing_key)
+            .with_store(store.clone());
+        let first = provider
+            .generate_playback(&ctx1, &json!({"room_id": "room1", "media_id": "media1"}))
+            .await
+            .unwrap();
+
+        let ctx2 = ProviderContext::new("synctv")
+            .with_user_id("user2")
+            .with_room_id("room1")
+            .with_signing_key(&signing_key)
+            .with_store(store);
+        let second = provider
+            .generate_playback(&ctx2, &json!({"room_id": "room1", "media_id": "media1"}))
+            .await
+            .unwrap();
+
+        let first_hls = first.playback_infos.get("hls").unwrap().urls.first().unwrap();
+        let second_hls = second.playback_infos.get("hls").unwrap().urls.first().unwrap();
+        assert_ne!(first_hls, second_hls, "cached playback must be re-signed per user");
+        assert!(second_hls.contains("uid=user2") || second_hls.contains("user_id=user2") || second_hls.contains("sig="));
     }
 }

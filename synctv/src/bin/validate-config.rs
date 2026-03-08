@@ -107,7 +107,7 @@ fn load_config_for_validation_with_env(
     env: &std::collections::HashMap<String, String>,
 ) -> Result<Config, String> {
     if let Some(path) = config_path {
-        Config::from_file(path).map_err(|e| e.to_string())
+        synctv_core::Config::load_with_env_map(Some(path), env).map_err(|e| e.to_string())
     } else {
         Config::from_env_map(env).map_err(|e| e.to_string())
     }
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn load_config_for_validation_rejects_invalid_env_override() {
         let result = load_config_for_validation_with_env(
-            &None,
+            &Some("config.yaml".to_string()),
             &HashMap::from([(
                 "SYNCTV_SERVER_GRPC_PORT".to_string(),
                 "invalid-port".to_string(),
@@ -210,5 +210,31 @@ mod tests {
             result.is_ok(),
             "empty environment should still load default config"
         );
+    }
+
+    #[test]
+    fn load_config_for_validation_applies_env_overrides_on_top_of_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            r#"
+server:
+  grpc_port: 50051
+database:
+  url: "postgresql://user:pass@localhost/db"
+jwt:
+  secret: "12345678901234567890123456789012"
+"#,
+        )
+        .expect("write config");
+
+        let result = load_config_for_validation_with_env(
+            &Some(path.display().to_string()),
+            &HashMap::from([("SYNCTV_SERVER_GRPC_PORT".to_string(), "50061".to_string())]),
+        )
+        .expect("config with env override should load");
+
+        assert_eq!(result.server.grpc_port, 50061);
     }
 }

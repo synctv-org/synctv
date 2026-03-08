@@ -1,6 +1,7 @@
 use anyhow::Result;
 use sqlx::PgPool;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use synctv_core::service::MigrationLock;
@@ -45,9 +46,30 @@ async fn run_migrations_with_mode(
     key_prefix: &str,
     cluster_mode: bool,
 ) -> Result<()> {
+    run_migrations_with_runner(
+        pool,
+        std::sync::Arc::from(lock.boxed_clone()),
+        key_prefix,
+        cluster_mode,
+        &|pool| Box::pin(run_migrate(pool)),
+    )
+    .await
+}
+
+type MigrateFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>;
+
+async fn run_migrations_with_runner(
+    pool: &PgPool,
+    lock: std::sync::Arc<dyn MigrationLock>,
+    key_prefix: &str,
+    cluster_mode: bool,
+    migrate: &(dyn for<'a> Fn(&'a PgPool) -> MigrateFuture<'a> + Send + Sync),
+) -> Result<()>
+{
     info!("Running database migrations...");
 
-    run_migrations_with_lock(pool, lock, key_prefix, cluster_mode).await?;
+    run_migrations_with_lock(pool, lock, key_prefix, cluster_mode, migrate).await?;
 
     info!("Migrations completed");
     Ok(())
@@ -91,20 +113,30 @@ async fn migrations_already_applied(pool: &PgPool) -> bool {
 /// cluster performs the migration. Other replicas wait and verify completion.
 async fn run_migrations_with_lock(
     pool: &PgPool,
-    lock: &dyn MigrationLock,
+    lock: std::sync::Arc<dyn MigrationLock>,
     key_prefix: &str,
     cluster_mode: bool,
-) -> Result<()> {
+    migrate: &(dyn for<'a> Fn(&'a PgPool) -> MigrateFuture<'a> + Send + Sync),
+) -> Result<()>
+{
     let migration_lock_key = format!("{key_prefix}migration");
 
     match lock.acquire(&migration_lock_key, MIGRATION_LOCK_TTL).await {
         Ok(Some(lock_value)) => {
             info!("Acquired migration lock, running migrations");
-            let result = run_migrate(pool).await;
-            release_lock(lock, &migration_lock_key, &lock_value).await;
+            let result = run_migration_under_lock(
+                lock.clone(),
+                migration_lock_key.clone(),
+                lock_value.clone(),
+                migrate(pool),
+            )
+            .await;
+            release_lock(lock.as_ref(), &migration_lock_key, &lock_value).await;
             result
         }
-        Ok(None) => wait_for_lock_and_migrate(pool, lock, &migration_lock_key, cluster_mode).await,
+        Ok(None) => {
+            wait_for_lock_and_migrate(pool, lock, &migration_lock_key, cluster_mode, migrate).await
+        }
         Err(e) => {
             if cluster_mode {
                 return Err(anyhow::anyhow!(
@@ -212,10 +244,12 @@ async fn run_migrations_with_pg_advisory_lock(pool: &PgPool) -> Result<()> {
 /// migrations still need to run.
 async fn wait_for_lock_and_migrate(
     pool: &PgPool,
-    lock: &dyn MigrationLock,
+    lock: std::sync::Arc<dyn MigrationLock>,
     lock_key: &str,
     cluster_mode: bool,
-) -> Result<()> {
+    migrate: &(dyn for<'a> Fn(&'a PgPool) -> MigrateFuture<'a> + Send + Sync),
+) -> Result<()>
+{
     info!("Another node is running migrations, waiting...");
 
     let max_attempts = (MIGRATION_MAX_WAIT.as_secs() / MIGRATION_POLL_INTERVAL.as_secs()) as u32;
@@ -231,13 +265,19 @@ async fn wait_for_lock_and_migrate(
                 // whether migrations are already applied to avoid redundant work.
                 if migrations_already_applied(pool).await {
                     info!("Migrations already applied by another node, skipping");
-                    release_lock(lock, lock_key, &lock_value).await;
+                    release_lock(lock.as_ref(), lock_key, &lock_value).await;
                     return Ok(());
                 }
 
                 info!("Migration lock acquired after waiting, running migrations");
-                let result = run_migrate(pool).await;
-                release_lock(lock, lock_key, &lock_value).await;
+                let result = run_migration_under_lock(
+                    lock.clone(),
+                    lock_key.to_string(),
+                    lock_value.clone(),
+                    migrate(pool),
+                )
+                .await;
+                release_lock(lock.as_ref(), lock_key, &lock_value).await;
                 return result;
             }
             Ok(None) if attempts < max_attempts => continue,
@@ -261,6 +301,100 @@ async fn wait_for_lock_and_migrate(
     }
 }
 
+async fn run_migration_under_lock<Fut>(
+    lock: std::sync::Arc<dyn MigrationLock>,
+    lock_key: String,
+    lock_value: String,
+    migrate: Fut,
+) -> Result<()>
+where
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let keepalive_cancel = CancellationToken::new();
+    let mut keepalive = spawn_lock_keepalive(
+        lock,
+        lock_key,
+        lock_value,
+        keepalive_cancel.clone(),
+    );
+    tokio::pin!(migrate);
+
+    let migrate_result = tokio::select! {
+        result = &mut migrate => {
+            keepalive_cancel.cancel();
+            Some(result)
+        }
+        keepalive_result = &mut keepalive => {
+            return match keepalive_result {
+                Ok(Ok(())) => Err(anyhow::anyhow!(
+                    "Migration lock keepalive stopped before migrations completed"
+                )),
+                Ok(Err(err)) => Err(err),
+                Err(join_err) if join_err.is_cancelled() => Err(anyhow::anyhow!(
+                    "Migration lock keepalive task was cancelled before migrations completed"
+                )),
+                Err(join_err) => Err(anyhow::anyhow!(
+                    "Migration lock keepalive task panicked: {join_err}"
+                )),
+            };
+        }
+    };
+
+    let result = migrate_result.expect("migrate branch must produce a result");
+    match keepalive.await {
+        Ok(Ok(())) => result,
+        Ok(Err(err)) if result.is_ok() => Err(err),
+        Ok(Err(_)) => result,
+        Err(join_err) if join_err.is_cancelled() => result,
+        Err(join_err) if result.is_ok() => Err(anyhow::anyhow!(
+            "Migration lock keepalive task panicked: {join_err}"
+        )),
+        Err(_) => result,
+    }
+}
+
+fn spawn_lock_keepalive(
+    lock: std::sync::Arc<dyn MigrationLock>,
+    lock_key: String,
+    lock_value: String,
+    cancel: CancellationToken,
+) -> tokio::task::JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let refresh_interval = Duration::from_secs((MIGRATION_LOCK_TTL / 3).max(1));
+        let mut ticker = tokio::time::interval(refresh_interval);
+        ticker.tick().await;
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => return Ok(()),
+                _ = ticker.tick() => {
+                    match lock.extend(&lock_key, &lock_value, MIGRATION_LOCK_TTL).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            warn!(
+                                lock_key = %lock_key,
+                                "Migration lock keepalive lost ownership while migrations are still running"
+                            );
+                            return Err(anyhow::anyhow!(
+                                "Migration lock '{lock_key}' expired or was stolen while migrations were still running"
+                            ));
+                        }
+                        Err(err) => {
+                            warn!(
+                                lock_key = %lock_key,
+                                error = %err,
+                                "Migration lock keepalive failed"
+                            );
+                            return Err(anyhow::anyhow!(
+                                "Migration lock keepalive failed for '{lock_key}': {err}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
 /// Best-effort lock release. Logs a warning on failure but never propagates
 /// the error since migrations may have already succeeded.
 async fn release_lock(lock: &dyn MigrationLock, lock_key: &str, lock_value: &str) {
@@ -271,17 +405,30 @@ async fn release_lock(lock: &dyn MigrationLock, lock_key: &str, lock_value: &str
 
 #[cfg(test)]
 mod tests {
-    use super::run_migrations_with_mode;
+    use super::{run_migrations_with_mode, run_migrations_with_runner, MIGRATION_LOCK_TTL};
     use anyhow::anyhow;
-    use sqlx::postgres::PgPoolOptions;
+    use sqlx::{postgres::PgPoolOptions, PgPool};
+    use std::time::Duration;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::Notify;
 
     struct FailingMigrationLock {
-        acquire_called: AtomicBool,
+        acquire_called: Arc<AtomicBool>,
     }
 
     struct WaitThenFailMigrationLock {
-        acquire_calls: AtomicUsize,
+        acquire_calls: Arc<AtomicUsize>,
+    }
+
+    #[derive(Clone, Default)]
+    struct ExtendTrackingMigrationLock {
+        acquire_calls: Arc<AtomicUsize>,
+        extend_calls: Arc<AtomicUsize>,
+        release_calls: Arc<AtomicUsize>,
+        allow_release: Arc<AtomicBool>,
+        fail_extend: Arc<AtomicBool>,
+        notify_extend: Arc<Notify>,
     }
 
     #[async_trait::async_trait]
@@ -293,6 +440,12 @@ mod tests {
 
         async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
             Ok(true)
+        }
+
+        fn boxed_clone(&self) -> Box<dyn synctv_core::service::MigrationLock> {
+            Box::new(FailingMigrationLock {
+                acquire_called: self.acquire_called.clone(),
+            })
         }
     }
 
@@ -310,6 +463,40 @@ mod tests {
         async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
             Ok(true)
         }
+
+        fn boxed_clone(&self) -> Box<dyn synctv_core::service::MigrationLock> {
+            Box::new(WaitThenFailMigrationLock {
+                acquire_calls: self.acquire_calls.clone(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl synctv_core::service::MigrationLock for ExtendTrackingMigrationLock {
+        async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
+            self.acquire_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some("lock-value".to_string()))
+        }
+
+        async fn extend(
+            &self,
+            _key: &str,
+            _lock_value: &str,
+            _ttl_secs: u64,
+        ) -> anyhow::Result<bool> {
+            self.extend_calls.fetch_add(1, Ordering::SeqCst);
+            self.notify_extend.notify_waiters();
+            Ok(!self.fail_extend.load(Ordering::SeqCst))
+        }
+
+        async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
+            self.release_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.allow_release.load(Ordering::SeqCst))
+        }
+
+        fn boxed_clone(&self) -> Box<dyn synctv_core::service::MigrationLock> {
+            Box::new(self.clone())
+        }
     }
 
     #[tokio::test]
@@ -319,7 +506,7 @@ mod tests {
             .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
             .expect("connect_lazy should succeed");
         let lock = FailingMigrationLock {
-            acquire_called: AtomicBool::new(false),
+            acquire_called: Arc::new(AtomicBool::new(false)),
         };
 
         let err = run_migrations_with_mode(&pool, &lock, "test:", true)
@@ -341,7 +528,7 @@ mod tests {
             .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
             .expect("connect_lazy should succeed");
         let lock = WaitThenFailMigrationLock {
-            acquire_calls: AtomicUsize::new(0),
+            acquire_calls: Arc::new(AtomicUsize::new(0)),
         };
 
         let err = tokio::time::timeout(
@@ -367,4 +554,83 @@ mod tests {
             "wait-path error should clearly describe the failing phase: {err}"
         );
     }
+
+    #[tokio::test]
+    async fn acquired_migration_lock_is_extended_while_migrations_run() {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
+            .expect("connect_lazy should succeed");
+        let lock = Arc::new(ExtendTrackingMigrationLock {
+            allow_release: Arc::new(AtomicBool::new(true)),
+            ..Default::default()
+        });
+        let lock_for_runner = Arc::clone(&lock);
+
+        let task = tokio::spawn(async move {
+            run_migrations_with_runner(&pool, lock_for_runner, "test:", false, &|_pool: &PgPool| {
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 1)).await;
+                    Ok(())
+                })
+            })
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 2)).await;
+        lock.notify_extend.notified().await;
+
+        let result = task.await.expect("migration task should join");
+        assert!(result.is_ok(), "migration runner should succeed: {result:?}");
+        assert_eq!(lock.acquire_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            lock.extend_calls.load(Ordering::SeqCst) >= 1,
+            "migration lock must be periodically extended while migrations run"
+        );
+        assert_eq!(lock.release_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn migration_runner_fails_when_keepalive_loses_lock() {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
+            .expect("connect_lazy should succeed");
+        let lock = Arc::new(ExtendTrackingMigrationLock {
+            allow_release: Arc::new(AtomicBool::new(true)),
+            fail_extend: Arc::new(AtomicBool::new(true)),
+            ..Default::default()
+        });
+        let lock_for_runner = Arc::clone(&lock);
+
+        let task = tokio::spawn(async move {
+            run_migrations_with_runner(
+                &pool,
+                lock_for_runner,
+                "test:",
+                false,
+                &|_pool: &PgPool| {
+                    Box::pin(async {
+                        tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 1)).await;
+                        Ok(())
+                    })
+                },
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 2)).await;
+        lock.notify_extend.notified().await;
+
+        let err = task
+            .await
+            .expect("migration task should join")
+            .expect_err("keepalive loss must fail the migration runner");
+        assert!(
+            err.to_string().contains("expired or was stolen"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(lock.release_calls.load(Ordering::SeqCst), 1);
+    }
+
 }

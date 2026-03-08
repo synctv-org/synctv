@@ -23,6 +23,33 @@ fn validate_path(path: &str) -> Result<(), AlistError> {
         .map_err(|e| AlistError::InvalidConfig(format!("Path traversal detected: {}", e.reason)))
 }
 
+fn parse_host_url(host: &str) -> Result<url::Url, AlistError> {
+    let parsed = url::Url::parse(host)
+        .map_err(|e| AlistError::InvalidConfig(format!("Invalid host URL: {e}")))?;
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(AlistError::InvalidConfig(
+            "Host URL must not include userinfo credentials".to_string(),
+        ));
+    }
+
+    Ok(parsed)
+}
+
+fn origin_value(url: &url::Url) -> Result<HeaderValue, AlistError> {
+    let origin = url.origin().unicode_serialization();
+    HeaderValue::from_str(&origin)
+        .map_err(|e| AlistError::InvalidConfig(format!("Invalid Origin header value: {e}")))
+}
+
+fn referer_value(url: &url::Url) -> Result<HeaderValue, AlistError> {
+    let mut referer = url.clone();
+    referer.set_query(None);
+    referer.set_fragment(None);
+    HeaderValue::from_str(referer.as_str())
+        .map_err(|e| AlistError::InvalidConfig(format!("Invalid Referer header value: {e}")))
+}
+
 /// Shared HTTP client for all Alist requests (connection pooling).
 /// SSRF-safe: uses the common DNS resolver and disables redirects.
 static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
@@ -87,14 +114,15 @@ impl AlistClient {
 
     /// Build request headers
     fn build_headers(&self) -> Result<HeaderMap, AlistError> {
+        let parsed_host = parse_host_url(&self.host)?;
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             USER_AGENT,
             HeaderValue::from_static(crate::error::PROVIDER_USER_AGENT),
         );
-        headers.insert(ORIGIN, HeaderValue::from_str(&self.host)?);
-        headers.insert(REFERER, HeaderValue::from_str(&format!("{}/", self.host))?);
+        headers.insert(ORIGIN, origin_value(&parsed_host)?);
+        headers.insert(REFERER, referer_value(&parsed_host)?);
 
         if let Some(ref token) = self.token {
             headers.insert(AUTHORIZATION, HeaderValue::from_str(token)?);
@@ -559,6 +587,35 @@ mod tests {
         assert!(client.has_token());
         client.set_token("new_token");
         assert!(client.has_token());
+    }
+
+    #[test]
+    fn test_build_headers_uses_origin_without_path_or_query() {
+        let client = AlistClient::new("https://alist.example.com/base?token=secret#frag").unwrap();
+        let headers = client.build_headers().unwrap();
+
+        assert_eq!(
+            headers.get(ORIGIN).and_then(|v| v.to_str().ok()),
+            Some("https://alist.example.com")
+        );
+        assert_eq!(
+            headers.get(REFERER).and_then(|v| v.to_str().ok()),
+            Some("https://alist.example.com/base")
+        );
+    }
+
+    #[test]
+    fn test_build_headers_rejects_userinfo_in_host() {
+        let client = AlistClient::new("https://user:pass@alist.example.com").unwrap();
+        let err = client
+            .build_headers()
+            .expect_err("userinfo must not be accepted in provider host");
+        assert!(
+            err.to_string().contains("Origin header")
+                || err.to_string().contains("userinfo")
+                || err.to_string().contains("Invalid host URL"),
+            "unexpected error: {err}"
+        );
     }
 
     // === Alist Types Deserialization Tests ===

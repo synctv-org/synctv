@@ -137,25 +137,20 @@ async fn extract_user_id(
     // matching, consistent with the HTTP AuthUser extractor. Also return an error
     // when the header is present but has an invalid format, instead of silently
     // falling through to query parameters.
-    if let Some(auth_header) = headers.get("Authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            let token = JwtValidator::extract_bearer_token(auth_str).map_err(|e| {
-                AppError::unauthorized(format!("Invalid Authorization header: {e}"))
-            })?;
+    if let Some(token) = extract_authorization_bearer_token(headers)? {
 
-            let claims = validator
-                .validate_token(&token)
-                .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
+        let claims = validator
+            .validate_token(&token)
+            .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
 
-            // Run SecurityPipeline checks (password version, banned/deleted status)
-            let authenticated = state
-                .security_pipeline
-                .check(&claims)
-                .await
-                .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+        // Run SecurityPipeline checks (password version, banned/deleted status)
+        let authenticated = state
+            .security_pipeline
+            .check(&claims)
+            .await
+            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
-            return Ok((authenticated.user_id, AuthMethod::Header));
-        }
+        return Ok((authenticated.user_id, AuthMethod::Header));
     }
 
     // Second, try ticket query parameter (recommended for browsers).
@@ -180,6 +175,21 @@ async fn extract_user_id(
     Err(AppError::unauthorized(
         "Missing authentication: provide token via Authorization header or ?ticket=",
     ))
+}
+
+fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<String>, AppError> {
+    let Some(auth_header) = headers.get("Authorization") else {
+        return Ok(None);
+    };
+
+    let auth_str = auth_header
+        .to_str()
+        .map_err(|_| AppError::unauthorized("Invalid Authorization header: non-UTF-8 value"))?;
+
+    let token = JwtValidator::extract_bearer_token(auth_str)
+        .map_err(|e| AppError::unauthorized(format!("Invalid Authorization header: {e}")))?;
+
+    Ok(Some(token))
 }
 
 /// WebSocket stream implementation of `StreamMessage` trait
@@ -778,6 +788,20 @@ mod tests {
         let auth_header = headers.get("Authorization").unwrap();
         let auth_str = auth_header.to_str().unwrap();
         assert!(auth_str.strip_prefix("Bearer ").is_none());
+    }
+
+    #[test]
+    fn test_auth_priority_invalid_utf8_header_is_not_ignored() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            axum::http::HeaderValue::from_bytes(b"Bearer \xFFinvalid").unwrap(),
+        );
+
+        let err = extract_authorization_bearer_token(&headers)
+            .expect_err("non-UTF-8 authorization header must fail closed");
+        assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
+        assert!(err.message.contains("non-UTF-8"));
     }
 
     #[test]

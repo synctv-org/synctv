@@ -101,7 +101,7 @@ pub struct RoomMessageHub {
     /// Optional Redis connection for distributed subscription state.
     /// When present, subscription relationships are persisted to Redis for
     /// cross-replica visibility and recovery. When absent, operates local-only.
-    redis_conn: Option<redis::aio::ConnectionManager>,
+    redis_conn: Option<RedisConnHandle>,
 
     /// Key prefix for Redis keys (e.g., "synctv:")
     redis_key_prefix: String,
@@ -131,6 +131,12 @@ pub struct RoomMessageHub {
 
     /// Guards idempotent startup of Redis-backed background tasks.
     background_tasks_started: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Debug)]
+enum RedisConnHandle {
+    Direct(redis::aio::ConnectionManager),
+    Shared(std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>),
 }
 
 impl RoomMessageHub {
@@ -167,10 +173,30 @@ impl RoomMessageHub {
     /// Both tasks are cancelled when `shutdown()` is called.
     #[must_use]
     pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
-        self.redis_conn = Some(conn);
+        self.redis_conn = Some(RedisConnHandle::Direct(conn));
         self.redis_key_prefix = key_prefix.to_string();
         self.start();
         self
+    }
+
+    #[must_use]
+    pub fn with_shared_redis(
+        mut self,
+        conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: &str,
+    ) -> Self {
+        self.redis_conn = Some(RedisConnHandle::Shared(conn));
+        self.redis_key_prefix = key_prefix.to_string();
+        self.start();
+        self
+    }
+
+    async fn redis_conn_clone(&self) -> Option<redis::aio::ConnectionManager> {
+        match &self.redis_conn {
+            Some(RedisConnHandle::Direct(conn)) => Some(conn.clone()),
+            Some(RedisConnHandle::Shared(conn)) => Some(conn.read().await.clone()),
+            None => None,
+        }
     }
 
     /// Start Redis-backed background tasks if Redis is configured and a Tokio runtime exists.
@@ -280,15 +306,13 @@ impl RoomMessageHub {
         // Awaited so callers can rely on the subscription being visible to other
         // replicas before this function returns. Errors are logged and propagated
         // so the caller knows if cross-replica state could not be written.
-        if let Some(ref conn) = self.redis_conn {
+        if let Some(mut conn_clone) = self.redis_conn_clone().await {
             let room_key = format!(
                 "{}room_hub:room:{}",
                 self.redis_key_prefix,
                 room_id.as_str()
             );
             let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
-
-            let mut conn_clone = conn.clone();
             let user_id_str = user_id.as_str().to_string();
             let room_id_str = room_id.as_str().to_string();
             let ttl_secs = self.redis_key_ttl_secs;
@@ -361,14 +385,13 @@ impl RoomMessageHub {
             // SAFETY: Fire-and-forget cleanup. If the node crashes before the
             // Redis delete completes, the stale keys will be cleaned up by their
             // TTL (set during subscribe). No manual intervention is needed.
-            if let Some(ref conn) = self.redis_conn {
+            if let Some(redis_conn) = self.redis_conn.clone() {
                 let room_key = format!(
                     "{}room_hub:room:{}",
                     self.redis_key_prefix,
                     room_id.as_str()
                 );
                 let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
-                let mut conn_clone = conn.clone();
                 let connection_id_owned = connection_id.to_string();
                 let room_id_for_retry = room_id.clone();
                 let pending_redis_cleanup = Arc::clone(&self.pending_redis_cleanup);
@@ -379,6 +402,10 @@ impl RoomMessageHub {
                 let cleanup_pending_redis_cleanup = Arc::clone(&pending_redis_cleanup);
 
                 let cleanup_fut = async move {
+                    let mut conn_clone = match redis_conn {
+                        RedisConnHandle::Direct(conn) => conn,
+                        RedisConnHandle::Shared(conn) => conn.read().await.clone(),
+                    };
                     let mut cleanup_failed = false;
 
                     // Remove connection from room's subscriber hash
@@ -822,7 +849,10 @@ impl RoomMessageHub {
                 self.redis_key_prefix,
                 room_id.as_str()
             );
-            let mut conn_clone = conn.clone();
+            let mut conn_clone = match conn {
+                RedisConnHandle::Direct(conn) => conn.clone(),
+                RedisConnHandle::Shared(conn) => conn.read().await.clone(),
+            };
 
             match conn_clone
                 .hgetall::<_, Vec<(String, String)>>(&room_key)
@@ -872,12 +902,11 @@ impl RoomMessageHub {
     /// about for dashboards and debugging.
     pub async fn audit_redis_subscriptions(&self) -> Result<usize, String> {
         info!("Auditing cluster subscription state from Redis (observability only, clients must reconnect for message routing)");
-        let Some(ref conn) = self.redis_conn else {
+        let Some(mut conn_clone) = self.redis_conn_clone().await else {
             return Err("Redis not configured".to_string());
         };
 
         let pattern = format!("{}room_hub:room:*", self.redis_key_prefix);
-        let mut conn_clone = conn.clone();
         let mut recovered = 0;
 
         // Use SCAN instead of KEYS to avoid blocking Redis on large datasets
@@ -934,10 +963,9 @@ impl RoomMessageHub {
     /// periodically refreshed, causing cross-replica visibility to silently
     /// stop working.
     async fn refresh_redis_key_ttls(&self) {
-        let Some(ref conn) = self.redis_conn else {
+        let Some(mut conn) = self.redis_conn_clone().await else {
             return;
         };
-        let mut conn = conn.clone();
         let ttl_secs = self.redis_key_ttl_secs;
 
         let mut keys_to_refresh = Vec::new();
@@ -992,10 +1020,9 @@ impl RoomMessageHub {
     /// node cannot reliably distinguish its own stale entries from another
     /// replica's still-active subscriptions.
     async fn cleanup_orphaned_redis_subscriptions(&self) {
-        let Some(ref conn) = self.redis_conn else {
+        let Some(mut conn) = self.redis_conn_clone().await else {
             return;
         };
-        let mut conn = conn.clone();
         let mut cleaned = 0u64;
         let mut errors = 0u64;
 

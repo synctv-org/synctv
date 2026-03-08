@@ -155,6 +155,16 @@ async fn await_runtime_server_shutdown(
     mut handle: JoinHandle<anyhow::Result<()>>,
     timeout: Duration,
 ) {
+    if timeout == Duration::ZERO {
+        match handle.await {
+            Ok(Ok(())) => info!("{name} stopped"),
+            Ok(Err(err)) => warn!("{name} stopped with error during shutdown: {err}"),
+            Err(err) if err.is_cancelled() => info!("{name} task cancelled during shutdown"),
+            Err(err) => warn!("{name} panicked during shutdown: {err}"),
+        }
+        return;
+    }
+
     match tokio::time::timeout(timeout, &mut handle).await {
         Ok(join_result) => match join_result {
             Ok(Ok(())) => info!("{name} stopped"),
@@ -176,6 +186,63 @@ async fn await_runtime_server_shutdown(
             }
         }
     }
+}
+
+async fn force_abort_runtime_server(
+    name: &'static str,
+    mut handle: JoinHandle<anyhow::Result<()>>,
+) {
+    warn!("{name} exceeded the remaining shutdown budget, aborting task");
+    handle.abort();
+    match handle.await {
+        Ok(Ok(())) => info!("{name} aborted cleanly"),
+        Ok(Err(err)) => warn!("{name} returned error after forced abort: {err}"),
+        Err(err) if err.is_cancelled() => info!("{name} aborted"),
+        Err(err) => warn!("{name} failed after forced abort: {err}"),
+    }
+}
+
+fn remaining_budget(deadline: tokio::time::Instant) -> Duration {
+    deadline.saturating_duration_since(tokio::time::Instant::now())
+}
+
+async fn shutdown_runtime_phase(
+    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    http_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    cleanup_handle: JoinHandle<()>,
+    total_budget: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + total_budget;
+
+    info!(
+        "Waiting up to {}s for gRPC/HTTP servers and cleanup task to stop...",
+        total_budget.as_secs()
+    );
+
+    if let Some(grpc_handle) = grpc_handle {
+        let budget = remaining_budget(deadline);
+        if budget.is_zero() {
+            force_abort_runtime_server("gRPC server", grpc_handle).await;
+        } else {
+            await_runtime_server_shutdown("gRPC server", grpc_handle, budget).await;
+        }
+    }
+
+    if let Some(http_handle) = http_handle {
+        let budget = remaining_budget(deadline);
+        if budget.is_zero() {
+            force_abort_runtime_server("HTTP server", http_handle).await;
+        } else {
+            await_runtime_server_shutdown("HTTP server", http_handle, budget).await;
+        }
+    }
+
+    await_task_shutdown(
+        "connection cleanup task",
+        cleanup_handle,
+        remaining_budget(deadline),
+    )
+    .await;
 }
 
 async fn cleanup_partial_startup(
@@ -342,12 +409,20 @@ impl SyncTvServer {
             .take()
             .ok_or_else(|| anyhow::anyhow!("HTTP server handle missing after startup"))?;
 
-        let unexpected_exit = tokio::select! {
-            result = &mut grpc_handle => Some(map_runtime_server_exit("gRPC server", result)),
-            result = &mut http_handle => Some(map_runtime_server_exit("HTTP server", result)),
+        let (unexpected_exit, grpc_handle, http_handle) = tokio::select! {
+            result = &mut grpc_handle => (
+                Some(map_runtime_server_exit("gRPC server", result)),
+                None,
+                Some(http_handle),
+            ),
+            result = &mut http_handle => (
+                Some(map_runtime_server_exit("HTTP server", result)),
+                Some(grpc_handle),
+                None,
+            ),
             () = shutdown_signal() => {
                 info!("Shutdown signal received, starting graceful shutdown...");
-                None
+                (None, Some(grpc_handle), Some(http_handle))
             }
         };
 
@@ -369,12 +444,7 @@ impl SyncTvServer {
             "Waiting up to {}s for gRPC and HTTP servers to shut down...",
             http_drain_budget.as_secs()
         );
-        let _ = tokio::time::timeout(http_drain_budget, async {
-            await_runtime_server_shutdown("gRPC server", grpc_handle, Duration::ZERO).await;
-            await_runtime_server_shutdown("HTTP server", http_handle, Duration::ZERO).await;
-            let _ = cleanup_handle.await;
-        })
-        .await;
+        shutdown_runtime_phase(grpc_handle, http_handle, cleanup_handle, http_drain_budget).await;
         info!("gRPC and HTTP servers shut down");
 
         // Phase 2: Drain active connections BEFORE shutting down the cluster manager.
@@ -753,15 +823,17 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        await_task_shutdown, build_ws_ticket_service, cleanup_partial_startup,
+        await_task_shutdown, await_runtime_server_shutdown, build_ws_ticket_service,
+        cleanup_partial_startup,
         map_background_task_exit, map_runtime_server_exit,
+        shutdown_runtime_phase,
     };
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     };
     use std::time::Duration;
-    use tokio::sync::watch;
+    use tokio::sync::{oneshot, watch};
     use tokio_util::sync::CancellationToken;
 
     /// Test that invalid HTTP address format returns an error
@@ -921,6 +993,94 @@ mod tests {
         assert!(
             dropped.load(Ordering::SeqCst),
             "timed-out task should be aborted rather than detached"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_await_runtime_server_shutdown_zero_timeout_waits_for_graceful_stop() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_clone = Arc::clone(&stopped);
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            stopped_clone.store(true, Ordering::SeqCst);
+            Ok::<(), anyhow::Error>(())
+        });
+
+        await_runtime_server_shutdown("graceful server", handle, Duration::ZERO).await;
+
+        assert!(
+            stopped.load(Ordering::SeqCst),
+            "zero timeout should defer to the outer shutdown budget instead of aborting immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_runtime_phase_aborts_stuck_tasks_within_budget() {
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let grpc_dropped = Arc::new(AtomicBool::new(false));
+        let grpc_dropped_clone = Arc::clone(&grpc_dropped);
+        let grpc_handle = tokio::spawn(async move {
+            let _guard = DropFlag(grpc_dropped_clone);
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        });
+
+        let http_dropped = Arc::new(AtomicBool::new(false));
+        let http_dropped_clone = Arc::clone(&http_dropped);
+        let http_handle = tokio::spawn(async move {
+            let _guard = DropFlag(http_dropped_clone);
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        });
+
+        let (cleanup_tx, cleanup_rx) = oneshot::channel::<()>();
+        let cleanup_handle = tokio::spawn(async move {
+            let _ = cleanup_rx.await;
+        });
+
+        shutdown_runtime_phase(
+            Some(grpc_handle),
+            Some(http_handle),
+            cleanup_handle,
+            Duration::from_millis(60),
+        )
+        .await;
+
+        assert!(
+            grpc_dropped.load(Ordering::SeqCst),
+            "gRPC task should be aborted within the phase budget"
+        );
+        assert!(
+            http_dropped.load(Ordering::SeqCst),
+            "HTTP task should be aborted within the phase budget"
+        );
+        assert!(
+            cleanup_tx.send(()).is_err(),
+            "cleanup task should no longer be running after shutdown phase returns"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_join_handle_is_not_safe_to_await_again_after_select_completion() {
+        let mut handle = tokio::spawn(async { Ok::<(), anyhow::Error>(()) });
+
+        let first = tokio::select! {
+            result = &mut handle => result,
+        };
+        assert!(first.is_ok(), "first completion should succeed");
+
+        let second = tokio::time::timeout(Duration::from_millis(20), async move { handle.await }).await;
+        assert!(
+            second.is_err() || second.as_ref().is_ok_and(|result| result.is_err()),
+            "re-awaiting a completed JoinHandle must not be relied on in shutdown logic"
         );
     }
 

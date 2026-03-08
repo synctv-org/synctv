@@ -799,6 +799,7 @@ mod websocket_e2e {
         let cluster_config = ClusterConfig {
             redis_client: Some(redis_client_for_cluster),
             redis_conn: Some(redis_conn_for_cluster),
+            shared_redis_conn: None,
             node_id: node_id.to_string(),
             ..Default::default()
         };
@@ -835,6 +836,7 @@ mod websocket_e2e {
             provider_instance_repo,
             None,
             None,
+            "",
         ));
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
@@ -849,6 +851,8 @@ mod websocket_e2e {
                 provider_instance_manager.clone(),
             )),
             direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
+            rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
+            live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
         };
 
         let config = Arc::new(synctv_core::Config::default());
@@ -960,7 +964,7 @@ mod websocket_e2e {
             alist_api,
             emby_api,
             provider_stores: std::sync::Arc::new(
-                synctv_core::provider::store::ProviderStoreRegistry::new(None),
+                synctv_core::provider::store::ProviderStoreRegistry::new(None, ""),
             ),
             proxy_provider_registry: std::sync::Arc::new(providers.build_proxy_registry()),
             proxy_services: {
@@ -3554,6 +3558,7 @@ mod websocket_connection_limit_timing {
         let cluster_config = ClusterConfig {
             redis_client: Some(redis_client_for_cluster),
             redis_conn: Some(redis_conn_for_cluster),
+            shared_redis_conn: None,
             node_id: "limit_test_node".to_string(),
             ..Default::default()
         };
@@ -3596,6 +3601,7 @@ mod websocket_connection_limit_timing {
             provider_instance_repo,
             None,
             None,
+            "",
         ));
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
@@ -3610,6 +3616,8 @@ mod websocket_connection_limit_timing {
                 provider_instance_manager.clone(),
             )),
             direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
+            rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
+            live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
         };
 
         let config = Arc::new(synctv_core::Config::default());
@@ -3715,7 +3723,7 @@ mod websocket_connection_limit_timing {
             alist_api,
             emby_api,
             provider_stores: std::sync::Arc::new(
-                synctv_core::provider::store::ProviderStoreRegistry::new(None),
+                synctv_core::provider::store::ProviderStoreRegistry::new(None, ""),
             ),
             proxy_provider_registry: std::sync::Arc::new(providers.build_proxy_registry()),
             proxy_services: {

@@ -47,6 +47,7 @@ async fn test_cross_replica_cache_invalidation() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
@@ -191,6 +192,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
@@ -273,6 +275,7 @@ async fn test_cluster_permission_cache_consistency() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
@@ -297,6 +300,7 @@ async fn test_cluster_permission_cache_consistency() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_b = ClusterManager::new(config_b, None, Some(cache_svc_b))
@@ -439,6 +443,7 @@ async fn test_concurrent_permission_cache_updates() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_a = Arc::new(
@@ -464,6 +469,7 @@ async fn test_concurrent_permission_cache_updates() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_b = Arc::new(
@@ -489,6 +495,7 @@ async fn test_concurrent_permission_cache_updates() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_c = Arc::new(

@@ -154,6 +154,54 @@ async fn test_distributed_connection_queries_fail_closed_when_redis_is_unavailab
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
+async fn test_register_rejects_when_distributed_total_limit_is_reached() {
+    use redis::AsyncCommands;
+
+    let redis = TestRedis::start().await;
+    let conn = redis_connection(&redis.redis_url).await;
+    let manager = ConnectionManager::new(ConnectionLimits {
+        max_total: 1,
+        max_per_user: 10,
+        ..ConnectionLimits::default()
+    })
+    .with_redis(conn, "fail_closed_total_limit:");
+
+    manager
+        .register("conn1".to_string(), uid("user1"))
+        .await
+        .expect("first registration should succeed");
+
+    let second = manager
+        .register("conn2".to_string(), uid("user2"))
+        .await
+        .expect_err("second registration must fail once distributed total limit is reached");
+    assert!(
+        second.contains("across all replicas"),
+        "unexpected error: {second}"
+    );
+
+    let mut verify_conn = redis_connection(&redis.redis_url).await;
+    let total_count: i64 = verify_conn
+        .get("fail_closed_total_limit:connections:total")
+        .await
+        .unwrap_or(0);
+    let user2_count: i64 = verify_conn
+        .get("fail_closed_total_limit:connections:user:user2")
+        .await
+        .unwrap_or(0);
+
+    assert_eq!(
+        total_count, 1,
+        "distributed total counter must roll back rejected registrations"
+    );
+    assert_eq!(
+        user2_count, 0,
+        "rejected registration must not leak per-user distributed counters"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
 async fn test_join_room_move_removes_old_room_from_distributed_index() {
     let redis = TestRedis::start().await;
     let conn = redis_connection(&redis.redis_url).await;

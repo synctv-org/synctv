@@ -66,6 +66,8 @@ pub struct ProviderSet {
     pub bilibili: std::sync::Arc<BilibiliProvider>,
     pub emby: std::sync::Arc<EmbyProvider>,
     pub direct_url: std::sync::Arc<DirectUrlProvider>,
+    pub rtmp: std::sync::Arc<RtmpProvider>,
+    pub live_proxy: std::sync::Arc<LiveProxyProvider>,
 }
 
 impl ProviderSet {
@@ -80,6 +82,8 @@ impl ProviderSet {
         registry.register(BilibiliProvider::NAME, self.bilibili.clone());
         registry.register(EmbyProvider::NAME, self.emby.clone());
         registry.register(DirectUrlProvider::NAME, self.direct_url.clone());
+        registry.register(RtmpProvider::NAME, self.rtmp.clone());
+        registry.register(LiveProxyProvider::NAME, self.live_proxy.clone());
         registry
     }
 }
@@ -98,15 +102,8 @@ pub fn parse_source_config<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// Build a `PlaybackResult` with HLS and FLV playback URLs for a live stream.
-///
-/// Shared by `RtmpProvider` and `LiveProxyProvider` which both generate
-/// identical playback URLs pointing to synctv's own HLS/FLV endpoints.
-/// The only difference between the two is the `metadata` map (`live_proxy` adds
-/// `source_url` and `provider` fields), which callers can extend after this
-/// function returns.
 #[must_use]
-pub fn build_live_playback(base_url: &str, media_id: &str, room_id: &str) -> PlaybackResult {
+pub fn build_live_playback(media_id: &str, room_id: &str) -> PlaybackResult {
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -114,14 +111,10 @@ pub fn build_live_playback(base_url: &str, media_id: &str, room_id: &str) -> Pla
 
     let mut playback_infos = HashMap::new();
 
-    // HLS URL — matches actual HTTP route: /api/room/movie/live/hls/list/:media_id?room_id=:room_id
     playback_infos.insert(
         "hls".to_string(),
         PlaybackInfo {
-            urls: vec![format!(
-                "{}/api/room/movie/live/hls/list/{}?room_id={}",
-                base_url, media_id, room_id
-            )],
+            urls: vec![format!("live-hls://{room_id}/{media_id}")],
             format: "m3u8".to_string(),
             headers: HashMap::new(),
             subtitles: Vec::new(),
@@ -130,14 +123,10 @@ pub fn build_live_playback(base_url: &str, media_id: &str, room_id: &str) -> Pla
         },
     );
 
-    // FLV URL — matches actual HTTP route: /api/room/movie/live/flv/:media_id.flv?room_id=:room_id
     playback_infos.insert(
         "flv".to_string(),
         PlaybackInfo {
-            urls: vec![format!(
-                "{}/api/room/movie/live/flv/{}.flv?room_id={}",
-                base_url, media_id, room_id
-            )],
+            urls: vec![format!("live-flv://{room_id}/{media_id}")],
             format: "flv".to_string(),
             headers: HashMap::new(),
             subtitles: Vec::new(),
@@ -248,6 +237,30 @@ pub fn sign_playback_urls(
             );
         }
     }
+}
+
+#[must_use]
+pub fn maybe_sign_versioned_playback(
+    mut result: PlaybackResult,
+    provider_name: &str,
+    version: &str,
+    expires_at: i64,
+    ctx: &ProviderContext<'_>,
+) -> PlaybackResult {
+    if let (Some(signing_key), Some(room_id), Some(user_id)) =
+        (ctx.signing_key, ctx.room_id, ctx.user_id)
+    {
+        sign_playback_urls(
+            &mut result,
+            provider_name,
+            version,
+            signing_key,
+            room_id,
+            user_id,
+            expires_at,
+        );
+    }
+    result
 }
 
 /// Strip credential fields from a `source_config` value before sending to clients.

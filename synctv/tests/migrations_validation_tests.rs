@@ -23,6 +23,8 @@ struct MockMigrationLock {
     acquire_called: std::sync::atomic::AtomicBool,
     /// Track if release was called
     release_called: std::sync::atomic::AtomicBool,
+    /// Track if extend was called
+    extend_called: std::sync::atomic::AtomicBool,
     /// Lock value to return
     lock_value: String,
 }
@@ -34,6 +36,7 @@ impl MockMigrationLock {
             release_succeeds: true,
             acquire_called: std::sync::atomic::AtomicBool::new(false),
             release_called: std::sync::atomic::AtomicBool::new(false),
+            extend_called: std::sync::atomic::AtomicBool::new(false),
             lock_value: "test-lock-value".to_string(),
         }
     }
@@ -45,6 +48,11 @@ impl MockMigrationLock {
 
     fn was_release_called(&self) -> bool {
         self.release_called
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn was_extend_called(&self) -> bool {
+        self.extend_called
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
@@ -61,10 +69,33 @@ impl synctv_core::service::MigrationLock for MockMigrationLock {
         }
     }
 
+    async fn extend(&self, _key: &str, _lock_value: &str, _ttl_secs: u64) -> anyhow::Result<bool> {
+        self.extend_called
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(true)
+    }
+
     async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
         self.release_called
             .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(self.release_succeeds)
+    }
+
+    fn boxed_clone(&self) -> Box<dyn synctv_core::service::MigrationLock> {
+        Box::new(Self {
+            acquire_succeeds: self.acquire_succeeds,
+            release_succeeds: self.release_succeeds,
+            acquire_called: std::sync::atomic::AtomicBool::new(
+                self.acquire_called.load(std::sync::atomic::Ordering::SeqCst),
+            ),
+            release_called: std::sync::atomic::AtomicBool::new(
+                self.release_called.load(std::sync::atomic::Ordering::SeqCst),
+            ),
+            extend_called: std::sync::atomic::AtomicBool::new(
+                self.extend_called.load(std::sync::atomic::Ordering::SeqCst),
+            ),
+            lock_value: self.lock_value.clone(),
+        })
     }
 }
 
@@ -119,6 +150,15 @@ mod mock_migration_lock_tests {
         let release_result = lock.release("migration-lock", &lock_value.unwrap()).await;
         assert!(release_result.is_ok());
         assert!(release_result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_mock_lock_extend() {
+        let lock = MockMigrationLock::new(true);
+        let result = lock.extend("test-key", "test-lock-value", 300).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+        assert!(lock.was_extend_called());
     }
 }
 

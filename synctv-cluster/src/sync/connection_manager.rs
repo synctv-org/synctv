@@ -865,22 +865,34 @@ impl ConnectionManager {
 
         let total_key = format!("{}connections:total", self.redis_key_prefix);
 
-        // Increment distributed total connection counter (best-effort).
-        // Uses the same atomic INCR+EXPIRE Lua script as redis_incr_and_check()
-        // to prevent a crash between the two operations from leaving a key
-        // without a TTL.
+        // Enforce the total connection limit across replicas when Redis is
+        // configured. This must fail closed: in cluster mode, a best-effort
+        // counter would let N replicas each admit up to max_total locally.
         if let Some(ref conn) = self.redis_conn {
-            let mut conn_clone = conn.clone();
-            let script = redis::Script::new(
-                "local count = redis.call('INCR', KEYS[1]) \
-                 redis.call('EXPIRE', KEYS[1], ARGV[1]) \
-                 return count",
-            );
-            let _ = script
-                .key(&total_key)
-                .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
-                .invoke_async::<i64>(&mut conn_clone)
-                .await;
+            match self
+                .redis_incr_and_check(&total_key, self.limits.max_total)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.total_connections.fetch_sub(1, Ordering::AcqRel);
+                    if self.redis_decr(conn, &total_key).await.is_err() {
+                        self.enqueue_retry(PendingRedisOp::Decr(total_key.clone()));
+                    }
+                    return Err(format!(
+                        "Server at capacity across all replicas ({} connections)",
+                        self.limits.max_total
+                    ));
+                }
+                Err(e) => {
+                    self.total_connections.fetch_sub(1, Ordering::AcqRel);
+                    warn!("Distributed total connection check failed; rejecting connection: {e}");
+                    return Err(
+                        "Distributed total connection check unavailable; refusing new connection while cluster Redis is degraded"
+                            .to_string(),
+                    );
+                }
+            }
         }
 
         // Enforce per-user connection limit.
@@ -932,24 +944,24 @@ impl ConnectionManager {
                     );
                 }
             }
-        } else {
-            // No Redis: enforce limit using the local DashMap count only.
-            let user_count = self.user_connections.get(&user_id).map_or(0, |c| c.len());
-            if user_count >= self.limits.max_per_user {
+        }
+
+        // Add the connection to the local user index (used for routing and
+        // cleanup) under the same shard lock that enforces the local per-user
+        // limit. Without Redis, this closes the TOCTOU race where concurrent
+        // registrations could both observe the old count before either inserts.
+        let is_first_connection_for_user = {
+            let mut user_entry = self.user_connections.entry(user_id.clone()).or_default();
+            if self.redis_conn.is_none() && user_entry.len() >= self.limits.max_per_user {
                 self.total_connections.fetch_sub(1, Ordering::AcqRel);
                 return Err(format!(
                     "Too many connections for this user (max {})",
                     self.limits.max_per_user
                 ));
             }
-        }
 
-        // Add the connection to the local user index (used for routing and cleanup).
-        let is_first_connection_for_user = {
-            let mut user_entry = self.user_connections.entry(user_id.clone()).or_default();
             let is_first = user_entry.is_empty();
             user_entry.push(connection_id.clone());
-            // Drop the shard lock before inserting into another DashMap
             is_first
         };
 
@@ -1041,27 +1053,15 @@ impl ConnectionManager {
             old
         };
 
-        // Check per-room limit locally, then increment Redis, then commit the move.
-        //
-        // The DashMap entry lock is NOT held across the Redis await to avoid
-        // blocking the entire shard during Redis RTT. This means there is a
-        // small TOCTOU window where concurrent local joins could both pass the
-        // local check, but the Redis counter still enforces the distributed
-        // limit correctly, and the local overshoot is bounded to the number of
-        // concurrent join_room calls (typically very small).
+        // Check distributed per-room capacity first when Redis is enabled,
+        // then commit the local room index update. In local mode, the room
+        // limit is enforced inside the commit step under the room shard lock
+        // so concurrent joins cannot oversubscribe the room.
 
-        // Step 1: Check local limit (short-lived lock)
-        {
-            let room_entry = self.room_connections.entry(room_id.clone()).or_default();
-            if room_entry.len() >= self.limits.max_per_room {
-                return Err(format!(
-                    "Room at capacity ({} connections)",
-                    self.limits.max_per_room
-                ));
-            }
-        }
-
-        // Step 2: Check distributed per-room limit via Redis (no DashMap lock held)
+        // Step 1: Check distributed per-room limit via Redis (when enabled).
+        // In local mode we enforce the room limit inside the commit step below
+        // under the room shard lock, which closes the TOCTOU race for
+        // concurrent same-room joins.
         let redis_room_incremented = if let Some(ref redis_conn) = self.redis_conn {
             let redis_key = format!(
                 "{}connections:room:{}",
@@ -1092,7 +1092,7 @@ impl ConnectionManager {
             false
         };
 
-        // Step 3: Update connection info first. If the connection disappeared,
+        // Step 2: Update connection info first. If the connection disappeared,
         // roll back the distributed increment and leave prior room membership intact.
         let conn_info_updated = if let Some(mut conn) = self.connections.get_mut(connection_id) {
             conn.room_id = Some(room_id.clone());
@@ -1112,9 +1112,20 @@ impl ConnectionManager {
             return Err("Connection not found".to_string());
         };
 
-        // Step 4: Commit the room move locally after all checks have passed.
+        // Step 3: Commit the room move locally after all checks have passed.
+        // Without Redis, enforce the room limit under the same shard lock as
+        // the insert so concurrent local joins cannot oversubscribe the room.
         {
             let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
+            if self.redis_conn.is_none() && room_entry.len() >= self.limits.max_per_room {
+                if let Some(mut conn) = self.connections.get_mut(connection_id) {
+                    conn.room_id = old_room_id.clone();
+                }
+                return Err(format!(
+                    "Room at capacity ({} connections)",
+                    self.limits.max_per_room
+                ));
+            }
             room_entry.push(connection_id.to_string());
         }
 
@@ -1128,7 +1139,7 @@ impl ConnectionManager {
             }
         }
 
-        // Step 5: Decrement the old room's distributed counter only after the
+        // Step 4: Decrement the old room's distributed counter only after the
         // move succeeds. If it fails, enqueue a retry so Redis eventually matches
         // the in-memory truth.
         if let (Some(old_room), Some(redis_conn)) = (&old_room_id, &self.redis_conn) {
@@ -2856,6 +2867,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_per_user_limit_holds_under_concurrent_registers_without_redis() {
+        let limits = ConnectionLimits {
+            max_per_user: 1,
+            max_total: 10,
+            ..Default::default()
+        };
+        let manager = Arc::new(ConnectionManager::new(limits));
+        let user_id = UserId::from_string("race-user".to_string());
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+
+        let task1 = {
+            let manager = Arc::clone(&manager);
+            let user_id = user_id.clone();
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                barrier.wait().await;
+                manager.register("conn-race-1".to_string(), user_id).await
+            })
+        };
+        let task2 = {
+            let manager = Arc::clone(&manager);
+            let user_id = user_id.clone();
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                barrier.wait().await;
+                manager.register("conn-race-2".to_string(), user_id).await
+            })
+        };
+
+        barrier.wait().await;
+
+        let result1 = task1.await.expect("task1 join");
+        let result2 = task2.await.expect("task2 join");
+        let success_count = usize::from(result1.is_ok()) + usize::from(result2.is_ok());
+
+        assert_eq!(
+            success_count, 1,
+            "only one concurrent register should succeed when max_per_user=1"
+        );
+        assert_eq!(
+            manager.user_connection_count(&user_id),
+            1,
+            "local user index must not oversubscribe the per-user limit"
+        );
+        assert_eq!(manager.connection_count(), 1);
+    }
+
+    #[tokio::test]
     async fn test_join_room() {
         let manager = ConnectionManager::default();
         let user_id = UserId::from_string("user1".to_string());
@@ -2981,6 +3040,65 @@ mod tests {
         // Third should fail
         let result = manager.join_room("conn3", room_id.clone()).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_per_room_limit_holds_under_concurrent_join_without_redis() {
+        let limits = ConnectionLimits {
+            max_per_room: 1,
+            max_total: 10,
+            max_per_user: 10,
+            ..Default::default()
+        };
+        let manager = Arc::new(ConnectionManager::new(limits));
+        let room_id = RoomId::from_string("race-room".to_string());
+
+        manager
+            .register(
+                "conn-room-race-1".to_string(),
+                UserId::from_string("user-room-race-1".to_string()),
+            )
+            .await
+            .expect("first registration");
+        manager
+            .register(
+                "conn-room-race-2".to_string(),
+                UserId::from_string("user-room-race-2".to_string()),
+            )
+            .await
+            .expect("second registration");
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let join1 = {
+            let manager = Arc::clone(&manager);
+            let room_id = room_id.clone();
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                barrier.wait().await;
+                manager.join_room("conn-room-race-1", room_id).await
+            })
+        };
+        let join2 = {
+            let manager = Arc::clone(&manager);
+            let room_id = room_id.clone();
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                barrier.wait().await;
+                manager.join_room("conn-room-race-2", room_id).await
+            })
+        };
+
+        barrier.wait().await;
+
+        let result1 = join1.await.expect("join1 task");
+        let result2 = join2.await.expect("join2 task");
+        let success_count = usize::from(result1.is_ok()) + usize::from(result2.is_ok());
+
+        assert_eq!(
+            success_count, 1,
+            "only one concurrent room join should succeed when max_per_room=1"
+        );
+        assert_eq!(manager.room_connection_count(&room_id), 1);
     }
 
     #[tokio::test]

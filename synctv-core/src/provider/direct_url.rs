@@ -232,7 +232,13 @@ impl MediaProvider for DirectUrlProvider {
         if let Some(store) = store {
             if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
                 if !cached.is_expired() {
-                    return Ok(cached.result);
+                    return Ok(super::maybe_sign_versioned_playback(
+                        cached.result,
+                        Self::NAME,
+                        &cached.version,
+                        cached.expires_at,
+                        _ctx,
+                    ));
                 }
             }
         }
@@ -272,7 +278,7 @@ impl MediaProvider for DirectUrlProvider {
             metadata.insert("filename".to_string(), json!(filename));
         }
 
-        let mut result = PlaybackResult {
+        let result = PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
             metadata,
@@ -294,21 +300,13 @@ impl MediaProvider for DirectUrlProvider {
         }
 
         // Sign playback URLs when signing_key and identity are available
-        if let (Some(signing_key), Some(room_id), Some(user_id)) =
-            (_ctx.signing_key, _ctx.room_id, _ctx.user_id)
-        {
-            super::sign_playback_urls(
-                &mut result,
-                Self::NAME,
-                &version,
-                signing_key,
-                room_id,
-                user_id,
-                expires_at,
-            );
-        }
-
-        Ok(result)
+        Ok(super::maybe_sign_versioned_playback(
+            result,
+            Self::NAME,
+            &version,
+            expires_at,
+            _ctx,
+        ))
     }
 }
 

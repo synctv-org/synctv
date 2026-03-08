@@ -126,6 +126,7 @@ pub async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
     let config = ClusterConfig {
         redis_client: Some(client),
         redis_conn: Some(conn),
+        shared_redis_conn: None,
         cluster_enabled: true,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_secs(10),
@@ -157,6 +158,7 @@ pub async fn create_node_with_config(
     let mut config = ClusterConfig {
         redis_client: Some(client),
         redis_conn: Some(conn),
+        shared_redis_conn: None,
         cluster_enabled: true,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_secs(10),

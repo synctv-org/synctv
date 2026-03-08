@@ -146,7 +146,7 @@ async fn scenario_channel_creation_from_db_config() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance in DB
     let instance = make_test_instance("test-instance-1");
@@ -182,7 +182,7 @@ async fn scenario_channel_cache_hit() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance in DB
     let instance = make_test_instance("test-instance-2");
@@ -211,7 +211,7 @@ async fn scenario_channel_cache_ttl_expiration() {
 
     // Create a manager with a very short TTL for testing
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance in DB
     let instance = make_test_instance("test-instance-3");
@@ -253,9 +253,10 @@ async fn scenario_redis_invalidation_on_delete() {
             infra.redis_connection_manager().await,
         ))),
         Some(infra.redis_client.clone()),
+        "",
     );
 
-    let manager2 = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager2 = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Start invalidation listener
     manager2.start_invalidation_listener().await.unwrap();
@@ -282,7 +283,7 @@ async fn scenario_redis_invalidation_on_delete() {
     .await;
 
     // Verify manager2 no longer lists the instance
-    let instances2 = manager2.list().await;
+    let instances2 = manager2.list().await.unwrap();
     assert!(
         !instances2.contains(&"test-instance-5".to_string()),
         "Manager2 should not list deleted instance"
@@ -304,7 +305,7 @@ async fn scenario_health_check_integration() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance in DB
     let instance = make_test_instance("test-instance-6");
@@ -336,7 +337,7 @@ async fn scenario_health_check_respects_enabled_flag() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create enabled instance
     let instance_enabled = make_test_instance("test-instance-7a");
@@ -399,10 +400,11 @@ async fn scenario_tls_configuration_secure() {
         Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
         redis_conn,
         redis_client,
+        "",
     );
 
     // Verify the instance can be listed
-    let instances = manager.list().await;
+    let instances = manager.list().await.unwrap();
     assert!(
         instances.contains(&"test-instance-8".to_string()),
         "Should list the TLS instance"
@@ -420,7 +422,7 @@ async fn scenario_tls_configuration_insecure() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance with insecure TLS. The add() eagerly connects for
     // insecure TLS (connect_with_connector), so use a short timeout to avoid
@@ -460,7 +462,7 @@ async fn scenario_fallback_to_local_provider() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Try to get a non-existent instance
     let channel = manager.get("non-existent-instance").await;
@@ -497,7 +499,7 @@ async fn scenario_fallback_when_instance_name_none() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Test resolve_client with None instance_name (should use local)
     let result = manager
@@ -521,7 +523,7 @@ async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     let result = manager
         .resolve_client_required(Some("missing-instance"), |_channel| "remote", || "local")
@@ -549,7 +551,7 @@ async fn scenario_fallback_when_channel_creation_fails() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance with invalid endpoint (will fail SSRF validation)
     let mut instance = make_test_instance("test-instance-12");
@@ -574,7 +576,7 @@ async fn scenario_enable_disable_instance() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create enabled instance
     let instance = make_test_instance("test-instance-13");
@@ -618,7 +620,7 @@ async fn scenario_reconnect_instance() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance
     let instance = make_test_instance("test-instance-14");
@@ -657,7 +659,7 @@ async fn scenario_add_duplicate_instance_fails() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance
     let instance = make_test_instance("test-instance-15");
@@ -686,7 +688,7 @@ async fn scenario_update_nonexistent_instance_fails() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Try to update non-existent instance
     let instance = make_test_instance("test-instance-16");
@@ -710,7 +712,7 @@ async fn scenario_delete_nonexistent_instance_fails() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Try to delete non-existent instance
     let result = manager.delete("test-instance-17").await;
@@ -733,7 +735,7 @@ async fn scenario_get_all_instances() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create multiple instances
     for i in 1..=3 {
@@ -779,6 +781,7 @@ async fn scenario_manager_without_redis() {
         Arc::new(repo),
         None, // No Redis
         None, // No Redis client
+        "",
     );
 
     // Start invalidation listener - should return Ok without starting
@@ -796,7 +799,7 @@ async fn scenario_manager_without_redis() {
     let _ = manager.get("test-instance-19").await;
 
     // List should work
-    let instances = manager.list().await;
+    let instances = manager.list().await.unwrap();
     assert!(
         instances.contains(&"test-instance-19".to_string()),
         "Should list the instance even without Redis"
@@ -814,7 +817,7 @@ async fn scenario_init_pre_warms_cache() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instances before init
     for i in 1..=3 {
@@ -827,7 +830,7 @@ async fn scenario_init_pre_warms_cache() {
     assert!(result.is_ok(), "Init should succeed");
 
     // Verify instances are listed
-    let instances = manager.list().await;
+    let instances = manager.list().await.unwrap();
     assert!(
         instances.len() >= 3,
         "Should list at least 3 instances after init"
@@ -845,7 +848,7 @@ async fn scenario_ssrf_validation_blocks_internal_ips() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Try to create instance with internal IP (should fail SSRF validation)
     let mut instance = make_test_instance("test-instance-21");
@@ -881,7 +884,7 @@ async fn scenario_ssrf_validation_allows_public_endpoints() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance with public endpoint (will fail connection, but pass SSRF)
     let mut instance = make_test_instance("test-instance-22");
@@ -917,6 +920,7 @@ async fn scenario_resolve_client_uses_remote_when_available() {
         Arc::new(repo),
         redis_conn,
         redis_client,
+        "",
     ));
 
     // Create instance (tonic creates lazy channel)
@@ -944,7 +948,7 @@ async fn scenario_cache_respects_max_capacity() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instances (default max is 1000, so this won't test eviction)
     // This is more of a sanity check that the cache doesn't panic
@@ -954,8 +958,49 @@ async fn scenario_cache_respects_max_capacity() {
     }
 
     // All should be listable
-    let instances = manager.list().await;
+    let instances = manager.list().await.unwrap();
     assert!(instances.len() >= 10, "Should list at least 10 instances");
+}
+
+async fn scenario_redis_invalidation_respects_key_prefix() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+
+    let manager1 = RemoteProviderManager::new(
+        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Some(Arc::new(RwLock::new(
+            infra.redis_connection_manager().await,
+        ))),
+        Some(infra.redis_client.clone()),
+        "tenant-a:",
+    );
+    let manager2 = RemoteProviderManager::new(
+        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Some(Arc::new(RwLock::new(
+            infra.redis_connection_manager().await,
+        ))),
+        Some(infra.redis_client.clone()),
+        "tenant-a:",
+    );
+
+    manager2.start_invalidation_listener().await.unwrap();
+
+    let instance = make_test_instance("test-instance-prefix");
+    manager1.add(instance).await.unwrap();
+    let _ = manager2.get("test-instance-prefix").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    manager1.delete("test-instance-prefix").await.unwrap();
+
+    wait_until(
+        REDIS_INVALIDATION_WAIT_TIMEOUT,
+        REDIS_INVALIDATION_WAIT_INTERVAL,
+        || {
+            let manager2 = &manager2;
+            async move { manager2.get("test-instance-prefix").await.is_none() }
+        },
+    )
+    .await;
 }
 
 // ─── Test 25: Provider instance supports_provider ───────────────────────────
@@ -1191,6 +1236,13 @@ async fn test_resolve_client_uses_remote_when_available() {
 async fn test_cache_respects_max_capacity() {
     install_rustls_provider_once();
     scenario_cache_respects_max_capacity().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_redis_invalidation_respects_key_prefix() {
+    install_rustls_provider_once();
+    scenario_redis_invalidation_respects_key_prefix().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

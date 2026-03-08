@@ -128,10 +128,14 @@ impl HlsProxyClient {
             })
             .build();
 
-        // "Not found" responses are cached with a much shorter TTL (5s) so that
-        // a stream that starts shortly after a "not found" entry was cached
-        // becomes discoverable within a few seconds instead of the full TTL.
-        let not_found_ttl = Duration::from_secs(5);
+        // "Not found" responses must expire faster than found playlists, or a
+        // newly started stream can remain hidden behind a stale negative cache
+        // entry longer than a healthy positive cache entry.
+        let not_found_ttl = if playlist_cache_ttl > Duration::from_millis(250) {
+            Duration::from_millis(250)
+        } else {
+            std::cmp::max(playlist_cache_ttl / 4, Duration::from_millis(1))
+        };
         let playlist_cache = Cache::builder()
             .max_capacity(500)
             .expire_after(PlaylistCacheExpiry {
@@ -1208,6 +1212,36 @@ mod tests {
             .get_playlist_with_version_check(room_id, media_id, url_base, 0, 0)
             .await;
         assert!(stale.is_none(), "Old version should be considered stale");
+    }
+
+    #[test]
+    fn test_playlist_negative_cache_ttl_is_shorter_than_found_ttl() {
+        let found_ttl = Duration::from_secs(1);
+        let not_found_ttl = if found_ttl > Duration::from_millis(250) {
+            Duration::from_millis(250)
+        } else {
+            std::cmp::max(found_ttl / 4, Duration::from_millis(1))
+        };
+        let expiry = PlaylistCacheExpiry {
+            found_ttl,
+            not_found_ttl,
+        };
+
+        let found_expiry = expiry
+            .expire_after_create(
+                &"playlist:found".to_string(),
+                &Some("#EXTM3U".to_string()),
+                Instant::now(),
+            )
+            .expect("found playlist expiry should be configured");
+        let negative_expiry = expiry
+            .expire_after_create(&"playlist:missing".to_string(), &None, Instant::now())
+            .expect("negative playlist expiry should be configured");
+
+        assert!(
+            negative_expiry < found_expiry,
+            "negative cache TTL must be shorter so newly started streams become discoverable quickly"
+        );
     }
 
     #[tokio::test]

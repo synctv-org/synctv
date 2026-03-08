@@ -192,7 +192,7 @@ async fn test_complete_hls_workflow() {
     // Step 3: Generate HLS playlist
     let playlist =
         HlsStreamingApi::generate_playlist(&infrastructure, "test_room", "test_media", |ts_name| {
-            format!("/api/room/movie/live/hls/data/test_room/test_media/{ts_name}.ts")
+            format!("/api/providers/proxy/rtmp/version123/segment/{ts_name}.ts")
         })
         .await
         .unwrap()
@@ -360,7 +360,7 @@ async fn test_hls_url_generation_with_custom_callback() {
         "room123",
         "media456",
         move |ts_name| {
-            format!("/api/room/movie/live/hls/data/room123/media456/{ts_name}.ts?token={token}")
+            format!("/api/providers/proxy/rtmp/version123/segment/{ts_name}.ts?sig=test&uid=u1&rid=room123&exp=1&token={token}")
         },
     )
     .await
@@ -539,27 +539,27 @@ async fn test_hls_playlist_ended_stream() {
 async fn test_path_parameter_separation() {
     // Test that room_id and media_id are properly separated in different contexts
 
-    // FLV: media_id in path, room_id in query
-    let media_id = "media123";
+    // FLV: versioned provider proxy path
+    let _media_id = "media123";
     let room_id = "room456";
-    let flv_path = format!("/api/room/movie/live/flv/{media_id}.flv");
-    let flv_query = format!("roomId={room_id}");
+    let flv_path = "/api/providers/proxy/rtmp/version123/stream".to_string();
+    let flv_query = format!("sig=test&uid=u1&rid={room_id}&exp=1");
 
-    assert!(flv_path.contains(media_id));
-    assert!(flv_query.contains(room_id));
+    assert!(flv_path.contains("/stream"));
+    assert!(flv_query.contains(&format!("rid={room_id}")));
 
-    // HLS playlist: media_id in path, room_id in query
-    let hls_path = format!("/api/room/movie/live/hls/list/{media_id}");
-    let hls_query = format!("roomId={room_id}");
+    // HLS playlist: versioned provider proxy path
+    let hls_path = "/api/providers/proxy/rtmp/version123/m3u8".to_string();
+    let hls_query = format!("sig=test&uid=u1&rid={room_id}&exp=1");
 
-    assert!(hls_path.contains(media_id));
-    assert!(hls_query.contains(room_id));
+    assert!(hls_path.contains("/m3u8"));
+    assert!(hls_query.contains(&format!("rid={room_id}")));
 
-    // HLS segment: both room_id and media_id in path
-    let segment_path = format!("/api/room/movie/live/hls/data/{room_id}/{media_id}/segment.ts");
+    // HLS segment: version-scoped provider proxy path
+    let segment_path = "/api/providers/proxy/rtmp/version123/segment/segment.ts";
 
-    assert!(segment_path.contains(room_id));
-    assert!(segment_path.contains(media_id));
+    assert!(segment_path.contains("version123"));
+    assert!(segment_path.contains("segment.ts"));
 }
 
 #[tokio::test]

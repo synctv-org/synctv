@@ -891,17 +891,17 @@ mod live_streaming_validation {
         assert!(err.message.contains("Live streaming not configured"));
     }
 
-    /// Missing roomId query parameter should produce 400
+    /// Missing `room_id` query parameter should produce 400
     #[test]
     fn test_missing_room_id_produces_400() {
         // Reproduce live.rs:104-106
         let room_id: Option<String> = None;
         let result =
-            room_id.ok_or_else(|| AppError::bad_request("roomId query parameter is required"));
+            room_id.ok_or_else(|| AppError::bad_request("room_id query parameter is required"));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.message.contains("roomId"));
+        assert!(err.message.contains("room_id"));
     }
 
     /// Missing token query parameter should produce 401
@@ -916,32 +916,29 @@ mod live_streaming_validation {
         assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
     }
 
-    /// `LiveQuery` deserialization edge cases
+    /// provider live query deserialization edge cases
     #[test]
-    fn test_live_query_deserialize_full() {
-        use synctv_api::http::live::LiveQuery;
+    fn test_live_query_deserialize_required_room_id() {
+        use synctv_api::http::providers::live::RoomQuery;
 
-        // Full query - should deserialize without error
-        let result: Result<LiveQuery, _> = serde_urlencoded::from_str("room_id=room123&token=abc");
-        assert!(result.is_ok(), "Full LiveQuery should deserialize");
+        let result: Result<RoomQuery, _> = serde_urlencoded::from_str("room_id=room123");
+        assert!(result.is_ok(), "provider RoomQuery should deserialize");
     }
 
     #[test]
-    fn test_live_query_deserialize_empty() {
-        use synctv_api::http::live::LiveQuery;
+    fn test_live_query_deserialize_empty_fails() {
+        use synctv_api::http::providers::live::RoomQuery;
 
-        // Empty query - should deserialize with all fields as None
-        let result: Result<LiveQuery, _> = serde_urlencoded::from_str("");
-        assert!(result.is_ok(), "Empty LiveQuery should deserialize");
+        let result: Result<RoomQuery, _> = serde_urlencoded::from_str("");
+        assert!(result.is_err(), "provider RoomQuery requires room_id");
     }
 
     #[test]
-    fn test_live_query_deserialize_partial() {
-        use synctv_api::http::live::LiveQuery;
+    fn test_live_query_deserialize_legacy_room_id_rejected() {
+        use synctv_api::http::providers::live::RoomQuery;
 
-        // Partial query - only room_id
-        let result: Result<LiveQuery, _> = serde_urlencoded::from_str("room_id=room123");
-        assert!(result.is_ok(), "Partial LiveQuery should deserialize");
+        let result: Result<RoomQuery, _> = serde_urlencoded::from_str("roomId=room123");
+        assert!(result.is_err(), "legacy camelCase roomId must not deserialize");
     }
 }
 

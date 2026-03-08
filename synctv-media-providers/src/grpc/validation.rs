@@ -39,6 +39,24 @@ pub fn validate_host(host: &str) -> Result<(), Status> {
         ));
     }
 
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(Status::invalid_argument(
+            "host URL must not include userinfo credentials",
+        ));
+    }
+
+    if parsed.query().is_some() {
+        return Err(Status::invalid_argument(
+            "host URL must not include query parameters",
+        ));
+    }
+
+    if parsed.fragment().is_some() {
+        return Err(Status::invalid_argument(
+            "host URL must not include fragments",
+        ));
+    }
+
     Ok(())
 }
 
@@ -158,6 +176,33 @@ mod tests {
     fn test_validate_host_with_path() {
         assert!(validate_host("https://example.com/api/v1").is_ok());
         assert!(validate_host("https://example.com/emby").is_ok());
+    }
+
+    #[test]
+    fn test_validate_host_rejects_userinfo() {
+        let result = validate_host("https://user:pass@example.com");
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("userinfo"));
+    }
+
+    #[test]
+    fn test_validate_host_rejects_query_and_fragment() {
+        for host in [
+            "https://example.com/emby?token=secret",
+            "https://example.com/emby#fragment",
+        ] {
+            let result = validate_host(host);
+            assert!(result.is_err(), "expected invalid host: {host}");
+            let status = result.unwrap_err();
+            assert_eq!(status.code(), tonic::Code::InvalidArgument);
+            assert!(
+                status.message().contains("query") || status.message().contains("fragment"),
+                "unexpected message for {host}: {}",
+                status.message()
+            );
+        }
     }
 
     // ========== Provider Name Validation Tests ==========

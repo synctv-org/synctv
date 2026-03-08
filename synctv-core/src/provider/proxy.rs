@@ -39,6 +39,26 @@ pub enum ProxyAction {
         content_type: String,
         status: u16,
     },
+    /// Execute a live FLV stream directly from the API layer.
+    LiveFlv {
+        provider_name: String,
+        room_id: String,
+        media_id: String,
+    },
+    /// Generate an HLS playlist for a live stream.
+    LiveHlsPlaylist {
+        provider_name: String,
+        room_id: String,
+        media_id: String,
+        version: String,
+    },
+    /// Serve a live HLS segment from the API layer.
+    LiveHlsSegment {
+        room_id: String,
+        media_id: String,
+        segment_name: String,
+        disguised_as_png: bool,
+    },
 }
 
 /// Services available to providers during proxy resolution.

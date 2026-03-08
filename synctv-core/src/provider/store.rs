@@ -372,14 +372,19 @@ impl<S: ProviderStore> ProviderStore for PrefixedProviderStore<S> {
 pub struct ProviderStoreRegistry {
     redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     stores: Mutex<HashMap<String, Arc<dyn ProviderStore>>>,
+    key_prefix: Arc<str>,
 }
 
 impl ProviderStoreRegistry {
     /// Create a new registry, optionally backed by Redis (Sentinel-safe shared handle).
-    pub fn new(redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>) -> Self {
+    pub fn new(
+        redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
         Self {
             redis,
             stores: Mutex::new(HashMap::new()),
+            key_prefix: key_prefix.into().into(),
         }
     }
 
@@ -392,7 +397,7 @@ impl ProviderStoreRegistry {
         stores
             .entry(name.to_string())
             .or_insert_with(|| {
-                let prefix = format!("synctv:provider:{name}");
+                let prefix = format!("{}provider:{name}", self.key_prefix);
                 match &self.redis {
                     Some(shared_conn) => Arc::new(PrefixedProviderStore::new(
                         RedisProviderStore::new(shared_conn.clone()),
@@ -569,7 +574,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_store_registry_lazy_creation() {
-        let registry = ProviderStoreRegistry::new(None);
+        let registry = ProviderStoreRegistry::new(None, "");
 
         // First load creates the store
         let store1 = registry.load("bilibili");
@@ -589,10 +594,34 @@ mod tests {
 
     #[test]
     fn test_provider_store_registry_any_name() {
-        let registry = ProviderStoreRegistry::new(None);
+        let registry = ProviderStoreRegistry::new(None, "");
         // Any arbitrary provider name works — no pre-registration needed
         let _store = registry.load("my_custom_provider");
         let _store2 = registry.load("another_one");
+    }
+
+    #[tokio::test]
+    async fn test_provider_store_registry_respects_configured_prefix() {
+        let registry = ProviderStoreRegistry::new(None, "tenant-a:");
+        let store = registry.load("bilibili");
+        store
+            .set_raw("cache-key", b"value", Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let second = registry.load("bilibili");
+        assert_eq!(
+            second.get_raw("cache-key").await.unwrap().unwrap(),
+            b"value",
+            "same prefixed store should be reused"
+        );
+
+        let other_registry = ProviderStoreRegistry::new(None, "tenant-b:");
+        let other = other_registry.load("bilibili");
+        assert!(
+            other.get_raw("cache-key").await.unwrap().is_none(),
+            "different configured prefixes must isolate provider cache state"
+        );
     }
 
     #[test]

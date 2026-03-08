@@ -309,6 +309,26 @@ fn build_proxy_request(cfg: &ProxyConfig<'_>) -> Result<reqwest::RequestBuilder,
     apply_provider_headers(request, cfg.url, cfg.provider_headers)
 }
 
+fn validate_target_url_against_ssrf(url: &url::Url) -> Result<(), ProxyError> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| ProxyError::InvalidRequest("URL host is required".to_string()))?;
+
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if synctv_common::ssrf::is_ip_blocked(&ip) {
+            return Err(ProxyError::Ssrf(format!(
+                "target host `{host}` is blocked by SSRF policy"
+            )));
+        }
+    } else if synctv_common::ssrf::is_host_blocked(host) {
+        return Err(ProxyError::Ssrf(format!(
+            "target host `{host}` is blocked by SSRF policy"
+        )));
+    }
+
+    Ok(())
+}
+
 /// Inner implementation of proxy fetch, separated for metrics wrapping.
 async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response, anyhow::Error> {
     // Validate URL scheme to prevent SSRF via non-HTTP schemes (e.g., file://)
@@ -320,23 +340,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
 
     let parsed_url = url::Url::parse(cfg.url)
         .map_err(|e| ProxyError::InvalidRequest(format!("invalid URL: {e}")))?;
-    let host = parsed_url
-        .host_str()
-        .ok_or_else(|| ProxyError::InvalidRequest("URL host is required".to_string()))?;
-
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if synctv_common::ssrf::is_ip_blocked(&ip) {
-            return Err(ProxyError::InvalidRequest(format!(
-                "target host `{host}` is blocked by SSRF policy"
-            ))
-            .into());
-        }
-    } else if synctv_common::ssrf::is_host_blocked(host) {
-        return Err(ProxyError::InvalidRequest(format!(
-            "target host `{host}` is blocked by SSRF policy"
-        ))
-        .into());
-    }
+    validate_target_url_against_ssrf(&parsed_url)?;
 
     let request = build_proxy_request(&cfg)?;
     let proxy_result = send_with_redirect_validation(request).await?;
@@ -1036,6 +1040,9 @@ async fn send_with_redirect_validation(
 
         // Determine if this redirect crosses origin boundaries.
         let is_cross_origin = location.origin().ascii_serialization() != original_origin;
+        if is_cross_origin {
+            validate_target_url_against_ssrf(&location)?;
+        }
 
         // SSRF protection is handled by the DNS resolver at connection time
         let mut redirect_req = proxy_client()?.get(location.clone());
@@ -1548,5 +1555,39 @@ mod tests {
             .expect("body should be readable");
         assert_eq!(body.as_ref(), b"ok");
         assert!(proxy_response.followed_redirects);
+    }
+
+    #[tokio::test]
+    async fn test_send_with_redirect_validation_rejects_redirect_to_blocked_ip() {
+        let server = wiremock::MockServer::start().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/start"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(302)
+                    .insert_header("location", "http://127.0.0.1:12345/private"),
+            )
+            .mount(&server)
+            .await;
+
+        let request = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client should build")
+            .get(format!("{}/start", server.uri()));
+
+        let result = send_with_redirect_validation(request).await;
+        let err = match result {
+            Ok(_) => panic!("redirect to blocked loopback must fail"),
+            Err(err) => err,
+        };
+        let proxy_err = err
+            .downcast_ref::<ProxyError>()
+            .expect("error should downcast to ProxyError");
+        assert!(matches!(proxy_err, ProxyError::Ssrf(_)));
+        assert!(
+            proxy_err.to_string().contains("blocked by SSRF policy"),
+            "unexpected error: {proxy_err}"
+        );
     }
 }

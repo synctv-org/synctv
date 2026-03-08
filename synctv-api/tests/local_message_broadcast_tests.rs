@@ -26,6 +26,7 @@ async fn test_cluster_manager_single_node_mode_works() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        shared_redis_conn: None,
         cluster_enabled: false,
         node_id: "test_local_node".to_string(),
         dedup_window: Duration::from_mins(1),
@@ -60,6 +61,7 @@ async fn test_local_subscribe_and_broadcast() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        shared_redis_conn: None,
         cluster_enabled: false,
         node_id: "test_local_broadcast".to_string(),
         dedup_window: Duration::from_mins(1),
@@ -134,6 +136,7 @@ async fn test_multiple_subscribers_receive_broadcasts() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        shared_redis_conn: None,
         cluster_enabled: false,
         node_id: "test_multi_subscribers".to_string(),
         dedup_window: Duration::from_mins(1),
@@ -410,6 +413,7 @@ async fn test_lazy_cluster_manager_creation() {
             let config = ClusterConfig {
                 redis_client: None,
                 redis_conn: None,
+        shared_redis_conn: None,
                 cluster_enabled: false,
                 node_id: format!("local_{}", nanoid::nanoid!(8)),
                 dedup_window: Duration::from_mins(1),
@@ -462,6 +466,7 @@ async fn test_local_cluster_manager_supports_room_operations() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        shared_redis_conn: None,
         cluster_enabled: false,
         node_id: "test_local_ops".to_string(),
         dedup_window: Duration::from_mins(1),

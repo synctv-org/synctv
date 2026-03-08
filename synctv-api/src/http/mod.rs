@@ -6,7 +6,6 @@ pub mod auth;
 pub mod email_verification;
 pub mod error;
 pub mod health;
-pub mod live;
 pub mod media;
 pub mod middleware;
 pub mod notifications;
@@ -304,6 +303,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
     // Uses the shared Redis connection handle for Sentinel failover safety
     let provider_stores = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
         config.redis_conn.clone(),
+        config.config.redis.key_prefix.clone(),
     ));
 
     // Build proxy provider registry from ProviderSet (single source of truth)
@@ -629,15 +629,6 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
                 )),
         )
         .merge(register_read_routes(&state))
-        // Live streaming routes
-        .merge(
-            Router::new()
-                .nest("/api/room/movie/live", live::create_live_router())
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::streaming_rate_limit,
-                )),
-        )
         // WebSocket endpoint
         .merge(
             Router::new()
@@ -689,6 +680,11 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
                 )
                 .nest("/api/providers/alist", providers::alist::alist_routes())
                 .nest("/api/providers/emby", providers::emby::emby_routes())
+                .nest("/api/providers/rtmp", providers::live::rtmp_routes())
+                .nest(
+                    "/api/providers/live_proxy",
+                    providers::live::live_proxy_routes(),
+                )
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::read_rate_limit,

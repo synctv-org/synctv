@@ -23,8 +23,8 @@ use tokio::sync::oneshot;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Uri};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
 
-/// Redis Pub/Sub channel for provider instance change notifications
-const PROVIDER_CHANGE_CHANNEL: &str = "synctv:provider_instances:changes";
+/// Redis Pub/Sub channel suffix for provider instance change notifications.
+const PROVIDER_CHANGE_CHANNEL_SUFFIX: &str = "provider_instances:changes";
 
 /// Default channel cache TTL (5 minutes)
 const CHANNEL_CACHE_TTL_SECS: u64 = 300;
@@ -59,6 +59,9 @@ pub struct RemoteProviderManager {
     /// Optional Redis client for creating Pub/Sub subscriptions
     /// (`ConnectionManager` cannot be used for subscriptions)
     redis_client: Option<redis::Client>,
+
+    /// Redis Pub/Sub channel name including the configured deployment prefix.
+    provider_change_channel: Arc<str>,
 }
 
 impl std::fmt::Debug for RemoteProviderManager {
@@ -82,7 +85,9 @@ impl RemoteProviderManager {
         repository: Arc<ProviderInstanceRepository>,
         redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
         redis_client: Option<redis::Client>,
+        redis_key_prefix: impl Into<String>,
     ) -> Self {
+        let redis_key_prefix = redis_key_prefix.into();
         if redis_conn.is_none() {
             tracing::warn!(
                 "RemoteProviderManager using local-only cache invalidation. \
@@ -99,6 +104,10 @@ impl RemoteProviderManager {
             repository,
             redis_conn,
             redis_client,
+            provider_change_channel: format!(
+                "{redis_key_prefix}{PROVIDER_CHANGE_CHANNEL_SUFFIX}"
+            )
+            .into(),
         }
     }
 
@@ -157,13 +166,21 @@ impl RemoteProviderManager {
 
         let client = client.clone();
         let cache = Arc::clone(&self.channel_cache);
+        let provider_change_channel = Arc::clone(&self.provider_change_channel);
         let (ready_tx, ready_rx) = oneshot::channel();
 
         crate::spawn::spawn_monitored("provider_invalidation_listener", async move {
             let mut ready_tx = Some(ready_tx);
 
             loop {
-                match Self::run_pubsub_listener(&client, &cache, &mut ready_tx).await {
+                match Self::run_pubsub_listener(
+                    &client,
+                    &cache,
+                    provider_change_channel.as_ref(),
+                    &mut ready_tx,
+                )
+                .await
+                {
                     Ok(()) => break, // clean shutdown (shouldn't happen)
                     Err(e) => {
                         tracing::warn!(
@@ -199,6 +216,7 @@ impl RemoteProviderManager {
     async fn run_pubsub_listener(
         client: &redis::Client,
         cache: &moka::future::Cache<String, Channel>,
+        provider_change_channel: &str,
         ready_tx: &mut Option<oneshot::Sender<()>>,
     ) -> crate::Result<()> {
         use futures::StreamExt;
@@ -208,7 +226,7 @@ impl RemoteProviderManager {
         })?;
 
         pubsub
-            .subscribe(PROVIDER_CHANGE_CHANNEL)
+            .subscribe(provider_change_channel)
             .await
             .map_err(|e| crate::Error::Internal(format!("Failed to subscribe: {e}")))?;
 
@@ -249,7 +267,7 @@ impl RemoteProviderManager {
 
         // PUBLISH to the channel -- all subscribed replicas receive the message
         let result: Result<(), redis::RedisError> = redis::cmd("PUBLISH")
-            .arg(PROVIDER_CHANGE_CHANNEL)
+            .arg(self.provider_change_channel.as_ref())
             .arg(instance_name)
             .query_async(&mut conn)
             .await;
@@ -567,16 +585,12 @@ impl RemoteProviderManager {
     /// List all remote instance names (from cache + DB)
     ///
     /// Returns the union of cached instances and enabled instances from the DB.
-    pub async fn list(&self) -> Vec<String> {
-        // Get all enabled instances from DB for a complete picture
-        match self.repository.get_all_enabled().await {
-            Ok(configs) => configs.into_iter().map(|c| c.name).collect(),
-            Err(e) => {
-                tracing::warn!("Failed to list provider instances from DB: {e}, using cache only");
-                // Fallback to cache keys (moka doesn't expose keys directly, so return empty)
-                Vec::new()
-            }
-        }
+    pub async fn list(&self) -> crate::Result<Vec<String>> {
+        self.repository
+            .get_all_enabled()
+            .await
+            .map(|configs| configs.into_iter().map(|c| c.name).collect())
+            .map_err(|e| crate::Error::Internal(format!("{e}")))
     }
 
     /// Get all provider instances with full metadata

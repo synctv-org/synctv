@@ -424,6 +424,16 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+        let ts_key = Self::family_timestamp_key(key);
+        let revoked_at = Self::family_timestamp_expiry(timestamp, ttl_secs);
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            tracing::error!(
+                key = %key,
+                error = %e,
+                "Failed to begin PostgreSQL transaction for refresh token family revocation"
+            );
+            crate::Error::Internal("Failed to revoke refresh token family".to_string())
+        })?;
 
         // Store the family revocation marker
         sqlx::query(
@@ -432,7 +442,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         )
         .bind(key)
         .bind(expires_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
             tracing::error!(
@@ -445,15 +455,13 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
 
         // Store a companion entry that expires on the same horizon as the family
         // marker, so cleanup_expired_token_blacklist() will delete both together.
-        let ts_key = Self::family_timestamp_key(key);
-        let revoked_at = Self::family_timestamp_expiry(timestamp, ttl_secs);
         sqlx::query(
             "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
         )
         .bind(&ts_key)
         .bind(revoked_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
             tracing::error!(
@@ -461,6 +469,14 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
                 timestamp_key = %ts_key,
                 error = %e,
                 "Failed to persist refresh token family revocation timestamp in PostgreSQL"
+            );
+            crate::Error::Internal("Failed to revoke refresh token family".to_string())
+        })?;
+        tx.commit().await.map_err(|e| {
+            tracing::error!(
+                key = %key,
+                error = %e,
+                "Failed to commit PostgreSQL transaction for refresh token family revocation"
             );
             crate::Error::Internal("Failed to revoke refresh token family".to_string())
         })?;

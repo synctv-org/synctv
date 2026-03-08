@@ -73,10 +73,21 @@ pub trait MigrationLock: Send + Sync {
     /// or `Err` on infrastructure failure.
     async fn acquire(&self, key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>>;
 
+    /// Extend a previously acquired lock.
+    ///
+    /// Implementations without TTL semantics may treat this as a successful no-op
+    /// while ownership is still held.
+    async fn extend(&self, _key: &str, _lock_value: &str, _ttl_secs: u64) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+
     /// Release a previously acquired lock.
     ///
     /// Returns `true` if the lock was released, `false` if not held or expired.
     async fn release(&self, key: &str, lock_value: &str) -> anyhow::Result<bool>;
+
+    /// Clone into a trait object for background keepalive tasks.
+    fn boxed_clone(&self) -> Box<dyn MigrationLock>;
 }
 
 /// `MigrationLock` implementation backed by the existing Redis `DistributedLock`.
@@ -92,6 +103,16 @@ impl MigrationLock for DistributedLock {
         Self::release(self, key, lock_value)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    async fn extend(&self, key: &str, lock_value: &str, ttl_secs: u64) -> anyhow::Result<bool> {
+        Self::extend(self, key, lock_value, ttl_secs)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    fn boxed_clone(&self) -> Box<dyn MigrationLock> {
+        Box::new(self.clone())
     }
 }
 
@@ -179,6 +200,10 @@ impl MigrationLock for PgAdvisoryMigrationLock {
             Ok(false)
         }
     }
+
+    fn boxed_clone(&self) -> Box<dyn MigrationLock> {
+        Box::new(Self::new(self.pool.clone()))
+    }
 }
 
 /// Distributed lock service (single Redis instance)
@@ -192,7 +217,13 @@ impl MigrationLock for PgAdvisoryMigrationLock {
 /// details.
 #[derive(Clone)]
 pub struct DistributedLock {
-    redis: RedisConnectionManager,
+    backend: DistributedLockBackend,
+}
+
+#[derive(Clone)]
+enum DistributedLockBackend {
+    Direct(RedisConnectionManager),
+    Shared(std::sync::Arc<tokio::sync::RwLock<RedisConnectionManager>>),
 }
 
 impl DistributedLock {
@@ -202,7 +233,23 @@ impl DistributedLock {
     /// "sentinel" in the URL) and emits a startup warning about lock safety.
     #[must_use]
     pub const fn new(redis: RedisConnectionManager) -> Self {
-        Self { redis }
+        Self {
+            backend: DistributedLockBackend::Direct(redis),
+        }
+    }
+
+    /// Create a distributed lock service from the shared Redis handle used by
+    /// the rest of the application.
+    ///
+    /// This keeps the lock service aligned with Sentinel failover hot-swaps so
+    /// it does not keep talking to a stale master after reconnection.
+    #[must_use]
+    pub fn new_shared(
+        redis: std::sync::Arc<tokio::sync::RwLock<RedisConnectionManager>>,
+    ) -> Self {
+        Self {
+            backend: DistributedLockBackend::Shared(redis),
+        }
     }
 
     /// Create a new distributed lock service and log a warning if the Redis URL
@@ -240,6 +287,33 @@ impl DistributedLock {
         Self::new(redis)
     }
 
+    /// Create a distributed lock service from the shared Redis handle with
+    /// deployment-mode awareness.
+    pub fn new_shared_with_mode(
+        redis: std::sync::Arc<tokio::sync::RwLock<RedisConnectionManager>>,
+        is_sentinel: bool,
+    ) -> Self {
+        if is_sentinel {
+            tracing::warn!(
+                "Distributed lock is running behind Redis Sentinel. \
+                 During a Sentinel failover, there is a brief split-brain window where \
+                 locks held on the old master may be lost because Redis replication is \
+                 asynchronous. Fencing tokens mitigate this for database writes, but \
+                 non-idempotent side effects (notifications, billing) cannot be fenced. \
+                 For production Sentinel deployments, consider using the Redlock algorithm \
+                 with multiple independent Redis masters."
+            );
+        }
+        Self::new_shared(redis)
+    }
+
+    async fn conn(&self) -> RedisConnectionManager {
+        match &self.backend {
+            DistributedLockBackend::Direct(conn) => conn.clone(),
+            DistributedLockBackend::Shared(conn) => conn.read().await.clone(),
+        }
+    }
+
     /// Generate a fencing token for a lock key using Redis INCR
     ///
     /// Uses Redis INCR on a per-key counter to ensure monotonic tokens
@@ -248,7 +322,7 @@ impl DistributedLock {
     /// monotonicity across replicas.
     async fn generate_fencing_token(&self, key: &str) -> crate::Result<u64> {
         let token_key = format!("lock:token:{key}");
-        let mut conn = self.redis.clone();
+        let mut conn = self.conn().await;
 
         // Atomically INCR and set a 24-hour TTL to prevent unbounded key accumulation
         let script = Script::new(
@@ -344,7 +418,7 @@ impl DistributedLock {
         let lock_key = format!("lock:{key}");
         let lock_value = crate::models::generate_id(); // nanoid(12)
 
-        let mut conn = self.redis.clone();
+        let mut conn = self.conn().await;
 
         // SET key value NX EX ttl
         // NX: Only set if not exists
@@ -414,7 +488,7 @@ impl DistributedLock {
             "#,
         );
 
-        let mut conn = self.redis.clone();
+        let mut conn = self.conn().await;
 
         let result: i32 = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
@@ -675,7 +749,7 @@ impl DistributedLock {
             "#,
         );
 
-        let mut conn = self.redis.clone();
+        let mut conn = self.conn().await;
 
         let result: i32 = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,

@@ -105,6 +105,22 @@ impl Services {
     }
 }
 
+fn handle_provider_invalidation_listener_result(
+    start_result: crate::Result<()>,
+    cluster_mode: bool,
+) -> Result<(), anyhow::Error> {
+    if let Err(e) = start_result {
+        if cluster_mode {
+            return Err(anyhow::anyhow!(
+                "cluster mode requires provider invalidation listener to start successfully: {e}"
+            ));
+        }
+        tracing::warn!("Failed to start provider invalidation listener: {e}");
+    }
+
+    Ok(())
+}
+
 /// Initialize all core services
 ///
 /// The caller must supply optional `RedisHandles` (created by `init_redis`)
@@ -275,6 +291,8 @@ pub async fn init_services(
         user_service.clone(),
         cache_invalidation.clone(),
         brute_force.clone(),
+        redis_handles.as_ref(),
+        matches!(config.redis.deployment_mode, crate::config::RedisDeploymentMode::Sentinel),
     );
     info!("RoomService initialized");
 
@@ -345,6 +363,7 @@ pub async fn init_services(
         provider_instance_repo.clone(),
         redis_handles.as_ref().map(|h| h.conn.clone()),
         redis_client.clone(),
+        config.redis.key_prefix.clone(),
     ));
 
     // Pre-warm cache with all enabled provider instances from database
@@ -356,12 +375,10 @@ pub async fn init_services(
     }
 
     // Start cross-replica cache invalidation listener
-    if let Err(e) = provider_instance_manager
-        .start_invalidation_listener()
-        .await
-    {
-        tracing::warn!("Failed to start provider invalidation listener: {e}");
-    }
+    handle_provider_invalidation_listener_result(
+        provider_instance_manager.start_invalidation_listener().await,
+        cluster_mode,
+    )?;
 
     // Initialize ProvidersManager
     info!("Initializing ProvidersManager...");
@@ -692,8 +709,17 @@ fn build_room_service(
     user_service: UserService,
     cache_invalidation: Arc<CacheInvalidationService>,
     brute_force: crate::service::auth::BruteForceProtection,
+    redis_handles: Option<&RedisHandles>,
+    is_sentinel: bool,
 ) -> RoomService {
     let mut room_service = RoomService::new(pool, user_service);
+    if let Some(redis_handles) = redis_handles {
+        let lock = crate::service::DistributedLock::new_shared_with_mode(
+            redis_handles.conn.clone(),
+            is_sentinel,
+        );
+        room_service.set_distributed_lock(lock);
+    }
     room_service.set_brute_force_service(brute_force);
     room_service.set_cache_invalidation(cache_invalidation.clone());
     room_service.set_playback_cache_invalidation(cache_invalidation);
@@ -888,6 +914,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_cluster_mode_provider_invalidation_failure_is_fatal() {
+        let err = handle_provider_invalidation_listener_result(
+            Err(crate::Error::Internal(
+                "listener bootstrap failed".to_string(),
+            )),
+            true,
+        )
+        .expect_err("cluster mode must fail closed on provider invalidation wiring");
+        assert!(
+            err.to_string()
+                .contains("cluster mode requires provider invalidation listener"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_standalone_provider_invalidation_failure_is_non_fatal() {
+        handle_provider_invalidation_listener_result(
+            Err(crate::Error::Internal(
+                "listener bootstrap failed".to_string(),
+            )),
+            false,
+        )
+        .expect("standalone mode may continue with local-only provider invalidation");
+    }
+
     #[tokio::test]
     async fn test_build_room_service_wires_brute_force_protection() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
@@ -924,10 +977,26 @@ mod tests {
             user_service,
             cache_invalidation,
             crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
+            None,
+            false,
         );
 
         assert!(room_service.has_brute_force_service());
+        assert!(!room_service.has_distributed_lock());
     }
+
+    #[test]
+    fn test_build_room_service_signature_supports_redis_lock_wiring() {
+        let _: fn(
+            PgPool,
+            UserService,
+            Arc<CacheInvalidationService>,
+            crate::service::auth::BruteForceProtection,
+            Option<&RedisHandles>,
+            bool,
+        ) -> RoomService = build_room_service;
+    }
+
 
     #[test]
     fn test_cluster_enabled_without_redis_fails_at_config_validation_layer() {

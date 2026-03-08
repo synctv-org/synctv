@@ -11,6 +11,7 @@
 pub mod alist;
 pub mod bilibili;
 pub mod emby;
+pub mod live;
 // direct_url module removed: proxy handled by unified_proxy_handler,
 // no provider-specific API endpoints needed.
 
@@ -33,6 +34,11 @@ pub(crate) async fn execute_proxy_action(
     client_headers: &axum::http::HeaderMap,
 ) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
+        ProxyAction::LiveFlv { .. }
+        | ProxyAction::LiveHlsPlaylist { .. }
+        | ProxyAction::LiveHlsSegment { .. } => Err(AppError::internal(
+            "live proxy actions must execute with application state".to_string(),
+        )),
         ProxyAction::FetchAndForward { url, headers } => {
             let cfg = synctv_proxy::ProxyConfig {
                 url: &url,
@@ -72,6 +78,11 @@ async fn execute_proxy_action_with_state(
     client_headers: &axum::http::HeaderMap,
 ) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
+        ProxyAction::LiveFlv { .. }
+        | ProxyAction::LiveHlsPlaylist { .. }
+        | ProxyAction::LiveHlsSegment { .. } => {
+            live::execute_live_proxy_action(state, action, None).await
+        }
         ProxyAction::FetchAndForward { url, headers } => {
             let cache_enabled =
                 proxy_cache_enabled(state.settings_registry.as_ref()).map_err(|e| {
@@ -184,7 +195,14 @@ pub(crate) async fn unified_proxy_handler(
 
     // 7. Resolve and execute
     let action = proxy.resolve_proxy(&ctx).await.map_err(AppError::from)?;
-    execute_proxy_action_with_state(&state, action, &headers).await
+    match action {
+        ProxyAction::LiveFlv { .. }
+        | ProxyAction::LiveHlsPlaylist { .. }
+        | ProxyAction::LiveHlsSegment { .. } => {
+            live::execute_live_proxy_action(&state, action, Some(query_str)).await
+        }
+        other => execute_proxy_action_with_state(&state, other, &headers).await,
+    }
 }
 
 #[cfg(test)]

@@ -13,8 +13,8 @@ use std::time::Duration;
 use synctv_core::provider::{
     proxy::lookup_versioned,
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
-    AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, MediaProvider,
-    PlaybackResult,
+    AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
+    MediaProvider, PlaybackResult, ProviderSet, RtmpProvider,
 };
 
 fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderManager> {
@@ -23,7 +23,7 @@ fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderM
         pool,
     ));
     Arc::new(synctv_core::service::RemoteProviderManager::new(
-        repo, None, None,
+        repo, None, None, "",
     ))
 }
 
@@ -57,6 +57,34 @@ async fn emby_has_provider_proxy() {
 fn direct_url_does_not_have_provider_proxy() {
     let p = DirectUrlProvider::new();
     assert!(p.as_provider_proxy().is_some());
+}
+
+#[tokio::test]
+async fn rtmp_has_provider_proxy() {
+    let p = RtmpProvider::new();
+    assert!(p.as_provider_proxy().is_some());
+}
+
+#[tokio::test]
+async fn live_proxy_has_provider_proxy() {
+    let p = LiveProxyProvider::new();
+    assert!(p.as_provider_proxy().is_some());
+}
+
+#[tokio::test]
+async fn provider_set_registers_live_providers() {
+    let provider_set = ProviderSet {
+        alist: Arc::new(AlistProvider::new(fake_provider_instance_manager())),
+        bilibili: Arc::new(BilibiliProvider::new(fake_provider_instance_manager())),
+        emby: Arc::new(EmbyProvider::new(fake_provider_instance_manager())),
+        direct_url: Arc::new(DirectUrlProvider::new()),
+        rtmp: Arc::new(RtmpProvider::new()),
+        live_proxy: Arc::new(LiveProxyProvider::new()),
+    };
+
+    let registry = provider_set.build_proxy_registry();
+    assert!(registry.get("rtmp").is_some());
+    assert!(registry.get("live_proxy").is_some());
 }
 
 // ---------------------------------------------------------------------------

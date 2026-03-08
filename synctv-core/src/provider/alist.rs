@@ -465,7 +465,13 @@ impl MediaProvider for AlistProvider {
         if let Some(store) = store {
             if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
                 if !cached.is_expired() {
-                    return Ok(cached.result);
+                    return Ok(super::maybe_sign_versioned_playback(
+                        cached.result,
+                        Self::NAME,
+                        &cached.version,
+                        cached.expires_at,
+                        _ctx,
+                    ));
                 }
             }
         }
@@ -484,13 +490,19 @@ impl MediaProvider for AlistProvider {
         if let Some(store) = store {
             if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
                 if !cached.is_expired() {
-                    return Ok(cached.result);
+                    return Ok(super::maybe_sign_versioned_playback(
+                        cached.result,
+                        Self::NAME,
+                        &cached.version,
+                        cached.expires_at,
+                        _ctx,
+                    ));
                 }
             }
         }
 
         // Call provider API
-        let mut result = self.resolve_from_api(&resolved).await?;
+        let result = self.resolve_from_api(&resolved).await?;
 
         // Generate version and store result
         let version = nanoid::nanoid!(16);
@@ -508,21 +520,13 @@ impl MediaProvider for AlistProvider {
         }
 
         // Sign playback URLs when signing_key and identity are available
-        if let (Some(signing_key), Some(room_id), Some(user_id)) =
-            (_ctx.signing_key, _ctx.room_id, _ctx.user_id)
-        {
-            super::sign_playback_urls(
-                &mut result,
-                Self::NAME,
-                &version,
-                signing_key,
-                room_id,
-                user_id,
-                expires_at,
-            );
-        }
-
-        Ok(result)
+        Ok(super::maybe_sign_versioned_playback(
+            result,
+            Self::NAME,
+            &version,
+            expires_at,
+            _ctx,
+        ))
     }
 
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {

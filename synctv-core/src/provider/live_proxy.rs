@@ -7,6 +7,7 @@
 //! The `PullStreamManager` handles the actual pulling from the external source.
 
 use super::{
+    proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
     store::{ProviderStoreExt, VersionedPlayback},
     MediaProvider, PlaybackResult, ProviderContext, ProviderError,
 };
@@ -21,21 +22,20 @@ use std::time::Duration;
 /// The external URL is stored in `source_config.url` and validated on creation.
 /// Playback URLs point to synctv's own HLS/FLV endpoints.
 pub struct LiveProxyProvider {
-    base_url: String,
 }
 
 impl LiveProxyProvider {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self {
-            base_url: base_url.into(),
-        }
+    pub const NAME: &'static str = "live_proxy";
+
+    pub const fn new() -> Self {
+        Self {}
     }
 }
 
 #[async_trait]
 impl MediaProvider for LiveProxyProvider {
     fn name(&self) -> &'static str {
-        "live_proxy"
+        Self::NAME
     }
 
     async fn generate_playback(
@@ -58,7 +58,7 @@ impl MediaProvider for LiveProxyProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
 
-        let mut result = super::build_live_playback(&self.base_url, media_id, room_id);
+        let mut result = super::build_live_playback(media_id, room_id);
         let redacted_host = url::Url::parse(source_url)
             .ok()
             .and_then(|u| u.host_str().map(String::from))
@@ -87,7 +87,13 @@ impl MediaProvider for LiveProxyProvider {
                 .await;
         }
 
-        Ok(result)
+        Ok(super::maybe_sign_versioned_playback(
+            result,
+            Self::NAME,
+            &version,
+            versioned.expires_at,
+            _ctx,
+        ))
     }
 
     async fn validate_source_config(
@@ -125,6 +131,58 @@ impl MediaProvider for LiveProxyProvider {
 
         Ok(())
     }
+
+    fn as_provider_proxy(&self) -> Option<&dyn ProviderProxy> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl ProviderProxy for LiveProxyProvider {
+    async fn resolve_proxy(
+        &self,
+        ctx: &ProxyRequestContext<'_>,
+    ) -> Result<ProxyAction, ProviderError> {
+        let (version, rest) = ctx.sub_path.split_once('/').ok_or(ProviderError::NotFound)?;
+        let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+        let room_id = versioned
+            .result
+            .metadata
+            .get("room_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ProviderError::ApiError("Live playback missing room_id".into()))?;
+        let media_id = versioned
+            .result
+            .metadata
+            .get("media_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
+
+        match rest {
+            "stream" => Ok(ProxyAction::LiveFlv {
+                provider_name: Self::NAME.to_string(),
+                room_id: room_id.to_string(),
+                media_id: media_id.to_string(),
+            }),
+            "m3u8" => Ok(ProxyAction::LiveHlsPlaylist {
+                provider_name: Self::NAME.to_string(),
+                room_id: room_id.to_string(),
+                media_id: media_id.to_string(),
+                version: version.to_string(),
+            }),
+            segment if segment.starts_with("segment/") => {
+                let segment_name = segment.trim_start_matches("segment/");
+                let disguised_as_png = segment_name.ends_with(".png");
+                Ok(ProxyAction::LiveHlsSegment {
+                    room_id: room_id.to_string(),
+                    media_id: media_id.to_string(),
+                    segment_name: segment_name.to_string(),
+                    disguised_as_png,
+                })
+            }
+            _ => Err(ProviderError::NotFound),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -136,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_live_proxy_metadata_does_not_expose_source_url() {
-        let provider = LiveProxyProvider::new("https://localhost:8080");
+        let provider = LiveProxyProvider::new();
         let ctx = ProviderContext::new("test");
 
         let source_config = json!({
@@ -169,16 +227,14 @@ mod tests {
     }
 
     #[test]
-    fn test_live_proxy_provider_requires_explicit_base_url() {
-        // L14: LiveProxyProvider must NOT implement Default.
-        // It must always be constructed with an explicit base URL via new().
-        let provider = LiveProxyProvider::new("https://my-server.example.com:9090");
-        assert_eq!(provider.base_url, "https://my-server.example.com:9090");
+    fn test_live_proxy_provider_can_be_constructed_without_base_url() {
+        let provider = LiveProxyProvider::new();
+        let _ = provider;
     }
 
     #[tokio::test]
     async fn test_live_proxy_metadata_contains_provider_tag() {
-        let provider = LiveProxyProvider::new("https://localhost:8080");
+        let provider = LiveProxyProvider::new();
         let ctx = ProviderContext::new("test");
 
         let source_config = json!({
@@ -196,5 +252,34 @@ mod tests {
             Some("live_proxy"),
             "Metadata should still contain provider tag"
         );
+    }
+
+    #[tokio::test]
+    async fn generate_playback_signs_urls_with_provider_proxy_prefix() {
+        use crate::provider::store::InMemoryProviderStore;
+        use crate::service::ProxySigningKey;
+        use std::sync::Arc;
+
+        let provider = LiveProxyProvider::new();
+        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let ctx = ProviderContext::new("synctv")
+            .with_user_id("user1")
+            .with_room_id("room1")
+            .with_signing_key(&signing_key)
+            .with_store(Arc::new(InMemoryProviderStore::new(16)));
+        let result = provider
+            .generate_playback(
+                &ctx,
+                &json!({"room_id": "room1", "media_id": "media1", "url": "rtmp://example.com/live/stream"}),
+            )
+            .await
+            .unwrap();
+
+        let hls = result.playback_infos.get("hls").unwrap().urls.first().unwrap();
+        let flv = result.playback_infos.get("flv").unwrap().urls.first().unwrap();
+        assert!(hls.starts_with("/api/providers/proxy/live_proxy/"));
+        assert!(hls.contains("/m3u8?"));
+        assert!(flv.starts_with("/api/providers/proxy/live_proxy/"));
+        assert!(flv.contains("/stream?"));
     }
 }

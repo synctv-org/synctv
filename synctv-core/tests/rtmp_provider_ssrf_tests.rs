@@ -21,7 +21,7 @@ fn create_context() -> ProviderContext<'static> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_validate_source_config_rejects_url_field() {
-    let provider = RtmpProvider::new("https://example.com");
+    let provider = RtmpProvider::new();
     let ctx = create_context();
 
     let malicious_configs = vec![
@@ -61,7 +61,7 @@ async fn test_rtmp_provider_validate_source_config_rejects_url_field() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_validate_source_config_accepts_valid_fields() {
-    let provider = RtmpProvider::new("https://example.com");
+    let provider = RtmpProvider::new();
     let ctx = create_context();
 
     let valid_config = json!({

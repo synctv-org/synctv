@@ -6,6 +6,7 @@ target/
 .idea/
 .vscode/
 .claude/
+.cargo-home/
 
 # Secrets and configuration
 *.pem

@@ -34,6 +34,57 @@ impl RtmpProvider {
     pub const fn new() -> Self {
         Self {}
     }
+
+    fn build_live_proxy_action(
+        &self,
+        rest: &str,
+        versioned: &VersionedPlayback,
+        verified_claims: Option<&crate::service::proxy_signature::ProxyUrlClaims>,
+    ) -> Result<ProxyAction, ProviderError> {
+        let room_id = versioned
+            .result
+            .metadata
+            .get("room_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ProviderError::ApiError("Live playback missing room_id".into()))?;
+        let media_id = versioned
+            .result
+            .metadata
+            .get("media_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
+
+        match rest {
+            "stream" => {
+                let claims = verified_claims
+                    .ok_or_else(|| ProviderError::ApiError("Missing verified proxy claims".into()))?;
+                Ok(ProxyAction::LiveFlv {
+                    provider_name: Self::NAME.to_string(),
+                    room_id: room_id.to_string(),
+                    media_id: media_id.to_string(),
+                    user_id: claims.user_id.clone(),
+                    expires_at: claims.expires_at,
+                })
+            }
+            "m3u8" => Ok(ProxyAction::LiveHlsPlaylist {
+                provider_name: Self::NAME.to_string(),
+                room_id: room_id.to_string(),
+                media_id: media_id.to_string(),
+                version: versioned.version.clone(),
+            }),
+            segment if segment.starts_with("segment/") => {
+                let segment_name = segment.trim_start_matches("segment/");
+                let disguised_as_png = segment_name.ends_with(".png");
+                Ok(ProxyAction::LiveHlsSegment {
+                    room_id: room_id.to_string(),
+                    media_id: media_id.to_string(),
+                    segment_name: segment_name.to_string(),
+                    disguised_as_png,
+                })
+            }
+            _ => Err(ProviderError::NotFound),
+        }
+    }
 }
 
 impl Default for RtmpProvider {
@@ -133,43 +184,7 @@ impl ProviderProxy for RtmpProvider {
     ) -> Result<ProxyAction, ProviderError> {
         let (version, rest) = ctx.sub_path.split_once('/').ok_or(ProviderError::NotFound)?;
         let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
-        let room_id = versioned
-            .result
-            .metadata
-            .get("room_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ProviderError::ApiError("Live playback missing room_id".into()))?;
-        let media_id = versioned
-            .result
-            .metadata
-            .get("media_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
-
-        match rest {
-            "stream" => Ok(ProxyAction::LiveFlv {
-                provider_name: Self::NAME.to_string(),
-                room_id: room_id.to_string(),
-                media_id: media_id.to_string(),
-            }),
-            "m3u8" => Ok(ProxyAction::LiveHlsPlaylist {
-                provider_name: Self::NAME.to_string(),
-                room_id: room_id.to_string(),
-                media_id: media_id.to_string(),
-                version: version.to_string(),
-            }),
-            segment if segment.starts_with("segment/") => {
-                let segment_name = segment.trim_start_matches("segment/");
-                let disguised_as_png = segment_name.ends_with(".png");
-                Ok(ProxyAction::LiveHlsSegment {
-                    room_id: room_id.to_string(),
-                    media_id: media_id.to_string(),
-                    segment_name: segment_name.to_string(),
-                    disguised_as_png,
-                })
-            }
-            _ => Err(ProviderError::NotFound),
-        }
+        self.build_live_proxy_action(rest, &versioned, ctx.verified_claims)
     }
 }
 
@@ -282,5 +297,68 @@ mod tests {
         let second_hls = second.playback_infos.get("hls").unwrap().urls.first().unwrap();
         assert_ne!(first_hls, second_hls, "cached playback must be re-signed per user");
         assert!(second_hls.contains("uid=user2") || second_hls.contains("user_id=user2") || second_hls.contains("sig="));
+    }
+
+    #[tokio::test]
+    async fn resolve_proxy_flv_includes_verified_identity_and_expiry() {
+        use crate::provider::store::VersionedPlayback;
+        use crate::service::proxy_signature::ProxyUrlClaims;
+        use std::collections::HashMap;
+
+        let provider = RtmpProvider::new();
+        let versioned = VersionedPlayback {
+            version: "v1".to_string(),
+            result: PlaybackResult {
+                playback_infos: HashMap::new(),
+                default_mode: "hls".to_string(),
+                metadata: HashMap::from([
+                    ("room_id".to_string(), json!("room1")),
+                    ("media_id".to_string(), json!("media1")),
+                ]),
+            },
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+        let claims = ProxyUrlClaims {
+            provider: "rtmp".to_string(),
+            version: "v1".to_string(),
+            room_id: "room1".to_string(),
+            user_id: "user1".to_string(),
+            expires_at: chrono::Utc::now().timestamp() + 30,
+        };
+        let action = provider
+            .build_live_proxy_action("stream", &versioned, Some(&claims))
+            .unwrap();
+        match action {
+            ProxyAction::LiveFlv { user_id, expires_at, .. } => {
+                assert_eq!(user_id, "user1");
+                assert_eq!(expires_at, claims.expires_at);
+            }
+            other => panic!("expected LiveFlv action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_proxy_flv_requires_verified_claims() {
+        use crate::provider::store::VersionedPlayback;
+        use std::collections::HashMap;
+
+        let provider = RtmpProvider::new();
+        let versioned = VersionedPlayback {
+            version: "v1".to_string(),
+            result: PlaybackResult {
+                playback_infos: HashMap::new(),
+                default_mode: "hls".to_string(),
+                metadata: HashMap::from([
+                    ("room_id".to_string(), json!("room1")),
+                    ("media_id".to_string(), json!("media1")),
+                ]),
+            },
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+
+        let err = provider
+            .build_live_proxy_action("stream", &versioned, None)
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::ApiError(_)));
     }
 }

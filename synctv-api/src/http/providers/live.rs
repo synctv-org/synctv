@@ -82,7 +82,17 @@ pub(crate) async fn execute_live_proxy_action(
             provider_name,
             room_id,
             media_id,
-        } => execute_flv_stream(state, &provider_name, &room_id, &media_id).await,
+            user_id,
+            expires_at,
+        } => execute_flv_stream(
+            state,
+            &provider_name,
+            &room_id,
+            &media_id,
+            &user_id,
+            expires_at,
+        )
+        .await,
         ProxyAction::LiveHlsPlaylist {
             provider_name,
             room_id,
@@ -107,6 +117,8 @@ async fn execute_flv_stream(
     provider_name: &str,
     room_id_str: &str,
     media_id: &str,
+    user_id: &str,
+    expires_at: i64,
 ) -> AppResult<Response> {
     info!(room_id = %room_id_str, media_id = %media_id, provider = %provider_name, "FLV streaming request");
 
@@ -143,26 +155,39 @@ async fn execute_flv_stream(
 
     let (tx, rx_wrapped) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(512);
     let room_id_clone = room_id.clone();
+    let user_id = synctv_core::models::id::UserId::from_string(user_id.to_string());
     tokio::spawn(async move {
         let _guard = subscriber_guard;
         let mut rx = rx;
         let mut consecutive_drops: u32 = 0;
         const MAX_CONSECUTIVE_DROPS: u32 = 100;
         let start_time = std::time::Instant::now();
+        let mut lifecycle_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        lifecycle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            if max_connection_duration.as_secs() > 0
-                && start_time.elapsed() >= max_connection_duration
-            {
-                info!(
-                    room_id = %room_id_clone.as_str(),
-                    max_duration_secs = max_connection_duration.as_secs(),
-                    "FLV stream terminated: max connection duration exceeded"
-                );
-                break;
-            }
-
             tokio::select! {
+                _ = lifecycle_tick.tick() => {
+                    if chrono::Utc::now().timestamp() > expires_at {
+                        info!(
+                            room_id = %room_id_clone.as_str(),
+                            expires_at,
+                            "FLV stream terminated: proxy signature expired"
+                        );
+                        break;
+                    }
+
+                    if max_connection_duration.as_secs() > 0
+                        && start_time.elapsed() >= max_connection_duration
+                    {
+                        info!(
+                            room_id = %room_id_clone.as_str(),
+                            max_duration_secs = max_connection_duration.as_secs(),
+                            "FLV stream terminated: max connection duration exceeded"
+                        );
+                        break;
+                    }
+                }
                 data = rx.recv() => {
                     if let Some(chunk) = data {
                         let send_success = send_flv_chunk(&tx, chunk, write_timeout).await;
@@ -182,8 +207,12 @@ async fn execute_flv_stream(
                 disconnect = disconnect_rx.recv() => {
                     if let Ok(event) = disconnect {
                         let should_disconnect = match event {
+                            synctv_cluster::sync::DisconnectSignal::User(ref uid) => uid == &user_id,
                             synctv_cluster::sync::DisconnectSignal::Room(ref rid) => rid == &room_id,
-                            synctv_cluster::sync::DisconnectSignal::UserFromRoom { room_id: ref rid, .. } => rid == &room_id,
+                            synctv_cluster::sync::DisconnectSignal::UserFromRoom {
+                                user_id: ref uid,
+                                room_id: ref rid,
+                            } => uid == &user_id && rid == &room_id,
                             _ => false,
                         };
                         if should_disconnect {
@@ -221,20 +250,19 @@ async fn execute_hls_playlist(
         .live_infrastructure()
         .ok_or_else(|| AppError::internal_server_error("Live streaming not configured"))?;
 
-    let query_suffix = raw_query
-        .filter(|query| !query.is_empty())
-        .map(|query| format!("?{query}"))
-        .unwrap_or_default();
+    let segment_disguised_as_png = live_segments_disguised_as_png(state);
 
     let playlist = HlsStreamingApi::generate_playlist(
         infrastructure,
         room_id,
         media_id,
-        |ts_name| {
-            format!(
-                "/api/providers/proxy/{provider_name}/{version}/segment/{ts_name}.ts{query_suffix}"
-            )
-        },
+        |ts_name| build_hls_segment_path(
+            provider_name,
+            version,
+            ts_name,
+            raw_query,
+            segment_disguised_as_png,
+        ),
     )
     .await
     .map_err(|e| AppError::internal_server_error(format!("Failed to generate HLS playlist: {e}")))?;
@@ -250,6 +278,30 @@ async fn execute_hls_playlist(
             "No active HLS stream for {room_id}/{media_id}"
         ))),
     }
+}
+
+fn live_segments_disguised_as_png(state: &AppState) -> bool {
+    state
+        .settings_registry
+        .as_ref()
+        .and_then(|registry| registry.ts_disguised_as_png.get().ok())
+        .unwrap_or(true)
+}
+
+fn build_hls_segment_path(
+    provider_name: &str,
+    version: &str,
+    ts_name: &str,
+    raw_query: Option<&str>,
+    disguised_as_png: bool,
+) -> String {
+    let query_suffix = raw_query
+        .filter(|query| !query.is_empty())
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    let extension = if disguised_as_png { "png" } else { "ts" };
+
+    format!("/api/providers/proxy/{provider_name}/{version}/segment/{ts_name}.{extension}{query_suffix}")
 }
 
 async fn execute_hls_segment(
@@ -366,5 +418,20 @@ mod tests {
         let path = "/api/providers/rtmp/info/media123";
         assert!(path.starts_with("/api/providers/rtmp/"));
         assert!(path.ends_with("/media123"));
+    }
+
+    #[test]
+    fn build_hls_segment_path_uses_png_suffix_when_enabled() {
+        let path = build_hls_segment_path("rtmp", "ver1", "seg001", Some("sig=1"), true);
+        assert_eq!(
+            path,
+            "/api/providers/proxy/rtmp/ver1/segment/seg001.png?sig=1"
+        );
+    }
+
+    #[test]
+    fn build_hls_segment_path_uses_ts_suffix_when_disabled() {
+        let path = build_hls_segment_path("rtmp", "ver1", "seg001", None, false);
+        assert_eq!(path, "/api/providers/proxy/rtmp/ver1/segment/seg001.ts");
     }
 }

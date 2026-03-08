@@ -44,6 +44,8 @@ pub enum ProxyAction {
         provider_name: String,
         room_id: String,
         media_id: String,
+        user_id: String,
+        expires_at: i64,
     },
     /// Generate an HLS playlist for a live stream.
     LiveHlsPlaylist {

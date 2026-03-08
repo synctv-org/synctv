@@ -30,6 +30,57 @@ impl LiveProxyProvider {
     pub const fn new() -> Self {
         Self {}
     }
+
+    fn build_live_proxy_action(
+        &self,
+        rest: &str,
+        versioned: &VersionedPlayback,
+        verified_claims: Option<&crate::service::proxy_signature::ProxyUrlClaims>,
+    ) -> Result<ProxyAction, ProviderError> {
+        let room_id = versioned
+            .result
+            .metadata
+            .get("room_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ProviderError::ApiError("Live playback missing room_id".into()))?;
+        let media_id = versioned
+            .result
+            .metadata
+            .get("media_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
+
+        match rest {
+            "stream" => {
+                let claims = verified_claims
+                    .ok_or_else(|| ProviderError::ApiError("Missing verified proxy claims".into()))?;
+                Ok(ProxyAction::LiveFlv {
+                    provider_name: Self::NAME.to_string(),
+                    room_id: room_id.to_string(),
+                    media_id: media_id.to_string(),
+                    user_id: claims.user_id.clone(),
+                    expires_at: claims.expires_at,
+                })
+            }
+            "m3u8" => Ok(ProxyAction::LiveHlsPlaylist {
+                provider_name: Self::NAME.to_string(),
+                room_id: room_id.to_string(),
+                media_id: media_id.to_string(),
+                version: versioned.version.clone(),
+            }),
+            segment if segment.starts_with("segment/") => {
+                let segment_name = segment.trim_start_matches("segment/");
+                let disguised_as_png = segment_name.ends_with(".png");
+                Ok(ProxyAction::LiveHlsSegment {
+                    room_id: room_id.to_string(),
+                    media_id: media_id.to_string(),
+                    segment_name: segment_name.to_string(),
+                    disguised_as_png,
+                })
+            }
+            _ => Err(ProviderError::NotFound),
+        }
+    }
 }
 
 #[async_trait]
@@ -145,43 +196,7 @@ impl ProviderProxy for LiveProxyProvider {
     ) -> Result<ProxyAction, ProviderError> {
         let (version, rest) = ctx.sub_path.split_once('/').ok_or(ProviderError::NotFound)?;
         let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
-        let room_id = versioned
-            .result
-            .metadata
-            .get("room_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ProviderError::ApiError("Live playback missing room_id".into()))?;
-        let media_id = versioned
-            .result
-            .metadata
-            .get("media_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
-
-        match rest {
-            "stream" => Ok(ProxyAction::LiveFlv {
-                provider_name: Self::NAME.to_string(),
-                room_id: room_id.to_string(),
-                media_id: media_id.to_string(),
-            }),
-            "m3u8" => Ok(ProxyAction::LiveHlsPlaylist {
-                provider_name: Self::NAME.to_string(),
-                room_id: room_id.to_string(),
-                media_id: media_id.to_string(),
-                version: version.to_string(),
-            }),
-            segment if segment.starts_with("segment/") => {
-                let segment_name = segment.trim_start_matches("segment/");
-                let disguised_as_png = segment_name.ends_with(".png");
-                Ok(ProxyAction::LiveHlsSegment {
-                    room_id: room_id.to_string(),
-                    media_id: media_id.to_string(),
-                    segment_name: segment_name.to_string(),
-                    disguised_as_png,
-                })
-            }
-            _ => Err(ProviderError::NotFound),
-        }
+        self.build_live_proxy_action(rest, &versioned, ctx.verified_claims)
     }
 }
 

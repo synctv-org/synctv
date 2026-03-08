@@ -546,7 +546,7 @@ mod ws_auth_scenarios {
     #[test]
     fn test_ticket_service_not_configured() {
         let err = AppError::internal_server_error(
-            "WebSocket ticket service not configured (Redis required)",
+            "WebSocket ticket service not configured",
         );
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -912,7 +912,9 @@ mod websocket_e2e {
             },
             live_streaming_infrastructure: None,
             rate_limiter,
-            ws_ticket_service: None,
+            ws_ticket_service: Some(Arc::new(
+                synctv_core::service::WsTicketService::with_memory(None),
+            )),
             redis_conn: None,
             builtin_stun_url: None,
             credential_encryption: None,
@@ -3177,10 +3179,9 @@ mod websocket_e2e {
     #[tokio::test]
     #[ignore = "Disabled: CI timeout"]
     async fn test_ws_expired_ticket_rejected() {
-        // The WsTicketService is NOT configured in our test setup (ws_ticket_service: None).
-        // Any ?ticket= value will therefore be rejected with "ticket service not configured"
-        // or "invalid ticket" — the exact error message depends on whether the service is
-        // present. Either way, the connection MUST be rejected.
+        // The standalone test setup now wires an in-memory WsTicketService.
+        // A fake/expired ticket must still be rejected after validation against the
+        // memory-backed store.
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
@@ -3666,7 +3667,9 @@ mod websocket_connection_limit_timing {
             },
             live_streaming_infrastructure: None,
             rate_limiter,
-            ws_ticket_service: None,
+            ws_ticket_service: Some(Arc::new(
+                synctv_core::service::WsTicketService::with_memory(None),
+            )),
             redis_conn: None,
             builtin_stun_url: None,
             credential_encryption: None,

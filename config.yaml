@@ -64,10 +64,6 @@ server:
   # Maximum time to wait for active connections to drain during shutdown
   shutdown_drain_timeout_seconds: 30
 
-  # Disable legacy ?token=<jwt> WebSocket query parameter authentication
-  # When true, only Authorization header and ?ticket= are accepted
-  # Recommended in production (tokens in URLs appear in logs and browser history)
-  disable_ws_token_query: false
 
 # ============================================================================
 # DATABASE CONFIGURATION

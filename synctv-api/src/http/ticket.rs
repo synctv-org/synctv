@@ -110,9 +110,10 @@ pub async fn create_ticket(
     }
 
     // Check if ticket service is available
-    let ws_ticket_service = state.ws_ticket_service.as_ref().ok_or_else(|| {
-        AppError::internal_server_error("WebSocket ticket service not configured (Redis required)")
-    })?;
+    let ws_ticket_service = state
+        .ws_ticket_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_server_error("WebSocket ticket service not configured"))?;
 
     // Create a new room-bound ticket for this user (Issue #65)
     // Include password_version so tickets are invalidated on password change

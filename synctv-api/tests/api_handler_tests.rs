@@ -427,7 +427,7 @@ mod create_ticket_validation {
                 let ws_ticket_service: Option<()> = None;
                 ws_ticket_service.ok_or_else(|| {
                     AppError::internal_server_error(
-                        "WebSocket ticket service not configured (Redis required)",
+                        "WebSocket ticket service not configured",
                     )
                 })?;
 
@@ -1099,15 +1099,12 @@ mod optional_services_absent {
     #[test]
     fn test_ws_ticket_service_none_error_message() {
         let ws_ticket_service: Option<()> = None;
-        let result = ws_ticket_service.ok_or_else(|| {
-            AppError::internal_server_error(
-                "WebSocket ticket service not configured (Redis required)",
-            )
-        });
+        let result = ws_ticket_service
+            .ok_or_else(|| AppError::internal_server_error("WebSocket ticket service not configured"));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(err.message.contains("Redis required"));
+        assert_eq!(err.message, "WebSocket ticket service not configured");
     }
 
     /// `admin_api=None` should produce correct error
@@ -1137,9 +1134,7 @@ mod optional_services_absent {
                 AppError::internal_server_error("OAuth2 service not configured")
             }),
             ("ws_ticket", || {
-                AppError::internal_server_error(
-                    "WebSocket ticket service not configured (Redis required)",
-                )
+                AppError::internal_server_error("WebSocket ticket service not configured")
             }),
             ("admin", || {
                 AppError::internal("Admin service not configured")

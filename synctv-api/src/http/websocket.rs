@@ -173,7 +173,7 @@ async fn extract_user_id(
             return Ok((validated.user_id, AuthMethod::Ticket));
         }
         return Err(AppError::internal_server_error(
-            "WebSocket ticket service not configured (Redis required)",
+            "WebSocket ticket service not configured",
         ));
     }
 
@@ -823,7 +823,7 @@ mod tests {
     #[test]
     fn test_internal_error_for_missing_ticket_service() {
         let err = AppError::internal_server_error(
-            "WebSocket ticket service not configured (Redis required)",
+            "WebSocket ticket service not configured",
         );
         assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     }

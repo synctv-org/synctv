@@ -890,18 +890,27 @@ impl Drop for UnpublishGuard {
                 let sender = self.stream_hub_event_sender.clone();
                 let room_id = self.room_id.clone();
                 let media_id = self.media_id.clone();
+                let room_id_for_task = room_id.clone();
+                let media_id_for_task = media_id.clone();
                 warn!(
                     "UnpublishGuard: channel full, spawning async UnPublish for {}/{}",
                     room_id, media_id
                 );
-                tokio::spawn(async move {
+                if crate::util::try_spawn(async move {
                     if let Err(e) = sender.send(event).await {
                         warn!(
                             "UnpublishGuard: async UnPublish failed for {}/{}: {}",
-                            room_id, media_id, e
+                            room_id_for_task, media_id_for_task, e
                         );
                     }
-                });
+                })
+                .is_none()
+                {
+                    warn!(
+                        "UnpublishGuard: no Tokio runtime available, skipping async UnPublish for {}/{}",
+                        room_id, media_id
+                    );
+                }
             }
             Err(e) => {
                 warn!(

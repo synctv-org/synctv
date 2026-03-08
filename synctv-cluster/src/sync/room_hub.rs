@@ -1,11 +1,12 @@
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 /// Timeout for delivering critical events to slow consumers.
@@ -44,6 +45,16 @@ const SUBSCRIBER_CHANNEL_CAPACITY: usize = 512;
 /// Set higher to tolerate transient bursts (e.g., rapid seek operations) without
 /// prematurely disconnecting clients on slower networks.
 const MAX_CONSECUTIVE_DROPS: u32 = 50;
+
+fn try_spawn<F>(future: F) -> Option<JoinHandle<F::Output>>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::runtime::Handle::try_current()
+        .map(|handle| handle.spawn(future))
+        .ok()
+}
 
 /// Message sender for a client connection
 pub type MessageSender = mpsc::Sender<ClusterEvent>;
@@ -117,6 +128,9 @@ pub struct RoomMessageHub {
     /// because replicas share the same key prefix and would otherwise delete
     /// each other's still-active subscriptions.
     pending_redis_cleanup: Arc<DashMap<ConnectionId, RoomId>>,
+
+    /// Guards idempotent startup of Redis-backed background tasks.
+    background_tasks_started: Arc<AtomicBool>,
 }
 
 impl RoomMessageHub {
@@ -134,6 +148,7 @@ impl RoomMessageHub {
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             stale_cleanup_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             pending_redis_cleanup: Arc::new(DashMap::new()),
+            background_tasks_started: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -154,27 +169,41 @@ impl RoomMessageHub {
     pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
         self.redis_conn = Some(conn);
         self.redis_key_prefix = key_prefix.to_string();
+        self.start();
+        self
+    }
 
-        // Auto-spawn the TTL refresh task unconditionally whenever Redis is
-        // configured, so callers do not need to remember to call
-        // `spawn_ttl_refresh_task()` manually.  The interval is set to 40% of
-        // the configured TTL so keys are always refreshed well before expiry.
-        let cancel = tokio_util::sync::CancellationToken::new();
-        self.ttl_refresh_cancel = Arc::new(cancel.clone());
+    /// Start Redis-backed background tasks if Redis is configured and a Tokio runtime exists.
+    ///
+    /// Safe to call multiple times. When called without a Tokio runtime, no
+    /// tasks are started and the hub remains usable; the next call from within
+    /// an async runtime will start the tasks.
+    pub fn start(&self) {
+        if self.redis_conn.is_none() {
+            return;
+        }
+
+        if self.background_tasks_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        if tokio::runtime::Handle::try_current().is_err() {
+            self.background_tasks_started.store(false, Ordering::Release);
+            warn!("RoomMessageHub::start() called without Tokio runtime; deferring background task startup");
+            return;
+        }
+
+        let ttl_cancel = (*self.ttl_refresh_cancel).clone();
         // Use 40% of TTL as the refresh interval (at most 120s, at least 30s)
         let refresh_interval_secs =
             (self.redis_key_ttl_secs as f64 * 0.4).clamp(30.0, 120.0) as u64;
-        let _handle =
-            self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), cancel);
-
-        // Auto-spawn the stale subscription cleanup task to remove orphaned
-        // Redis entries that accumulate when fire-and-forget cleanup fails.
-        let stale_cancel = tokio_util::sync::CancellationToken::new();
-        self.stale_cleanup_cancel = Arc::new(stale_cancel.clone());
+        let stale_cancel = (*self.stale_cleanup_cancel).clone();
+        let _handle = self.spawn_ttl_refresh_task(
+            Duration::from_secs(refresh_interval_secs),
+            ttl_cancel,
+        );
         let _cleanup_handle =
             self.spawn_stale_subscription_cleanup_task(Duration::from_mins(1), stale_cancel);
-
-        self
     }
 
     /// Cancel the auto-spawned background tasks (TTL refresh and stale cleanup).
@@ -213,6 +242,7 @@ impl RoomMessageHub {
         user_id: UserId,
         connection_id: ConnectionId,
     ) -> mpsc::Receiver<ClusterEvent> {
+        self.start();
         let (tx, rx) = mpsc::channel(SUBSCRIBER_CHANNEL_CAPACITY);
 
         let subscriber = Subscriber {
@@ -343,13 +373,18 @@ impl RoomMessageHub {
                 let connection_id_owned = connection_id.to_string();
                 let room_id_for_retry = room_id.clone();
                 let pending_redis_cleanup = Arc::clone(&self.pending_redis_cleanup);
+                let connection_id_for_log = connection_id_owned.clone();
+                let room_id_for_log = room_id_for_retry.clone();
+                let cleanup_connection_id = connection_id_owned.clone();
+                let cleanup_room_id = room_id_for_retry.clone();
+                let cleanup_pending_redis_cleanup = Arc::clone(&pending_redis_cleanup);
 
-                tokio::spawn(async move {
+                let cleanup_fut = async move {
                     let mut cleanup_failed = false;
 
                     // Remove connection from room's subscriber hash
                     if let Err(e) = conn_clone
-                        .hdel::<_, _, ()>(&room_key, &connection_id_owned)
+                        .hdel::<_, _, ()>(&room_key, &cleanup_connection_id)
                         .await
                     {
                         cleanup_failed = true;
@@ -362,11 +397,21 @@ impl RoomMessageHub {
                     }
 
                     if cleanup_failed {
-                        pending_redis_cleanup.insert(connection_id_owned, room_id_for_retry);
+                        cleanup_pending_redis_cleanup
+                            .insert(cleanup_connection_id, cleanup_room_id);
                     } else {
-                        pending_redis_cleanup.remove(&connection_id_owned);
+                        cleanup_pending_redis_cleanup.remove(&cleanup_connection_id);
                     }
-                });
+                };
+
+                if try_spawn(cleanup_fut).is_none() {
+                    pending_redis_cleanup.insert(connection_id_owned, room_id_for_retry);
+                    warn!(
+                        connection_id = %connection_id_for_log,
+                        room_id = %room_id_for_log.as_str(),
+                        "No Tokio runtime available for Redis unsubscribe cleanup; deferred to retry loop/TTL"
+                    );
+                }
             }
 
             // Emit lifecycle event if the last subscriber left
@@ -1025,7 +1070,7 @@ impl RoomMessageHub {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         let hub = self.clone();
-        tokio::spawn(async move {
+        try_spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             // Skip the first immediate tick
             ticker.tick().await;
@@ -1041,6 +1086,7 @@ impl RoomMessageHub {
                 }
             }
         })
+        .expect("spawn_stale_subscription_cleanup_task requires a Tokio runtime")
     }
 
     /// Spawn a background task that periodically refreshes TTLs on Redis
@@ -1056,7 +1102,7 @@ impl RoomMessageHub {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         let hub = self.clone();
-        tokio::spawn(async move {
+        try_spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             // Skip the first immediate tick
             ticker.tick().await;
@@ -1072,6 +1118,7 @@ impl RoomMessageHub {
                 }
             }
         })
+        .expect("spawn_ttl_refresh_task requires a Tokio runtime")
     }
 }
 
@@ -1408,6 +1455,13 @@ mod tests {
             cleanup_result.is_ok(),
             "Stale cleanup task should complete after cancellation"
         );
+    }
+
+    #[test]
+    fn test_start_without_redis_is_noop_even_without_runtime() {
+        let hub = RoomMessageHub::new();
+        hub.start();
+        hub.shutdown();
     }
 
     #[tokio::test]

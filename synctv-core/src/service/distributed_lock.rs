@@ -1226,9 +1226,16 @@ impl Drop for RedlockGuard {
         let lock_key = self.lock_key.clone();
         let lock_value = self.lock_value.clone();
 
-        tokio::spawn(async move {
-            redlock.release(&lock_key, &lock_value).await;
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                redlock.release(&lock_key, &lock_value).await;
+            });
+        } else {
+            tracing::warn!(
+                lock_key = %self.lock_key,
+                "Skipping Redlock async release because no Tokio runtime is available; lock will expire via TTL"
+            );
+        }
     }
 }
 
@@ -1792,6 +1799,26 @@ mod tests {
         assert!(
             result.is_err() || result.unwrap().is_err(),
             "Should fail due to unreachable Redis, not count validation"
+        );
+    }
+
+    #[test]
+    fn test_redlock_guard_drop_without_runtime_does_not_panic() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let guard = RedlockGuard {
+                redlock: RedlockRef {
+                    connections: Vec::new(),
+                },
+                lock_key: "lock:test".to_string(),
+                lock_value: "value".to_string(),
+                connections_to_release: vec![0],
+            };
+            drop(guard);
+        }));
+
+        assert!(
+            result.is_ok(),
+            "RedlockGuard::drop must not panic without a Tokio runtime"
         );
     }
 

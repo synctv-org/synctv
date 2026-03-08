@@ -55,6 +55,7 @@ pub struct RouterConfig {
     pub config: Arc<synctv_core::Config>,
     pub user_service: Arc<UserService>,
     pub room_service: Arc<RoomService>,
+    pub content_filter: synctv_core::service::ContentFilter,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
     pub providers: ProviderSet,
@@ -108,6 +109,8 @@ pub struct AppState {
     pub rate_limit_config: Arc<middleware::RateLimitConfig>,
     /// Shared messaging rate limit config for WebSocket (chat/danmaku rate limits)
     pub messaging_rate_limit_config: Arc<synctv_core::service::RateLimitConfig>,
+    /// Shared content filter configured at startup.
+    pub content_filter: Arc<synctv_core::service::ContentFilter>,
     pub heartbeat_schedule: crate::impls::HeartbeatSchedule,
     /// Shared JWT validator (created once at startup, not per-request)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
@@ -320,10 +323,13 @@ fn build_app_state(config: RouterConfig) -> AppState {
 
     let heartbeat_schedule = config.heartbeat_schedule;
 
+    let shared_content_filter = Arc::new(config.content_filter.clone());
+
     AppState {
         router_config: Arc::new(config),
         rate_limit_config,
         messaging_rate_limit_config,
+        content_filter: shared_content_filter,
         heartbeat_schedule,
         jwt_validator,
         security_pipeline,

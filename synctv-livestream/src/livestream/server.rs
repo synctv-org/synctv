@@ -258,13 +258,17 @@ impl Drop for LivestreamHandle {
         // and the stop_all() calls will clean up the actual stream resources.
         let pull_manager = Arc::clone(&self.pull_manager);
         let external_publish_manager = Arc::clone(&self.infrastructure.external_publish_manager);
-        tokio::spawn(async move {
+        if crate::util::try_spawn(async move {
             info!("LivestreamHandle drop: stopping all managed pull streams");
             pull_manager.stop_all().await;
             info!("LivestreamHandle drop: stopping all managed external publish streams");
             external_publish_manager.stop_all().await;
             info!("LivestreamHandle drop: all managed streams stopped");
-        });
+        })
+        .is_none()
+        {
+            warn!("LivestreamHandle drop: no Tokio runtime available, skipping async stop_all cleanup");
+        }
 
         // Cancel all cancellation tokens to signal tasks to exit
         self.reregister_cancel_token.cancel();
@@ -1172,6 +1176,26 @@ mod tests {
         // which signals the HLS cleanup task to exit.
         // Note: We can't check the token after drop because it's owned by the handle,
         // but the Drop implementation calls cancel() on it.
+    }
+
+    #[test]
+    fn test_livestream_handle_drop_without_runtime_does_not_panic() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let handle = runtime.block_on(async {
+                let registry = Arc::new(MockStreamRegistry::new());
+                let server = LivestreamServer::new(test_config(), registry, test_tracker());
+                server.start().await.expect("Failed to start server")
+            });
+
+            drop(runtime);
+            drop(handle);
+        }));
+
+        assert!(
+            result.is_ok(),
+            "LivestreamHandle::drop must not panic when runtime is already gone"
+        );
     }
 
     // ========== RTMP Port Pre-binding Tests ==========

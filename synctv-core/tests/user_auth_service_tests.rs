@@ -56,6 +56,48 @@ fn create_user_service(pool: PgPool) -> UserService {
     create_user_service_with_blacklist(pool, token_blacklist)
 }
 
+struct FamilyRevocationFailingStore {
+    inner: InMemoryTokenBlacklistStore,
+}
+
+#[async_trait::async_trait]
+impl TokenBlacklistStore for FamilyRevocationFailingStore {
+    async fn is_blacklisted(&self, key: &str) -> bool {
+        self.inner.is_blacklisted(key).await
+    }
+
+    async fn is_blacklisted_checked(&self, key: &str) -> synctv_core::Result<bool> {
+        self.inner.is_blacklisted_checked(key).await
+    }
+
+    async fn blacklist(&self, key: &str, ttl_secs: u64) -> synctv_core::Result<()> {
+        self.inner.blacklist(key, ttl_secs).await
+    }
+
+    async fn blacklist_if_not_exists(
+        &self,
+        key: &str,
+        ttl_secs: u64,
+    ) -> synctv_core::Result<bool> {
+        self.inner.blacklist_if_not_exists(key, ttl_secs).await
+    }
+
+    async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
+        self.inner.get_family_revoked_at(key).await
+    }
+
+    async fn set_family_revoked(
+        &self,
+        _key: &str,
+        _timestamp: i64,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<()> {
+        Err(Error::Internal(
+            "simulated family revocation persistence failure".to_string(),
+        ))
+    }
+}
+
 fn create_user_service_with_email_verification(pool: PgPool) -> UserService {
     let mut service = create_user_service(pool);
     service.set_email_verification_required(true);
@@ -851,6 +893,49 @@ async fn test_set_password_bumps_password_version() {
         updated_user.password_version,
         old_version + 1,
         "Password version should be incremented by set_password"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_password_fails_when_family_revocation_persistence_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(FamilyRevocationFailingStore {
+        inner: InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
+    });
+    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist);
+
+    let username = format!("setpw_fail_{}", nanoid::nanoid!(6));
+    let (user, _, _) = service
+        .register(
+            username.clone(),
+            Some(format!("setpw_fail_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    let result = service.set_password(&user.id, "AdminNewPass1").await;
+    assert!(
+        result.is_err(),
+        "Password change must fail closed when refresh token family revocation cannot be persisted"
+    );
+
+    let login_old = service
+        .login(username.clone(), "StrongPass1".to_string(), None)
+        .await;
+    assert!(
+        login_old.is_ok(),
+        "Failed password reset must not partially commit the new password"
+    );
+
+    let login_new = service
+        .login(username, "AdminNewPass1".to_string(), None)
+        .await;
+    assert!(
+        login_new.is_err(),
+        "New password must not become active when family revocation persistence fails"
     );
 }
 

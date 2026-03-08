@@ -1700,6 +1700,90 @@ async fn test_full_body_stale_when_expired_within_window() {
     assert_eq!(body2.as_ref(), b"stale-body");
 }
 
+#[tokio::test]
+async fn test_full_body_stale_background_revalidation_updates_next_request() {
+    let mock_server = MockServer::start().await;
+
+    let first_guard = Mock::given(method("GET"))
+        .and(path("/stale-refresh.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("version-1")
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("Content-Length", "9"),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        segment_ttl: Duration::from_millis(50),
+        stale_max_age: Duration::from_secs(5),
+        stale_while_revalidate: true,
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+    let url = format!("{}/stale-refresh.bin", mock_server.uri());
+    let provider_headers = HashMap::new();
+
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
+    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body1.as_ref(), b"version-1");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(first_guard);
+
+    Mock::given(method("GET"))
+        .and(path("/stale-refresh.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("version-2")
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("Content-Length", "9"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let stale_resp =
+        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+            .await
+            .unwrap();
+    assert_eq!(
+        stale_resp
+            .headers()
+            .get("X-Cache-Status")
+            .and_then(|v| v.to_str().ok()),
+        Some("STALE")
+    );
+    let stale_body = stale_resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(stale_body.as_ref(), b"version-1");
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let resp =
+                synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+                    .await
+                    .unwrap();
+            let status = resp
+                .headers()
+                .get("X-Cache-Status")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .unwrap_or_default();
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            if status == "HIT" && body.as_ref() == b"version-2" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background revalidation should refresh the cached body for the next request");
+}
+
 /// When stale_while_revalidate is enabled, an expired slice within the stale
 /// window returns STALE for the range request.
 #[tokio::test]

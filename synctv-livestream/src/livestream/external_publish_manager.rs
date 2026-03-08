@@ -603,19 +603,28 @@ impl Drop for ExternalPublishStream {
                     // Channel full — spawn an async task to await capacity so the
                     // UnPublish is not silently dropped, leaving the stream registered.
                     let sender = self.stream_hub_event_sender.clone();
+                    let room_id_for_task = room_id.clone();
+                    let media_id_for_task = media_id.clone();
                     warn!(
                         "ExternalPublishStream drop: channel full, spawning async UnPublish for {}/{}",
                         room_id, media_id
                     );
-                    tokio::spawn(async move {
+                    if crate::util::try_spawn(async move {
                         if let Err(e) = sender.send(event).await {
                             warn!(
                                 "ExternalPublishStream drop: async UnPublish failed for {}/{}: {} \
                                  (best-effort cleanup; Redis TTL will expire stale entry)",
-                                room_id, media_id, e
+                                room_id_for_task, media_id_for_task, e
                             );
                         }
-                    });
+                    })
+                    .is_none()
+                    {
+                        warn!(
+                            "ExternalPublishStream drop: no Tokio runtime available, skipping async UnPublish for {}/{}",
+                            room_id, media_id
+                        );
+                    }
                 }
                 Err(e) => {
                     // During runtime shutdown, the channel may already be closed.

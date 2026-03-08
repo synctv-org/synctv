@@ -117,9 +117,14 @@ async fn inject_request_id_into_error_response(response: Response, request_id: &
                 "Failed to inject request_id into error response"
             );
             // Reconstruct a response preserving the original status code and headers.
-            // The body was consumed by the failed injection attempt, so we return an
-            // empty body but with the correct status code (not a misleading 200 OK).
-            let mut fallback = Response::new(axum::body::Body::empty());
+            // Preserve the original body bytes as best-effort fallback instead of
+            // silently replacing the payload with an empty body.
+            let body = e
+                .downcast_ref::<ResponseBodyPreservationError>()
+                .map_or_else(axum::body::Body::empty, |err| {
+                    axum::body::Body::from(err.original_body.clone())
+                });
+            let mut fallback = Response::new(body);
             *fallback.status_mut() = status;
             *fallback.headers_mut() = headers;
             fallback
@@ -142,7 +147,12 @@ async fn try_inject_request_id_async(
     let bytes = to_bytes(body, usize::MAX).await?;
 
     // Try to parse as JSON and check if it's an error response
-    let mut json: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let mut json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|source| {
+        anyhow::Error::new(ResponseBodyPreservationError {
+            source,
+            original_body: bytes.to_vec(),
+        })
+    })?;
 
     // Check if this looks like an AppError response (has "error" and "status" fields)
     if json.get("error").is_some() && json.get("status").is_some() {
@@ -163,6 +173,20 @@ async fn try_inject_request_id_async(
     let original_response = Response::from_parts(parts, Body::from(bytes.to_vec()));
     Ok(original_response)
 }
+
+#[derive(Debug)]
+struct ResponseBodyPreservationError {
+    source: serde_json::Error,
+    original_body: Vec<u8>,
+}
+
+impl std::fmt::Display for ResponseBodyPreservationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "failed to deserialize JSON body for request_id injection: {}", self.source)
+    }
+}
+
+impl std::error::Error for ResponseBodyPreservationError {}
 
 /// Pre-validated security header names (validated once at startup via Lazy)
 static X_FRAME_OPTIONS: LazyLock<axum::http::HeaderName> =
@@ -1055,6 +1079,26 @@ mod tests {
             result.headers().get("X-Custom-Header").unwrap(),
             "custom-value",
             "Custom headers must be preserved when injection fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inject_request_id_preserves_body_on_injection_failure() {
+        let original_body = "not valid json {{{";
+        let response = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(original_body))
+            .unwrap();
+
+        let result = inject_request_id_into_error_response(response, "test-req-body").await;
+        let body_bytes = axum::body::to_bytes(result.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(&body_bytes).unwrap(),
+            original_body,
+            "fallback must preserve original body when injection fails"
         );
     }
 

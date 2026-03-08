@@ -356,6 +356,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let email_service_for_admin = email_service.clone();
     let providers_manager_for_client = providers_manager.clone();
     let rate_limiter_for_provider = rate_limiter.clone();
+    let shared_content_filter_for_provider = Arc::new(content_filter.clone());
 
     // Build the shared ClientApiImpl for gRPC handlers
     let client_api = Arc::new(
@@ -677,6 +678,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             config: Arc::new(config.clone()),
             user_service: user_service_for_provider,
             room_service: room_service_for_provider,
+            content_filter: (*shared_content_filter_for_provider).clone(),
             provider_instance_manager: _providers_mgr.instance_manager().clone(),
             user_provider_credential_repository: user_provider_credential_repository.clone(),
             providers: providers.clone(),
@@ -710,6 +712,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             router_config: provider_router_config,
             rate_limit_config: Arc::new(config.http_rate_limits.clone()),
             messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
+            content_filter: shared_content_filter_for_provider.clone(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             jwt_validator: provider_jwt_validator,
             security_pipeline: Arc::new(

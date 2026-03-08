@@ -500,18 +500,27 @@ impl Drop for PullStream {
                 // Channel full -- spawn a task that awaits capacity so the
                 // UnPublish is not silently dropped.
                 let sender = self.stream_hub_event_sender.clone();
+                let room_id_for_task = room_id.clone();
+                let media_id_for_task = media_id.clone();
                 warn!(
                     "PullStream drop: channel full, spawning async UnPublish for {}/{}",
                     room_id, media_id
                 );
-                tokio::spawn(async move {
+                if crate::util::try_spawn(async move {
                     if let Err(e) = sender.send(event).await {
                         warn!(
                             "PullStream drop: async UnPublish failed for {}/{}: {}",
-                            room_id, media_id, e
+                            room_id_for_task, media_id_for_task, e
                         );
                     }
-                });
+                })
+                .is_none()
+                {
+                    warn!(
+                        "PullStream drop: no Tokio runtime available, skipping async UnPublish for {}/{}",
+                        room_id, media_id
+                    );
+                }
             }
             Err(e) => {
                 warn!(

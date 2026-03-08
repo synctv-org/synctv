@@ -95,7 +95,8 @@ async fn test_force_logout_revokes_token_family() {
     let ttl_secs = 3600;
     store
         .set_family_revoked(&family_key, revoked_at, ttl_secs)
-        .await;
+        .await
+        .expect("set_family_revoked should succeed");
 
     // Verify the family is revoked
     let family_revoked_at = store.get_family_revoked_at(&family_key).await;
@@ -249,7 +250,8 @@ async fn test_token_issued_after_family_revocation_not_blacklisted() {
     let revoked_at = chrono::Utc::now().timestamp();
     store
         .set_family_revoked(&family_key, revoked_at, 3600)
-        .await;
+        .await
+        .expect("set_family_revoked should succeed");
 
     // Token issued after revocation should have iat > revoked_at
     // This is checked by SecurityPipeline, not the blacklist store

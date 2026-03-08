@@ -920,6 +920,7 @@ mod websocket_e2e {
             config,
             user_service: user_service.clone(),
             room_service: room_service.clone(),
+            content_filter: synctv_core::service::ContentFilter::new(),
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
             providers: providers.clone(),
@@ -970,6 +971,7 @@ mod websocket_e2e {
             router_config: Arc::new(router_config),
             rate_limit_config,
             messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
+            content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
                 std::time::Duration::from_secs(1),
                 std::time::Duration::from_millis(200),
@@ -3718,6 +3720,7 @@ mod websocket_connection_limit_timing {
             config,
             user_service: user_service.clone(),
             room_service: room_service.clone(),
+            content_filter: synctv_core::service::ContentFilter::new(),
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
             providers: providers.clone(),
@@ -3764,6 +3767,7 @@ mod websocket_connection_limit_timing {
             router_config: Arc::new(router_config),
             rate_limit_config,
             messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
+            content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
                 std::time::Duration::from_secs(1),
                 std::time::Duration::from_millis(200),

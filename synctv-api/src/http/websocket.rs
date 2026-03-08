@@ -499,6 +499,10 @@ fn build_failed_upgrade_cleanup(
     }
 }
 
+fn websocket_content_filter(filter: &Arc<ContentFilter>) -> Arc<ContentFilter> {
+    Arc::clone(filter)
+}
+
 async fn handle_socket(
     socket: axum::extract::ws::WebSocket,
     state: AppState,
@@ -545,7 +549,7 @@ async fn handle_socket(
     // Use the shared rate limiter from app state
     let rate_limiter = Arc::new(state.rate_limiter.clone());
     let rate_limit_config = state.messaging_rate_limit_config.clone();
-    let content_filter = Arc::new(ContentFilter::new());
+    let content_filter = websocket_content_filter(&state.content_filter);
 
     // Create channel for sending messages to WebSocket with bounded capacity.
     // Buffer size of 1000 messages provides backpressure for slow clients.
@@ -656,6 +660,28 @@ mod tests {
             ticket: Some("ticket_abc".to_string()),
         };
         assert_eq!(query.ticket.as_deref(), Some("ticket_abc"));
+    }
+
+    #[test]
+    fn test_websocket_content_filter_reuses_shared_filter() {
+        let shared = Arc::new(ContentFilter::with_config(
+            17,
+            9,
+            Some(vec!["blocked".to_string()]),
+            false,
+        ));
+        let selected = websocket_content_filter(&shared);
+        assert!(
+            Arc::ptr_eq(&selected, &shared),
+            "websocket path must reuse the shared ContentFilter instance"
+        );
+        assert_eq!(selected.max_chat_length, 17);
+        assert_eq!(selected.max_danmaku_length, 9);
+        assert_eq!(
+            selected.filter_chat("<b>hi</b>").unwrap(),
+            "<b>hi</b>",
+            "websocket path must reuse the shared filter config instead of default strip_html=true"
+        );
     }
 
     #[test]

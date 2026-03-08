@@ -295,33 +295,30 @@ impl CacheInvalidationService {
                             break;
                         }
 
-                        // Check if we need to do a state sync (either due to previous
-                        // Redis failures or as periodic health check)
-                        let should_sync = needs_state_sync.swap(false, std::sync::atomic::Ordering::Relaxed);
+                        let pending_recovery_sync = needs_state_sync
+                            .swap(false, std::sync::atomic::Ordering::Relaxed);
 
-                        if should_sync {
-                            // Attempt to broadcast an "All" invalidation message
-                            match Self::do_broadcast_to_stream(
-                                &client,
-                                &redis_conn,
-                                &stream_key,
-                                &node_id,
-                                &InvalidationMessage::All,
-                            ).await {
-                                Ok(()) => {
-                                    info!(
-                                        node_id = %node_id,
-                                        "Periodic state sync: broadcast 'All' invalidation message"
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        error = %e,
-                                        "Failed to broadcast state sync message, will retry next interval"
-                                    );
-                                    // Mark for retry on next interval
-                                    needs_state_sync.store(true, std::sync::atomic::Ordering::Relaxed);
-                                }
+                        match Self::do_broadcast_to_stream(
+                            &client,
+                            &redis_conn,
+                            &stream_key,
+                            &node_id,
+                            &InvalidationMessage::All,
+                        ).await {
+                            Ok(()) => {
+                                info!(
+                                    node_id = %node_id,
+                                    recovery_sync = pending_recovery_sync,
+                                    "Periodic state sync: broadcast 'All' invalidation message"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    recovery_sync = pending_recovery_sync,
+                                    "Failed to broadcast state sync message, will retry next interval"
+                                );
+                                needs_state_sync.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
                         }
                     }
@@ -1501,15 +1498,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_state_sync_task_runs_periodically() {
-        use std::sync::atomic::AtomicU64;
-        use std::sync::Arc;
-
         // Test that the state sync interval constant is defined correctly
         assert_eq!(STATE_SYNC_INTERVAL_SECS, 60);
-
-        // Create a mock sync counter to verify the mechanism works
-        let sync_count = Arc::new(AtomicU64::new(0));
-        let sync_count_clone = sync_count.clone();
 
         // Create service without Redis
         let service = CacheInvalidationService::new(
@@ -1518,25 +1508,12 @@ mod tests {
             "synctv:cache:invalidate:stream".to_string(),
         );
 
-        // Manually set the needs_state_sync flag
-        service
-            .needs_state_sync
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-
-        // Verify we can check and clear the flag atomically
-        let was_sync_needed = service
-            .needs_state_sync
-            .swap(false, std::sync::atomic::Ordering::Relaxed);
-        assert!(was_sync_needed);
-
-        // The flag should now be false
-        assert!(!service
-            .needs_state_sync
-            .load(std::sync::atomic::Ordering::Relaxed));
-
-        // Increment our mock counter
-        sync_count_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(sync_count.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(
+            !service
+                .needs_state_sync
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "Periodic state sync must not depend on prior failure flags"
+        );
     }
 
     #[test]

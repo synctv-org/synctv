@@ -1,4 +1,6 @@
 use sqlx::PgPool;
+use sqlx::Postgres;
+use sqlx::Transaction;
 use std::collections::HashMap;
 
 use std::sync::Arc;
@@ -694,7 +696,7 @@ impl UserService {
                         .saturating_add(3600);
                     self.token_blacklist
                         .set_family_revoked(&family_key, now, family_ttl)
-                        .await;
+                        .await?;
 
                     return Err(Error::Authentication("Authentication failed".to_string()));
                 }
@@ -776,11 +778,13 @@ impl UserService {
         // Hash new password
         let password_hash = hash_password(new_password).await?;
 
+        let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
+
         // Update password in database (this also updates password_changed_at,
         // which invalidates all tokens issued before this moment)
         let updated_user = self
             .repository
-            .update_password(user_id, &password_hash)
+            .update_password_with_executor(user_id, &password_hash, &mut *tx)
             .await?;
 
         // Revoke all refresh token families for this user so existing refresh
@@ -798,7 +802,9 @@ impl UserService {
             .saturating_add(3600);
         self.token_blacklist
             .set_family_revoked(&family_key, now, family_ttl)
-            .await;
+            .await?;
+
+        tx.commit().await?;
 
         // Invalidate user cache across all replicas
         self.notify_user_invalidation(user_id).await;

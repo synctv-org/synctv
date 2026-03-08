@@ -32,7 +32,16 @@ impl TokenBlacklistStore for FailingBlacklistStore {
         None
     }
 
-    async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) {}
+    async fn set_family_revoked(
+        &self,
+        _key: &str,
+        _timestamp: i64,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<()> {
+        Err(synctv_core::Error::Internal(
+            "Blacklist store unavailable".to_string(),
+        ))
+    }
 }
 
 // ============================================================================
@@ -73,6 +82,19 @@ async fn test_blacklist_failure_returns_error() {
     assert!(
         err.to_string().contains("unavailable") || err.to_string().contains("Blacklist"),
         "Error message should indicate the blacklist store issue"
+    );
+}
+
+#[tokio::test]
+async fn test_family_revocation_failure_returns_error() {
+    let store = FailingBlacklistStore;
+
+    let result = store
+        .set_family_revoked("family:test_token", chrono::Utc::now().timestamp(), 3600)
+        .await;
+    assert!(
+        result.is_err(),
+        "Family revocation must surface persistence failures so callers can fail closed"
     );
 }
 
@@ -164,7 +186,14 @@ async fn test_concurrent_blacklist_failures_all_return_errors() {
             None
         }
 
-        async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) {}
+        async fn set_family_revoked(
+            &self,
+            _key: &str,
+            _timestamp: i64,
+            _ttl_secs: u64,
+        ) -> synctv_core::Result<()> {
+            Ok(())
+        }
     }
 
     let store = CountingFailingStore {

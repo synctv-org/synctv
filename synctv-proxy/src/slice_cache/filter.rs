@@ -231,10 +231,10 @@ pub(super) async fn full_body_cache_path(
         // Spawn background revalidation for stale entries so the next
         // request gets a fresh copy without waiting.
         if status == CacheStatus::Stale {
+            let bg_cache = cache.clone();
             let bg_url = url.to_string();
             let bg_headers = provider_headers.clone();
             let bg_meta = cache.get_resource_meta(url, provider_headers).await;
-            let bg_cache_cfg = cache.config().clone();
             tokio::spawn(async move {
                 let client = match proxy_client() {
                     Ok(client) => client,
@@ -269,13 +269,40 @@ pub(super) async fn full_body_cache_path(
                 }
                 match req.send().await {
                     Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
-                        // Still valid -- nothing to do, TTL will be refreshed on next access.
+                        // Still valid -- refresh TTL so the next request is a HIT instead of
+                        // repeatedly re-entering the stale path.
                         let _ = resp.bytes().await;
+                        if let Some((data, content_type, _)) =
+                            bg_cache.get_full_body(&bg_url, &bg_headers).await
+                        {
+                            let ttl = match content_type.as_deref() {
+                                Some(ct) if is_manifest_content_type(ct) => {
+                                    bg_cache.config().manifest_ttl
+                                }
+                                _ => bg_cache.config().segment_ttl,
+                            };
+                            bg_cache
+                                .put_full_body(
+                                    &bg_url,
+                                    &bg_headers,
+                                    data,
+                                    content_type.as_deref(),
+                                    ttl,
+                                )
+                                .await;
+                        }
                     }
-                    Ok(_resp) => {
-                        // New content available -- will be picked up on next full cache miss.
-                        // We intentionally do not cache here to avoid complexity of
-                        // needing a reference to the SliceCache in the background task.
+                    Ok(resp) => {
+                        if let Err(error) =
+                            refresh_full_body_cache_entry(&bg_cache, &bg_url, &bg_headers, resp)
+                                .await
+                        {
+                            tracing::debug!(
+                                url = %bg_url,
+                                error = %error,
+                                "Background full-body revalidation failed to update cache"
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::debug!(
@@ -285,7 +312,6 @@ pub(super) async fn full_body_cache_path(
                         );
                     }
                 }
-                drop(bg_cache_cfg); // ensure config is kept alive
             });
         }
 
@@ -370,6 +396,48 @@ pub(super) async fn full_body_cache_path(
     }
 
     handle_full_body_response(cache, url, provider_headers, resp, pre_status).await
+}
+
+async fn refresh_full_body_cache_entry(
+    cache: &SliceCache,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+    resp: reqwest::Response,
+) -> Result<(), anyhow::Error> {
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(ToString::to_string);
+
+    let max_body = cache.config().max_cacheable_body;
+    let mut buf = Vec::with_capacity(std::cmp::min(max_body, 4 * 1024 * 1024));
+    let mut stream = resp.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
+        if buf.len().saturating_add(chunk.len()) > max_body {
+            return Ok(());
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    let ttl = match content_type.as_deref() {
+        Some(ct) if is_manifest_content_type(ct) => cache.config().manifest_ttl,
+        _ => cache.config().segment_ttl,
+    };
+
+    cache
+        .put_full_body(
+            url,
+            provider_headers,
+            Bytes::from(buf),
+            content_type.as_deref(),
+            ttl,
+        )
+        .await;
+
+    Ok(())
 }
 
 /// Process a non-304 full-body upstream response: cache if small enough,

@@ -1,6 +1,8 @@
 //! Shared utilities for the livestream crate.
 
 use rand::RngExt;
+use std::future::Future;
+use tokio::task::JoinHandle;
 
 /// Exponential backoff with jitter.
 ///
@@ -18,4 +20,35 @@ pub async fn backoff(attempt: u32, initial_ms: u64, max_ms: u64) {
     };
     let delay = (capped.saturating_sub(jitter_range) + random_offset).min(max_ms);
     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+}
+
+/// Best-effort spawn that does nothing when no Tokio runtime is available.
+///
+/// This is intended for `Drop` paths and other fire-and-forget cleanup where
+/// panicking during runtime teardown would be worse than skipping async cleanup.
+pub fn try_spawn<F>(future: F) -> Option<JoinHandle<F::Output>>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::runtime::Handle::try_current()
+        .ok()
+        .map(|handle| handle.spawn(future))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_spawn_returns_none_without_runtime() {
+        let result = try_spawn(async {});
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn try_spawn_spawns_when_runtime_exists() {
+        let handle = try_spawn(async { 42 }).expect("runtime should be available");
+        assert_eq!(handle.await.expect("task should complete"), 42);
+    }
 }

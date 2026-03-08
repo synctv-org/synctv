@@ -114,7 +114,14 @@ impl TokenBlacklistStore for MockPgStore {
         None
     }
 
-    async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) {}
+    async fn set_family_revoked(
+        &self,
+        _key: &str,
+        _timestamp: i64,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
 }
 
 // ============================================================================

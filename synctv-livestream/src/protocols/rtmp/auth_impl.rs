@@ -80,7 +80,7 @@ impl Drop for PublisherGuard {
             let registry = Arc::clone(&self.registry);
             let room_id = self.room_id.clone();
             let media_id = self.media_id.clone();
-            tokio::spawn(async move {
+            if crate::util::try_spawn(async move {
                 warn!(
                     room_id = %room_id,
                     media_id = %media_id,
@@ -94,7 +94,15 @@ impl Drop for PublisherGuard {
                         "Failed to cleanup publisher registration"
                     );
                 }
-            });
+            })
+            .is_none()
+            {
+                warn!(
+                    room_id = %self.room_id,
+                    media_id = %self.media_id,
+                    "Skipping publisher cleanup because no Tokio runtime is available"
+                );
+            }
         }
     }
 }
@@ -422,6 +430,9 @@ fn extract_token_from_query(query: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relay::InMemoryStreamRegistry;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::Arc;
 
     #[test]
     fn test_redact_jwt_token_standard_jwt() {
@@ -495,5 +506,23 @@ mod tests {
         // Realistic JWT from common libraries
         let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
         assert_eq!(redact_jwt_token(jwt), "[REDACTED]");
+    }
+
+    #[test]
+    fn test_publisher_guard_drop_without_runtime_does_not_panic() {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let guard = runtime.block_on(async {
+                let registry = Arc::new(InMemoryStreamRegistry::new());
+                PublisherGuard::new(registry, "room1".to_string(), "media1".to_string())
+            });
+            drop(runtime);
+            drop(guard);
+        }));
+
+        assert!(
+            result.is_ok(),
+            "PublisherGuard::drop must not panic when runtime is unavailable"
+        );
     }
 }

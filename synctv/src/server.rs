@@ -591,6 +591,7 @@ impl SyncTvServer {
                 config: Arc::new(self.config.clone()),
                 user_service,
                 room_service,
+                content_filter: self.services.content_filter.clone(),
                 provider_instance_manager,
                 user_provider_credential_repository,
                 providers: self.services.providers.clone(),

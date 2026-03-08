@@ -7,6 +7,7 @@ use std::time::Duration;
 use moka::Expiry;
 use parking_lot::Mutex;
 use thiserror::Error;
+use uuid::Uuid;
 
 /// Errors returned by provider store operations.
 #[derive(Debug, Error)]
@@ -109,17 +110,23 @@ impl Expiry<String, TtlValue> for PerEntryExpiry {
     }
 }
 
+#[derive(Clone)]
+struct LockValue {
+    owner_token: String,
+    ttl: Duration,
+}
+
 /// Moka `Expiry` for lock entries: each lock key expires after its stored TTL `Duration`.
 struct LockEntryExpiry;
 
-impl Expiry<String, Duration> for LockEntryExpiry {
+impl Expiry<String, LockValue> for LockEntryExpiry {
     fn expire_after_create(
         &self,
         _key: &String,
-        value: &Duration,
+        value: &LockValue,
         _current_time: std::time::Instant,
     ) -> Option<Duration> {
-        Some(*value)
+        Some(value.ttl)
     }
 }
 
@@ -130,7 +137,7 @@ impl Expiry<String, Duration> for LockEntryExpiry {
 /// A `Mutex` guards the check-and-insert to prevent TOCTOU races.
 pub struct InMemoryProviderStore {
     cache: moka::future::Cache<String, TtlValue>,
-    locks: moka::sync::Cache<String, Duration>,
+    locks: moka::sync::Cache<String, LockValue>,
     lock_mutex: Mutex<()>,
 }
 
@@ -179,13 +186,26 @@ impl ProviderStore for InMemoryProviderStore {
         if self.locks.contains_key(key) {
             return Err(StoreError::LockFailed(format!("key already locked: {key}")));
         }
-        self.locks.insert(key.to_string(), ttl);
+        let owner_token = Uuid::new_v4().to_string();
+        self.locks.insert(
+            key.to_string(),
+            LockValue {
+                owner_token: owner_token.clone(),
+                ttl,
+            },
+        );
         drop(_guard);
 
         let locks = self.locks.clone();
         let key_owned = key.to_string();
+        let owner_token_owned = owner_token;
         Ok(StoreLockGuard::new(move || {
-            locks.invalidate(&key_owned);
+            let should_release = locks
+                .get(&key_owned)
+                .is_some_and(|value| value.owner_token == owner_token_owned);
+            if should_release {
+                locks.invalidate(&key_owned);
+            }
         }))
     }
 }
@@ -248,10 +268,11 @@ impl ProviderStore for RedisProviderStore {
 
     async fn lock(&self, key: &str, ttl: Duration) -> Result<StoreLockGuard, StoreError> {
         let ttl_secs = ttl.as_secs().max(1);
+        let owner_token = Uuid::new_v4().to_string();
         for _ in 0..10 {
             let result: Option<String> = redis::cmd("SET")
                 .arg(key)
-                .arg(1)
+                .arg(&owner_token)
                 .arg("NX")
                 .arg("EX")
                 .arg(ttl_secs)
@@ -262,14 +283,31 @@ impl ProviderStore for RedisProviderStore {
             if result.is_some() {
                 let key_owned = key.to_string();
                 let shared = self.shared_conn.clone();
+                let owner_token_owned = owner_token.clone();
                 return Ok(StoreLockGuard::new(move || {
-                    tokio::spawn(async move {
-                        let mut conn = shared.read().await.clone();
-                        let _: Result<(), _> = redis::cmd("DEL")
-                            .arg(&key_owned)
-                            .query_async(&mut conn)
-                            .await;
-                    });
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        handle.spawn(async move {
+                            let delete_if_owner = redis::Script::new(
+                                r#"
+                                if redis.call("GET", KEYS[1]) == ARGV[1] then
+                                    return redis.call("DEL", KEYS[1])
+                                end
+                                return 0
+                            "#,
+                            );
+                            let mut conn = shared.read().await.clone();
+                            let _: Result<i32, _> = delete_if_owner
+                                .key(&key_owned)
+                                .arg(&owner_token_owned)
+                                .invoke_async(&mut conn)
+                                .await;
+                        });
+                    } else {
+                        tracing::warn!(
+                            key = %key_owned,
+                            "Skipping Redis provider lock release because no Tokio runtime is available; lock will expire via TTL"
+                        );
+                    }
                 }));
             }
 
@@ -395,6 +433,33 @@ impl VersionedPlayback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use redis::AsyncCommands;
+    use std::sync::Arc;
+    use testcontainers::{runners::AsyncRunner, ContainerAsync};
+    use testcontainers_modules::redis::Redis;
+
+    async fn start_redis() -> (ContainerAsync<Redis>, Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) {
+        let container = Redis::default()
+            .start()
+            .await
+            .expect("Failed to start Redis container");
+        let host = container
+            .get_host()
+            .await
+            .expect("Failed to get Redis host");
+        let port = container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Failed to get Redis port");
+        let redis_url = format!("redis://{host}:{port}");
+        let client =
+            redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+        let conn = client
+            .get_connection_manager()
+            .await
+            .expect("Failed to create ConnectionManager");
+        (container, Arc::new(tokio::sync::RwLock::new(conn)))
+    }
 
     #[tokio::test]
     async fn test_in_memory_store_get_set() {
@@ -426,6 +491,25 @@ mod tests {
         assert!(store.lock("mylock", Duration::from_secs(10)).await.is_err());
         drop(guard);
         // After drop, should succeed
+        assert!(store.lock("mylock", Duration::from_secs(10)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_stale_guard_does_not_delete_new_owner_lock() {
+        let store = InMemoryProviderStore::new(100);
+        let first_guard = store.lock("mylock", Duration::from_secs(1)).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+
+        let second_guard = store.lock("mylock", Duration::from_secs(10)).await.unwrap();
+        drop(first_guard);
+
+        assert!(
+            store.lock("mylock", Duration::from_secs(10)).await.is_err(),
+            "stale guard must not invalidate a new owner's lock"
+        );
+
+        drop(second_guard);
         assert!(store.lock("mylock", Duration::from_secs(10)).await.is_ok());
     }
 
@@ -506,5 +590,59 @@ mod tests {
         // Any arbitrary provider name works — no pre-registration needed
         let _store = registry.load("my_custom_provider");
         let _store2 = registry.load("another_one");
+    }
+
+    #[test]
+    fn test_store_lock_guard_drop_without_runtime_does_not_panic() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let guard = StoreLockGuard::new(|| {
+                let _ = tokio::runtime::Handle::try_current()
+                    .expect("release callback should not assume runtime in this test");
+            });
+            drop(guard);
+        }));
+
+        assert!(
+            result.is_err(),
+            "control check: plain runtime-dependent callbacks still panic without protection"
+        );
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let guard = StoreLockGuard::new(|| {
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async {});
+                }
+            });
+            drop(guard);
+        }));
+
+        assert!(
+            result.is_ok(),
+            "StoreLockGuard drop path must not panic when runtime is unavailable"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_redis_lock_drop_does_not_delete_new_owner_lock() {
+        let (_container, shared_conn) = start_redis().await;
+        let store = RedisProviderStore::new(shared_conn.clone());
+        let lock_key = "provider-lock-race";
+
+        let first_guard = store.lock(lock_key, Duration::from_secs(1)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+
+        let second_guard = store.lock(lock_key, Duration::from_secs(30)).await.unwrap();
+
+        drop(first_guard);
+
+        let mut conn = shared_conn.read().await.clone();
+        let value: Option<String> = conn.get(lock_key).await.unwrap();
+        assert!(
+            value.is_some(),
+            "dropping stale guard must not delete lock held by newer owner"
+        );
+
+        drop(second_guard);
     }
 }

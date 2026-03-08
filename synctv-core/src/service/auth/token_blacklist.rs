@@ -108,7 +108,10 @@ pub trait TokenBlacklistStore: Send + Sync {
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64>;
 
     /// Set the family revocation timestamp for a key with TTL.
-    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64);
+    ///
+    /// This is a security-critical write. Callers must be able to fail closed
+    /// if persistence does not succeed.
+    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()>;
 }
 
 // ============================================================================
@@ -226,11 +229,12 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
         }
     }
 
-    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) {
+    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
         let expiry = Instant::now() + Duration::from_secs(ttl_secs);
         self.family_revoked
             .insert(key.to_string(), (timestamp, expiry))
             .await;
+        Ok(())
     }
 }
 
@@ -418,31 +422,49 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         }
     }
 
-    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) {
+    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
 
         // Store the family revocation marker
-        let _ = sqlx::query(
+        sqlx::query(
             "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
         )
         .bind(key)
         .bind(expires_at)
         .execute(&self.pool)
-        .await;
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                key = %key,
+                error = %e,
+                "Failed to persist refresh token family revocation marker in PostgreSQL"
+            );
+            crate::Error::Internal("Failed to revoke refresh token family".to_string())
+        })?;
 
         // Store a companion entry that expires on the same horizon as the family
         // marker, so cleanup_expired_token_blacklist() will delete both together.
         let ts_key = Self::family_timestamp_key(key);
         let revoked_at = Self::family_timestamp_expiry(timestamp, ttl_secs);
-        let _ = sqlx::query(
+        sqlx::query(
             "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
         )
         .bind(&ts_key)
         .bind(revoked_at)
         .execute(&self.pool)
-        .await;
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                key = %key,
+                timestamp_key = %ts_key,
+                error = %e,
+                "Failed to persist refresh token family revocation timestamp in PostgreSQL"
+            );
+            crate::Error::Internal("Failed to revoke refresh token family".to_string())
+        })?;
+        Ok(())
     }
 }
 
@@ -865,9 +887,9 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         }
     }
 
-    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) {
+    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
         // 1. Write to PG (durable primary)
-        self.pg.set_family_revoked(key, timestamp, ttl_secs).await;
+        self.pg.set_family_revoked(key, timestamp, ttl_secs).await?;
 
         // 2. Write to L2 Redis (positive, overwrites any stale negative sentinel)
         if let Some(ref redis_conn) = self.redis_conn {
@@ -885,6 +907,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 (Some(timestamp), Instant::now() + L1_POSITIVE_TTL),
             )
             .await;
+        Ok(())
     }
 }
 
@@ -1033,16 +1056,14 @@ impl TokenBlacklistStore for FallbackTokenBlacklistStore {
         self.primary.get_family_revoked_at(key).await
     }
 
-    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) {
+    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
         // Always write to fallback first
         self.fallback
             .set_family_revoked(key, timestamp, ttl_secs)
-            .await;
+            .await?;
 
         // Try to write to primary
-        self.primary
-            .set_family_revoked(key, timestamp, ttl_secs)
-            .await;
+        self.primary.set_family_revoked(key, timestamp, ttl_secs).await
     }
 }
 
@@ -1233,13 +1254,23 @@ impl RedisSyncableTokenBlacklistStore {
                     continue;
                 }
 
-                // set_family_revoked doesn't return Result, so we can't detect failure
-                // We'll check if it's still in the fallback after the call
-                self.primary
+                match self
+                    .primary
                     .set_family_revoked(&key, pending.timestamp, pending.ttl_secs)
-                    .await;
-                self.pending_family.remove(&key).await;
-                stats.family_synced += 1;
+                    .await
+                {
+                    Ok(()) => {
+                        self.pending_family.remove(&key).await;
+                        stats.family_synced += 1;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            key = %key,
+                            error = %e,
+                            "Failed to sync pending family revocation to primary"
+                        );
+                    }
+                }
             }
         }
 
@@ -1373,28 +1404,30 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
         self.primary.get_family_revoked_at(key).await
     }
 
-    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) {
+    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
         // Always write to fallback first
         self.fallback
             .set_family_revoked(key, timestamp, ttl_secs)
-            .await;
+            .await?;
 
-        // Try to write to primary
-        // Note: set_family_revoked doesn't return Result, so we can't detect failure directly.
-        // For now, we always add to pending and let sync handle duplicates.
-        // This is safe because set_family_revoked is idempotent.
-        self.primary
-            .set_family_revoked(key, timestamp, ttl_secs)
-            .await;
-
-        // Add to pending for potential sync (idempotent, will be no-op if primary succeeded)
-        let pending = PendingFamilyWrite {
-            key: key.to_string(),
-            timestamp,
-            ttl_secs,
-            expires_at: Instant::now() + Duration::from_secs(ttl_secs),
-        };
-        self.pending_family.insert(key.to_string(), pending).await;
+        match self.primary.set_family_revoked(key, timestamp, ttl_secs).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let pending = PendingFamilyWrite {
+                    key: key.to_string(),
+                    timestamp,
+                    ttl_secs,
+                    expires_at: Instant::now() + Duration::from_secs(ttl_secs),
+                };
+                self.pending_family.insert(key.to_string(), pending).await;
+                tracing::warn!(
+                    key = %key,
+                    error = %e,
+                    "Failed to persist family revocation to primary store; queued pending sync"
+                );
+                Err(e)
+            }
+        }
     }
 }
 
@@ -1546,16 +1579,17 @@ mod tests {
             .await
             .is_none());
 
-        // set_family_revoked writes to PG (fails silently) then L1
+        // Family revocation is fail-closed: if the durable PG write fails, the
+        // tiered store must return an error and must not populate L1 as if the
+        // revocation were durably committed.
         let ts = 1700000000_i64;
-        store
-            .set_family_revoked("family:write_test", ts, 3600)
-            .await;
+        let result = store.set_family_revoked("family:write_test", ts, 3600).await;
+        assert!(result.is_err());
 
-        // L1 should now have the entry
+        // L1 should remain empty because the durable write failed.
         assert_eq!(
             store.get_family_revoked_at("family:write_test").await,
-            Some(ts)
+            None
         );
     }
 
@@ -1620,7 +1654,7 @@ mod tests {
         let timestamp = 1700000000_i64;
 
         assert!(store.get_family_revoked_at(key).await.is_none());
-        store.set_family_revoked(key, timestamp, 86400).await;
+        store.set_family_revoked(key, timestamp, 86400).await.unwrap();
         assert_eq!(store.get_family_revoked_at(key).await, Some(timestamp));
     }
 
@@ -1673,7 +1707,7 @@ mod tests {
         let key = "family:ttl_test";
         let timestamp = 1700000000_i64;
 
-        store.set_family_revoked(key, timestamp, 1).await;
+        store.set_family_revoked(key, timestamp, 1).await.unwrap();
         assert_eq!(store.get_family_revoked_at(key).await, Some(timestamp));
 
         // Wait for expiry
@@ -1692,7 +1726,10 @@ mod tests {
         for i in 0..10 {
             let key = format!("family:user_{i}");
             let timestamp = 1700000000_i64 + i;
-            store.set_family_revoked(&key, timestamp, 86400).await;
+            store
+                .set_family_revoked(&key, timestamp, 86400)
+                .await
+                .unwrap();
         }
 
         // Verify all are retrievable
@@ -1728,7 +1765,10 @@ mod tests {
 
         assert!(fallback.get_family_revoked_at(key).await.is_none());
 
-        fallback.set_family_revoked(key, timestamp, 86400).await;
+        fallback
+            .set_family_revoked(key, timestamp, 86400)
+            .await
+            .unwrap();
         assert_eq!(fallback.get_family_revoked_at(key).await, Some(timestamp));
     }
 
@@ -1760,8 +1800,11 @@ mod tests {
         let key = "family:failing_primary_test";
         let timestamp = 1700000000_i64;
 
-        // Set family revocation (should succeed via fallback)
-        fallback.set_family_revoked(key, timestamp, 86400).await;
+        // Family revocation is security-critical: the API must fail closed if
+        // the primary store cannot persist it, even though fallback still
+        // keeps a local copy for degraded behavior.
+        let result = fallback.set_family_revoked(key, timestamp, 86400).await;
+        assert!(result.is_err());
 
         // Should be retrievable (via fallback)
         assert_eq!(
@@ -1829,7 +1872,10 @@ mod tests {
         let key = "family:fallback_ttl_test";
         let timestamp = 1700000000_i64;
 
-        fallback.set_family_revoked(key, timestamp, 1).await;
+        fallback
+            .set_family_revoked(key, timestamp, 1)
+            .await
+            .unwrap();
         assert_eq!(fallback.get_family_revoked_at(key).await, Some(timestamp));
 
         // Wait for expiry

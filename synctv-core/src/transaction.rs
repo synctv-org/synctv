@@ -283,12 +283,16 @@ impl Drop for UnitOfWork {
         //
         // In debug mode, panic to catch the bug early.
         // In release mode, just log a warning.
-        assert!(
-            !needs_handling,
-            "UnitOfWork dropped without explicit commit or rollback! \
+        if needs_handling {
+            let message = "UnitOfWork dropped without explicit commit or rollback! \
              This is likely a bug - transactions should be explicitly committed or rolled back. \
-             The transaction will be rolled back automatically."
-        );
+             The transaction will be rolled back automatically.";
+            if cfg!(debug_assertions) {
+                panic!("{message}");
+            } else {
+                tracing::warn!("{message}");
+            }
+        }
     }
 }
 
@@ -569,5 +573,18 @@ mod tests {
             result.is_ok(),
             "Uncommitted UnitOfWork should not panic in release mode"
         );
+    }
+
+    #[test]
+    fn test_release_behavior_matches_build_mode() {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _uow = UnitOfWork::new_uncommitted_for_testing();
+        }));
+
+        if cfg!(debug_assertions) {
+            assert!(result.is_err(), "debug builds should panic on unhandled UnitOfWork drop");
+        } else {
+            assert!(result.is_ok(), "release builds should only warn on unhandled UnitOfWork drop");
+        }
     }
 }

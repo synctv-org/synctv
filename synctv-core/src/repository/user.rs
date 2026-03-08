@@ -228,6 +228,20 @@ impl UserRepository {
 
     /// Update user password
     pub async fn update_password(&self, user_id: &UserId, password_hash: &str) -> Result<User> {
+        self.update_password_with_executor(user_id, password_hash, &self.pool)
+            .await
+    }
+
+    /// Update user password using a provided executor (pool or transaction)
+    pub async fn update_password_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        password_hash: &str,
+        executor: E,
+    ) -> Result<User>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let now = Utc::now();
         let u = sqlx::query_as::<_, User>(
             r"
@@ -240,7 +254,7 @@ impl UserRepository {
         .bind(user_id.as_str())
         .bind(password_hash)
         .bind(now)
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await?
         .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
 

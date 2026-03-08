@@ -160,7 +160,7 @@ async fn test_in_memory_family_revoked_set_and_get() {
     assert!(store.get_family_revoked_at(key).await.is_none());
 
     // Set family revocation
-    store.set_family_revoked(key, timestamp, 86400).await;
+    store.set_family_revoked(key, timestamp, 86400).await.unwrap();
 
     // Should be retrievable
     let revoked_at = store.get_family_revoked_at(key).await;
@@ -174,7 +174,7 @@ async fn test_in_memory_family_ttl_expiry() {
     let key = "family:ttl_test";
     let timestamp = chrono::Utc::now().timestamp();
 
-    store.set_family_revoked(key, timestamp, 1).await;
+    store.set_family_revoked(key, timestamp, 1).await.unwrap();
     assert_eq!(store.get_family_revoked_at(key).await, Some(timestamp));
 
     // Wait for expiry
@@ -214,7 +214,10 @@ async fn test_fallback_family_roundtrip() {
 
     assert!(fallback.get_family_revoked_at(key).await.is_none());
 
-    fallback.set_family_revoked(key, timestamp, 86400).await;
+    fallback
+        .set_family_revoked(key, timestamp, 86400)
+        .await
+        .unwrap();
     assert_eq!(fallback.get_family_revoked_at(key).await, Some(timestamp));
 }
 
@@ -247,7 +250,10 @@ async fn test_fallback_family_ttl_expiry() {
     let key = "family:fallback_ttl_test";
     let timestamp = chrono::Utc::now().timestamp();
 
-    fallback.set_family_revoked(key, timestamp, 1).await;
+    fallback
+        .set_family_revoked(key, timestamp, 1)
+        .await
+        .unwrap();
     assert_eq!(fallback.get_family_revoked_at(key).await, Some(timestamp));
 
     // Wait for expiry
@@ -267,7 +273,7 @@ async fn test_pg_family_revocation_survives_cleanup_until_marker_expires() {
     let key = "family:pg_cleanup_guard";
     let timestamp = chrono::Utc::now().timestamp();
 
-    store.set_family_revoked(key, timestamp, 120).await;
+    store.set_family_revoked(key, timestamp, 120).await.unwrap();
     store.cleanup_expired().await.unwrap();
 
     assert_eq!(
@@ -296,8 +302,15 @@ impl TokenBlacklistStore for FailingStore {
         None
     }
 
-    async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) {
-        // Do nothing (simulates failure)
+    async fn set_family_revoked(
+        &self,
+        _key: &str,
+        _timestamp: i64,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<()> {
+        Err(synctv_core::Error::Internal(
+            "Primary store failed".to_string(),
+        ))
     }
 }
 
@@ -328,8 +341,10 @@ async fn test_fallback_with_failing_primary_still_tracks_family() {
     let key = "family:failing_primary_test";
     let timestamp = chrono::Utc::now().timestamp();
 
-    // Set family revocation (should succeed via fallback)
-    fallback.set_family_revoked(key, timestamp, 86400).await;
+    // Family revocation must fail closed when the primary store cannot persist
+    // it, while still leaving degraded local state in the fallback store.
+    let result = fallback.set_family_revoked(key, timestamp, 86400).await;
+    assert!(result.is_err());
 
     // Should be retrievable (via fallback)
     assert_eq!(
@@ -400,10 +415,21 @@ impl TokenBlacklistStore for ToggleableStore {
         None
     }
 
-    async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) {
+    async fn set_family_revoked(
+        &self,
+        _key: &str,
+        _timestamp: i64,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<()> {
         self.family_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        // Like the real implementation, this is fire-and-forget
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            Err(synctv_core::Error::Internal(
+                "Store is unavailable".to_string(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -462,8 +488,10 @@ async fn test_family_revocation_during_outage() {
     let key = "family:outage_user";
     let timestamp = chrono::Utc::now().timestamp();
 
-    // Set family revocation while primary is down
-    fallback.set_family_revoked(key, timestamp, 86400).await;
+    // Family revocation is fail-closed, so the call must error while still
+    // leaving degraded fallback state available locally.
+    let result = fallback.set_family_revoked(key, timestamp, 86400).await;
+    assert!(result.is_err());
 
     // Should be retrievable from memory fallback
     assert_eq!(
@@ -648,10 +676,17 @@ async fn test_sync_family_revocations() {
 
     let timestamp = chrono::Utc::now().timestamp();
 
+    // Simulate primary outage for the initial write.
+    toggleable.set_failing(true);
+
     // Set family revocation while primary is down
-    fallback
+    let result = fallback
         .set_family_revoked("family:sync_test", timestamp, 86400)
         .await;
+    assert!(
+        result.is_err(),
+        "family revocation must fail closed when primary persistence fails"
+    );
 
     // Recover primary
     toggleable.set_failing(false);

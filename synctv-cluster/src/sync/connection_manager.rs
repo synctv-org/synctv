@@ -48,13 +48,19 @@ struct ConnectionInfoPersistent {
     rtc_joined_at_unix: Option<u64>,
 }
 
+fn system_time_to_unix_secs(now: SystemTime) -> u64 {
+    now.duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|error| {
+            warn!("System clock is before UNIX_EPOCH; using zero timestamp fallback: {error}");
+            Duration::ZERO
+        })
+        .as_secs()
+}
+
 impl From<&ConnectionInfo> for ConnectionInfoPersistent {
     fn from(info: &ConnectionInfo) -> Self {
         let now = SystemTime::now();
-        let now_unix = now
-            .duration_since(UNIX_EPOCH)
-            .expect("SystemTime is before UNIX_EPOCH")
-            .as_secs();
+        let now_unix = system_time_to_unix_secs(now);
         let connected_at_unix = now_unix.saturating_sub(info.connected_at.elapsed().as_secs());
         let last_activity_unix = now_unix.saturating_sub(info.last_activity.elapsed().as_secs());
         let rtc_joined_at_unix = info
@@ -3527,6 +3533,20 @@ mod tests {
         assert_eq!(deserialized.room_id, Some("room1".to_string()));
         assert_eq!(deserialized.message_count, 5);
         assert!(deserialized.rtc_joined);
+    }
+
+    #[test]
+    fn test_system_time_to_unix_secs_handles_pre_epoch_without_panicking() {
+        let pre_epoch = UNIX_EPOCH
+            .checked_sub(Duration::from_secs(1))
+            .expect("pre-epoch time should be constructible");
+
+        let result = std::panic::catch_unwind(|| system_time_to_unix_secs(pre_epoch));
+
+        assert!(
+            result.is_ok(),
+            "cluster connection metadata conversion must not panic on clock rollback"
+        );
     }
 
     // ========== Connection Reservation Tests (P1#6) ==========

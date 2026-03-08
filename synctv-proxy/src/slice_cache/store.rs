@@ -46,18 +46,32 @@ pub struct SliceCache {
     /// The cache backend (memory or file).
     backend: Arc<CacheBackend>,
     /// Per-key locks to prevent thundering herd.
-    locks: dashmap::DashMap<String, SliceLock>,
+    locks: Arc<dashmap::DashMap<String, SliceLock>>,
     /// Per-resource metadata for ETag consistency validation.
-    pub(super) meta: dashmap::DashMap<String, CachedResourceMeta>,
+    pub(super) meta: Arc<dashmap::DashMap<String, CachedResourceMeta>>,
     /// Tracks which cache keys have been inserted recently so we can
     /// distinguish `EXPIRED` (was cached, TTL elapsed) from `MISS`
     /// (never seen before). Backed by moka with TTL to prevent unbounded
     /// growth.
     pub(super) seen_keys: moka::future::Cache<String, ()>,
     /// Keys currently being updated (STALE/UPDATING support).
-    updating_keys: dashmap::DashSet<String>,
+    updating_keys: Arc<dashmap::DashSet<String>>,
     /// Counter for periodic stale lock cleanup.
-    lock_ops: std::sync::atomic::AtomicU64,
+    lock_ops: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Clone for SliceCache {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            backend: Arc::clone(&self.backend),
+            locks: Arc::clone(&self.locks),
+            meta: Arc::clone(&self.meta),
+            seen_keys: self.seen_keys.clone(),
+            updating_keys: Arc::clone(&self.updating_keys),
+            lock_ops: Arc::clone(&self.lock_ops),
+        }
+    }
 }
 
 impl SliceCache {
@@ -122,11 +136,11 @@ impl SliceCache {
         Self {
             config,
             backend: Arc::new(backend),
-            locks: dashmap::DashMap::new(),
-            meta: dashmap::DashMap::new(),
+            locks: Arc::new(dashmap::DashMap::new()),
+            meta: Arc::new(dashmap::DashMap::new()),
             seen_keys,
-            updating_keys: dashmap::DashSet::new(),
-            lock_ops: std::sync::atomic::AtomicU64::new(0),
+            updating_keys: Arc::new(dashmap::DashSet::new()),
+            lock_ops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 

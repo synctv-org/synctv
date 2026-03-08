@@ -707,7 +707,14 @@ impl TokenBlacklistStore for ErroringBlacklistStore {
         None
     }
 
-    async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) {}
+    async fn set_family_revoked(
+        &self,
+        _key: &str,
+        _timestamp: i64,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
 }
 
 /// Test that when the blacklist store encounters a storage error during

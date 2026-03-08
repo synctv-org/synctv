@@ -114,6 +114,43 @@ fn build_connection_manager(
     Ok(manager)
 }
 
+async fn build_local_cluster_manager(
+    config: &Config,
+    node_id: &str,
+    connection_manager: &ConnectionManager,
+    cache_invalidation: Arc<CacheInvalidationService>,
+    permission_service: Option<synctv_core::service::PermissionService>,
+) -> Result<Arc<ClusterManager>> {
+    let cluster_config = ClusterConfig {
+        redis_client: None,
+        redis_conn: None,
+        cluster_enabled: false,
+        node_id: node_id.to_string(),
+        dedup_window: Duration::from_secs(
+            config
+                .cluster
+                .catchup_window_secs
+                .saturating_mul(3)
+                .max(900),
+        ),
+        cleanup_interval: Duration::from_secs(30),
+        critical_channel_capacity: config.cluster.critical_channel_capacity,
+        publish_channel_capacity: config.cluster.publish_channel_capacity,
+        key_prefix: config.redis.key_prefix.clone(),
+        catchup_window_secs: config.cluster.catchup_window_secs,
+        stream_max_length: config.cluster.stream_max_length,
+        parent_cancel_token: None,
+    };
+
+    let mut cluster_manager =
+        ClusterManager::new(cluster_config, permission_service, Some((*cache_invalidation).clone()))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create local ClusterManager: {e}"))?;
+    cluster_manager.set_connection_manager(connection_manager.clone());
+
+    Ok(Arc::new(cluster_manager))
+}
+
 fn require_cluster_redis_conn<'a>(
     redis_conn: Option<&'a Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
 ) -> Result<&'a Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>> {
@@ -608,9 +645,22 @@ impl Application {
         );
 
         if !cluster_runtime_enabled(&infra.config) {
-            info!("Cluster mode disabled — skipping ClusterManager and discovery");
+            let cluster_manager = build_local_cluster_manager(
+                &infra.config,
+                &infra.node_id,
+                &connection_manager,
+                core.cache_invalidation.clone(),
+                Some(core.services.room_service.permission_service().clone()),
+            )
+            .await?;
+            core.services
+                .room_service
+                .set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
+                    cluster_manager: cluster_manager.clone(),
+                }));
+            info!("Cluster mode disabled — initialized local-only ClusterManager");
             return Ok(ClusterState {
-                cluster_manager: None,
+                cluster_manager: Some(cluster_manager),
                 connection_manager,
                 redis_publish_tx: None,
                 node_registry: None,
@@ -951,6 +1001,39 @@ mod tests {
                 .to_string()
                 .contains("cluster mode requires Redis to be configured"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_local_cluster_manager_supports_single_node_realtime_paths() {
+        let config = minimal_valid_startup_config();
+        let connection_manager =
+            build_connection_manager(ConnectionLimits::default(), None, "test-local:", false)
+                .expect("local connection manager should initialize");
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "test-local:cache:invalidate".to_string(),
+        ));
+
+        let cluster_manager = build_local_cluster_manager(
+            &config,
+            "test-node",
+            &connection_manager,
+            cache_invalidation,
+            None,
+        )
+        .await
+        .expect("standalone mode should still wire a local ClusterManager");
+
+        let metrics = cluster_manager.metrics();
+        assert!(
+            metrics.has_connection_manager,
+            "single-node realtime paths need a wired connection manager"
+        );
+        assert!(
+            !metrics.redis_enabled,
+            "local-only cluster manager must not require Redis"
         );
     }
 

@@ -427,3 +427,65 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
         hub_b.unsubscribe(&format!("conn_b_{i}"));
     }
 }
+
+// ============================================================================
+// Test 7: Local stale cleanup must not delete active subscriptions on other replicas
+// ============================================================================
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions() {
+    let redis = TestRedis::start().await;
+
+    let hub_a = create_hub(&redis.redis_url, "test7:").await;
+    let hub_b = create_hub(&redis.redis_url, "test7:").await;
+
+    let room_id = RoomId::from_string("shared_room".to_string());
+
+    let _rx_a = hub_a
+        .subscribe(
+            room_id.clone(),
+            UserId::from_string("user_a".to_string()),
+            "conn_a".to_string(),
+        )
+        .await;
+    let _rx_b = hub_b
+        .subscribe(
+            room_id.clone(),
+            UserId::from_string("user_b".to_string()),
+            "conn_b".to_string(),
+        )
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    hub_a.unsubscribe("conn_a");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let before_cleanup = hub_b.get_room_subscribers_distributed(&room_id).await;
+    assert_eq!(
+        before_cleanup.len(),
+        1,
+        "Only hub B's active subscriber should remain after hub A unsubscribes"
+    );
+    assert_eq!(before_cleanup[0].1, "conn_b");
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let cleanup_task = hub_a.spawn_stale_subscription_cleanup_task(
+        Duration::from_millis(10),
+        cancel.clone(),
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    cancel.cancel();
+    let _ = cleanup_task.await;
+
+    let after_cleanup = hub_b.get_room_subscribers_distributed(&room_id).await;
+    assert_eq!(
+        after_cleanup.len(),
+        1,
+        "Hub A cleanup must not delete hub B's active Redis subscription"
+    );
+    assert_eq!(after_cleanup[0].1, "conn_b");
+
+    hub_b.unsubscribe("conn_b");
+}

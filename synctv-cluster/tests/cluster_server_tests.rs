@@ -15,8 +15,7 @@ use synctv_cluster::grpc::server::ClusterServer;
 // Import the ClusterService trait to call the gRPC methods
 use synctv_cluster::grpc::synctv::cluster::cluster_service_server::ClusterService;
 use synctv_cluster::grpc::synctv::cluster::{
-    DeregisterNodeRequest, GetRoomConnectionsRequest, GetUserOnlineStatusRequest, HeartbeatRequest,
-    RegisterNodeRequest,
+    DeregisterNodeRequest, GetRoomConnectionsRequest, GetUserOnlineStatusRequest,
 };
 
 /// Helper: create a `ClusterServer` with no `ConnectionManager`.
@@ -260,37 +259,6 @@ async fn test_deregister_node_valid_epoch_accepted() {
     // Redis fails but the response is still success (best-effort cleanup)
     let result = server.deregister_node(request).await;
     assert!(result.is_ok(), "Valid epoch should pass validation");
-}
-
-// ============================================================================
-// register_node and heartbeat return Unimplemented
-// ============================================================================
-
-#[tokio::test]
-async fn test_register_node_unimplemented() {
-    let server = make_server();
-    let request = Request::new(RegisterNodeRequest {
-        node_id: "test".to_string(),
-        address: "localhost:50051".to_string(),
-        region: String::new(),
-    });
-
-    let result = server.register_node(request).await;
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().code(), tonic::Code::Unimplemented);
-}
-
-#[tokio::test]
-async fn test_heartbeat_unimplemented() {
-    let server = make_server();
-    let request = Request::new(HeartbeatRequest {
-        node_id: "test".to_string(),
-        metrics: None,
-    });
-
-    let result = server.heartbeat(request).await;
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().code(), tonic::Code::Unimplemented);
 }
 
 // ============================================================================

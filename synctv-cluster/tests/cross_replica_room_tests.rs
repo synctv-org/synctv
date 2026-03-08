@@ -12,25 +12,10 @@ use chrono::Utc;
 use synctv_cluster::sync::events::ClusterEvent;
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 mod integration_test_helpers;
-use integration_test_helpers::{create_node, TestRedis};
+use integration_test_helpers::{
+    broadcast_until_admin_event, broadcast_until_room_event, create_node, wait_until, TestRedis,
+};
 
-async fn recv_until_room_settings_changed(
-    room_rx: &mut tokio::sync::mpsc::Receiver<ClusterEvent>,
-) -> ClusterEvent {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    loop {
-        let remaining = deadline
-            .checked_duration_since(tokio::time::Instant::now())
-            .expect("Timed out waiting for RoomSettingsChanged");
-        let event = tokio::time::timeout(remaining.min(Duration::from_secs(5)), room_rx.recv())
-            .await
-            .expect("Timed out waiting for RoomSettingsChanged")
-            .expect("Room channel closed");
-        if matches!(event, ClusterEvent::RoomSettingsChanged { .. }) {
-            return event;
-        }
-    }
-}
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -46,27 +31,19 @@ async fn test_cross_replica_kick_user() {
     // Also subscribe to admin events on node B to verify self-ignore
     let mut admin_rx_b = node_b.subscribe_admin_events();
 
-    // Allow Redis pub/sub connections to settle
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Admin on node B broadcasts a KickUser event
-    let kick_event = ClusterEvent::KickUser {
-        event_id: nanoid::nanoid!(16),
-        user_id: UserId::from_string("victim_user".to_string()),
-        reason: "banned_by_admin".to_string(),
-        timestamp: Utc::now(),
-    };
-
-    let result = node_b.broadcast(kick_event);
-    // KickUser has no room_id, so local_sent is 0 (no room subscribers)
-    assert_eq!(result.local_sent, 0);
-    assert!(result.redis_sent, "Event should be published to Redis");
-
-    // Node A should receive the KickUser event via Redis pub/sub
-    let received = tokio::time::timeout(Duration::from_secs(5), admin_rx_a.recv())
-        .await
-        .expect("Timed out waiting for KickUser on node A")
-        .expect("Admin channel closed on node A");
+    let received = broadcast_until_admin_event(
+        &node_b,
+        &mut admin_rx_a,
+        || ClusterEvent::KickUser {
+            event_id: nanoid::nanoid!(16),
+            user_id: UserId::from_string("victim_user".to_string()),
+            reason: "banned_by_admin".to_string(),
+            timestamp: Utc::now(),
+        },
+        |event| matches!(event, ClusterEvent::KickUser { .. }),
+        "KickUser on node A",
+    )
+    .await;
 
     assert_eq!(received.event_type(), "kick_user");
     if let ClusterEvent::KickUser {
@@ -108,29 +85,23 @@ async fn test_cross_replica_room_event_propagation() {
     // User subscribes to room on node A (simulating a WebSocket connection on node A)
     let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
-    // Allow Redis pub/sub connections to settle
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Node B broadcasts a chat message to the same room
-    let chat_event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        user_id: UserId::from_string("sender_user".to_string()),
-        username: "sender".to_string(),
-        message: "Hello from node B!".to_string(),
-        timestamp: Utc::now(),
-        position: None,
-        color: None,
-    };
-
-    let result = node_b.broadcast(chat_event);
-    assert!(result.redis_sent, "Event should be published to Redis");
-
-    // Node A's room subscriber should receive the chat message via Redis
-    let received = tokio::time::timeout(Duration::from_secs(5), room_rx.recv())
-        .await
-        .expect("Timed out waiting for ChatMessage on node A")
-        .expect("Room channel closed on node A");
+    let received = broadcast_until_room_event(
+        &node_b,
+        &mut room_rx,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("sender_user".to_string()),
+            username: "sender".to_string(),
+            message: "Hello from node B!".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        |event| matches!(event, ClusterEvent::ChatMessage { message, .. } if message == "Hello from node B!"),
+        "ChatMessage on node A",
+    )
+    .await;
 
     assert_eq!(received.event_type(), "chat_message");
     if let ClusterEvent::ChatMessage {
@@ -165,24 +136,21 @@ async fn test_cross_replica_kick_publisher() {
     let user_id = UserId::from_string("publisher_user".to_string());
     let (_room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Admin on node B kicks the publisher
-    let kick_event = ClusterEvent::KickPublisher {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        media_id: MediaId::from_string("live_stream_1".to_string()),
-        reason: "room_deleted".to_string(),
-        timestamp: Utc::now(),
-    };
-
-    node_b.broadcast(kick_event);
-
-    // Node A should receive KickPublisher via admin channel
-    let received = tokio::time::timeout(Duration::from_secs(5), admin_rx_a.recv())
-        .await
-        .expect("Timed out waiting for KickPublisher on node A")
-        .expect("Admin channel closed on node A");
+    let received = broadcast_until_admin_event(
+        &node_b,
+        &mut admin_rx_a,
+        || ClusterEvent::KickPublisher {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            media_id: MediaId::from_string("live_stream_1".to_string()),
+            reason: "room_deleted".to_string(),
+            timestamp: Utc::now(),
+        },
+        |event| matches!(event, ClusterEvent::KickPublisher { room_id, media_id, .. }
+            if room_id.as_str() == "stream_room" && media_id.as_str() == "live_stream_1"),
+        "KickPublisher on node A",
+    )
+    .await;
 
     assert_eq!(received.event_type(), "kick_publisher");
     if let ClusterEvent::KickPublisher {
@@ -223,30 +191,27 @@ async fn test_cross_replica_room_deleted() {
     assert_eq!(metrics.total_connections, 1);
     assert_eq!(metrics.total_rooms, 1);
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Node B deletes the room
-    let delete_event = ClusterEvent::RoomDeleted {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        deleted_by: UserId::from_string("admin_user".to_string()),
-        timestamp: Utc::now(),
-    };
-
-    node_b.broadcast(delete_event);
-
-    // Node A's subscriber should receive the RoomDeleted notification
-    let received = tokio::time::timeout(Duration::from_secs(5), room_rx.recv())
-        .await
-        .expect("Timed out waiting for RoomDeleted on node A")
-        .expect("Room channel closed");
+    let received = broadcast_until_room_event(
+        &node_b,
+        &mut room_rx,
+        || ClusterEvent::RoomDeleted {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            deleted_by: UserId::from_string("admin_user".to_string()),
+            timestamp: Utc::now(),
+        },
+        |event| matches!(event, ClusterEvent::RoomDeleted { room_id, .. } if room_id.as_str() == "doomed_room"),
+        "RoomDeleted on node A",
+    )
+    .await;
 
     assert_eq!(received.event_type(), "room_deleted");
 
-    // After RoomDeleted dispatch, the room should be cleaned up on node A
-    // (the dispatch_event handler calls remove_room after a 100ms drain delay).
-    // Wait long enough for the drain delay plus cleanup to complete.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_until("room cleanup after RoomDeleted", Duration::from_secs(5), || {
+        let metrics = node_a.metrics();
+        metrics.total_rooms == 0 && metrics.total_connections == 0
+    })
+    .await;
 
     let metrics = node_a.metrics();
     assert_eq!(
@@ -276,33 +241,25 @@ async fn test_cross_replica_room_settings_changed() {
     // Subscribe on node A
     let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Node B broadcasts a RoomSettingsChanged event
-    let settings_bytes = serde_json::to_vec(&serde_json::json!({
-        "max_members": 50,
-        "chat_enabled": false
-    }))
-    .expect("serialize settings");
-
-    let settings_event = ClusterEvent::RoomSettingsChanged {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        user_id: UserId::from_string("room_admin".to_string()),
-        username: "room_admin".to_string(),
-        settings_json: settings_bytes,
-        timestamp: Utc::now(),
-    };
-
-    let result = node_b.broadcast(settings_event);
-    assert!(
-        result.redis_sent,
-        "RoomSettingsChanged should be published to Redis"
-    );
-
-    // Node A may observe earlier room lifecycle chatter before the Redis
-    // settings event arrives; wait until the matching event is received.
-    let received = recv_until_room_settings_changed(&mut room_rx).await;
+    let received = broadcast_until_room_event(
+        &node_b,
+        &mut room_rx,
+        || ClusterEvent::RoomSettingsChanged {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("room_admin".to_string()),
+            username: "room_admin".to_string(),
+            settings_json: serde_json::to_vec(&serde_json::json!({
+                "max_members": 50,
+                "chat_enabled": false
+            }))
+            .expect("serialize settings"),
+            timestamp: Utc::now(),
+        },
+        |event| matches!(event, ClusterEvent::RoomSettingsChanged { .. }),
+        "RoomSettingsChanged on node A",
+    )
+    .await;
 
     assert_eq!(received.event_type(), "room_settings_changed");
     if let ClusterEvent::RoomSettingsChanged { settings_json, .. } = &received {
@@ -335,40 +292,23 @@ async fn test_multiple_rooms_cross_replica() {
     let (mut rx1, conn1) = node_a.subscribe(room1.clone(), user1.clone()).await;
     let (mut rx2, conn2) = node_a.subscribe(room2.clone(), user2.clone()).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Node B sends to room1
-    let event1 = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
-        room_id: room1.clone(),
-        user_id: UserId::from_string("sender_b".to_string()),
-        username: "sender_b".to_string(),
-        message: "To room 1".to_string(),
-        timestamp: Utc::now(),
-        position: None,
-        color: None,
-    };
-
-    // Node B sends to room2
-    let event2 = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
-        room_id: room2.clone(),
-        user_id: UserId::from_string("sender_b".to_string()),
-        username: "sender_b".to_string(),
-        message: "To room 2".to_string(),
-        timestamp: Utc::now(),
-        position: None,
-        color: None,
-    };
-
-    node_b.broadcast(event1);
-    node_b.broadcast(event2);
-
-    // Verify room1 subscriber gets room1 message
-    let msg1 = tokio::time::timeout(Duration::from_secs(5), rx1.recv())
-        .await
-        .expect("Timed out waiting for room1 message")
-        .expect("Room1 channel closed");
+    let msg1 = broadcast_until_room_event(
+        &node_b,
+        &mut rx1,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room1.clone(),
+            user_id: UserId::from_string("sender_b".to_string()),
+            username: "sender_b".to_string(),
+            message: "To room 1".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        |event| matches!(event, ClusterEvent::ChatMessage { message, .. } if message == "To room 1"),
+        "room1 message",
+    )
+    .await;
 
     if let ClusterEvent::ChatMessage { message, .. } = &msg1 {
         assert_eq!(message, "To room 1");
@@ -376,11 +316,23 @@ async fn test_multiple_rooms_cross_replica() {
         panic!("Expected ChatMessage for room1");
     }
 
-    // Verify room2 subscriber gets room2 message
-    let msg2 = tokio::time::timeout(Duration::from_secs(5), rx2.recv())
-        .await
-        .expect("Timed out waiting for room2 message")
-        .expect("Room2 channel closed");
+    let msg2 = broadcast_until_room_event(
+        &node_b,
+        &mut rx2,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room2.clone(),
+            user_id: UserId::from_string("sender_b".to_string()),
+            username: "sender_b".to_string(),
+            message: "To room 2".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        |event| matches!(event, ClusterEvent::ChatMessage { message, .. } if message == "To room 2"),
+        "room2 message",
+    )
+    .await;
 
     if let ClusterEvent::ChatMessage { message, .. } = &msg2 {
         assert_eq!(message, "To room 2");

@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_cluster::{ClusterConfig, ClusterManager};
+use synctv_core::cache::InvalidationMessage;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
@@ -14,10 +15,14 @@ use testcontainers_modules::redis::Redis;
 #[allow(dead_code)]
 pub const REDIS_VERSION: &str = "7-alpine";
 
+#[allow(dead_code)]
 const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;
+#[allow(dead_code)]
 const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
+#[allow(dead_code)]
 const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
 
+#[allow(dead_code)]
 fn docker_startup_timeout() -> Duration {
     std::env::var(DOCKER_STARTUP_TIMEOUT_ENV)
         .ok()
@@ -29,6 +34,7 @@ fn docker_startup_timeout() -> Duration {
 
 /// Redis test infrastructure that manages a single Redis container.
 /// The container is automatically stopped when this struct is dropped.
+#[allow(dead_code)]
 pub struct TestRedis {
     pub redis_url: String,
     pub _redis: ContainerAsync<Redis>,
@@ -39,6 +45,7 @@ impl TestRedis {
     /// Waits until Redis is actually accepting connections before returning.
     /// Applies a bounded startup timeout so tests fail deterministically when
     /// Docker is unavailable, while still tolerating slower CI/container hosts.
+    #[allow(dead_code)]
     pub async fn start() -> Self {
         let redis_container =
             tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
@@ -72,6 +79,7 @@ impl TestRedis {
     /// `ConnectionManager` can still let tests proceed into a transient startup
     /// window where `register()` times out even though the container process has
     /// already started.
+    #[allow(dead_code)]
     pub async fn wait_until_ready(redis_url: &str) {
         let client = redis::Client::open(redis_url)
             .expect("Failed to create Redis client for readiness check");
@@ -111,6 +119,7 @@ impl TestRedis {
 }
 
 /// Helper: create a `ClusterManager` connected to the given Redis URL.
+#[allow(dead_code)]
 pub async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
     let client = redis::Client::open(redis_url).expect("Failed to open Redis client");
     let conn = client
@@ -212,5 +221,119 @@ pub async fn broadcast_until_all_clients_receive(
                 "timed out waiting for {label}; {missing} clients still missing expected message"
             );
         }
+    }
+}
+
+#[allow(dead_code)]
+pub async fn broadcast_until_room_event(
+    manager: &ClusterManager,
+    room_rx: &mut tokio::sync::mpsc::Receiver<synctv_cluster::sync::events::ClusterEvent>,
+    mut make_event: impl FnMut() -> synctv_cluster::sync::events::ClusterEvent,
+    mut matches: impl FnMut(&synctv_cluster::sync::events::ClusterEvent) -> bool,
+    label: &str,
+) -> synctv_cluster::sync::events::ClusterEvent {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+
+    loop {
+        manager.broadcast(make_event());
+
+        match tokio::time::timeout(Duration::from_millis(750), room_rx.recv()).await {
+            Ok(Some(event)) if matches(&event) => return event,
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("{label} channel closed unexpectedly"),
+            Err(_) => {}
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+    }
+}
+
+#[allow(dead_code)]
+pub async fn broadcast_until_admin_event(
+    manager: &ClusterManager,
+    admin_rx: &mut tokio::sync::broadcast::Receiver<synctv_cluster::sync::events::ClusterEvent>,
+    mut make_event: impl FnMut() -> synctv_cluster::sync::events::ClusterEvent,
+    mut matches: impl FnMut(&synctv_cluster::sync::events::ClusterEvent) -> bool,
+    label: &str,
+) -> synctv_cluster::sync::events::ClusterEvent {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+
+    loop {
+        manager.broadcast(make_event());
+
+        match tokio::time::timeout(Duration::from_millis(750), admin_rx.recv()).await {
+            Ok(Ok(event)) if matches(&event) => return event,
+            Ok(Ok(_)) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("{label} channel closed unexpectedly");
+            }
+            Err(_) => {}
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+    }
+}
+
+#[allow(dead_code)]
+pub async fn wait_until(
+    label: &str,
+    timeout: Duration,
+    mut condition: impl FnMut() -> bool,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if condition() {
+            return;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[allow(dead_code)]
+pub async fn broadcast_until_cache_invalidation(
+    manager: &ClusterManager,
+    rx: &mut tokio::sync::broadcast::Receiver<InvalidationMessage>,
+    mut make_event: impl FnMut() -> synctv_cluster::sync::events::ClusterEvent,
+    mut consume: impl FnMut(InvalidationMessage) -> bool,
+    label: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+
+    loop {
+        manager.broadcast(make_event());
+
+        loop {
+            match tokio::time::timeout(Duration::from_millis(250), rx.recv()).await {
+                Ok(Ok(message)) => {
+                    if consume(message) {
+                        return;
+                    }
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                    panic!("{label} channel closed unexpectedly");
+                }
+                Err(_) => break,
+            }
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
     }
 }

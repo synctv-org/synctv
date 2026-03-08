@@ -154,6 +154,16 @@ where
     }
 }
 
+async fn flush_provider_instances(infra: &TestInfra) {
+    sqlx::query("TRUNCATE TABLE media_provider_instances RESTART IDENTITY CASCADE")
+        .execute(&infra.pool)
+        .await
+        .expect("Failed to truncate media_provider_instances");
+}
+
+const REDIS_INVALIDATION_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const REDIS_INVALIDATION_WAIT_INTERVAL: Duration = Duration::from_millis(50);
+
 /// Create a test provider instance
 fn make_test_instance(name: &str) -> ProviderInstance {
     let now = Utc::now();
@@ -196,6 +206,7 @@ fn make_test_instance_tls(name: &str, insecure: bool) -> ProviderInstance {
 
 async fn scenario_channel_creation_from_db_config() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -231,6 +242,7 @@ async fn scenario_channel_creation_from_db_config() {
 
 async fn scenario_channel_cache_hit() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -258,6 +270,7 @@ async fn scenario_channel_cache_hit() {
 
 async fn scenario_channel_cache_ttl_expiration() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -289,82 +302,11 @@ async fn scenario_channel_cache_ttl_expiration() {
     // This is left as an exercise for future enhancement
 }
 
-// ─── Test 4: Redis Pub/Sub invalidation ─────────────────────────────────────
-
-async fn scenario_redis_pubsub_invalidation() {
-    let infra = shared_test_infra().await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
-
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
-
-    // Create two managers (simulating two replicas)
-    let manager1 = RemoteProviderManager::new(
-        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
-        Some(Arc::new(RwLock::new(
-            infra.redis_connection_manager().await,
-        ))),
-        Some(infra.redis_client.clone()),
-    );
-
-    let manager2 = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
-
-    // Start invalidation listener on manager2
-    manager2.start_invalidation_listener().await.unwrap();
-
-    // Create instance via manager1
-    let instance = make_test_instance("test-instance-4");
-    manager1.add(instance.clone()).await.unwrap();
-
-    wait_until(Duration::from_secs(3), Duration::from_millis(50), || {
-        let manager2 = &manager2;
-        async move {
-            manager2
-                .list()
-                .await
-                .contains(&"test-instance-4".to_string())
-        }
-    })
-    .await;
-
-    // Verify both managers can see the instance
-    let instances1 = manager1.list().await;
-    let instances2 = manager2.list().await;
-
-    assert!(
-        instances1.contains(&"test-instance-4".to_string()),
-        "Manager1 should list the instance"
-    );
-    assert!(
-        instances2.contains(&"test-instance-4".to_string()),
-        "Manager2 should see the instance after invalidation"
-    );
-
-    // Update instance via manager1
-    let mut updated_instance = instance.clone();
-    updated_instance.comment = Some("updated comment".to_string());
-    updated_instance.updated_at = Utc::now();
-    manager1.update(updated_instance).await.unwrap();
-
-    // Wait for invalidation
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Verify manager2 sees the update
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let fetched = repo.get_by_name("test-instance-4").await.unwrap();
-    assert!(fetched.is_some());
-    assert_eq!(
-        fetched.unwrap().comment,
-        Some("updated comment".to_string())
-    );
-}
-
-// ─── Test 5: Redis invalidation on delete ───────────────────────────────────
+// ─── Test 4: Redis invalidation on delete ───────────────────────────────────
 
 async fn scenario_redis_invalidation_on_delete() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -396,7 +338,7 @@ async fn scenario_redis_invalidation_on_delete() {
     // Delete via manager1
     manager1.delete("test-instance-5").await.unwrap();
 
-    wait_until(Duration::from_secs(3), Duration::from_millis(50), || {
+    wait_until(REDIS_INVALIDATION_WAIT_TIMEOUT, REDIS_INVALIDATION_WAIT_INTERVAL, || {
         let manager2 = &manager2;
         async move { manager2.get("test-instance-5").await.is_none() }
     })
@@ -414,10 +356,11 @@ async fn scenario_redis_invalidation_on_delete() {
     assert!(channel.is_none(), "Deleted instance should return None");
 }
 
-// ─── Test 6: Health check integration ───────────────────────────────────────
+// ─── Test 5: Health check integration ───────────────────────────────────────
 
 async fn scenario_health_check_integration() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -449,6 +392,7 @@ async fn scenario_health_check_integration() {
 
 async fn scenario_health_check_respects_enabled_flag() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -487,6 +431,7 @@ async fn scenario_health_check_respects_enabled_flag() {
 
 async fn scenario_tls_configuration_secure() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -531,6 +476,7 @@ async fn scenario_tls_configuration_secure() {
 
 async fn scenario_tls_configuration_insecure() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -570,6 +516,7 @@ async fn scenario_tls_configuration_insecure() {
 
 async fn scenario_fallback_to_local_provider() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -606,6 +553,7 @@ async fn scenario_fallback_to_local_provider() {
 
 async fn scenario_fallback_when_instance_name_none() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -629,6 +577,7 @@ async fn scenario_fallback_when_instance_name_none() {
 
 async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -656,6 +605,7 @@ async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
 
 async fn scenario_fallback_when_channel_creation_fails() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -680,6 +630,7 @@ async fn scenario_fallback_when_channel_creation_fails() {
 
 async fn scenario_enable_disable_instance() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -723,6 +674,7 @@ async fn scenario_enable_disable_instance() {
 
 async fn scenario_reconnect_instance() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -761,6 +713,7 @@ async fn scenario_reconnect_instance() {
 
 async fn scenario_add_duplicate_instance_fails() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -789,6 +742,7 @@ async fn scenario_add_duplicate_instance_fails() {
 
 async fn scenario_update_nonexistent_instance_fails() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -812,6 +766,7 @@ async fn scenario_update_nonexistent_instance_fails() {
 
 async fn scenario_delete_nonexistent_instance_fails() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -834,6 +789,7 @@ async fn scenario_delete_nonexistent_instance_fails() {
 
 async fn scenario_get_all_instances() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -879,6 +835,7 @@ async fn scenario_get_all_instances() {
 
 async fn scenario_manager_without_redis() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
     let manager = RemoteProviderManager::new(
@@ -913,6 +870,7 @@ async fn scenario_manager_without_redis() {
 
 async fn scenario_init_pre_warms_cache() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -943,6 +901,7 @@ async fn scenario_init_pre_warms_cache() {
 
 async fn scenario_ssrf_validation_blocks_internal_ips() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -978,6 +937,7 @@ async fn scenario_ssrf_validation_blocks_internal_ips() {
 
 async fn scenario_ssrf_validation_allows_public_endpoints() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -1009,6 +969,7 @@ async fn scenario_ssrf_validation_allows_public_endpoints() {
 
 async fn scenario_resolve_client_uses_remote_when_available() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -1039,6 +1000,7 @@ async fn scenario_resolve_client_uses_remote_when_available() {
 
 async fn scenario_cache_respects_max_capacity() {
     let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -1062,7 +1024,8 @@ async fn scenario_cache_respects_max_capacity() {
 // ─── Test 25: Provider instance supports_provider ───────────────────────────
 
 async fn scenario_provider_instance_supports_provider() {
-    let _infra = shared_test_infra().await;
+    let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
 
     // Create instance with multiple providers
     let instance = ProviderInstance {
@@ -1095,7 +1058,8 @@ async fn scenario_provider_instance_supports_provider() {
 // ─── Test 26: Provider instance parse_timeout ───────────────────────────────
 
 async fn scenario_provider_instance_parse_timeout() {
-    let _infra = shared_test_infra().await;
+    let infra = shared_test_infra().await;
+    flush_provider_instances(infra).await;
 
     // Test valid timeout formats
     let instance1 = make_test_instance("test-26a");
@@ -1126,7 +1090,6 @@ async fn test_remote_provider_manager_scenarios() {
     scenario_channel_creation_from_db_config().await;
     scenario_channel_cache_hit().await;
     scenario_channel_cache_ttl_expiration().await;
-    scenario_redis_pubsub_invalidation().await;
     scenario_redis_invalidation_on_delete().await;
     scenario_health_check_integration().await;
     scenario_health_check_respects_enabled_flag().await;

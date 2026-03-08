@@ -14,7 +14,9 @@ use synctv_cluster::{ClusterConfig, ClusterManager};
 use synctv_core::cache::{CacheInvalidationService, InvalidationMessage};
 use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
-use integration_test_helpers::{create_node, TestRedis};
+use integration_test_helpers::{
+    broadcast_until_cache_invalidation, broadcast_until_room_event, create_node, TestRedis,
+};
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -53,51 +55,37 @@ async fn test_cross_replica_cache_invalidation() {
 
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Node B updates user data and broadcasts a CacheInvalidate event
-    let invalidate_event = ClusterEvent::CacheInvalidate {
-        event_id: nanoid::nanoid!(16),
-        targets: vec![
-            CacheTarget::User {
-                user_id: "updated_user".to_string(),
-            },
-            CacheTarget::Room {
-                room_id: "updated_room".to_string(),
-            },
-        ],
-        timestamp: Utc::now(),
-    };
-
-    let result = node_b.broadcast(invalidate_event);
-    assert!(
-        result.redis_sent,
-        "CacheInvalidate should be published to Redis"
-    );
-
-    // Node A's cache invalidation service should receive local invalidation messages.
-    // CacheInvalidate events dispatch to cache_invalidation service, not admin channel.
     let mut received_user = false;
     let mut received_room = false;
-
-    for _ in 0..2 {
-        let msg = tokio::time::timeout(Duration::from_secs(5), local_rx_a.recv())
-            .await
-            .expect("Timed out waiting for cache invalidation")
-            .expect("Cache invalidation channel closed");
-
-        match msg {
+    broadcast_until_cache_invalidation(
+        &node_b,
+        &mut local_rx_a,
+        || ClusterEvent::CacheInvalidate {
+            event_id: nanoid::nanoid!(16),
+            targets: vec![
+                CacheTarget::User {
+                    user_id: "updated_user".to_string(),
+                },
+                CacheTarget::Room {
+                    room_id: "updated_room".to_string(),
+                },
+            ],
+            timestamp: Utc::now(),
+        },
+        |msg| match msg {
             InvalidationMessage::User { user_id } if user_id == "updated_user" => {
                 received_user = true;
+                received_user && received_room
             }
             InvalidationMessage::Room { room_id } if room_id == "updated_room" => {
                 received_room = true;
+                received_user && received_room
             }
-            other => {
-                panic!("Unexpected invalidation message: {other:?}");
-            }
-        }
-    }
+            other => panic!("Unexpected invalidation message: {other:?}"),
+        },
+        "cross-replica cache invalidation",
+    )
+    .await;
 
     assert!(received_user, "Should have received User invalidation");
     assert!(received_room, "Should have received Room invalidation");
@@ -120,41 +108,33 @@ async fn test_cross_replica_permission_changed() {
     // Subscribe on node A (simulating a WebSocket client on node A watching the room)
     let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Node B broadcasts a PermissionChanged event (e.g., admin changed permissions)
-    let perm_event = ClusterEvent::PermissionChanged {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        target_user_id: UserId::from_string("target_user".to_string()),
-        target_username: "target_user".to_string(),
-        new_permissions: synctv_core::models::PermissionBits(
-            synctv_core::models::PermissionBits::DEFAULT_MEMBER
-                | synctv_core::models::PermissionBits::KICK_MEMBER,
-        ),
-        role: 3, // Admin role
-        added_permissions: synctv_core::models::PermissionBits(
-            synctv_core::models::PermissionBits::KICK_MEMBER,
-        ),
-        removed_permissions: synctv_core::models::PermissionBits::empty(),
-        admin_added_permissions: synctv_core::models::PermissionBits::empty(),
-        admin_removed_permissions: synctv_core::models::PermissionBits::empty(),
-        changed_by: UserId::from_string("admin_user".to_string()),
-        changed_by_username: "admin_user".to_string(),
-        timestamp: Utc::now(),
-    };
-
-    let result = node_b.broadcast(perm_event);
-    assert!(
-        result.redis_sent,
-        "PermissionChanged should be published to Redis"
-    );
-
-    // Node A should receive the PermissionChanged event
-    let received = tokio::time::timeout(Duration::from_secs(5), room_rx.recv())
-        .await
-        .expect("Timed out waiting for PermissionChanged on node A")
-        .expect("Room channel closed");
+    let received = broadcast_until_room_event(
+        &node_b,
+        &mut room_rx,
+        || ClusterEvent::PermissionChanged {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            target_user_id: UserId::from_string("target_user".to_string()),
+            target_username: "target_user".to_string(),
+            new_permissions: synctv_core::models::PermissionBits(
+                synctv_core::models::PermissionBits::DEFAULT_MEMBER
+                    | synctv_core::models::PermissionBits::KICK_MEMBER,
+            ),
+            role: 3,
+            added_permissions: synctv_core::models::PermissionBits(
+                synctv_core::models::PermissionBits::KICK_MEMBER,
+            ),
+            removed_permissions: synctv_core::models::PermissionBits::empty(),
+            admin_added_permissions: synctv_core::models::PermissionBits::empty(),
+            admin_removed_permissions: synctv_core::models::PermissionBits::empty(),
+            changed_by: UserId::from_string("admin_user".to_string()),
+            changed_by_username: "admin_user".to_string(),
+            timestamp: Utc::now(),
+        },
+        |event| matches!(event, ClusterEvent::PermissionChanged { target_user_id, .. } if target_user_id.as_str() == "target_user"),
+        "PermissionChanged on node A",
+    )
+    .await;
 
     assert_eq!(received.event_type(), "permission_changed");
     if let ClusterEvent::PermissionChanged {
@@ -219,41 +199,30 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
 
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut received_target = false;
+    broadcast_until_cache_invalidation(
+        &node_b,
+        &mut local_rx_a,
+        || ClusterEvent::CacheInvalidate {
+            event_id: nanoid::nanoid!(16),
+            targets: vec![CacheTarget::User {
+                user_id: "perm_changed_user".to_string(),
+            }],
+            timestamp: Utc::now(),
+        },
+        |msg| match msg {
+            InvalidationMessage::User { user_id } => {
+                assert_eq!(user_id, "perm_changed_user", "Should invalidate the correct user");
+                received_target = true;
+                true
+            }
+            other => panic!("Expected User invalidation, got: {other:?}"),
+        },
+        "permission cache invalidation",
+    )
+    .await;
 
-    // Node B changes a user's permissions and broadcasts a CacheInvalidate event
-    // targeting the permission cache for that specific user
-    let invalidate_event = ClusterEvent::CacheInvalidate {
-        event_id: nanoid::nanoid!(16),
-        targets: vec![CacheTarget::User {
-            user_id: "perm_changed_user".to_string(),
-        }],
-        timestamp: Utc::now(),
-    };
-
-    let result = node_b.broadcast(invalidate_event);
-    assert!(
-        result.redis_sent,
-        "CacheInvalidate should be published to Redis"
-    );
-
-    // Node A's cache invalidation service should receive the user invalidation
-    let msg = tokio::time::timeout(Duration::from_secs(5), local_rx_a.recv())
-        .await
-        .expect("Timed out waiting for permission cache invalidation")
-        .expect("Cache invalidation channel closed");
-
-    match msg {
-        InvalidationMessage::User { user_id } => {
-            assert_eq!(
-                user_id, "perm_changed_user",
-                "Should invalidate the correct user"
-            );
-        }
-        other => {
-            panic!("Expected User invalidation, got: {other:?}");
-        }
-    }
+    assert!(received_target, "Should receive permission cache invalidation");
 
     node_a.shutdown().await;
     node_b.shutdown().await;
@@ -328,71 +297,56 @@ async fn test_cluster_permission_cache_consistency() {
         .await
         .expect("Failed to create node B");
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     // Test 1: User permission invalidation
     let user_id = "perm_test_user".to_string();
     let room_id = "perm_test_room".to_string();
 
-    // Broadcast user permission invalidation from node A
-    let invalidate_event = ClusterEvent::CacheInvalidate {
-        event_id: nanoid::nanoid!(16),
-        targets: vec![CacheTarget::User {
-            user_id: user_id.clone(),
-        }],
-        timestamp: Utc::now(),
-    };
-
-    let result = node_a.broadcast(invalidate_event);
-    assert!(
-        result.redis_sent,
-        "CacheInvalidate should be published to Redis"
-    );
-
-    // Node B's cache service should receive the invalidation
-    let msg = tokio::time::timeout(Duration::from_secs(5), rx_b.recv())
-        .await
-        .expect("Timed out waiting for user invalidation on node B")
-        .expect("Cache invalidation channel closed");
-
-    match msg {
-        InvalidationMessage::User {
-            user_id: received_user_id,
-        } => {
-            assert_eq!(received_user_id, user_id, "User ID should match");
-        }
-        other => panic!("Expected User invalidation, got: {other:?}"),
-    }
+    broadcast_until_cache_invalidation(
+        &node_a,
+        &mut rx_b,
+        || ClusterEvent::CacheInvalidate {
+            event_id: nanoid::nanoid!(16),
+            targets: vec![CacheTarget::User {
+                user_id: user_id.clone(),
+            }],
+            timestamp: Utc::now(),
+        },
+        |msg| match msg {
+            InvalidationMessage::User {
+                user_id: received_user_id,
+            } => {
+                assert_eq!(received_user_id, user_id, "User ID should match");
+                true
+            }
+            other => panic!("Expected User invalidation, got: {other:?}"),
+        },
+        "user invalidation on node B",
+    )
+    .await;
 
     // Test 2: Room permission invalidation
-    let room_invalidate_event = ClusterEvent::CacheInvalidate {
-        event_id: nanoid::nanoid!(16),
-        targets: vec![CacheTarget::Room {
-            room_id: room_id.clone(),
-        }],
-        timestamp: Utc::now(),
-    };
-
-    let result = node_b.broadcast(room_invalidate_event);
-    assert!(
-        result.redis_sent,
-        "Room cache invalidate should be published to Redis"
-    );
-
-    // Node A's cache service should receive the room invalidation
-    let msg = tokio::time::timeout(Duration::from_secs(5), rx_a.recv())
-        .await
-        .expect("Timed out waiting for room invalidation on node A")
-        .expect("Cache invalidation channel closed");
-
-    match msg {
-        InvalidationMessage::Room {
-            room_id: received_room_id,
-        } => {
-            assert_eq!(received_room_id, room_id, "Room ID should match");
-        }
-        other => panic!("Expected Room invalidation, got: {other:?}"),
-    }
+    broadcast_until_cache_invalidation(
+        &node_b,
+        &mut rx_a,
+        || ClusterEvent::CacheInvalidate {
+            event_id: nanoid::nanoid!(16),
+            targets: vec![CacheTarget::Room {
+                room_id: room_id.clone(),
+            }],
+            timestamp: Utc::now(),
+        },
+        |msg| match msg {
+            InvalidationMessage::Room {
+                room_id: received_room_id,
+            } => {
+                assert_eq!(received_room_id, room_id, "Room ID should match");
+                true
+            }
+            other => panic!("Expected Room invalidation, got: {other:?}"),
+        },
+        "room invalidation on node A",
+    )
+    .await;
 
     // Test 3: Multiple invalidations in rapid succession
     let mut invalidation_count = 0;
@@ -536,8 +490,6 @@ async fn test_concurrent_permission_cache_updates() {
             .await
             .expect("Node C"),
     );
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Concurrent invalidations from all three nodes
     let invalidations_per_node = 10;

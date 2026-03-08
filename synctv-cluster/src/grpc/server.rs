@@ -9,15 +9,14 @@ use super::synctv::cluster::cluster_service_server::ClusterService;
 use super::synctv::cluster::{
     DeregisterNodeRequest, DeregisterNodeResponse, GetNodesRequest, GetNodesResponse,
     GetRoomConnectionsRequest, GetRoomConnectionsResponse, GetUserOnlineStatusRequest,
-    GetUserOnlineStatusResponse, HeartbeatRequest, HeartbeatResponse, NodeInfo, NodeStatus,
-    RegisterNodeRequest, RegisterNodeResponse, RoomConnection, UserOnlineStatus,
+    GetUserOnlineStatusResponse, NodeInfo, NodeStatus, RoomConnection, UserOnlineStatus,
 };
 use crate::discovery::{NodeInfo as DiscoveryNodeInfo, NodeRegistry};
 use crate::sync::connection_manager::ConnectionManager;
 
 /// Cluster gRPC service
 ///
-/// Handles node registration, heartbeats, and state synchronization.
+/// Handles cluster discovery and state synchronization.
 ///
 /// # Architecture Overview
 ///
@@ -30,16 +29,10 @@ use crate::sync::connection_manager::ConnectionManager;
 ///
 /// | Endpoint | Status | Notes |
 /// |----------|--------|-------|
-/// | `RegisterNode` | UNIMPLEMENTED | Returns `Unimplemented` -- nodes self-register via Redis |
-/// | `Heartbeat` | UNIMPLEMENTED | Returns `Unimplemented` -- heartbeats go directly to Redis |
 /// | `GetNodes` | ACTIVE | Returns all known nodes from Redis registry |
 /// | `DeregisterNode` | ACTIVE | Handles graceful shutdown with epoch validation |
 /// | `GetUserOnlineStatus` | ACTIVE | Fan-out query for user presence across nodes |
 /// | `GetRoomConnections` | ACTIVE | Fan-out query for room participants across nodes |
-///
-/// The `RegisterNode` and `Heartbeat` proto definitions are preserved for potential
-/// future node-to-node gRPC discovery. The handlers return `Unimplemented` status
-/// since no client code calls them and nodes use Redis directly.
 #[derive(Clone)]
 pub struct ClusterServer {
     node_registry: Arc<NodeRegistry>,
@@ -115,42 +108,6 @@ impl ClusterServer {
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)] // tonic::Status is inherently large; required by gRPC trait
 impl ClusterService for ClusterServer {
-    /// Register a new node in the cluster.
-    ///
-    /// # Status: UNIMPLEMENTED
-    ///
-    /// No client code calls this RPC. Nodes self-register directly in Redis
-    /// via `NodeRegistry::register()` on startup. The proto definition is kept
-    /// for potential future node-to-node gRPC discovery, but the handler returns
-    /// `Unimplemented` to avoid exposing dead code on the wire.
-    async fn register_node(
-        &self,
-        _request: Request<RegisterNodeRequest>,
-    ) -> std::result::Result<Response<RegisterNodeResponse>, Status> {
-        Err(Status::unimplemented(
-            "RegisterNode is not implemented. Nodes self-register via Redis. \
-             See NodeRegistry::register().",
-        ))
-    }
-
-    /// Handle heartbeat from a node.
-    ///
-    /// # Status: UNIMPLEMENTED
-    ///
-    /// No client code calls this RPC. Heartbeats are sent directly to Redis
-    /// via `NodeRegistry::heartbeat()` in a background task. The proto definition
-    /// is kept for potential future node-to-node gRPC discovery, but the handler
-    /// returns `Unimplemented` to avoid exposing dead code on the wire.
-    async fn heartbeat(
-        &self,
-        _request: Request<HeartbeatRequest>,
-    ) -> std::result::Result<Response<HeartbeatResponse>, Status> {
-        Err(Status::unimplemented(
-            "Heartbeat is not implemented. Heartbeats are sent directly to Redis. \
-             See NodeRegistry::heartbeat().",
-        ))
-    }
-
     /// Get all nodes in the cluster
     async fn get_nodes(
         &self,

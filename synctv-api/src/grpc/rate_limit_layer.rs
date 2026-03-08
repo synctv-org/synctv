@@ -638,7 +638,7 @@ mod tests {
     #[test]
     fn test_tier_from_path_cluster_no_rate_limit() {
         assert_eq!(
-            tier_from_path("/synctv.cluster.ClusterService/Heartbeat"),
+            tier_from_path("/synctv.cluster.ClusterService/GetNodes"),
             None
         );
     }

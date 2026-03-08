@@ -108,6 +108,15 @@ pub struct RoomMessageHub {
     /// Cancellation token for the auto-spawned stale subscription cleanup task.
     /// Cancelled on `shutdown()` to stop the task gracefully.
     stale_cleanup_cancel: Arc<tokio_util::sync::CancellationToken>,
+
+    /// Local retry queue for Redis subscription cleanup operations that failed
+    /// during `unsubscribe()`.
+    ///
+    /// This only tracks subscriptions that were previously owned by this hub
+    /// instance. It must never be reconstructed by scanning Redis globally,
+    /// because replicas share the same key prefix and would otherwise delete
+    /// each other's still-active subscriptions.
+    pending_redis_cleanup: Arc<DashMap<ConnectionId, RoomId>>,
 }
 
 impl RoomMessageHub {
@@ -124,6 +133,7 @@ impl RoomMessageHub {
             redis_key_ttl_secs: 300, // 5 minutes default
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             stale_cleanup_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
+            pending_redis_cleanup: Arc::new(DashMap::new()),
         }
     }
 
@@ -211,6 +221,11 @@ impl RoomMessageHub {
             sender: tx,
             consecutive_drops: Arc::new(AtomicU32::new(0)),
         };
+
+        // A reused connection ID must never inherit a failed cleanup retry from
+        // an older subscription lifecycle. Clear any stale local retry entry
+        // before making the new subscription visible.
+        self.pending_redis_cleanup.remove(&connection_id);
 
         // Atomically check-and-insert using DashMap's entry API.
         // This avoids the TOCTOU race between `contains_key` + `entry().or_default()`
@@ -326,18 +341,30 @@ impl RoomMessageHub {
                 let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
                 let mut conn_clone = conn.clone();
                 let connection_id_owned = connection_id.to_string();
+                let room_id_for_retry = room_id.clone();
+                let pending_redis_cleanup = Arc::clone(&self.pending_redis_cleanup);
 
                 tokio::spawn(async move {
+                    let mut cleanup_failed = false;
+
                     // Remove connection from room's subscriber hash
                     if let Err(e) = conn_clone
                         .hdel::<_, _, ()>(&room_key, &connection_id_owned)
                         .await
                     {
+                        cleanup_failed = true;
                         warn!("Failed to remove room subscription from Redis: {e}");
                     }
                     // Remove connection mapping
                     if let Err(e) = conn_clone.del::<_, ()>(&conn_key).await {
+                        cleanup_failed = true;
                         warn!("Failed to remove connection mapping from Redis: {e}");
+                    }
+
+                    if cleanup_failed {
+                        pending_redis_cleanup.insert(connection_id_owned, room_id_for_retry);
+                    } else {
+                        pending_redis_cleanup.remove(&connection_id_owned);
                     }
                 });
             }
@@ -914,118 +941,70 @@ impl RoomMessageHub {
     ///
     /// This handles cases where `unsubscribe()` fire-and-forget Redis cleanup
     /// failed (e.g., Redis was slow or temporarily unavailable). Without this
-    /// periodic scan, stale entries would accumulate until their TTL expires.
+    /// retry loop, stale entries would accumulate until their TTL expires.
     ///
-    /// The cleanup is conservative: it only removes entries from Redis that
-    /// do not exist in the local `connections` map. Entries from other replicas
-    /// are left intact (they are identified by not having a local connection).
+    /// Only locally-owned failed cleanups are retried here. Global Redis scans
+    /// are intentionally avoided because replicas share a key namespace and one
+    /// node cannot reliably distinguish its own stale entries from another
+    /// replica's still-active subscriptions.
     async fn cleanup_orphaned_redis_subscriptions(&self) {
         let Some(ref conn) = self.redis_conn else {
             return;
         };
         let mut conn = conn.clone();
-
-        // Scan for all connection mapping keys (room_hub:conn:*)
-        let pattern = format!("{}room_hub:conn:*", self.redis_key_prefix);
-        let prefix = format!("{}room_hub:conn:", self.redis_key_prefix);
         let mut cleaned = 0u64;
         let mut errors = 0u64;
 
-        let mut cursor: u64 = 0;
-        loop {
-            let scan_result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
-                .arg(cursor)
-                .arg("MATCH")
-                .arg(&pattern)
-                .arg("COUNT")
-                .arg(100)
-                .query_async(&mut conn)
-                .await;
+        let pending: Vec<(ConnectionId, RoomId)> = self
+            .pending_redis_cleanup
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
 
-            match scan_result {
-                Ok((new_cursor, keys)) => {
-                    cursor = new_cursor;
+        for (connection_id, room_id) in pending {
+            if self.connections.contains_key(&connection_id) {
+                continue;
+            }
 
-                    for key in keys {
-                        // Extract connection_id from key
-                        if let Some(conn_id) = key.strip_prefix(&prefix) {
-                            // Only clean up entries that were ours (exist in neither
-                            // local connections nor rooms). Entries from other replicas
-                            // should not be touched.
-                            if !self.connections.contains_key(conn_id) {
-                                // Fetch the room_id to also clean up the room hash
-                                let room_id_result: Result<Option<String>, _> =
-                                    conn.get(&key).await;
+            let room_key = format!(
+                "{}room_hub:room:{}",
+                self.redis_key_prefix,
+                room_id.as_str()
+            );
+            let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
 
-                                match room_id_result {
-                                    Ok(Some(room_id_str)) => {
-                                        let room_key = format!(
-                                            "{}room_hub:room:{}",
-                                            self.redis_key_prefix, room_id_str
-                                        );
-                                        // Remove connection from room hash and delete conn key
-                                        let mut pipe = redis::pipe();
-                                        pipe.hdel(&room_key, conn_id).ignore();
-                                        pipe.del(&key).ignore();
-                                        if let Err(e) = pipe.query_async::<()>(&mut conn).await {
-                                            errors += 1;
-                                            warn!(
-                                                connection_id = %conn_id,
-                                                error = %e,
-                                                "Failed to clean up orphaned Redis subscription"
-                                            );
-                                        } else {
-                                            cleaned += 1;
-                                            debug!(
-                                                connection_id = %conn_id,
-                                                room_id = %room_id_str,
-                                                "Cleaned up orphaned Redis subscription"
-                                            );
-                                        }
-                                    }
-                                    Ok(None) => {
-                                        // Connection key exists but has no value -- just delete it
-                                        if let Err(e) = conn.del::<_, ()>(&key).await {
-                                            errors += 1;
-                                            warn!(
-                                                connection_id = %conn_id,
-                                                error = %e,
-                                                "Failed to delete empty orphaned connection key"
-                                            );
-                                        } else {
-                                            cleaned += 1;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        errors += 1;
-                                        warn!(
-                                            connection_id = %conn_id,
-                                            error = %e,
-                                            "Failed to read orphaned connection key"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
+            let mut pipe = redis::pipe();
+            pipe.hdel(&room_key, &connection_id).ignore();
+            pipe.del(&conn_key).ignore();
 
-                    if cursor == 0 {
-                        break;
-                    }
+            match pipe.query_async::<()>(&mut conn).await {
+                Ok(()) => {
+                    cleaned += 1;
+                    self.pending_redis_cleanup.remove(&connection_id);
+                    debug!(
+                        connection_id = %connection_id,
+                        room_id = %room_id.as_str(),
+                        "Retried failed Redis subscription cleanup"
+                    );
                 }
                 Err(e) => {
                     errors += 1;
-                    warn!(error = %e, "Failed to SCAN Redis for orphaned subscriptions");
-                    break;
+                    warn!(
+                        connection_id = %connection_id,
+                        room_id = %room_id.as_str(),
+                        error = %e,
+                        "Failed to retry Redis subscription cleanup"
+                    );
                 }
             }
         }
 
         if cleaned > 0 || errors > 0 {
             info!(
-                orphaned_cleaned = cleaned,
+                cleanup_retried = cleaned,
                 cleanup_errors = errors,
-                "Cleaned up orphaned Redis subscription entries"
+                pending_cleanup = self.pending_redis_cleanup.len(),
+                "Retried failed Redis subscription cleanup entries"
             );
         }
     }
@@ -1331,6 +1310,48 @@ mod tests {
         let hub = RoomMessageHub::new();
         hub.cleanup_orphaned_redis_subscriptions().await;
         // If we reach here without panic, the test passes
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_orphaned_subscriptions_only_tracks_local_failed_cleanup() {
+        let hub = RoomMessageHub::new();
+
+        hub.pending_redis_cleanup.insert(
+            "conn_local".to_string(),
+            RoomId::from_string("room_local".to_string()),
+        );
+
+        assert_eq!(hub.pending_redis_cleanup.len(), 1);
+
+        hub.cleanup_orphaned_redis_subscriptions().await;
+
+        assert_eq!(
+            hub.pending_redis_cleanup.len(),
+            1,
+            "Without Redis, cleanup must not mutate locally tracked retry state"
+        );
+        assert!(hub.pending_redis_cleanup.contains_key("conn_local"));
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_clears_stale_pending_cleanup_for_reused_connection_id() {
+        let hub = RoomMessageHub::new();
+        let room_id = RoomId::from_string("room_reuse".to_string());
+        let user_id = UserId::from_string("user_reuse".to_string());
+
+        hub.pending_redis_cleanup.insert(
+            "conn_reuse".to_string(),
+            RoomId::from_string("old_room".to_string()),
+        );
+
+        let _rx = hub
+            .subscribe(room_id, user_id, "conn_reuse".to_string())
+            .await;
+
+        assert!(
+            !hub.pending_redis_cleanup.contains_key("conn_reuse"),
+            "New subscription must clear stale pending cleanup for reused connection IDs"
+        );
     }
 
     #[tokio::test]

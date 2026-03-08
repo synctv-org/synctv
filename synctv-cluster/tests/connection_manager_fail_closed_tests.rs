@@ -151,3 +151,50 @@ async fn test_distributed_connection_queries_fail_closed_when_redis_is_unavailab
     .expect_err("room distributed query should fail closed when Redis is unavailable");
     assert!(room_err.contains("Distributed room connection lookup unavailable"));
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_join_room_move_removes_old_room_from_distributed_index() {
+    let redis = TestRedis::start().await;
+    let conn = redis_connection(&redis.redis_url).await;
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "move_room_index:");
+
+    let user = uid("user1");
+    let room_a = rid("room_a");
+    let room_b = rid("room_b");
+
+    manager
+        .register("conn1".to_string(), user)
+        .await
+        .expect("registration should succeed");
+    manager
+        .join_room("conn1", room_a.clone())
+        .await
+        .expect("initial room join should succeed");
+    manager
+        .join_room("conn1", room_b.clone())
+        .await
+        .expect("moving to another room should succeed");
+
+    let old_room_connections = manager
+        .get_room_connections_distributed(&room_a)
+        .await
+        .expect("old room distributed lookup should succeed");
+    assert!(
+        old_room_connections.is_empty(),
+        "old room distributed index must not retain moved connection, got {old_room_connections:?}"
+    );
+
+    let new_room_connections = manager
+        .get_room_connections_distributed(&room_b)
+        .await
+        .expect("new room distributed lookup should succeed");
+    assert_eq!(new_room_connections, vec!["conn1".to_string()]);
+
+    let online_counts = manager
+        .room_online_user_count_distributed_batch(&[&room_a, &room_b])
+        .await
+        .expect("distributed online user counts should succeed");
+    assert_eq!(online_counts, vec![0, 1]);
+}

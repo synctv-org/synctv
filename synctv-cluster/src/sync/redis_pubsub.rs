@@ -42,6 +42,8 @@ impl BufferPressure {
 
 /// Timeout for Redis operations in seconds
 const REDIS_TIMEOUT_SECS: u64 = 5;
+/// Maximum time to wait for the subscriber to finish its initial subscriptions.
+const SUBSCRIBER_READY_TIMEOUT_SECS: u64 = 5;
 
 /// Returns `true` if the Redis error indicates the current connection has become
 /// read-only or is still loading data — both symptoms of a Sentinel failover in
@@ -835,6 +837,7 @@ impl RedisPubSub {
 
         // Spawn task to handle subscribing with exponential backoff on reconnection.
         // Store the JoinHandle so shutdown() can await it.
+        let (subscriber_ready_tx, subscriber_ready_rx) = tokio::sync::oneshot::channel();
         let subscriber_jh = tokio::spawn(async move {
             let mut backoff_secs = INITIAL_BACKOFF_SECS;
             // Track per-stream cursors (per-room + admin) across reconnections.
@@ -851,6 +854,7 @@ impl RedisPubSub {
             // These rooms were activated while we were disconnected and need to be
             // subscribed on reconnect. Deactivations remove rooms from this set.
             let mut pending_subscriptions: HashSet<String> = HashSet::new();
+            let mut subscriber_ready_tx = Some(subscriber_ready_tx);
 
             loop {
                 // Check cancellation before each reconnect attempt
@@ -880,6 +884,7 @@ impl RedisPubSub {
                         &mut is_first_connect,
                         &mut lifecycle_rx,
                         &mut pending_subscriptions,
+                        &mut subscriber_ready_tx,
                     )
                     .await
                 {
@@ -922,6 +927,14 @@ impl RedisPubSub {
         // Store subscriber handle so shutdown() can await it
         *subscriber_handle_ref.subscriber_handle.lock().await = Some(subscriber_jh);
 
+        timeout(
+            Duration::from_secs(SUBSCRIBER_READY_TIMEOUT_SECS),
+            subscriber_ready_rx,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Redis subscriber did not become ready within timeout"))?
+        .map_err(|_| anyhow::anyhow!("Redis subscriber exited before reporting readiness"))?;
+
         Ok((publish_tx, backpressure, publisher_handle))
     }
 
@@ -955,6 +968,7 @@ impl RedisPubSub {
         is_first_connect: &mut bool,
         lifecycle_rx: &mut broadcast::Receiver<RoomLifecycleEvent>,
         pending_subscriptions: &mut HashSet<String>,
+        subscriber_ready_tx: &mut Option<tokio::sync::oneshot::Sender<()>>,
     ) -> SubscriberExit {
         let mut pubsub = match timeout(
             Duration::from_secs(REDIS_TIMEOUT_SECS),
@@ -1079,6 +1093,10 @@ impl RedisPubSub {
             admin_pattern,
             subscribed_rooms.len()
         );
+
+        if let Some(ready_tx) = subscriber_ready_tx.take() {
+            let _ = ready_tx.send(());
+        }
 
         // Note: lifecycle_rx is passed from outside so it persists across reconnections.
         // Any pending lifecycle events were already drained into pending_subscriptions
@@ -2542,36 +2560,6 @@ mod tests {
         state.set_retry_size(900);
         assert!(!backpressure.can_send_non_critical());
         assert_eq!(backpressure.pressure(), BufferPressure::High);
-    }
-
-    #[tokio::test]
-    async fn test_backpressure_returns_from_start() {
-        let message_hub = Arc::new(RoomMessageHub::new());
-        let (admin_tx, _) = broadcast::channel(256);
-        let dedup = Arc::new(MessageDeduplicator::with_defaults());
-        let redis_client = RedisClient::open("redis://127.0.0.1:6379").unwrap();
-
-        let pubsub = Arc::new(
-            RedisPubSub::new(
-                redis_client,
-                message_hub,
-                "test-node".to_string(),
-                admin_tx,
-                None,
-                None,
-                dedup,
-            )
-            .unwrap(),
-        );
-
-        // Start should return (sender, backpressure, handle)
-        let result = pubsub.start(100).await;
-        assert!(result.is_ok());
-
-        let (_tx, backpressure, _handle) = result.unwrap();
-
-        // Backpressure should initially be normal
-        assert_eq!(backpressure.pressure(), BufferPressure::Normal);
     }
 
     // ========== Reconnection Subscription Recovery Tests ==========

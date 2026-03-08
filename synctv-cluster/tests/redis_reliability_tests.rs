@@ -17,7 +17,37 @@ use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::broadcast;
 
 mod integration_test_helpers;
-use integration_test_helpers::{broadcast_until_all_clients_receive, create_node, TestRedis};
+use integration_test_helpers::{
+    broadcast_until_all_clients_receive, broadcast_until_room_event, create_node, TestRedis,
+};
+
+async fn wait_for_stream_len(redis_url: &str, stream_key: &str, expected_min_len: usize) {
+    let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+    loop {
+        let mut conn = client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("Failed to open Redis connection");
+        let len: usize = redis::cmd("XLEN")
+            .arg(stream_key)
+            .query_async(&mut conn)
+            .await
+            .expect("Failed to query stream length");
+
+        if len >= expected_min_len {
+            return;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for stream {stream_key} to reach length {expected_min_len}; current length {len}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -30,10 +60,27 @@ async fn test_redis_pubsub_no_message_loss() {
     let room_id = RoomId::from_string("busy_room".to_string());
     let user_id = UserId::from_string("listener".to_string());
 
-    // Subscribe on node A
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Subscribe on node A and establish the cross-replica subscription path first.
+    let (rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
+    let mut baseline_clients = vec![(rx, conn_id.clone())];
+    broadcast_until_all_clients_receive(
+        &node_b,
+        &mut baseline_clients,
+        "baseline no-loss message",
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("sender".to_string()),
+            username: "sender".to_string(),
+            message: "baseline no-loss message".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        "baseline no-loss message",
+    )
+    .await;
+    let (mut room_rx, _baseline_conn_id) = baseline_clients.pop().expect("baseline client");
 
     // Send multiple messages from node B
     let message_count = 20;
@@ -49,8 +96,6 @@ async fn test_redis_pubsub_no_message_loss() {
             color: None,
         };
         node_b.broadcast(event);
-        // Small delay to avoid overwhelming the channel
-        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     // Collect all received messages
@@ -111,8 +156,6 @@ async fn test_redis_stream_catchup() {
     // Create the publisher node separately to write events to Redis streams
     let publisher = create_node(&redis.redis_url, "publisher_node").await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Publish events to Redis (they go into streams via dual-write)
     for i in 0..5 {
         let event = ClusterEvent::ChatMessage {
@@ -128,8 +171,8 @@ async fn test_redis_stream_catchup() {
         publisher.broadcast(event);
     }
 
-    // Give time for events to be written to Redis streams
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait until all historical events are durably written to the room stream.
+    wait_for_stream_len(&redis.redis_url, "synctv:room:catchup_room:events", 5).await;
 
     // Now start a subscriber node that connects to the same Redis.
     // On first connect it snapshots stream tips, so pre-existing messages
@@ -156,27 +199,33 @@ async fn test_redis_stream_catchup() {
         .await
         .expect("Failed to start subscriber");
 
-    // Wait for the subscriber to connect
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    let no_catchup = tokio::time::timeout(Duration::from_millis(250), rx.recv()).await;
+    assert!(
+        no_catchup.is_err(),
+        "Initial connect should not replay historical stream entries"
+    );
 
     // Publish one more message (should be received live)
-    let final_event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        user_id: UserId::from_string("publisher".to_string()),
-        username: "publisher".to_string(),
-        message: "Live message after subscriber connect".to_string(),
-        timestamp: Utc::now(),
-        position: None,
-        color: None,
-    };
-    publisher.broadcast(final_event);
-
-    // The subscriber should receive this live message
-    let received = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .expect("Timed out waiting for live message")
-        .expect("Channel closed");
+    let received = broadcast_until_room_event(
+        &publisher,
+        &mut rx,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("publisher".to_string()),
+            username: "publisher".to_string(),
+            message: "Live message after subscriber connect".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        |event| {
+            matches!(event, ClusterEvent::ChatMessage { message, .. }
+                if message == "Live message after subscriber connect")
+        },
+        "live message after subscriber connect",
+    )
+    .await;
 
     assert_eq!(received.event_type(), "chat_message");
     if let ClusterEvent::ChatMessage { message, .. } = &received {
@@ -212,27 +261,35 @@ async fn test_redis_failure_and_recovery() {
         )
         .await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Test 1: Verify normal operation
-    let normal_event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
-        room_id: room_id.clone(),
-        user_id: UserId::from_string("recovery_user_a".to_string()),
-        username: "user_a".to_string(),
-        message: "Normal message".to_string(),
-        timestamp: Utc::now(),
-        position: None,
-        color: None,
-    };
-
-    node_a.broadcast(normal_event);
-
-    let received = tokio::time::timeout(Duration::from_secs(5), rx_b.recv())
-        .await
-        .expect("Should receive message in normal operation")
-        .expect("Channel not closed");
+    // Test 1: Verify normal operation and consume the local echo so later assertions
+    // don't accidentally pass on stale buffered messages.
+    let received = broadcast_until_room_event(
+        &node_a,
+        &mut rx_b,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: UserId::from_string("recovery_user_a".to_string()),
+            username: "user_a".to_string(),
+            message: "Normal message".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        },
+        |event| matches!(event, ClusterEvent::ChatMessage { message, .. } if message == "Normal message"),
+        "normal cross-replica message",
+    )
+    .await;
     assert_eq!(received.event_type(), "chat_message");
+    let local_received = tokio::time::timeout(Duration::from_secs(5), rx_a.recv())
+        .await
+        .expect("Local subscriber should receive normal message")
+        .expect("Local channel not closed");
+    if let ClusterEvent::ChatMessage { message, .. } = &local_received {
+        assert_eq!(message, "Normal message");
+    } else {
+        panic!("Expected local normal ChatMessage");
+    }
 
     // Test 2: Verify local broadcast still works even if Redis fails
     // (We can't actually stop the Redis container, but we can verify local delivery)
@@ -245,7 +302,14 @@ async fn test_redis_failure_and_recovery() {
         )
         .await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    while let Ok(Some(ClusterEvent::ChatMessage { message, .. })) =
+        tokio::time::timeout(Duration::from_millis(100), rx_a.recv()).await
+    {
+        assert_eq!(
+            message, "Normal message",
+            "unexpected buffered local message before recovery test"
+        );
+    }
 
     // Broadcast from user_b on node A should reach both subscribers on node A
     let local_event = ClusterEvent::ChatMessage {
@@ -267,12 +331,21 @@ async fn test_redis_failure_and_recovery() {
     );
 
     // Verify both local subscribers received the message
-    let _ = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
+    let local_a = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
         .await
-        .expect("First local subscriber should receive message");
-    let _ = tokio::time::timeout(Duration::from_secs(2), rx_a2.recv())
+        .expect("First local subscriber should receive message")
+        .expect("First local subscriber channel closed");
+    let local_a2 = tokio::time::timeout(Duration::from_secs(2), rx_a2.recv())
         .await
-        .expect("Second local subscriber should receive message");
+        .expect("Second local subscriber should receive message")
+        .expect("Second local subscriber channel closed");
+    for received in [&local_a, &local_a2] {
+        if let ClusterEvent::ChatMessage { message, .. } = received {
+            assert_eq!(message, "Local broadcast test");
+        } else {
+            panic!("Expected local ChatMessage");
+        }
+    }
 
     // Test 3: Verify event ordering is maintained after recovery
     // First, drain any remaining messages from node B's queue (e.g., "Local broadcast test")
@@ -293,7 +366,6 @@ async fn test_redis_failure_and_recovery() {
             color: None,
         };
         node_a.broadcast(ordered_event);
-        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     // Verify messages are received in order on node B
@@ -426,8 +498,6 @@ async fn test_cross_replica_deduplication() {
     let user_id = UserId::from_string("listener".to_string());
 
     let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Broadcast the same event twice locally (simulating duplicate delivery)
     let event = ClusterEvent::ChatMessage {

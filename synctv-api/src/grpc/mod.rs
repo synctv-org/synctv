@@ -173,6 +173,25 @@ fn should_mark_livestream_relay_serving(
     should_register_livestream_relay_service(config, live_streaming_infrastructure_available)
 }
 
+fn should_mark_notification_service_serving(notification_service_available: bool) -> bool {
+    notification_service_available
+}
+
+fn should_mark_oauth2_service_serving(oauth2_service_available: bool) -> bool {
+    oauth2_service_available
+}
+
+fn should_mark_provider_services_serving(providers_available: bool) -> bool {
+    providers_available
+}
+
+fn should_mark_cluster_service_serving(
+    config: &synctv_core::Config,
+    node_registry_available: bool,
+) -> bool {
+    should_register_cluster_grpc_service(config, node_registry_available)
+}
+
 fn validate_cluster_grpc_runtime_requirements(
     config: &synctv_core::Config,
     node_registry_available: bool,
@@ -485,6 +504,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let client_service_clone3 = client_service.clone();
     let client_service_clone4 = client_service.clone();
     let client_service_clone5 = client_service.clone();
+
+    let notification_service_registered = notification_service.is_some();
+    let oauth2_service_registered = oauth2_service.is_some();
+    let provider_services_registered = providers_manager.is_some();
+    let cluster_service_registered = should_mark_cluster_service_serving(config, node_registry.is_some());
 
     let mut router = server_builder
         // AuthService (public: register, login, refresh_token)
@@ -866,6 +890,39 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     health_reporter
         .set_serving::<AdminServiceServer<AdminServiceImpl>>()
         .await;
+    if should_mark_notification_service_serving(notification_service_registered) {
+        health_reporter
+            .set_serving::<NotificationServiceServer<NotificationServiceImpl>>()
+            .await;
+    }
+    if should_mark_oauth2_service_serving(oauth2_service_registered) {
+        use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
+        health_reporter
+            .set_serving::<OAuth2ServiceServer<oauth2_service::OAuth2GrpcService>>()
+            .await;
+    }
+    if should_mark_provider_services_serving(provider_services_registered) {
+        use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
+        use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
+        use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
+
+        health_reporter
+            .set_serving::<AlistProviderServiceServer<providers::alist::AlistProviderGrpcService>>()
+            .await;
+        health_reporter
+            .set_serving::<BilibiliProviderServiceServer<providers::bilibili::BilibiliProviderGrpcService>>()
+            .await;
+        health_reporter
+            .set_serving::<EmbyProviderServiceServer<providers::emby::EmbyProviderGrpcService>>()
+            .await;
+    }
+    if cluster_service_registered {
+        health_reporter
+            .set_serving::<synctv_cluster::grpc::ClusterServiceServer<
+                synctv_cluster::grpc::ClusterServer,
+            >>()
+            .await;
+    }
     if should_mark_livestream_relay_serving(config, live_streaming_infrastructure.is_some()) {
         health_reporter
             .set_serving::<synctv_livestream::grpc::StreamRelayServiceServer<
@@ -924,8 +981,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_mark_livestream_relay_serving, should_register_cluster_grpc_service,
-        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
+        should_mark_cluster_service_serving, should_mark_livestream_relay_serving,
+        should_mark_notification_service_serving,
+        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
+        should_register_cluster_grpc_service, should_register_livestream_relay_service,
+        validate_cluster_grpc_runtime_requirements,
     };
 
     #[test]
@@ -1026,6 +1086,32 @@ mod tests {
         assert!(
             !should_mark_livestream_relay_serving(&config, false),
             "health status must not report relay serving when infra is unavailable"
+        );
+    }
+
+    #[test]
+    fn test_optional_grpc_services_only_mark_serving_when_registered() {
+        assert!(should_mark_notification_service_serving(true));
+        assert!(!should_mark_notification_service_serving(false));
+        assert!(should_mark_oauth2_service_serving(true));
+        assert!(!should_mark_oauth2_service_serving(false));
+        assert!(should_mark_provider_services_serving(true));
+        assert!(!should_mark_provider_services_serving(false));
+    }
+
+    #[test]
+    fn test_cluster_grpc_service_mark_serving_matches_registration() {
+        let mut config = synctv_core::Config::default();
+        config.cluster.enabled = true;
+        config.server.cluster_secret = "shared-secret".to_string();
+
+        assert!(
+            should_mark_cluster_service_serving(&config, true),
+            "registered cluster service must be marked serving"
+        );
+        assert!(
+            !should_mark_cluster_service_serving(&config, false),
+            "missing node registry must not report cluster service serving"
         );
     }
 }

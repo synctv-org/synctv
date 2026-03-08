@@ -19,6 +19,7 @@ use crate::repository::ProviderInstanceRepository;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Uri};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
 
@@ -30,6 +31,9 @@ const CHANNEL_CACHE_TTL_SECS: u64 = 300;
 
 /// Maximum number of cached channels
 const MAX_CACHED_CHANNELS: u64 = 1_000;
+
+/// Maximum time to wait for the first Pub/Sub subscription to become active.
+const INVALIDATION_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Remote Provider Manager
 ///
@@ -152,12 +156,14 @@ impl RemoteProviderManager {
         };
 
         let client = client.clone();
-
         let cache = Arc::clone(&self.channel_cache);
+        let (ready_tx, ready_rx) = oneshot::channel();
 
         crate::spawn::spawn_monitored("provider_invalidation_listener", async move {
+            let mut ready_tx = Some(ready_tx);
+
             loop {
-                match Self::run_pubsub_listener(&client, &cache).await {
+                match Self::run_pubsub_listener(&client, &cache, &mut ready_tx).await {
                     Ok(()) => break, // clean shutdown (shouldn't happen)
                     Err(e) => {
                         tracing::warn!(
@@ -169,6 +175,21 @@ impl RemoteProviderManager {
             }
         });
 
+        tokio::time::timeout(INVALIDATION_LISTENER_READY_TIMEOUT, ready_rx)
+            .await
+            .map_err(|_| {
+                crate::Error::Internal(format!(
+                    "Provider invalidation listener did not become ready within {:?}",
+                    INVALIDATION_LISTENER_READY_TIMEOUT
+                ))
+            })?
+            .map_err(|_| {
+                crate::Error::Internal(
+                    "Provider invalidation listener exited before subscription became ready"
+                        .to_string(),
+                )
+            })?;
+
         tracing::info!("Provider instance cache invalidation listener started (Pub/Sub)");
         Ok(())
     }
@@ -178,6 +199,7 @@ impl RemoteProviderManager {
     async fn run_pubsub_listener(
         client: &redis::Client,
         cache: &moka::future::Cache<String, Channel>,
+        ready_tx: &mut Option<oneshot::Sender<()>>,
     ) -> crate::Result<()> {
         use futures::StreamExt;
 
@@ -189,6 +211,10 @@ impl RemoteProviderManager {
             .subscribe(PROVIDER_CHANGE_CHANNEL)
             .await
             .map_err(|e| crate::Error::Internal(format!("Failed to subscribe: {e}")))?;
+
+        if let Some(ready_tx) = ready_tx.take() {
+            let _ = ready_tx.send(());
+        }
 
         let mut stream = pubsub.on_message();
 

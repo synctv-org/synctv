@@ -764,11 +764,16 @@ impl RoomService for ClientServiceImpl {
 
     async fn get_network_quality(
         &self,
-        _request: Request<GetNetworkQualityRequest>,
+        request: Request<GetNetworkQualityRequest>,
     ) -> Result<Response<GetNetworkQualityResponse>, Status> {
-        Err(Status::unimplemented(
-            "Network quality tracking is not supported; quality metrics are handled peer-to-peer",
-        ))
+        let user_id = self.get_user_id(&request).await?;
+        let room_id = self.get_room_id(&request)?;
+        let response = self
+            .client_api
+            .get_network_quality(&room_id, &user_id)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
     }
 }
 
@@ -1434,4 +1439,5 @@ mod tests {
         const { assert!(MESSAGE_STREAM_BUFFER_SIZE >= 10) };
         const { assert!(MESSAGE_STREAM_BUFFER_SIZE <= 1000) };
     }
+
 }

@@ -11,23 +11,13 @@ package synctv.cluster;
 // - Events are broadcast via Redis Pub/Sub through ClusterManager
 //
 // Endpoint Usage:
-// - RegisterNode: UNUSED - kept for potential future node-to-node gRPC discovery
-// - Heartbeat: UNUSED - kept for potential future node-to-node gRPC discovery
 // - GetNodes: ACTIVE - returns all known nodes from Redis registry
 // - DeregisterNode: ACTIVE - handles graceful shutdown with epoch validation
 // - GetUserOnlineStatus: ACTIVE - fan-out query for user presence
 // - GetRoomConnections: ACTIVE - fan-out query for room participants
 //
-// NOTE on event encoding:
-// Cluster events are NOT transmitted via protobuf messages. They are serialized
-// as JSON via serde (ClusterEvent in synctv-cluster/src/sync/events.rs) and
-// published/consumed through Redis Pub/Sub via ClusterManager. The ClusterEvent
-// message definition below is kept only as a schema reference.
 service ClusterService {
-    // Node registration and health
-    // NOTE: RegisterNode and Heartbeat are currently unused - nodes use Redis directly
-    rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
-    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+    // Node discovery and shutdown
     rpc GetNodes(GetNodesRequest) returns (GetNodesResponse);
     rpc DeregisterNode(DeregisterNodeRequest) returns (DeregisterNodeResponse);
 
@@ -63,28 +53,6 @@ message NodeMetrics {
     double network_bandwidth_mbps = 6;
 }
 
-// Node registration
-message RegisterNodeRequest {
-    string node_id = 1;
-    string address = 2;
-    string region = 3;
-}
-
-message RegisterNodeResponse {
-    NodeInfo node = 1;
-    repeated NodeInfo peers = 2; // Other active nodes
-}
-
-message HeartbeatRequest {
-    string node_id = 1;
-    NodeMetrics metrics = 2;
-}
-
-message HeartbeatResponse {
-    bool success = 1;
-    int64 timestamp = 2;
-}
-
 message GetNodesRequest {
     NodeStatus status_filter = 1; // Optional filter
 }
@@ -101,148 +69,6 @@ message DeregisterNodeRequest {
 
 message DeregisterNodeResponse {
     bool success = 1;
-}
-
-// ClusterEvent schema reference
-//
-// These event types are NOT transmitted via protobuf. They are serialized as
-// JSON via serde (synctv_cluster::sync::events::ClusterEvent) and published
-// through Redis Pub/Sub. This protobuf definition exists solely as a schema
-// reference for documentation purposes.
-message ClusterEvent {
-    string event_id = 1; // UUID for deduplication
-    string node_id = 2; // Origin node
-    int64 timestamp = 3;
-    int32 sequence = 4; // Sequence number for ordering
-
-    oneof event {
-        PlaybackStateChangedEvent playback_state_changed = 5;
-        UserJoinedRoomEvent user_joined_room = 6;
-        UserLeftRoomEvent user_left_room = 7;
-        RoomCreatedEvent room_created = 8;
-        RoomDeletedEvent room_deleted = 9;
-        RoomSettingsChangedEvent room_settings_changed = 10;
-        ChatMessageEvent chat_message = 11;
-        DanmakuMessageEvent danmaku_message = 12;
-        CacheInvalidateEvent cache_invalidate = 13;
-        MediaAddedEvent media_added = 14;
-        MediaRemovedEvent media_removed = 15;
-        WebRTCSignalingEvent webrtc_signaling = 16;
-        KickPublisherEvent kick_publisher = 17;
-        KickUserEvent kick_user = 18;
-        PermissionChangedEvent permission_changed = 19;
-    }
-}
-
-message PlaybackState {
-    string playing_media_id = 1;
-    double current_time = 2; // playback position in seconds
-    double speed = 3;
-    bool is_playing = 4;
-    int64 updated_at = 5;
-    string playing_playlist_id = 6; // Currently playing playlist
-    string relative_path = 7; // Relative path within dynamic folder
-}
-
-message PlaybackStateChangedEvent {
-    string room_id = 1;
-    PlaybackState state = 2;
-}
-
-message UserJoinedRoomEvent {
-    string room_id = 1;
-    string user_id = 2;
-    string username = 3;
-    int64 permissions = 4;
-}
-
-message UserLeftRoomEvent {
-    string room_id = 1;
-    string user_id = 2;
-}
-
-message RoomCreatedEvent {
-    string room_id = 1;
-    string name = 2;
-    string created_by = 3;
-}
-
-message RoomDeletedEvent {
-    string room_id = 1;
-}
-
-message RoomSettingsChangedEvent {
-    string room_id = 1;
-    bytes settings = 2; // JSON settings
-}
-
-message ChatMessageEvent {
-    string room_id = 1;
-    string user_id = 2;
-    string username = 3;
-    string content = 4;
-    int64 timestamp = 5;
-}
-
-message DanmakuMessageEvent {
-    string room_id = 1;
-    string user_id = 2;
-    string content = 3;
-    string color = 4;
-    int32 position = 5;
-    int64 timestamp = 6;
-}
-
-message CacheInvalidateEvent {
-    repeated string keys = 1; // Cache keys to invalidate
-    string pattern = 2; // Optional pattern (e.g., "room:123:*")
-}
-
-message MediaAddedEvent {
-    string room_id = 1;
-    string media_id = 2;
-    string title = 3;
-    string added_by_user_id = 4;
-    string added_by_username = 5;
-}
-
-message MediaRemovedEvent {
-    string room_id = 1;
-    string media_id = 2;
-    string removed_by_user_id = 3;
-    string removed_by_username = 4;
-}
-
-message WebRTCSignalingEvent {
-    string room_id = 1;
-    string target_user_id = 2; // Specific user to route to
-    string from_user_id = 3;
-    string signal_type = 4; // "offer", "answer", "ice_candidate"
-    string data = 5; // Opaque signaling data (JSON)
-}
-
-message KickPublisherEvent {
-    string room_id = 1;
-    string media_id = 2;
-    string reason = 3;
-}
-
-message KickUserEvent {
-    string room_id = 1;
-    string user_id = 2;
-    string reason = 3;
-}
-
-message PermissionChangedEvent {
-    string room_id = 1;
-    string user_id = 2;
-    string role = 3; // New role
-    uint64 effective_permissions = 4;
-    uint64 added_permissions = 5;
-    uint64 removed_permissions = 6;
-    uint64 admin_added_permissions = 7;
-    uint64 admin_removed_permissions = 8;
-    string updated_by = 9;
 }
 
 // User connection tracking

@@ -34,38 +34,6 @@ pub struct NodeMetrics {
     #[prost(double, tag = "6")]
     pub network_bandwidth_mbps: f64,
 }
-/// Node registration
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RegisterNodeRequest {
-    #[prost(string, tag = "1")]
-    pub node_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub address: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub region: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RegisterNodeResponse {
-    #[prost(message, optional, tag = "1")]
-    pub node: ::core::option::Option<NodeInfo>,
-    /// Other active nodes
-    #[prost(message, repeated, tag = "2")]
-    pub peers: ::prost::alloc::vec::Vec<NodeInfo>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct HeartbeatRequest {
-    #[prost(string, tag = "1")]
-    pub node_id: ::prost::alloc::string::String,
-    #[prost(message, optional, tag = "2")]
-    pub metrics: ::core::option::Option<NodeMetrics>,
-}
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct HeartbeatResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-    #[prost(int64, tag = "2")]
-    pub timestamp: i64,
-}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetNodesRequest {
     /// Optional filter
@@ -92,251 +60,6 @@ pub struct DeregisterNodeRequest {
 pub struct DeregisterNodeResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
-}
-/// ClusterEvent schema reference
-///
-/// These event types are NOT transmitted via protobuf. They are serialized as
-/// JSON via serde (synctv_cluster::sync::events::ClusterEvent) and published
-/// through Redis Pub/Sub. This protobuf definition exists solely as a schema
-/// reference for documentation purposes.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ClusterEvent {
-    /// UUID for deduplication
-    #[prost(string, tag = "1")]
-    pub event_id: ::prost::alloc::string::String,
-    /// Origin node
-    #[prost(string, tag = "2")]
-    pub node_id: ::prost::alloc::string::String,
-    #[prost(int64, tag = "3")]
-    pub timestamp: i64,
-    /// Sequence number for ordering
-    #[prost(int32, tag = "4")]
-    pub sequence: i32,
-    #[prost(
-        oneof = "cluster_event::Event",
-        tags = "5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19"
-    )]
-    pub event: ::core::option::Option<cluster_event::Event>,
-}
-/// Nested message and enum types in `ClusterEvent`.
-pub mod cluster_event {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Event {
-        #[prost(message, tag = "5")]
-        PlaybackStateChanged(super::PlaybackStateChangedEvent),
-        #[prost(message, tag = "6")]
-        UserJoinedRoom(super::UserJoinedRoomEvent),
-        #[prost(message, tag = "7")]
-        UserLeftRoom(super::UserLeftRoomEvent),
-        #[prost(message, tag = "8")]
-        RoomCreated(super::RoomCreatedEvent),
-        #[prost(message, tag = "9")]
-        RoomDeleted(super::RoomDeletedEvent),
-        #[prost(message, tag = "10")]
-        RoomSettingsChanged(super::RoomSettingsChangedEvent),
-        #[prost(message, tag = "11")]
-        ChatMessage(super::ChatMessageEvent),
-        #[prost(message, tag = "12")]
-        DanmakuMessage(super::DanmakuMessageEvent),
-        #[prost(message, tag = "13")]
-        CacheInvalidate(super::CacheInvalidateEvent),
-        #[prost(message, tag = "14")]
-        MediaAdded(super::MediaAddedEvent),
-        #[prost(message, tag = "15")]
-        MediaRemoved(super::MediaRemovedEvent),
-        #[prost(message, tag = "16")]
-        WebrtcSignaling(super::WebRtcSignalingEvent),
-        #[prost(message, tag = "17")]
-        KickPublisher(super::KickPublisherEvent),
-        #[prost(message, tag = "18")]
-        KickUser(super::KickUserEvent),
-        #[prost(message, tag = "19")]
-        PermissionChanged(super::PermissionChangedEvent),
-    }
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PlaybackState {
-    #[prost(string, tag = "1")]
-    pub playing_media_id: ::prost::alloc::string::String,
-    /// playback position in seconds
-    #[prost(double, tag = "2")]
-    pub current_time: f64,
-    #[prost(double, tag = "3")]
-    pub speed: f64,
-    #[prost(bool, tag = "4")]
-    pub is_playing: bool,
-    #[prost(int64, tag = "5")]
-    pub updated_at: i64,
-    /// Currently playing playlist
-    #[prost(string, tag = "6")]
-    pub playing_playlist_id: ::prost::alloc::string::String,
-    /// Relative path within dynamic folder
-    #[prost(string, tag = "7")]
-    pub relative_path: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PlaybackStateChangedEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(message, optional, tag = "2")]
-    pub state: ::core::option::Option<PlaybackState>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct UserJoinedRoomEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub username: ::prost::alloc::string::String,
-    #[prost(int64, tag = "4")]
-    pub permissions: i64,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct UserLeftRoomEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RoomCreatedEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub created_by: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RoomDeletedEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RoomSettingsChangedEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    /// JSON settings
-    #[prost(bytes = "vec", tag = "2")]
-    pub settings: ::prost::alloc::vec::Vec<u8>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ChatMessageEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub username: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub content: ::prost::alloc::string::String,
-    #[prost(int64, tag = "5")]
-    pub timestamp: i64,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct DanmakuMessageEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub content: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub color: ::prost::alloc::string::String,
-    #[prost(int32, tag = "5")]
-    pub position: i32,
-    #[prost(int64, tag = "6")]
-    pub timestamp: i64,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct CacheInvalidateEvent {
-    /// Cache keys to invalidate
-    #[prost(string, repeated, tag = "1")]
-    pub keys: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Optional pattern (e.g., "room:123:\*")
-    #[prost(string, tag = "2")]
-    pub pattern: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct MediaAddedEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub media_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub title: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub added_by_user_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "5")]
-    pub added_by_username: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct MediaRemovedEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub media_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub removed_by_user_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub removed_by_username: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct WebRtcSignalingEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    /// Specific user to route to
-    #[prost(string, tag = "2")]
-    pub target_user_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub from_user_id: ::prost::alloc::string::String,
-    /// "offer", "answer", "ice_candidate"
-    #[prost(string, tag = "4")]
-    pub signal_type: ::prost::alloc::string::String,
-    /// Opaque signaling data (JSON)
-    #[prost(string, tag = "5")]
-    pub data: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct KickPublisherEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub media_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub reason: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct KickUserEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub reason: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PermissionChangedEvent {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
-    /// New role
-    #[prost(string, tag = "3")]
-    pub role: ::prost::alloc::string::String,
-    #[prost(uint64, tag = "4")]
-    pub effective_permissions: u64,
-    #[prost(uint64, tag = "5")]
-    pub added_permissions: u64,
-    #[prost(uint64, tag = "6")]
-    pub removed_permissions: u64,
-    #[prost(uint64, tag = "7")]
-    pub admin_added_permissions: u64,
-    #[prost(uint64, tag = "8")]
-    pub admin_removed_permissions: u64,
-    #[prost(string, tag = "9")]
-    pub updated_by: ::prost::alloc::string::String,
 }
 /// User connection tracking
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -437,18 +160,10 @@ pub mod cluster_service_client {
     ///
     /// Endpoint Usage:
     ///
-    /// * RegisterNode: UNUSED - kept for potential future node-to-node gRPC discovery
-    /// * Heartbeat: UNUSED - kept for potential future node-to-node gRPC discovery
     /// * GetNodes: ACTIVE - returns all known nodes from Redis registry
     /// * DeregisterNode: ACTIVE - handles graceful shutdown with epoch validation
     /// * GetUserOnlineStatus: ACTIVE - fan-out query for user presence
     /// * GetRoomConnections: ACTIVE - fan-out query for room participants
-    ///
-    /// NOTE on event encoding:
-    /// Cluster events are NOT transmitted via protobuf messages. They are serialized
-    /// as JSON via serde (ClusterEvent in synctv-cluster/src/sync/events.rs) and
-    /// published/consumed through Redis Pub/Sub via ClusterManager. The ClusterEvent
-    /// message definition below is kept only as a schema reference.
     #[derive(Debug, Clone)]
     pub struct ClusterServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -529,58 +244,7 @@ pub mod cluster_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Node registration and health
-        /// NOTE: RegisterNode and Heartbeat are currently unused - nodes use Redis directly
-        pub async fn register_node(
-            &mut self,
-            request: impl tonic::IntoRequest<super::RegisterNodeRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::RegisterNodeResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.cluster.ClusterService/RegisterNode",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.cluster.ClusterService", "RegisterNode"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn heartbeat(
-            &mut self,
-            request: impl tonic::IntoRequest<super::HeartbeatRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::HeartbeatResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.cluster.ClusterService/Heartbeat",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.cluster.ClusterService", "Heartbeat"));
-            self.inner.unary(req, path, codec).await
-        }
+        /// Node discovery and shutdown
         pub async fn get_nodes(
             &mut self,
             request: impl tonic::IntoRequest<super::GetNodesRequest>,
@@ -705,22 +369,7 @@ pub mod cluster_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with ClusterServiceServer.
     #[async_trait]
     pub trait ClusterService: std::marker::Send + std::marker::Sync + 'static {
-        /// Node registration and health
-        /// NOTE: RegisterNode and Heartbeat are currently unused - nodes use Redis directly
-        async fn register_node(
-            &self,
-            request: tonic::Request<super::RegisterNodeRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::RegisterNodeResponse>,
-            tonic::Status,
-        >;
-        async fn heartbeat(
-            &self,
-            request: tonic::Request<super::HeartbeatRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::HeartbeatResponse>,
-            tonic::Status,
-        >;
+        /// Node discovery and shutdown
         async fn get_nodes(
             &self,
             request: tonic::Request<super::GetNodesRequest>,
@@ -762,18 +411,10 @@ pub mod cluster_service_server {
     ///
     /// Endpoint Usage:
     ///
-    /// * RegisterNode: UNUSED - kept for potential future node-to-node gRPC discovery
-    /// * Heartbeat: UNUSED - kept for potential future node-to-node gRPC discovery
     /// * GetNodes: ACTIVE - returns all known nodes from Redis registry
     /// * DeregisterNode: ACTIVE - handles graceful shutdown with epoch validation
     /// * GetUserOnlineStatus: ACTIVE - fan-out query for user presence
     /// * GetRoomConnections: ACTIVE - fan-out query for room participants
-    ///
-    /// NOTE on event encoding:
-    /// Cluster events are NOT transmitted via protobuf messages. They are serialized
-    /// as JSON via serde (ClusterEvent in synctv-cluster/src/sync/events.rs) and
-    /// published/consumed through Redis Pub/Sub via ClusterManager. The ClusterEvent
-    /// message definition below is kept only as a schema reference.
     #[derive(Debug)]
     pub struct ClusterServiceServer<T> {
         inner: Arc<T>,
@@ -850,96 +491,6 @@ pub mod cluster_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/synctv.cluster.ClusterService/RegisterNode" => {
-                    #[allow(non_camel_case_types)]
-                    struct RegisterNodeSvc<T: ClusterService>(pub Arc<T>);
-                    impl<
-                        T: ClusterService,
-                    > tonic::server::UnaryService<super::RegisterNodeRequest>
-                    for RegisterNodeSvc<T> {
-                        type Response = super::RegisterNodeResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::RegisterNodeRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ClusterService>::register_node(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = RegisterNodeSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.cluster.ClusterService/Heartbeat" => {
-                    #[allow(non_camel_case_types)]
-                    struct HeartbeatSvc<T: ClusterService>(pub Arc<T>);
-                    impl<
-                        T: ClusterService,
-                    > tonic::server::UnaryService<super::HeartbeatRequest>
-                    for HeartbeatSvc<T> {
-                        type Response = super::HeartbeatResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::HeartbeatRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ClusterService>::heartbeat(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = HeartbeatSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/synctv.cluster.ClusterService/GetNodes" => {
                     #[allow(non_camel_case_types)]
                     struct GetNodesSvc<T: ClusterService>(pub Arc<T>);

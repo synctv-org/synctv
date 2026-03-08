@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
 use super::connection_manager::ConnectionManager;
@@ -141,6 +142,13 @@ pub struct ClusterManager {
     /// Awaited during shutdown so in-flight events are fully flushed before
     /// the process exits.
     publisher_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// JoinHandle for the critical-event forwarder task.
+    /// Awaited during shutdown before the Redis publisher is stopped so the
+    /// dedicated critical queue is fully drained.
+    critical_forwarder_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Tracks retry tasks spawned when the critical queue is full.
+    /// These tasks must finish enqueueing before shutdown drains the queue.
+    critical_retry_tasks: TaskTracker,
     /// Cancellation token for background heartbeat task
     cancel_token: CancellationToken,
     /// Node registry + heartbeat handle (behind Mutex for async shutdown from &self)
@@ -203,12 +211,24 @@ impl ClusterManager {
             config.dedup_window,
             config.cleanup_interval,
         ));
+        let manager_cancel_token = config.parent_cancel_token.as_ref().map_or_else(
+            CancellationToken::new,
+            tokio_util::sync::CancellationToken::child_token,
+        );
+        let critical_retry_tasks = TaskTracker::new();
 
         let (admin_event_tx, _) = broadcast::channel(4096);
 
         // Start Redis pub/sub using the pre-built client/connection.
         // When Redis is not provided, run in single-node mode (tests).
-        let (message_hub, redis_publish_tx, redis_critical_tx, redis_pubsub, publisher_handle) =
+        let (
+            message_hub,
+            redis_publish_tx,
+            redis_critical_tx,
+            redis_pubsub,
+            publisher_handle,
+            critical_forwarder_handle,
+        ) =
             if let (Some(redis_client), Some(redis_conn)) =
                 (config.redis_client.clone(), config.redis_conn.clone())
             {
@@ -242,8 +262,8 @@ impl ClusterManager {
                 // Forward critical events into the normal publish channel using `.send().await`
                 // (blocks until space available, never drops).
                 let normal_tx = tx.clone();
-                let cancel_critical = redis_pubsub.cancel_token();
-                tokio::spawn(async move {
+                let cancel_critical = manager_cancel_token.clone();
+                let critical_forwarder_handle = tokio::spawn(async move {
                     loop {
                         tokio::select! {
                             () = cancel_critical.cancelled() => {
@@ -273,6 +293,7 @@ impl ClusterManager {
                     Some(critical_tx),
                     Some(redis_pubsub),
                     Some(publisher_handle),
+                    Some(critical_forwarder_handle),
                 )
             } else {
                 warn!("Redis not provided, running in single-node mode");
@@ -284,7 +305,7 @@ impl ClusterManager {
                     );
                 }
                 let hub = Arc::new(RoomMessageHub::new());
-                (hub, None, None, None, None)
+                (hub, None, None, None, None, None)
             };
 
         Ok(Self {
@@ -296,10 +317,9 @@ impl ClusterManager {
             admin_event_tx,
             redis_pubsub,
             publisher_task: tokio::sync::Mutex::new(publisher_handle),
-            cancel_token: config.parent_cancel_token.as_ref().map_or_else(
-                CancellationToken::new,
-                tokio_util::sync::CancellationToken::child_token,
-            ),
+            critical_forwarder_task: tokio::sync::Mutex::new(critical_forwarder_handle),
+            critical_retry_tasks,
+            cancel_token: manager_cancel_token,
             critical_channel_capacity: config.critical_channel_capacity,
             publish_channel_capacity: config.publish_channel_capacity,
             heartbeat_state: tokio::sync::Mutex::new(HeartbeatState {
@@ -596,6 +616,7 @@ impl ClusterManager {
 
         // Cancel heartbeat loop
         self.cancel_token.cancel();
+        self.critical_retry_tasks.close();
 
         // Unregister this node from Redis FIRST so peers stop routing traffic
         // to us immediately, before we start draining pub/sub channels.
@@ -622,6 +643,32 @@ impl ClusterManager {
                             "Heartbeat task did not finish within {}s timeout during shutdown; proceeding",
                             self.heartbeat_shutdown_timeout().as_secs()
                         );
+                    }
+                }
+            }
+        }
+
+        match tokio::time::timeout(Duration::from_secs(5), self.critical_retry_tasks.wait()).await {
+            Ok(()) => {
+                debug!("Critical-event retry tasks completed during shutdown");
+            }
+            Err(_) => {
+                warn!("Critical-event retry tasks did not finish within 5s timeout during shutdown; proceeding");
+            }
+        }
+
+        {
+            let mut forwarder_guard = self.critical_forwarder_task.lock().await;
+            if let Some(handle) = forwarder_guard.take() {
+                match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                    Ok(Ok(())) => {
+                        info!("Critical-event forwarder completed cleanly during shutdown");
+                    }
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "Critical-event forwarder panicked during shutdown");
+                    }
+                    Err(_) => {
+                        warn!("Critical-event forwarder did not finish within 5s timeout during shutdown; proceeding");
                     }
                 }
             }
@@ -702,6 +749,17 @@ impl ClusterManager {
             let _ = self.admin_event_tx.send(event.clone());
         }
 
+        if self.shutdown_started.load(Ordering::Acquire) {
+            debug!(
+                event_type = %event_type,
+                "Skipping Redis publish because ClusterManager shutdown is in progress"
+            );
+            return BroadcastResult {
+                local_sent,
+                redis_sent: false,
+            };
+        }
+
         // Publish to Redis for cross-node sync.
         // Critical events (KickPublisher, KickUser, PermissionChanged) use a
         // separate high-priority channel that never drops events.
@@ -717,10 +775,10 @@ impl ClusterManager {
                         // send().await so the event is never dropped.
                         let tx = tx.clone();
                         warn!(
-                            "Critical event publish channel full (capacity {}), spawning retry task",
+                            "Critical event publish channel full (capacity {}), spawning tracked retry task",
                             self.critical_channel_capacity
                         );
-                        tokio::spawn(async move {
+                        self.critical_retry_tasks.spawn(async move {
                             if let Err(e) = tx.send(req).await {
                                 error!("Failed to send critical event after retry: {e}");
                             }
@@ -732,8 +790,34 @@ impl ClusterManager {
                     }
                 }
             } else if let Some(tx) = &self.redis_publish_tx {
-                // Fallback to normal channel if critical channel not available
-                let _ = tx.try_send(PublishRequest { event });
+                // Fallback to the normal channel only when a dedicated critical
+                // channel is unavailable. Critical events still must not be
+                // dropped when the normal channel is temporarily full.
+                match tx.try_send(PublishRequest { event }) {
+                    Ok(()) => {
+                        redis_sent = 1;
+                    }
+                    Err(mpsc::error::TrySendError::Full(req)) => {
+                        let tx = tx.clone();
+                        warn!(
+                            "Dedicated critical publish channel unavailable; normal Redis publish channel is full (capacity {}), spawning tracked retry for critical event",
+                            self.publish_channel_capacity
+                        );
+                        self.critical_retry_tasks.spawn(async move {
+                            if let Err(e) = tx.send(req).await {
+                                error!(
+                                    "Failed to send critical event through fallback Redis channel: {e}"
+                                );
+                            }
+                        });
+                        redis_sent = 1;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        error!(
+                            "Dedicated critical publish channel unavailable and fallback Redis publish channel is closed"
+                        );
+                    }
+                }
             }
         } else if let Some(tx) = &self.redis_publish_tx {
             match tx.try_send(PublishRequest { event }) {
@@ -1228,6 +1312,60 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(1),
             "Shutdown should time out stuck heartbeat handle quickly, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_waits_for_tracked_critical_retry_tasks() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "tracked-critical-retry-node".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1,
+            publish_channel_capacity: 1,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let manager = ClusterManager::new(config, None, None).await.unwrap();
+
+        let retry_gate = Arc::new(tokio::sync::Notify::new());
+        let retry_gate_clone = Arc::clone(&retry_gate);
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_clone = Arc::clone(&finished);
+
+        manager.critical_retry_tasks.spawn(async move {
+            retry_gate_clone.notified().await;
+            finished_clone.store(true, Ordering::SeqCst);
+        });
+
+        let manager = Arc::new(manager);
+        let shutdown_manager = Arc::clone(&manager);
+        let shutdown_handle = tokio::spawn(async move {
+            shutdown_manager.shutdown().await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !shutdown_handle.is_finished(),
+            "shutdown must wait for tracked critical retry tasks to finish"
+        );
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "retry task should still be blocked before gate release"
+        );
+
+        retry_gate.notify_waiters();
+        shutdown_handle.await.unwrap();
+
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "tracked critical retry task should finish before shutdown returns"
         );
     }
 

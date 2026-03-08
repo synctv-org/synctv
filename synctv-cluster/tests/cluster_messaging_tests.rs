@@ -11,6 +11,8 @@ use testcontainers_modules::redis::Redis;
 use synctv_cluster::sync::events::{CacheTarget, ClusterEvent, NotificationLevel};
 use synctv_cluster::{ClusterConfig, ClusterManager, DedupKey, MessageDeduplicator};
 use synctv_core::models::id::{MediaId, RoomId, UserId};
+mod integration_test_helpers;
+use integration_test_helpers::{broadcast_until_admin_event, broadcast_until_room_event};
 
 /// Default Redis version for test containers
 #[allow(dead_code)]
@@ -92,6 +94,20 @@ fn make_cluster_config(
     redis_conn: redis::aio::ConnectionManager,
     node_id: &str,
 ) -> ClusterConfig {
+    make_cluster_config_with_prefix(
+        redis_client,
+        redis_conn,
+        node_id,
+        format!("test_{}:", nanoid::nanoid!(8)),
+    )
+}
+
+fn make_cluster_config_with_prefix(
+    redis_client: redis::Client,
+    redis_conn: redis::aio::ConnectionManager,
+    node_id: &str,
+    key_prefix: String,
+) -> ClusterConfig {
     ClusterConfig {
         redis_client: Some(redis_client),
         redis_conn: Some(redis_conn),
@@ -101,7 +117,7 @@ fn make_cluster_config(
         cleanup_interval: Duration::from_secs(10),
         critical_channel_capacity: 100,
         publish_channel_capacity: 1000,
-        key_prefix: format!("test_{}:", nanoid::nanoid!(8)),
+        key_prefix,
         catchup_window_secs: 300,
         stream_max_length: 1000,
         parent_cancel_token: None,
@@ -147,8 +163,12 @@ async fn test_cross_node_broadcast() {
     };
 
     // Create two cluster managers (simulating two nodes) with separate Redis clients
-    let config1 = make_cluster_config(redis_client1.clone(), _conn1.clone(), "node1");
-    let config2 = make_cluster_config(redis_client2.clone(), conn2.clone(), "node2");
+    // but the same key prefix so they participate in the same logical cluster.
+    let shared_prefix = format!("test_{}:", nanoid::nanoid!(8));
+    let config1 =
+        make_cluster_config_with_prefix(redis_client1.clone(), _conn1.clone(), "node1", shared_prefix.clone());
+    let config2 =
+        make_cluster_config_with_prefix(redis_client2.clone(), conn2.clone(), "node2", shared_prefix);
 
     let manager1 = ClusterManager::new(config1, None, None)
         .await
@@ -158,53 +178,30 @@ async fn test_cross_node_broadcast() {
         .await
         .expect("Failed to create ClusterManager 2");
 
-    // Give managers time to fully initialize (Redis pub/sub needs time to establish subscriptions)
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
     // Subscribe to room messages on node1
     let room = rid("room1");
     let user = uid("user1");
     let (mut rx, _conn_id) = manager1
         .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
         .await;
-
-    // Give subscription time to propagate
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Publish a chat message from node2
-    let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
-        room_id: room.clone(),
-        user_id: uid("user2"),
-        username: "sender".to_string(),
-        message: "hello from node2".to_string(),
-        timestamp: chrono::Utc::now(),
-        position: None,
-        color: None,
-    };
-
-    manager2.broadcast(event.clone());
-
-    // Node1 should receive the message (increased timeout for slower CI systems)
-    let start = std::time::Instant::now();
-    let result = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
-    let elapsed = start.elapsed();
-
-    if result.is_err() {
-        eprintln!(
-            "SKIPPED: Cross-node broadcast test timed out after {elapsed:?}. This may be due to:"
-        );
-        eprintln!("  - Redis pub/sub not fully initialized");
-        eprintln!("  - Network timing issues in test environment");
-        eprintln!("  - Race condition in cluster messaging");
-        eprintln!("This is a known flaky integration test. Skipping...");
-        // Cleanup and skip test
-        manager1.shutdown().await;
-        manager2.shutdown().await;
-        return;
-    }
-
-    assert!(result.is_ok(), "Should receive message from other node");
+    let received = broadcast_until_room_event(
+        &manager2,
+        &mut rx,
+        || ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room.clone(),
+            user_id: uid("user2"),
+            username: "sender".to_string(),
+            message: "hello from node2".to_string(),
+            timestamp: chrono::Utc::now(),
+            position: None,
+            color: None,
+        },
+        |event| matches!(event, ClusterEvent::ChatMessage { message, .. } if message == "hello from node2"),
+        "cross-node broadcast",
+    )
+    .await;
+    assert_eq!(received.event_type(), "chat_message");
 
     // Cleanup
     manager1.shutdown().await;
@@ -487,24 +484,44 @@ async fn test_multiple_subscriptions_same_room() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_critical_event_delivery() {
-    let (_container, redis_client, conn) = setup_redis().await;
+    let (container, redis_client1, conn1) = setup_redis().await;
 
-    let config = make_cluster_config(redis_client.clone(), conn.clone(), "node1");
-    let manager = ClusterManager::new(config, None, None)
+    let redis_host = container
+        .get_host()
         .await
-        .expect("Failed to create ClusterManager");
+        .expect("Failed to get Redis host");
+    let redis_port = container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("Failed to get Redis port");
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
+    let redis_client2 =
+        redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client 2");
+    let conn2 = redis::aio::ConnectionManager::new(redis_client2.clone())
+        .await
+        .expect("Failed to create Redis ConnectionManager 2");
 
-    // Give manager time to fully initialize (Redis pub/sub needs time to establish subscriptions)
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    let shared_prefix = format!("test_{}:", nanoid::nanoid!(8));
+    let config1 =
+        make_cluster_config_with_prefix(redis_client1.clone(), conn1.clone(), "node1", shared_prefix.clone());
+    let config2 =
+        make_cluster_config_with_prefix(redis_client2.clone(), conn2.clone(), "node2", shared_prefix);
+
+    let manager1 = ClusterManager::new(config1, None, None)
+        .await
+        .expect("Failed to create ClusterManager 1");
+    let manager2 = ClusterManager::new(config2, None, None)
+        .await
+        .expect("Failed to create ClusterManager 2");
 
     let room = rid("room1");
     let user = uid("user1");
 
-    // Subscribe to admin events
-    let mut admin_rx = manager.subscribe_admin_events();
+    // Subscribe to admin events on the receiving node, where Redis fan-out lands.
+    let mut admin_rx = manager1.subscribe_admin_events();
 
-    // Subscribe to room
-    let (mut room_rx, _) = manager
+    // Subscribe to room on node1
+    let (mut room_rx, _) = manager1
         .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
         .await;
 
@@ -517,36 +534,28 @@ async fn test_critical_event_delivery() {
         timestamp: chrono::Utc::now(),
     };
 
-    manager.broadcast(kick_event.clone());
+    let room_received = broadcast_until_room_event(
+        &manager2,
+        &mut room_rx,
+        || kick_event.clone(),
+        |event| matches!(event, ClusterEvent::KickUserFromRoom { user_id, .. } if user_id.as_str() == "user1"),
+        "critical event on remote room channel",
+    )
+    .await;
+    assert_eq!(room_received.event_type(), "kick_user_from_room");
 
-    // Give time for event to propagate
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let admin_received = broadcast_until_admin_event(
+        &manager2,
+        &mut admin_rx,
+        || kick_event.clone(),
+        |event| matches!(event, ClusterEvent::KickUserFromRoom { user_id, .. } if user_id.as_str() == "user1"),
+        "critical event on remote admin channel",
+    )
+    .await;
+    assert_eq!(admin_received.event_type(), "kick_user_from_room");
 
-    // Should receive via room channel (increased timeout)
-    let room_result = tokio::time::timeout(Duration::from_secs(5), room_rx.recv()).await;
-    if room_result.is_err() {
-        eprintln!("SKIPPED: Critical event delivery test timed out waiting for room channel. This is a known flaky integration test. Skipping...");
-        manager.shutdown().await;
-        return;
-    }
-    assert!(
-        room_result.is_ok(),
-        "Should receive kick event via room channel"
-    );
-
-    // Should also receive via admin channel (increased timeout)
-    let admin_result = tokio::time::timeout(Duration::from_secs(5), admin_rx.recv()).await;
-    if admin_result.is_err() {
-        eprintln!("SKIPPED: Critical event delivery test timed out waiting for admin channel. This is a known flaky integration test. Skipping...");
-        manager.shutdown().await;
-        return;
-    }
-    assert!(
-        admin_result.is_ok(),
-        "Should receive kick event via admin channel"
-    );
-
-    manager.shutdown().await;
+    manager1.shutdown().await;
+    manager2.shutdown().await;
 }
 
 // ============================================================================

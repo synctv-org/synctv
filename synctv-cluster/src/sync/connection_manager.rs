@@ -905,6 +905,9 @@ impl ConnectionManager {
                     // Distributed limit exceeded -- roll back total counter and
                     // the Redis per-user counter that was just incremented.
                     self.total_connections.fetch_sub(1, Ordering::AcqRel);
+                    if self.redis_decr(conn, &total_key).await.is_err() {
+                        self.enqueue_retry(PendingRedisOp::Decr(total_key.clone()));
+                    }
                     let _ = self.redis_decr(conn, &redis_key).await;
                     return Err(format!(
                         "Too many connections for this user across all replicas (max {})",
@@ -1141,6 +1144,13 @@ impl ConnectionManager {
                 self.redis_key_prefix,
                 room_id.as_str()
             );
+            let old_room_index_key = old_room_id.as_ref().map(|old_room| {
+                format!(
+                    "{}conn_mgr:room:{}",
+                    self.redis_key_prefix,
+                    old_room.as_str()
+                )
+            });
 
             let persistent = ConnectionInfoPersistent::from(&info);
             let mut conn_clone = conn.clone();
@@ -1169,9 +1179,22 @@ impl ConnectionManager {
             {
                 warn!("Failed to add connection to room index: {e}");
             }
+            if let Some(old_room_index_key) = old_room_index_key.as_ref() {
+                if let Err(e) = conn_clone
+                    .srem::<_, _, ()>(old_room_index_key, &connection_id_clone)
+                    .await
+                {
+                    warn!("Failed to remove connection from previous room index: {e}");
+                }
+            }
             let _: Result<(), _> = conn_clone
                 .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
                 .await;
+            if let Some(old_room_index_key) = old_room_index_key.as_ref() {
+                let _: Result<(), _> = conn_clone
+                    .expire(old_room_index_key, CONNECTION_METADATA_TTL_SECONDS)
+                    .await;
+            }
         }
 
         synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS.set(self.room_connections.len() as i64);
@@ -3407,6 +3430,61 @@ mod tests {
         assert_eq!(user_count, 1);
 
         // Cleanup
+        manager.unregister("conn1").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_register_user_limit_rejection_rolls_back_distributed_total_counter() {
+        use redis::AsyncCommands;
+
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let conn = if let Ok(conn) = redis::aio::ConnectionManager::new(client.clone()).await {
+            conn
+        } else {
+            eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
+            return;
+        };
+
+        let limits = ConnectionLimits {
+            max_per_user: 1,
+            ..ConnectionLimits::default()
+        };
+        let manager = ConnectionManager::new(limits).with_redis(conn, "test4:");
+        let user_id = UserId::from_string("user-total-rollback".to_string());
+
+        manager
+            .register("conn1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+
+        let second = manager.register("conn2".to_string(), user_id.clone()).await;
+        assert!(
+            second.is_err(),
+            "second connection should be rejected by distributed per-user limit"
+        );
+
+        let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+        let total_count: i64 = redis_conn
+            .get("test4:connections:total")
+            .await
+            .unwrap_or(0);
+        let user_count: i64 = redis_conn
+            .get("test4:connections:user:user-total-rollback")
+            .await
+            .unwrap_or(0);
+
+        assert_eq!(
+            total_count, 1,
+            "distributed total counter must be rolled back when register is rejected"
+        );
+        assert_eq!(
+            user_count, 1,
+            "distributed per-user counter should only reflect the accepted connection"
+        );
+
         manager.unregister("conn1").await;
     }
 

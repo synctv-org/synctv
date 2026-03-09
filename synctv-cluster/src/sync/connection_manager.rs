@@ -177,6 +177,21 @@ enum PendingRedisOp {
     Decr(String),
 }
 
+#[derive(Clone)]
+enum RedisConnHandle {
+    Direct(redis::aio::ConnectionManager),
+    Shared(std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>),
+}
+
+impl RedisConnHandle {
+    async fn snapshot(&self) -> redis::aio::ConnectionManager {
+        match self {
+            Self::Direct(conn) => conn.clone(),
+            Self::Shared(conn) => conn.read().await.clone(),
+        }
+    }
+}
+
 /// Connection manager for tracking active gRPC streaming connections
 #[derive(Clone)]
 pub struct ConnectionManager {
@@ -225,10 +240,13 @@ pub struct ConnectionManager {
     /// Counter for tracking retried disconnect signals (monitoring)
     retried_disconnect_signals: Arc<AtomicU64>,
 
-    /// Optional Redis connection for distributed connection counting.
+    /// Optional Redis connection handle for distributed connection counting.
     /// When present, per-user and per-room limits are enforced across all replicas.
     /// When absent, limits are per-node only (fallback).
-    redis_conn: Option<redis::aio::ConnectionManager>,
+    ///
+    /// In Sentinel deployments, prefer the shared handle so new method calls
+    /// observe failover hot-swaps instead of holding a stale connection snapshot.
+    redis_conn: Option<RedisConnHandle>,
 
     /// Key prefix for Redis keys (e.g., "synctv:")
     redis_key_prefix: String,
@@ -342,6 +360,17 @@ impl ConnectionManager {
         self.disconnect_retry_started.load(Ordering::Acquire)
     }
 
+    fn redis_enabled(&self) -> bool {
+        self.redis_conn.is_some()
+    }
+
+    async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
+        match &self.redis_conn {
+            Some(conn) => Some(conn.snapshot().await),
+            None => None,
+        }
+    }
+
     /// Enable distributed connection counting via Redis.
     ///
     /// When Redis is configured, per-user and per-room connection limits are
@@ -355,7 +384,7 @@ impl ConnectionManager {
     /// All tasks are cancelled when `shutdown()` is called.
     #[must_use]
     pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
-        self.redis_conn = Some(conn.clone());
+        self.redis_conn = Some(RedisConnHandle::Direct(conn.clone()));
         self.redis_key_prefix = key_prefix.to_string();
 
         // Start the disconnect-signal retry task (idempotent if already running)
@@ -384,7 +413,47 @@ impl ConnectionManager {
             self.pending_retries_tx = tx;
             rx
         };
-        Self::spawn_pending_retries_task(conn, rx, cancel);
+        Self::spawn_pending_retries_task(
+            RedisConnHandle::Direct(conn),
+            rx,
+            cancel,
+        );
+
+        self
+    }
+
+    /// Enable distributed connection counting via a shared Redis handle.
+    ///
+    /// This variant follows Sentinel failover hot-swaps because each operation
+    /// resolves a fresh connection snapshot from the shared `RwLock`.
+    #[must_use]
+    pub fn with_shared_redis(
+        mut self,
+        conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: &str,
+    ) -> Self {
+        self.redis_conn = Some(RedisConnHandle::Shared(conn.clone()));
+        self.redis_key_prefix = key_prefix.to_string();
+
+        self.start();
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.ttl_refresh_cancel = Arc::new(cancel.clone());
+        let _handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
+
+        let rx = self
+            .pending_retries_rx
+            .try_lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        let rx = if let Some(rx) = rx {
+            rx
+        } else {
+            let (tx, rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
+            self.pending_retries_tx = tx;
+            rx
+        };
+        Self::spawn_pending_retries_task(RedisConnHandle::Shared(conn), rx, cancel);
 
         self
     }
@@ -395,7 +464,7 @@ impl ConnectionManager {
     /// operation. Operations that still fail are re-queued (up to 3 attempts each,
     /// tracked internally) before being dropped with a warning.
     fn spawn_pending_retries_task(
-        redis_conn: redis::aio::ConnectionManager,
+        redis_conn: RedisConnHandle,
         mut rx: mpsc::Receiver<PendingRedisOp>,
         cancel: tokio_util::sync::CancellationToken,
     ) {
@@ -427,7 +496,7 @@ impl ConnectionManager {
                         }
 
                         let mut still_pending = Vec::new();
-                        let mut conn = redis_conn.clone();
+                        let mut conn = redis_conn.snapshot().await;
 
                         for (op, attempts) in pending.drain(..) {
                             let result = match &op {
@@ -772,6 +841,7 @@ impl ConnectionManager {
     /// Must be called after `join_room` completes (success or failure) or
     /// if the WebSocket upgrade fails.
     pub fn release_room_reservation(&self, room_id: &RoomId) {
+        let mut should_remove_entry = false;
         if let Some(counter) = self.pending_room_reservations.get(room_id) {
             let result = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if current > 0 {
@@ -780,12 +850,23 @@ impl ConnectionManager {
                     None // refuse to decrement below zero
                 }
             });
-            if result.is_err() {
-                warn!(
-                    room_id = %room_id.as_str(),
-                    "release_room_reservation called but counter is already 0 (double-release?)"
-                );
+            match result {
+                Ok(previous) => {
+                    should_remove_entry = previous == 1;
+                }
+                Err(_) => {
+                    warn!(
+                        room_id = %room_id.as_str(),
+                        "release_room_reservation called but counter is already 0 (double-release?)"
+                    );
+                }
             }
+        }
+
+        if should_remove_entry {
+            self.pending_room_reservations.remove_if(room_id, |_, counter| {
+                counter.load(Ordering::Acquire) == 0
+            });
         }
     }
 
@@ -823,6 +904,7 @@ impl ConnectionManager {
 
     /// Release a user connection slot reservation.
     pub fn release_user_reservation(&self, user_id: &UserId) {
+        let mut should_remove_entry = false;
         if let Some(counter) = self.pending_user_reservations.get(user_id) {
             let result = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if current > 0 {
@@ -831,12 +913,23 @@ impl ConnectionManager {
                     None // refuse to decrement below zero
                 }
             });
-            if result.is_err() {
-                warn!(
-                    user_id = %user_id.as_str(),
-                    "release_user_reservation called but counter is already 0 (double-release?)"
-                );
+            match result {
+                Ok(previous) => {
+                    should_remove_entry = previous == 1;
+                }
+                Err(_) => {
+                    warn!(
+                        user_id = %user_id.as_str(),
+                        "release_user_reservation called but counter is already 0 (double-release?)"
+                    );
+                }
             }
+        }
+
+        if should_remove_entry {
+            self.pending_user_reservations.remove_if(user_id, |_, counter| {
+                counter.load(Ordering::Acquire) == 0
+            });
         }
     }
 
@@ -857,7 +950,7 @@ impl ConnectionManager {
         let prev = self.total_connections.fetch_add(1, Ordering::AcqRel);
         if prev >= self.limits.max_total {
             self.total_connections.fetch_sub(1, Ordering::AcqRel);
-            return Err(if self.redis_conn.is_some() {
+            return Err(if self.redis_enabled() {
                 format!(
                     "Server at capacity across all replicas ({} connections)",
                     self.limits.max_total
@@ -872,7 +965,7 @@ impl ConnectionManager {
         // Enforce the total connection limit across replicas when Redis is
         // configured. This must fail closed: in cluster mode, a best-effort
         // counter would let N replicas each admit up to max_total locally.
-        if let Some(ref conn) = self.redis_conn {
+        if self.redis_enabled() {
             match self
                 .redis_incr_and_check(&total_key, self.limits.max_total)
                 .await
@@ -880,7 +973,7 @@ impl ConnectionManager {
                 Ok(true) => {}
                 Ok(false) => {
                     self.total_connections.fetch_sub(1, Ordering::AcqRel);
-                    if self.redis_decr(conn, &total_key).await.is_err() {
+                    if self.redis_decr(&total_key).await.is_err() {
                         self.enqueue_retry(PendingRedisOp::Decr(total_key.clone()));
                     }
                     return Err(format!(
@@ -910,7 +1003,7 @@ impl ConnectionManager {
         // App wiring only enables Redis-backed ConnectionManager in cluster mode,
         // so a Redis error here means distributed state is unavailable and we
         // must fail closed instead of weakening enforcement.
-        if let Some(ref conn) = self.redis_conn {
+        if self.redis_enabled() {
             let redis_key = format!(
                 "{}connections:user:{}",
                 self.redis_key_prefix,
@@ -927,10 +1020,10 @@ impl ConnectionManager {
                     // Distributed limit exceeded -- roll back total counter and
                     // the Redis per-user counter that was just incremented.
                     self.total_connections.fetch_sub(1, Ordering::AcqRel);
-                    if self.redis_decr(conn, &total_key).await.is_err() {
+                    if self.redis_decr(&total_key).await.is_err() {
                         self.enqueue_retry(PendingRedisOp::Decr(total_key.clone()));
                     }
-                    let _ = self.redis_decr(conn, &redis_key).await;
+                    let _ = self.redis_decr(&redis_key).await;
                     return Err(format!(
                         "Too many connections for this user across all replicas (max {})",
                         self.limits.max_per_user
@@ -938,7 +1031,7 @@ impl ConnectionManager {
                 }
                 Err(e) => {
                     self.total_connections.fetch_sub(1, Ordering::AcqRel);
-                    if self.redis_decr(conn, &total_key).await.is_err() {
+                    if self.redis_decr(&total_key).await.is_err() {
                         self.enqueue_retry(PendingRedisOp::Decr(total_key.clone()));
                     }
                     warn!("Distributed user connection check failed; rejecting connection: {e}");
@@ -956,7 +1049,7 @@ impl ConnectionManager {
         // registrations could both observe the old count before either inserts.
         let is_first_connection_for_user = {
             let mut user_entry = self.user_connections.entry(user_id.clone()).or_default();
-            if self.redis_conn.is_none() && user_entry.len() >= self.limits.max_per_user {
+            if !self.redis_enabled() && user_entry.len() >= self.limits.max_per_user {
                 self.total_connections.fetch_sub(1, Ordering::AcqRel);
                 return Err(format!(
                     "Too many connections for this user (max {})",
@@ -975,7 +1068,7 @@ impl ConnectionManager {
             .insert(connection_id.clone(), conn_info.clone());
 
         // Persist connection metadata to Redis (best-effort)
-        if let Some(ref conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
             let user_index_key = format!(
                 "{}conn_mgr:user:{}",
@@ -984,7 +1077,6 @@ impl ConnectionManager {
             );
 
             let persistent = ConnectionInfoPersistent::from(&conn_info);
-            let mut conn_clone = conn.clone();
             let connection_id_clone = connection_id.clone();
             match serde_json::to_string(&persistent) {
                 Ok(json) => {
@@ -993,7 +1085,7 @@ impl ConnectionManager {
                         .arg(&json)
                         .arg("EX")
                         .arg(CONNECTION_METADATA_TTL_SECONDS)
-                        .query_async(&mut conn_clone)
+                        .query_async(&mut conn)
                         .await;
                     if let Err(e) = result {
                         warn!("Failed to persist connection metadata to Redis: {e}");
@@ -1004,13 +1096,13 @@ impl ConnectionManager {
                 }
             }
 
-            if let Err(e) = conn_clone
+            if let Err(e) = conn
                 .sadd::<_, _, ()>(&user_index_key, &connection_id_clone)
                 .await
             {
                 warn!("Failed to add connection to user index: {e}");
             }
-            let _: Result<(), _> = conn_clone
+            let _: Result<(), _> = conn
                 .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
                 .await;
         }
@@ -1066,7 +1158,7 @@ impl ConnectionManager {
         // In local mode we enforce the room limit inside the commit step below
         // under the room shard lock, which closes the TOCTOU race for
         // concurrent same-room joins.
-        let redis_room_incremented = if let Some(ref redis_conn) = self.redis_conn {
+        let redis_room_incremented = if self.redis_enabled() {
             let redis_key = format!(
                 "{}connections:room:{}",
                 self.redis_key_prefix,
@@ -1078,7 +1170,7 @@ impl ConnectionManager {
             {
                 Ok(true) => true,
                 Ok(false) => {
-                    let _ = self.redis_decr(redis_conn, &redis_key).await;
+                    let _ = self.redis_decr(&redis_key).await;
                     return Err(format!(
                         "Room at capacity across all replicas ({} connections)",
                         self.limits.max_per_room
@@ -1104,14 +1196,12 @@ impl ConnectionManager {
             Some(conn.clone())
         } else {
             if redis_room_incremented {
-                if let Some(ref conn) = self.redis_conn {
-                    let redis_key = format!(
-                        "{}connections:room:{}",
-                        self.redis_key_prefix,
-                        room_id.as_str()
-                    );
-                    let _ = self.redis_decr(conn, &redis_key).await;
-                }
+                let redis_key = format!(
+                    "{}connections:room:{}",
+                    self.redis_key_prefix,
+                    room_id.as_str()
+                );
+                let _ = self.redis_decr(&redis_key).await;
             }
             return Err("Connection not found".to_string());
         };
@@ -1121,7 +1211,7 @@ impl ConnectionManager {
         // the insert so concurrent local joins cannot oversubscribe the room.
         {
             let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
-            if self.redis_conn.is_none() && room_entry.len() >= self.limits.max_per_room {
+            if !self.redis_enabled() && room_entry.len() >= self.limits.max_per_room {
                 if let Some(mut conn) = self.connections.get_mut(connection_id) {
                     conn.room_id = old_room_id.clone();
                 }
@@ -1146,75 +1236,76 @@ impl ConnectionManager {
         // Step 4: Decrement the old room's distributed counter only after the
         // move succeeds. If it fails, enqueue a retry so Redis eventually matches
         // the in-memory truth.
-        if let (Some(old_room), Some(redis_conn)) = (&old_room_id, &self.redis_conn) {
+        if let Some(old_room) = &old_room_id {
             let old_key = format!(
                 "{}connections:room:{}",
                 self.redis_key_prefix,
                 old_room.as_str()
             );
-            if self.redis_decr(redis_conn, &old_key).await.is_err() {
+            if self.redis_decr(&old_key).await.is_err() {
                 self.enqueue_retry(PendingRedisOp::Decr(old_key));
             }
         }
 
         // Update Redis metadata with new room_id (best-effort)
-        if let (Some(info), Some(ref conn)) = (conn_info_updated, &self.redis_conn) {
-            let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
-            let room_index_key = format!(
-                "{}conn_mgr:room:{}",
-                self.redis_key_prefix,
-                room_id.as_str()
-            );
-            let old_room_index_key = old_room_id.as_ref().map(|old_room| {
-                format!(
+        if let Some(info) = conn_info_updated {
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
+                let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
+                let room_index_key = format!(
                     "{}conn_mgr:room:{}",
                     self.redis_key_prefix,
-                    old_room.as_str()
-                )
-            });
+                    room_id.as_str()
+                );
+                let old_room_index_key = old_room_id.as_ref().map(|old_room| {
+                    format!(
+                        "{}conn_mgr:room:{}",
+                        self.redis_key_prefix,
+                        old_room.as_str()
+                    )
+                });
 
-            let persistent = ConnectionInfoPersistent::from(&info);
-            let mut conn_clone = conn.clone();
-            let connection_id_clone = connection_id.to_string();
-            match serde_json::to_string(&persistent) {
-                Ok(json) => {
-                    let result: Result<(), _> = redis::cmd("SET")
-                        .arg(&conn_key)
-                        .arg(&json)
-                        .arg("EX")
-                        .arg(CONNECTION_METADATA_TTL_SECONDS)
-                        .query_async(&mut conn_clone)
-                        .await;
-                    if let Err(e) = result {
-                        warn!("Failed to update connection metadata in Redis: {e}");
+                let persistent = ConnectionInfoPersistent::from(&info);
+                let connection_id_clone = connection_id.to_string();
+                match serde_json::to_string(&persistent) {
+                    Ok(json) => {
+                        let result: Result<(), _> = redis::cmd("SET")
+                            .arg(&conn_key)
+                            .arg(&json)
+                            .arg("EX")
+                            .arg(CONNECTION_METADATA_TTL_SECONDS)
+                            .query_async(&mut conn)
+                            .await;
+                        if let Err(e) = result {
+                            warn!("Failed to update connection metadata in Redis: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to serialize updated connection metadata for Redis: {e}");
                     }
                 }
-                Err(e) => {
-                    warn!("Failed to serialize updated connection metadata for Redis: {e}");
-                }
-            }
 
-            if let Err(e) = conn_clone
-                .sadd::<_, _, ()>(&room_index_key, &connection_id_clone)
-                .await
-            {
-                warn!("Failed to add connection to room index: {e}");
-            }
-            if let Some(old_room_index_key) = old_room_index_key.as_ref() {
-                if let Err(e) = conn_clone
-                    .srem::<_, _, ()>(old_room_index_key, &connection_id_clone)
+                if let Err(e) = conn
+                    .sadd::<_, _, ()>(&room_index_key, &connection_id_clone)
                     .await
                 {
-                    warn!("Failed to remove connection from previous room index: {e}");
+                    warn!("Failed to add connection to room index: {e}");
                 }
-            }
-            let _: Result<(), _> = conn_clone
-                .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
-                .await;
-            if let Some(old_room_index_key) = old_room_index_key.as_ref() {
-                let _: Result<(), _> = conn_clone
-                    .expire(old_room_index_key, CONNECTION_METADATA_TTL_SECONDS)
+                if let Some(old_room_index_key) = old_room_index_key.as_ref() {
+                    if let Err(e) = conn
+                        .srem::<_, _, ()>(old_room_index_key, &connection_id_clone)
+                        .await
+                    {
+                        warn!("Failed to remove connection from previous room index: {e}");
+                    }
+                }
+                let _: Result<(), _> = conn
+                    .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
                     .await;
+                if let Some(old_room_index_key) = old_room_index_key.as_ref() {
+                    let _: Result<(), _> = conn
+                        .expire(old_room_index_key, CONNECTION_METADATA_TTL_SECONDS)
+                        .await;
+                }
             }
         }
 
@@ -1272,8 +1363,7 @@ impl ConnectionManager {
             // Use a timeout to ensure cleanup completes promptly during normal
             // unregister. If the timeout expires (e.g., Redis is slow/down), the
             // TTL on Redis keys acts as a safety net for eventual cleanup.
-            if let Some(ref conn) = self.redis_conn {
-                let conn_clone = conn.clone();
+            if let Some(conn_clone) = self.redis_conn_snapshot().await {
                 let key_prefix = self.redis_key_prefix.clone();
                 let user_id_str = conn_info.user_id.as_str().to_string();
                 let room_id_str = conn_info.room_id.as_ref().map(|r| r.as_str().to_string());
@@ -1285,20 +1375,20 @@ impl ConnectionManager {
 
                     // Decrement total distributed counter
                     let total_key = format!("{key_prefix}connections:total");
-                    if let Err(_e) = this.redis_decr(&conn_clone, &total_key).await {
+                    if let Err(_e) = this.redis_decr(&total_key).await {
                         let _ = retry_tx.try_send(PendingRedisOp::Decr(total_key));
                     }
 
                     // Decrement user counter
                     let user_key = format!("{key_prefix}connections:user:{user_id_str}");
-                    if let Err(_e) = this.redis_decr(&conn_clone, &user_key).await {
+                    if let Err(_e) = this.redis_decr(&user_key).await {
                         let _ = retry_tx.try_send(PendingRedisOp::Decr(user_key));
                     }
 
                     // Decrement room counter
                     if let Some(ref room_id) = room_id_str {
                         let room_key = format!("{key_prefix}connections:room:{room_id}");
-                        if let Err(_e) = this.redis_decr(&conn_clone, &room_key).await {
+                        if let Err(_e) = this.redis_decr(&room_key).await {
                             let _ = retry_tx.try_send(PendingRedisOp::Decr(room_key));
                         }
                     }
@@ -1441,10 +1531,9 @@ impl ConnectionManager {
     /// by `register`/`unregister`. Falls back to the local-only count if Redis
     /// is not configured or unavailable.
     pub async fn connection_count_distributed(&self) -> Result<usize, String> {
-        if let Some(ref conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = format!("{}connections:total", self.redis_key_prefix);
-            let mut conn_clone = conn.clone();
-            match conn_clone.get::<_, Option<i64>>(&redis_key).await {
+            match conn.get::<_, Option<i64>>(&redis_key).await {
                 Ok(Some(count)) if count > 0 => return Ok(count as usize),
                 Ok(_) => return Ok(0),
                 Err(e) => {
@@ -1484,14 +1573,13 @@ impl ConnectionManager {
         &self,
         room_id: &RoomId,
     ) -> Result<usize, String> {
-        if let Some(ref conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = format!(
                 "{}connections:room:{}",
                 self.redis_key_prefix,
                 room_id.as_str()
             );
-            let mut conn_clone = conn.clone();
-            match conn_clone.get::<_, Option<i64>>(&redis_key).await {
+            match conn.get::<_, Option<i64>>(&redis_key).await {
                 Ok(Some(count)) if count > 0 => return Ok(count as usize),
                 Ok(_) => return Ok(0),
                 Err(e) => {
@@ -1519,16 +1607,15 @@ impl ConnectionManager {
             return Ok(Vec::new());
         }
 
-        if let Some(ref conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let keys: Vec<String> = room_ids
                 .iter()
                 .map(|rid| format!("{}connections:room:{}", self.redis_key_prefix, rid.as_str()))
                 .collect();
 
-            let mut conn_clone = conn.clone();
             match redis::cmd("MGET")
                 .arg(&keys)
-                .query_async::<Vec<Option<i64>>>(&mut conn_clone)
+                .query_async::<Vec<Option<i64>>>(&mut conn)
                 .await
             {
                 Ok(values) => {
@@ -1587,7 +1674,7 @@ impl ConnectionManager {
             return Ok(Vec::new());
         }
 
-        if self.redis_conn.is_some() {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             use std::collections::{HashMap, HashSet};
 
             let mut room_to_users: HashMap<&str, HashSet<String>> = room_ids
@@ -1600,16 +1687,9 @@ impl ConnectionManager {
                 for connection_id in connection_ids {
                     let conn_key =
                         format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix);
-                    let mut conn_clone = self
-                        .redis_conn
-                        .as_ref()
-                        .expect("checked is_some above")
-                        .clone();
-
-                    let metadata: Option<String> =
-                        conn_clone.get(&conn_key).await.map_err(|e| {
-                            format!("Failed to fetch distributed connection metadata: {e}")
-                        })?;
+                    let metadata: Option<String> = conn.get(&conn_key).await.map_err(|e| {
+                        format!("Failed to fetch distributed connection metadata: {e}")
+                    })?;
 
                     let Some(metadata) = metadata else {
                         continue;
@@ -1741,10 +1821,9 @@ impl ConnectionManager {
     /// keys at a time, reducing memory pressure and network round-trips compared to
     /// refreshing all keys at once.
     async fn refresh_distributed_counter_ttls(&self) {
-        let Some(ref conn) = self.redis_conn else {
+        let Some(mut conn) = self.redis_conn_snapshot().await else {
             return;
         };
-        let mut conn = conn.clone();
 
         // Collect unique user and room keys from active connections
         let mut counter_keys = std::collections::HashSet::new();
@@ -2217,7 +2296,7 @@ impl ConnectionManager {
     /// This method performs a full reconciliation between local state and Redis:
     /// 1. Syncs local connection counts to Redis counters
     /// 2. Writes missing connection metadata to Redis
-    /// 3. Cleans up stale Redis connection metadata that doesn't exist locally
+    /// 3. Cleans up stale Redis user/room index members that reference missing metadata
     ///
     /// # When to Call
     ///
@@ -2236,11 +2315,10 @@ impl ConnectionManager {
     /// Errors are logged but do not propagate. The method is designed to be
     /// eventually consistent - failures are retried on the next call.
     pub async fn reconcile_with_redis(&self) {
-        let Some(ref conn) = self.redis_conn else {
+        let Some(mut conn) = self.redis_conn_snapshot().await else {
             // No Redis configured - nothing to reconcile
             return;
         };
-        let mut conn = conn.clone();
 
         // Step 1: Sync connection counters (existing logic)
         self.sync_local_counts_to_redis(&mut conn).await;
@@ -2248,8 +2326,13 @@ impl ConnectionManager {
         // Step 2: Sync connection metadata to Redis
         self.sync_connection_metadata_to_redis(&mut conn).await;
 
-        // Step 3: Clean up stale Redis metadata (keys that don't exist locally)
-        self.cleanup_stale_redis_metadata(&mut conn).await;
+        // Step 3: Clean up stale Redis user/room index members that point to
+        // missing connection metadata.
+        //
+        // Important: this must NOT delete `conn_mgr:conn:*` keys globally just
+        // because this replica does not know about them. Those keys may belong
+        // to healthy connections on other replicas.
+        self.cleanup_stale_redis_indexes(&mut conn).await;
     }
 
     /// Sync local connection metadata to Redis.
@@ -2310,84 +2393,138 @@ impl ConnectionManager {
         }
     }
 
-    /// Clean up stale Redis connection metadata that doesn't exist locally.
+    /// Clean up stale Redis user/room index members whose metadata key is gone.
     ///
-    /// Scans Redis for connection metadata keys and deletes any that don't
-    /// correspond to active local connections. This handles the case where
-    /// a connection was unregistered locally but the Redis deletion failed.
-    async fn cleanup_stale_redis_metadata(&self, conn: &mut redis::aio::ConnectionManager) {
+    /// This only removes index members that are provably invalid:
+    /// - `conn_mgr:user:*` set members without a matching `conn_mgr:conn:*`
+    /// - `conn_mgr:room:*` set members without a matching `conn_mgr:conn:*`
+    ///
+    /// It deliberately does not delete arbitrary `conn_mgr:conn:*` keys by
+    /// scanning Redis and comparing against local memory. In a multi-replica
+    /// cluster, metadata for connections on other replicas is valid and must
+    /// not be removed by this node.
+    async fn cleanup_stale_redis_indexes(&self, conn: &mut redis::aio::ConnectionManager) {
         use redis::AsyncCommands;
 
-        let pattern = format!("{}conn_mgr:conn:*", self.redis_key_prefix);
+        let patterns = [
+            format!("{}conn_mgr:user:*", self.redis_key_prefix),
+            format!("{}conn_mgr:room:*", self.redis_key_prefix),
+        ];
         let mut cleaned = 0u64;
         let mut errors = 0u64;
 
-        // Use SCAN to iterate over matching keys
-        let mut cursor: u64 = 0;
-        loop {
-            let result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
-                .arg(cursor)
-                .arg("MATCH")
-                .arg(&pattern)
-                .arg("COUNT")
-                .arg(100) // Batch size
-                .query_async(conn)
-                .await;
+        for pattern in patterns {
+            let mut cursor: u64 = 0;
+            loop {
+                let result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg(&pattern)
+                    .arg("COUNT")
+                    .arg(100)
+                    .query_async(conn)
+                    .await;
 
-            match result {
-                Ok((new_cursor, keys)) => {
-                    cursor = new_cursor;
+                match result {
+                    Ok((new_cursor, keys)) => {
+                        cursor = new_cursor;
 
-                    for key in keys {
-                        // Extract connection_id from key
-                        // Key format: {prefix}conn_mgr:conn:{connection_id}
-                        if let Some(conn_id) =
-                            key.strip_prefix(&format!("{}conn_mgr:conn:", self.redis_key_prefix))
-                        {
-                            // Check if this connection exists locally
-                            if !self.connections.contains_key(conn_id) {
-                                // Connection doesn't exist locally - delete from Redis
-                                let del_result: Result<(), _> = conn.del(&key).await;
-                                match del_result {
-                                    Ok(()) => {
-                                        cleaned += 1;
-                                        debug!(
-                                            connection_id = %conn_id,
-                                            key = %key,
-                                            "Cleaned up stale connection metadata from Redis"
-                                        );
+                        for key in keys {
+                            let members: Result<Vec<String>, _> = conn.smembers(&key).await;
+                            let members = match members {
+                                Ok(members) => members,
+                                Err(e) => {
+                                    errors += 1;
+                                    warn!(
+                                        key = %key,
+                                        error = %e,
+                                        "Failed to fetch Redis index members during reconciliation"
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            for conn_id in members {
+                                let conn_key =
+                                    format!("{}conn_mgr:conn:{conn_id}", self.redis_key_prefix);
+                                let exists: Result<bool, _> = conn.exists(&conn_key).await;
+                                match exists {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        let remove_result: Result<(), _> =
+                                            conn.srem(&key, &conn_id).await;
+                                        match remove_result {
+                                            Ok(()) => {
+                                                cleaned += 1;
+                                                debug!(
+                                                    index_key = %key,
+                                                    connection_id = %conn_id,
+                                                    "Removed stale distributed connection index member"
+                                                );
+                                            }
+                                            Err(e) => {
+                                                errors += 1;
+                                                warn!(
+                                                    index_key = %key,
+                                                    connection_id = %conn_id,
+                                                    error = %e,
+                                                    "Failed to remove stale distributed connection index member"
+                                                );
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         errors += 1;
                                         warn!(
-                                            key = %key,
+                                            index_key = %key,
+                                            connection_id = %conn_id,
                                             error = %e,
-                                            "Failed to delete stale connection metadata"
+                                            "Failed to verify distributed connection metadata during reconciliation"
                                         );
                                     }
                                 }
                             }
+
+                            let key_is_empty: Result<bool, _> = conn.scard::<_, usize>(&key).await
+                                .map(|count| count == 0);
+                            match key_is_empty {
+                                Ok(true) => {
+                                    let _: Result<(), _> = conn.del(&key).await;
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    errors += 1;
+                                    warn!(
+                                        key = %key,
+                                        error = %e,
+                                        "Failed to check Redis index cardinality during reconciliation"
+                                    );
+                                }
+                            }
+                        }
+
+                        if cursor == 0 {
+                            break;
                         }
                     }
-
-                    // SCAN returns cursor 0 when done
-                    if cursor == 0 {
+                    Err(e) => {
+                        errors += 1;
+                        warn!(
+                            pattern = %pattern,
+                            error = %e,
+                            "Failed to SCAN Redis for stale distributed connection indexes"
+                        );
                         break;
                     }
-                }
-                Err(e) => {
-                    errors += 1;
-                    warn!(error = %e, "Failed to SCAN Redis for stale metadata");
-                    break;
                 }
             }
         }
 
         if cleaned > 0 || errors > 0 {
             info!(
-                stale_cleaned = cleaned,
+                stale_index_members_cleaned = cleaned,
                 cleanup_errors = errors,
-                "Cleaned up stale connection metadata from Redis"
+                "Cleaned up stale distributed connection indexes from Redis"
             );
         }
     }
@@ -2536,15 +2673,14 @@ impl ConnectionManager {
         &self,
         user_id: &UserId,
     ) -> Result<Vec<String>, String> {
-        if let Some(ref conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let user_index_key = format!(
                 "{}conn_mgr:user:{}",
                 self.redis_key_prefix,
                 user_id.as_str()
             );
-            let mut conn_clone = conn.clone();
 
-            match conn_clone.smembers::<_, Vec<String>>(&user_index_key).await {
+            match conn.smembers::<_, Vec<String>>(&user_index_key).await {
                 Ok(conn_ids) => return Ok(conn_ids),
                 Err(e) => {
                     warn!("Failed to fetch user connections from Redis: {e}");
@@ -2585,15 +2721,14 @@ impl ConnectionManager {
         &self,
         room_id: &RoomId,
     ) -> Result<Vec<String>, String> {
-        if let Some(ref conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let room_index_key = format!(
                 "{}conn_mgr:room:{}",
                 self.redis_key_prefix,
                 room_id.as_str()
             );
-            let mut conn_clone = conn.clone();
 
-            match conn_clone.smembers::<_, Vec<String>>(&room_index_key).await {
+            match conn.smembers::<_, Vec<String>>(&room_index_key).await {
                 Ok(conn_ids) => return Ok(conn_ids),
                 Err(e) => {
                     warn!("Failed to fetch room connections from Redis: {e}");
@@ -2621,7 +2756,7 @@ impl ConnectionManager {
         user_id: &UserId,
         room_id: &RoomId,
     ) -> Result<usize, String> {
-        if let Some(ref conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let conn_ids = self.get_user_connections_distributed(user_id).await?;
             if conn_ids.is_empty() {
                 return Ok(0);
@@ -2632,8 +2767,7 @@ impl ConnectionManager {
                 .map(|conn_id| format!("{}conn_mgr:conn:{conn_id}", self.redis_key_prefix))
                 .collect();
 
-            let mut conn_clone = conn.clone();
-            let metadata: Vec<Option<String>> = conn_clone
+            let metadata: Vec<Option<String>> = conn
                 .mget(metadata_keys)
                 .await
                 .map_err(|e| format!("Failed to fetch distributed connection metadata: {e}"))?;
@@ -2671,7 +2805,7 @@ impl ConnectionManager {
         room_id: &RoomId,
         excluding_connection_id: &str,
     ) -> Result<bool, String> {
-        if let Some(ref conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let conn_ids = self.get_user_connections_distributed(user_id).await?;
             let other_conn_ids: Vec<String> = conn_ids
                 .into_iter()
@@ -2687,8 +2821,7 @@ impl ConnectionManager {
                 .map(|conn_id| format!("{}conn_mgr:conn:{conn_id}", self.redis_key_prefix))
                 .collect();
 
-            let mut conn_clone = conn.clone();
-            let metadata: Vec<Option<String>> = conn_clone
+            let metadata: Vec<Option<String>> = conn
                 .mget(metadata_keys)
                 .await
                 .map_err(|e| format!("Failed to fetch distributed connection metadata: {e}"))?;
@@ -2745,10 +2878,9 @@ impl ConnectionManager {
     /// `Ok(false)` if the limit was exceeded (counter was still incremented and must be rolled back),
     /// or `Err` on Redis failure.
     async fn redis_incr_and_check(&self, key: &str, max: usize) -> Result<bool, String> {
-        let Some(ref conn) = self.redis_conn else {
+        let Some(mut conn) = self.redis_conn_snapshot().await else {
             return Err("Redis not configured".to_string());
         };
-        let mut conn = conn.clone();
 
         // Lua script: atomically INCR the key and set TTL in a single round-trip.
         // Returns the new counter value after increment.
@@ -2771,12 +2903,10 @@ impl ConnectionManager {
     ///
     /// Uses a Lua script to atomically DECR and DEL if the result is negative,
     /// avoiding a race where a concurrent INCR between DECR and SET(0) would be lost.
-    async fn redis_decr(
-        &self,
-        conn: &redis::aio::ConnectionManager,
-        key: &str,
-    ) -> Result<(), String> {
-        let mut conn = conn.clone();
+    async fn redis_decr(&self, key: &str) -> Result<(), String> {
+        let Some(mut conn) = self.redis_conn_snapshot().await else {
+            return Err("Redis not configured".to_string());
+        };
         let script = redis::Script::new(
             r"local v = redis.call('DECR', KEYS[1])
               if v < 0 then
@@ -3451,26 +3581,41 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker Redis"]
     async fn test_redis_recovery_reconciles_stale_connections() {
-        // This test verifies that stale Redis connection metadata is cleaned up
-        // during reconciliation.
+        // This test verifies that stale Redis index members are cleaned up
+        // during reconciliation without deleting unrelated metadata keys.
 
         use redis::AsyncCommands;
 
         let (_container, client, conn, prefix) = docker_redis_connection("test2:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let _user_id = UserId::from_string("user1".to_string());
-
-        // Manually inject stale connection metadata into Redis
-        // (simulating a connection that was never cleaned up)
+        // Manually inject a stale connection id into the distributed user/room indexes
+        // without creating a matching conn_mgr:conn:* metadata key.
         let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
-        let stale_key = format!("{prefix}conn_mgr:conn:stale_conn");
-        let stale_meta = ConnectionInfoPersistent {
-            connection_id: "stale_conn".to_string(),
-            user_id: "user_stale".to_string(),
-            room_id: None,
+        let stale_user_index = format!("{prefix}conn_mgr:user:user_stale");
+        let stale_room_index = format!("{prefix}conn_mgr:room:room_stale");
+        let stale_conn_key = format!("{prefix}conn_mgr:conn:stale_conn");
+        let unrelated_conn_key = format!("{prefix}conn_mgr:conn:other_node_conn");
+
+        let _: () = redis_conn
+            .sadd(&stale_user_index, "stale_conn")
+            .await
+            .unwrap();
+        let _: () = redis_conn
+            .sadd(&stale_room_index, "stale_conn")
+            .await
+            .unwrap();
+        let _: () = redis_conn.expire(&stale_user_index, CONNECTION_METADATA_TTL_SECONDS).await.unwrap();
+        let _: () = redis_conn.expire(&stale_room_index, CONNECTION_METADATA_TTL_SECONDS).await.unwrap();
+
+        // Also create a metadata key that belongs to another replica. Reconciliation
+        // on this node must not delete it just because it is absent from local memory.
+        let foreign_meta = ConnectionInfoPersistent {
+            connection_id: "other_node_conn".to_string(),
+            user_id: "user_foreign".to_string(),
+            room_id: Some("room_foreign".to_string()),
             connected_at_unix: 0,
             last_activity_unix: 0,
             message_count: 0,
@@ -3478,20 +3623,40 @@ mod tests {
             rtc_joined_at_unix: None,
         };
         let _: () = redis_conn
-            .set(&stale_key, serde_json::to_string(&stale_meta).unwrap())
+            .set(&unrelated_conn_key, serde_json::to_string(&foreign_meta).unwrap())
             .await
             .unwrap();
 
-        // Verify stale data exists
-        let exists: bool = redis_conn.exists(&stale_key).await.unwrap();
-        assert!(exists);
+        let stale_user_members: Vec<String> = redis_conn.smembers(&stale_user_index).await.unwrap();
+        let stale_room_members: Vec<String> = redis_conn.smembers(&stale_room_index).await.unwrap();
+        assert_eq!(stale_user_members, vec!["stale_conn".to_string()]);
+        assert_eq!(stale_room_members, vec!["stale_conn".to_string()]);
 
         // Trigger reconciliation
         manager.reconcile_with_redis().await;
 
-        // Stale connection should be cleaned up since it doesn't exist locally
-        let exists: bool = redis_conn.exists(&stale_key).await.unwrap();
-        assert!(!exists);
+        // Stale index members should be cleaned up since the metadata key is missing.
+        let stale_user_exists: bool = redis_conn.exists(&stale_user_index).await.unwrap();
+        let stale_room_exists: bool = redis_conn.exists(&stale_room_index).await.unwrap();
+        let stale_conn_exists: bool = redis_conn.exists(&stale_conn_key).await.unwrap();
+        let unrelated_conn_exists: bool = redis_conn.exists(&unrelated_conn_key).await.unwrap();
+
+        assert!(
+            !stale_user_exists,
+            "Empty stale user index should be removed during reconciliation"
+        );
+        assert!(
+            !stale_room_exists,
+            "Empty stale room index should be removed during reconciliation"
+        );
+        assert!(
+            !stale_conn_exists,
+            "Missing metadata key must remain absent"
+        );
+        assert!(
+            unrelated_conn_exists,
+            "Reconciliation must not delete connection metadata that may belong to another replica"
+        );
     }
 
     #[tokio::test]
@@ -3593,6 +3758,66 @@ mod tests {
         );
 
         manager.unregister("conn1").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_shared_redis_handle_observes_hot_swapped_connection() {
+        use redis::AsyncCommands;
+
+        let (_container, client, conn, prefix) = docker_redis_connection("shared-test:").await;
+        let shared_conn = Arc::new(tokio::sync::RwLock::new(conn));
+        let manager = ConnectionManager::new(ConnectionLimits::default())
+            .with_shared_redis(shared_conn.clone(), &prefix);
+
+        manager
+            .register(
+                "conn-shared".to_string(),
+                UserId::from_string("user-shared".to_string()),
+            )
+            .await
+            .unwrap();
+        manager
+            .join_room(
+                "conn-shared",
+                RoomId::from_string("room-shared".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let initial_metadata_key = format!("{prefix}conn_mgr:conn:conn-shared");
+        let initial_room_key = format!("{prefix}connections:room:room-shared");
+        let mut verify_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+        let initial_metadata: Option<String> = verify_conn.get(&initial_metadata_key).await.unwrap();
+        let initial_room_count: i64 = verify_conn.get(&initial_room_key).await.unwrap_or(0);
+        assert!(initial_metadata.is_some(), "initial shared handle should write metadata");
+        assert_eq!(initial_room_count, 1, "initial shared handle should write room counter");
+
+        let replacement_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+        *shared_conn.write().await = replacement_conn;
+
+        let moved_room = RoomId::from_string("room-shared-2".to_string());
+        manager.join_room("conn-shared", moved_room.clone()).await.unwrap();
+
+        let moved_room_key = format!("{prefix}connections:room:{}", moved_room.as_str());
+        let old_room_count: i64 = verify_conn.get(&initial_room_key).await.unwrap_or(0);
+        let new_room_count: i64 = verify_conn.get(&moved_room_key).await.unwrap_or(0);
+        let updated_metadata: String = verify_conn.get(&initial_metadata_key).await.unwrap();
+        let updated_info: ConnectionInfoPersistent = serde_json::from_str(&updated_metadata).unwrap();
+
+        assert_eq!(old_room_count, 0, "old room counter should be decremented after move");
+        assert_eq!(new_room_count, 1, "new room counter should be incremented after move");
+        assert_eq!(
+            updated_info.room_id.as_deref(),
+            Some(moved_room.as_str()),
+            "post-swap operations must use the replacement shared Redis connection"
+        );
+
+        manager.unregister("conn-shared").await;
     }
 
     #[tokio::test]
@@ -3764,6 +3989,40 @@ mod tests {
         assert!(mgr.reserve_room_slot(&rid).is_ok());
         assert!(mgr.reserve_room_slot(&rid).is_ok());
         assert!(mgr.reserve_room_slot(&rid).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_release_room_reservation_removes_zero_counter_entry() {
+        let mgr = ConnectionManager::new(ConnectionLimits::default());
+        let rid = RoomId("cleanup_room".to_string());
+
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+        assert_eq!(mgr.pending_room_reservations.len(), 1);
+
+        mgr.release_room_reservation(&rid);
+
+        assert!(
+            mgr.pending_room_reservations.get(&rid).is_none(),
+            "room reservation entry should be removed after the count returns to zero"
+        );
+        assert_eq!(mgr.pending_room_reservations.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_release_user_reservation_removes_zero_counter_entry() {
+        let mgr = ConnectionManager::new(ConnectionLimits::default());
+        let uid = UserId("cleanup_user".to_string());
+
+        assert!(mgr.reserve_user_slot(&uid).is_ok());
+        assert_eq!(mgr.pending_user_reservations.len(), 1);
+
+        mgr.release_user_reservation(&uid);
+
+        assert!(
+            mgr.pending_user_reservations.get(&uid).is_none(),
+            "user reservation entry should be removed after the count returns to zero"
+        );
+        assert_eq!(mgr.pending_user_reservations.len(), 0);
     }
 
     #[tokio::test]

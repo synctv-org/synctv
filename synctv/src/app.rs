@@ -10,6 +10,7 @@ use std::{future::Future, pin::Pin};
 
 use anyhow::Result;
 use sqlx::PgPool;
+use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use synctv_cluster::leader::{LeaderRuntime, LeaderRuntimeBuilder, LeadershipEvent};
@@ -149,7 +150,7 @@ fn spawn_on_leadership_gain(
 
 fn build_connection_manager(
     limits: ConnectionLimits,
-    redis_conn: Option<redis::aio::ConnectionManager>,
+    redis_conn: Option<Arc<RwLock<redis::aio::ConnectionManager>>>,
     redis_key_prefix: &str,
     cluster_mode: bool,
 ) -> Result<ConnectionManager> {
@@ -157,7 +158,7 @@ fn build_connection_manager(
         let conn = redis_conn.ok_or_else(|| {
             anyhow::anyhow!("cluster.enabled=true requires Redis-backed ConnectionManager wiring")
         })?;
-        ConnectionManager::new(limits).with_redis(conn, redis_key_prefix)
+        ConnectionManager::new(limits).with_shared_redis(conn, redis_key_prefix)
     } else {
         let manager = ConnectionManager::new(limits);
         manager.start();
@@ -754,14 +755,9 @@ impl Application {
             max_duration: Duration::from_secs(infra.config.connection_limits.max_duration_seconds),
             webrtc_session_timeout: Duration::from_hours(2), // 2 hours (matches ConnectionLimits::default())
         };
-        let redis_conn_for_connections = if let Some(ref rh) = infra.redis_handles {
-            Some(rh.conn_snapshot().await)
-        } else {
-            None
-        };
         let connection_manager = build_connection_manager(
             connection_limits,
-            redis_conn_for_connections,
+            infra.redis_handles.as_ref().map(|rh| rh.conn.clone()),
             &infra.config.redis.key_prefix,
             cluster_runtime_enabled(&infra.config),
         )?;
@@ -1232,10 +1228,11 @@ mod tests {
         let conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .expect("Redis connection manager should be created");
+        let shared_conn = Arc::new(RwLock::new(conn.clone()));
 
         let connection_manager = build_connection_manager(
             ConnectionLimits::default(),
-            Some(conn.clone()),
+            Some(shared_conn),
             "test-cluster:",
             true,
         )
@@ -1281,10 +1278,11 @@ mod tests {
         let app_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .expect("App connection manager should be created");
+        let shared_conn = Arc::new(RwLock::new(app_conn));
 
         let manager = build_connection_manager(
             ConnectionLimits::default(),
-            Some(app_conn),
+            Some(shared_conn),
             "test-app:",
             true,
         )
@@ -1320,6 +1318,60 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker"]
+    async fn test_build_connection_manager_uses_shared_redis_handle_in_cluster_mode() {
+        use redis::AsyncCommands;
+        use synctv_core::models::{RoomId, UserId};
+
+        let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
+        let first_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .expect("initial app connection manager should be created");
+        let shared_conn = Arc::new(RwLock::new(first_conn));
+
+        let manager = build_connection_manager(
+            ConnectionLimits::default(),
+            Some(shared_conn.clone()),
+            "test-shared-app:",
+            true,
+        )
+        .expect("cluster mode should preserve shared Redis handle wiring");
+
+        manager
+            .register(
+                "conn-1".to_string(),
+                UserId::from_string("user-1".to_string()),
+            )
+            .await
+            .expect("connection registration should succeed");
+
+        let replacement_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .expect("replacement app connection manager should be created");
+        *shared_conn.write().await = replacement_conn;
+
+        manager
+            .join_room("conn-1", RoomId::from_string("room-2".to_string()))
+            .await
+            .expect("room join after shared connection swap should succeed");
+
+        let mut verify_conn = redis::aio::ConnectionManager::new(client)
+            .await
+            .expect("verification connection should be created");
+        let count: i64 = verify_conn
+            .get("test-shared-app:connections:room:room-2")
+            .await
+            .expect("swapped shared Redis handle should still write distributed room counters");
+
+        assert_eq!(
+            count, 1,
+            "cluster ConnectionManager must continue using the shared Redis handle after a hot swap"
+        );
+
+        manager.shutdown();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
     async fn test_build_connection_manager_keeps_standalone_mode_local_even_with_redis() {
         use redis::AsyncCommands;
         use synctv_core::models::{RoomId, UserId};
@@ -1330,7 +1382,7 @@ mod tests {
 
         let manager = build_connection_manager(
             ConnectionLimits::default(),
-            Some(app_conn),
+            Some(Arc::new(RwLock::new(app_conn))),
             "test-standalone:",
             false,
         )

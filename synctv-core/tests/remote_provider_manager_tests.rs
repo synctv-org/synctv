@@ -17,7 +17,7 @@ use synctv_core::{
     service::remote_provider_manager::RemoteProviderManager,
 };
 use synctv_core_testing::{create_test_pool_with_options_and_label, start_redis_with_client};
-use tokio::sync::RwLock;
+use tokio::sync::{Barrier, RwLock};
 
 // Test utilities
 
@@ -609,6 +609,44 @@ async fn scenario_enable_disable_instance() {
     assert!(fetched.unwrap().enabled);
 }
 
+async fn scenario_enable_with_invalid_endpoint_preserves_disabled_state() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut invalid_disabled = make_test_instance("test-instance-13-invalid-enable");
+    invalid_disabled.enabled = false;
+    invalid_disabled.endpoint = "http://127.0.0.1:50051".to_string();
+
+    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    repo.create(&invalid_disabled).await.unwrap();
+
+    let result = manager.enable("test-instance-13-invalid-enable").await;
+    assert!(result.is_err(), "enabling invalid config should fail");
+
+    let persisted = repo
+        .get_by_name("test-instance-13-invalid-enable")
+        .await
+        .unwrap()
+        .expect("instance should still exist");
+    assert!(
+        !persisted.enabled,
+        "failed enable must not leave the DB row enabled"
+    );
+
+    let channel = manager.get("test-instance-13-invalid-enable").await;
+    assert!(
+        channel.is_none(),
+        "failed enable must not leave a cached channel behind"
+    );
+}
+
 // ─── Test 14: Reconnect instance ────────────────────────────────────────────
 
 async fn scenario_reconnect_instance() {
@@ -675,6 +713,146 @@ async fn scenario_add_duplicate_instance_fails() {
             "Error should be AlreadyExists variant"
         );
     }
+}
+
+async fn scenario_add_disabled_instance_is_not_retrievable_via_get() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut disabled = make_test_instance("test-instance-15-disabled");
+    disabled.enabled = false;
+    manager.add(disabled).await.unwrap();
+
+    let fetched = ProviderInstanceRepository::new(infra.pool.clone())
+        .get_by_name("test-instance-15-disabled")
+        .await
+        .unwrap()
+        .expect("instance should exist");
+    assert!(!fetched.enabled, "instance should remain disabled in DB");
+
+    let channel = manager.get("test-instance-15-disabled").await;
+    assert!(
+        channel.is_none(),
+        "disabled instance must not be returned from same-node cache"
+    );
+}
+
+async fn scenario_update_to_disabled_invalidates_cached_channel() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let instance = make_test_instance("test-instance-15-update-disabled");
+    manager.add(instance.clone()).await.unwrap();
+
+    let initial = manager.get("test-instance-15-update-disabled").await;
+    assert!(initial.is_some(), "enabled instance should be retrievable");
+
+    let mut disabled = instance;
+    disabled.enabled = false;
+    disabled.comment = Some("now disabled".to_string());
+    manager.update(disabled).await.unwrap();
+
+    let fetched = ProviderInstanceRepository::new(infra.pool.clone())
+        .get_by_name("test-instance-15-update-disabled")
+        .await
+        .unwrap()
+        .expect("instance should exist");
+    assert!(!fetched.enabled, "instance should be disabled in DB");
+
+    let channel = manager.get("test-instance-15-update-disabled").await;
+    assert!(
+        channel.is_none(),
+        "update(enabled=false) must evict any cached channel"
+    );
+}
+
+async fn scenario_concurrent_duplicate_add_returns_one_success_and_one_already_exists() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let manager = Arc::new(RemoteProviderManager::new(
+        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        redis_conn,
+        redis_client,
+        "",
+    ));
+    let barrier = Arc::new(Barrier::new(3));
+    let instance = make_test_instance("test-instance-15-concurrent-dup");
+
+    let task1 = {
+        let manager = Arc::clone(&manager);
+        let barrier = Arc::clone(&barrier);
+        let instance = instance.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            manager.add(instance).await
+        })
+    };
+    let task2 = {
+        let manager = Arc::clone(&manager);
+        let barrier = Arc::clone(&barrier);
+        tokio::spawn(async move {
+            barrier.wait().await;
+            manager.add(instance).await
+        })
+    };
+
+    barrier.wait().await;
+
+    let result1 = task1.await.unwrap();
+    let result2 = task2.await.unwrap();
+    let results = [result1, result2];
+
+    let success_count = results.iter().filter(|result| result.is_ok()).count();
+    let duplicate_errors = results
+        .iter()
+        .filter_map(|result| match result {
+            Ok(()) => None,
+            Err(err) => Some(err),
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(success_count, 1, "exactly one create must succeed");
+    assert_eq!(
+        duplicate_errors.len(),
+        1,
+        "exactly one create must fail with AlreadyExists"
+    );
+    assert!(
+        matches!(
+            duplicate_errors[0],
+            synctv_core::Error::AlreadyExists(message)
+                if message.contains("test-instance-15-concurrent-dup")
+        ),
+        "duplicate add should normalize to a stable AlreadyExists error, got {:?}",
+        duplicate_errors[0]
+    );
+
+    let stored_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM media_provider_instances WHERE name = $1")
+            .bind("test-instance-15-concurrent-dup")
+            .fetch_one(&infra.pool)
+            .await
+            .unwrap();
+    assert_eq!(stored_count, 1, "only one DB row should be persisted");
 }
 
 // ─── Test 16: Update non-existent instance fails ─────────────────────────────
@@ -1163,6 +1341,13 @@ async fn test_enable_disable_instance() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
+async fn test_enable_with_invalid_endpoint_preserves_disabled_state() {
+    install_rustls_provider_once();
+    scenario_enable_with_invalid_endpoint_preserves_disabled_state().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
 async fn test_reconnect_instance() {
     install_rustls_provider_once();
     scenario_reconnect_instance().await;
@@ -1173,6 +1358,27 @@ async fn test_reconnect_instance() {
 async fn test_add_duplicate_instance_fails() {
     install_rustls_provider_once();
     scenario_add_duplicate_instance_fails().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_add_disabled_instance_is_not_retrievable_via_get() {
+    install_rustls_provider_once();
+    scenario_add_disabled_instance_is_not_retrievable_via_get().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_update_to_disabled_invalidates_cached_channel() {
+    install_rustls_provider_once();
+    scenario_update_to_disabled_invalidates_cached_channel().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_duplicate_add_returns_one_success_and_one_already_exists() {
+    install_rustls_provider_once();
+    scenario_concurrent_duplicate_add_returns_one_success_and_one_already_exists().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

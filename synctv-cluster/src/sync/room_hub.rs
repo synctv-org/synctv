@@ -454,7 +454,7 @@ impl RoomMessageHub {
                 "Client unsubscribed from room"
             );
         } else {
-            warn!(
+            debug!(
                 connection_id = %connection_id,
                 "Attempted to unsubscribe unknown connection"
             );
@@ -805,8 +805,16 @@ impl RoomMessageHub {
     /// WebSocket read loops terminate.
     pub fn remove_room(&self, room_id: &RoomId) {
         if let Some((_, subscribers)) = self.rooms.remove(room_id) {
-            for sub in subscribers.values() {
-                self.connections.remove(&sub.connection_id);
+            let removed_subscribers: Vec<(ConnectionId, RoomId)> = subscribers
+                .values()
+                .map(|sub| {
+                    self.connections.remove(&sub.connection_id);
+                    (sub.connection_id.clone(), room_id.clone())
+                })
+                .collect();
+
+            for (connection_id, room_id) in &removed_subscribers {
+                self.schedule_redis_cleanup(connection_id.clone(), room_id.clone());
             }
             // Emit lifecycle event since the room is no longer active
             let _ = self
@@ -816,6 +824,60 @@ impl RoomMessageHub {
                 room_id = %room_id.as_str(),
                 removed_connections = subscribers.len(),
                 "Removed all subscribers for deleted room"
+            );
+        }
+    }
+
+    fn schedule_redis_cleanup(&self, connection_id: ConnectionId, room_id: RoomId) {
+        let Some(redis_conn) = self.redis_conn.clone() else {
+            return;
+        };
+
+        let room_key = format!(
+            "{}room_hub:room:{}",
+            self.redis_key_prefix,
+            room_id.as_str()
+        );
+        let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
+        let pending_redis_cleanup = Arc::clone(&self.pending_redis_cleanup);
+        let connection_id_for_log = connection_id.clone();
+        let room_id_for_log = room_id.clone();
+        let cleanup_connection_id = connection_id.clone();
+        let cleanup_room_id = room_id.clone();
+        let cleanup_pending_redis_cleanup = Arc::clone(&pending_redis_cleanup);
+
+        let cleanup_fut = async move {
+            let mut conn_clone = match redis_conn {
+                RedisConnHandle::Direct(conn) => conn,
+                RedisConnHandle::Shared(conn) => conn.read().await.clone(),
+            };
+            let mut cleanup_failed = false;
+
+            if let Err(e) = conn_clone
+                .hdel::<_, _, ()>(&room_key, &cleanup_connection_id)
+                .await
+            {
+                cleanup_failed = true;
+                warn!("Failed to remove room subscription from Redis: {e}");
+            }
+            if let Err(e) = conn_clone.del::<_, ()>(&conn_key).await {
+                cleanup_failed = true;
+                warn!("Failed to remove connection mapping from Redis: {e}");
+            }
+
+            if cleanup_failed {
+                cleanup_pending_redis_cleanup.insert(cleanup_connection_id, cleanup_room_id);
+            } else {
+                cleanup_pending_redis_cleanup.remove(&cleanup_connection_id);
+            }
+        };
+
+        if try_spawn(cleanup_fut).is_none() {
+            pending_redis_cleanup.insert(connection_id, room_id);
+            warn!(
+                connection_id = %connection_id_for_log,
+                room_id = %room_id_for_log.as_str(),
+                "No Tokio runtime available for Redis room cleanup; deferred to retry loop/TTL"
             );
         }
     }

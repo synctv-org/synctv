@@ -484,6 +484,10 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
             "/api/rooms/{room_id}/playback/stop",
             post(room::stop_playback),
         )
+        .route(
+            "/api/rooms/{room_id}/playback",
+            axum::routing::patch(room::update_playback),
+        )
         .route("/api/user/logout", post(auth::logout))
         .route("/api/user", axum::routing::patch(user::update_user))
         .route("/api/user/me", axum::routing::delete(user::delete_me))
@@ -790,11 +794,98 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
 
 #[cfg(test)]
 mod tests {
-    use super::start_proxy_cache_lifecycle;
+    use super::{build_app_state, register_all_routes, start_proxy_cache_lifecycle, RouterConfig};
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
     use bytes::Bytes;
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
+    use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
+    use synctv_core::provider::{
+        AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
+        ProviderSet, RtmpProvider,
+    };
+    use synctv_core::service::{
+        AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
+        RemoteProviderManager, RoomService, UserService,
+    };
     use synctv_proxy::slice_cache::{SliceCache, SliceCacheBackend, SliceCacheConfig, StoredEntry};
+    use tower::ServiceExt;
+
+    fn test_app_state() -> super::AppState {
+        let pool = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv").expect("lazy pool");
+        let username_cache = UsernameCache::new(
+            Arc::new(NoopCacheL2),
+            "test:username:".to_string(),
+            128,
+            60,
+        );
+        let user_service = Arc::new(UserService::new(
+            pool.clone(),
+            synctv_core::service::JwtService::new(
+                "test-secret-key-for-http-router-tests-minimum-32-chars",
+            )
+            .expect("jwt"),
+            username_cache,
+            synctv_core::config::PasswordComplexityConfig::default(),
+            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            KeyBuilder::new("test"),
+            synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
+        ));
+        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let provider_instance_manager =
+            Arc::new(RemoteProviderManager::new(Arc::new(synctv_core::repository::ProviderInstanceRepository::new(pool.clone())), None, None, "test:"));
+        let providers = ProviderSet {
+            alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
+            bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
+            emby: Arc::new(EmbyProvider::new(provider_instance_manager.clone())),
+            direct_url: Arc::new(DirectUrlProvider::new()),
+            rtmp: Arc::new(RtmpProvider::new()),
+            live_proxy: Arc::new(LiveProxyProvider::new()),
+        };
+        let jwt_service = synctv_core::service::JwtService::new(
+            "test-secret-key-for-http-router-tests-minimum-32-chars",
+        )
+        .expect("jwt");
+        let (audit_service, _audit_handle) = AuditService::new(pool.clone());
+        let router_config = RouterConfig {
+            config: Arc::new(synctv_core::Config::default()),
+            user_service: user_service.clone(),
+            room_service: room_service.clone(),
+            content_filter: ContentFilter::new(),
+            provider_instance_manager: provider_instance_manager.clone(),
+            user_provider_credential_repository: Arc::new(
+                synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()),
+            ),
+            providers,
+            cluster_manager: None,
+            connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
+                synctv_cluster::sync::ConnectionLimits::default(),
+            )),
+            jwt_service: jwt_service.clone(),
+            redis_publish_tx: None,
+            oauth2_service: None,
+            settings_service: None,
+            settings_registry: None,
+            email_service: None,
+            email_token_service: None,
+            publish_key_service: None,
+            notification_service: None,
+            chat_service: None,
+            audit_service: Arc::new(audit_service),
+            live_streaming_infrastructure: None,
+            rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
+            ws_ticket_service: None,
+            redis_conn: None,
+            builtin_stun_url: None,
+            turn_health_checker: None,
+            credential_encryption: None,
+            messaging_rate_limit_config: RateLimitConfig::default(),
+            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
+            providers_manager: None,
+        };
+        build_app_state(router_config)
+    }
 
     #[tokio::test]
     async fn test_start_proxy_cache_lifecycle_evicts_expired_entries_and_stops_on_cancel() {
@@ -850,6 +941,40 @@ mod tests {
         assert!(
             start_proxy_cache_lifecycle(cache).is_none(),
             "disabled proxy cache must not start lifecycle task"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_playback_patch_route_is_reachable_via_project_router() {
+        let state = test_app_state();
+        let app = register_all_routes(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/rooms/room123/playback")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"state":"playing"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "PATCH playback route must be registered in the project router"
+        );
+        assert_ne!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "PATCH playback route must accept PATCH requests"
+        );
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "request should reach the auth extractor once the route is registered"
         );
     }
 }

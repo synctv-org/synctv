@@ -136,14 +136,13 @@ async fn inject_request_id_into_error_response(response: Response, request_id: &
             // Reconstruct a response preserving the original status code and headers.
             // Preserve the original body bytes as best-effort fallback instead of
             // silently replacing the payload with an empty body.
-            let body = e
+            let body_bytes = e
                 .downcast_ref::<ResponseBodyPreservationError>()
-                .map_or_else(axum::body::Body::empty, |err| {
-                    axum::body::Body::from(err.original_body.clone())
-                });
-            let mut fallback = Response::new(body);
+                .map_or_else(Vec::new, |err| err.original_body.clone());
+            let mut fallback = Response::new(axum::body::Body::from(body_bytes.clone()));
             *fallback.status_mut() = status;
             *fallback.headers_mut() = headers;
+            set_content_length_header(fallback.headers_mut(), body_bytes.len());
             fallback
         }
     }
@@ -182,13 +181,21 @@ async fn try_inject_request_id_async(
         let new_bytes = serde_json::to_vec(&json)?;
 
         // Build new response with same status and headers
-        let new_response = Response::from_parts(parts, Body::from(new_bytes));
+        let mut new_response = Response::from_parts(parts, Body::from(new_bytes.clone()));
+        set_content_length_header(new_response.headers_mut(), new_bytes.len());
         return Ok(new_response);
     }
 
     // Not an error response, return original
     let original_response = Response::from_parts(parts, Body::from(bytes.to_vec()));
     Ok(original_response)
+}
+
+fn set_content_length_header(headers: &mut axum::http::HeaderMap, len: usize) {
+    headers.remove(axum::http::header::CONTENT_LENGTH);
+    if let Ok(value) = axum::http::HeaderValue::from_str(&len.to_string()) {
+        headers.insert(axum::http::header::CONTENT_LENGTH, value);
+    }
 }
 
 #[derive(Debug)]
@@ -1153,6 +1160,45 @@ mod tests {
         assert_eq!(
             json["request_id"], "test-charset",
             "request_id should be injected even when content-type includes charset"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inject_request_id_updates_content_length_after_body_rewrite() {
+        let original_json = serde_json::json!({
+            "error": "bad request",
+            "status": 400
+        });
+        let original_bytes = serde_json::to_vec(&original_json).unwrap();
+
+        let response = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header(
+                axum::http::header::CONTENT_LENGTH,
+                original_bytes.len().to_string(),
+            )
+            .body(axum::body::Body::from(original_bytes))
+            .unwrap();
+
+        let result = inject_request_id_into_error_response(response, "req-len-123").await;
+        let content_length = result
+            .headers()
+            .get(axum::http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok())
+            .expect("response should contain a valid content-length");
+
+        let body_bytes = axum::body::to_bytes(result.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(json["request_id"], "req-len-123");
+        assert_eq!(
+            content_length,
+            body_bytes.len(),
+            "content-length must match rewritten body length"
         );
     }
 

@@ -1522,9 +1522,10 @@ impl RedisPubSub {
                                                     warn!(
                                                         error = %e,
                                                         room_id = %room_id_str,
-                                                        "Dynamically subscribed but failed to snapshot cursor, using '$' (skip catch-up)"
+                                                        "Dynamically subscribed but failed to snapshot cursor, using catchup_start_id"
                                                     );
-                                                    stream_cursors.insert(sk, "$".to_string());
+                                                    stream_cursors
+                                                        .insert(sk, self.catchup_start_id());
                                                 }
                                             }
                                         }
@@ -1675,9 +1676,9 @@ impl RedisPubSub {
                             warn!(
                                 error = %e,
                                 room_id = %room_id,
-                                "Re-synced: subscribed but failed to snapshot cursor, using '$'"
+                                "Re-synced: subscribed but failed to snapshot cursor, using catchup_start_id"
                             );
-                            stream_cursors.insert(sk, "$".to_string());
+                            stream_cursors.insert(sk, self.catchup_start_id());
                         }
                     }
                 }
@@ -2886,5 +2887,37 @@ mod tests {
         // After successful subscription, clear pending
         pending_subscriptions.clear();
         assert!(pending_subscriptions.is_empty());
+    }
+
+    #[test]
+    fn test_failed_cursor_snapshot_falls_back_to_catchup_window_not_dollar() {
+        let message_hub = Arc::new(RoomMessageHub::new());
+        let (admin_tx, _) = broadcast::channel(256);
+        let dedup = Arc::new(MessageDeduplicator::with_defaults());
+        let redis_client = RedisClient::open("redis://127.0.0.1:1").unwrap();
+
+        let pubsub = RedisPubSub::with_key_prefix(
+            redis_client,
+            message_hub,
+            "test-node".to_string(),
+            "synctv:",
+            admin_tx,
+            None,
+            None,
+            dedup,
+            300,
+            1000,
+        )
+        .unwrap();
+
+        let fallback = pubsub.catchup_start_id();
+        assert_ne!(
+            fallback, "$",
+            "failed snapshot fallback must not skip catch-up entirely"
+        );
+        assert!(
+            parse_stream_id(&fallback).is_some(),
+            "fallback cursor should remain a valid Redis stream ID"
+        );
     }
 }

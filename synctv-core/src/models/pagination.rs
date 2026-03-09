@@ -111,7 +111,7 @@ impl PageParams {
     /// ```
     #[must_use]
     pub const fn offset(&self) -> u64 {
-        ((self.page - 1) * self.page_size) as u64
+        (self.page as u64 - 1) * self.page_size as u64
     }
 
     /// Get LIMIT for SQL query
@@ -279,6 +279,12 @@ mod tests {
         assert_eq!(PageParams::new(Some(2), Some(20)).offset(), 20);
         assert_eq!(PageParams::new(Some(3), Some(20)).offset(), 40);
         assert_eq!(PageParams::new(Some(5), Some(50)).offset(), 200);
+    }
+
+    #[test]
+    fn test_offset_uses_wide_arithmetic_for_large_pages() {
+        let params = PageParams::new(Some(u32::MAX), Some(20));
+        assert_eq!(params.offset(), (u32::MAX as u64 - 1) * 20);
     }
 
     #[test]

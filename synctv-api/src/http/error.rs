@@ -241,6 +241,10 @@ impl From<synctv_core::Error> for AppError {
             Error::Authorization(msg) => Self::forbidden(msg),
             Error::InvalidInput(msg) => Self::bad_request(msg),
             Error::RateLimited(msg) => Self::new(StatusCode::TOO_MANY_REQUESTS, msg),
+            Error::ServiceUnavailable(msg) => {
+                tracing::warn!("Service unavailable: {}", msg);
+                Self::service_unavailable()
+            }
             Error::Database(e) => {
                 tracing::error!("Database error: {}", e);
                 Self::internal_server_error("Database error")
@@ -303,6 +307,7 @@ impl From<crate::impls::ApiError> for AppError {
             ErrorKind::AlreadyExists => Self::conflict(msg),
             ErrorKind::InvalidArgument => Self::bad_request(msg),
             ErrorKind::RateLimited => Self::too_many_requests(msg),
+            ErrorKind::ServiceUnavailable => Self::service_unavailable(),
             ErrorKind::Internal => {
                 tracing::error!("Internal error: {msg}");
                 Self::internal("Internal error")
@@ -639,6 +644,14 @@ mod tests {
     }
 
     #[test]
+    fn test_from_core_service_unavailable() {
+        let core_err = synctv_core::Error::ServiceUnavailable("redis unavailable".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(app_err.message.contains("temporarily unavailable"));
+    }
+
+    #[test]
     fn test_from_core_internal() {
         let core_err = synctv_core::Error::Internal("something broke".to_string());
         let app_err = AppError::from(core_err);
@@ -709,6 +722,21 @@ mod tests {
         assert_eq!(
             app_err.error_code,
             Some(crate::impls::error_codes::RESOURCE_EXHAUSTED)
+        );
+    }
+
+    #[test]
+    fn test_from_api_error_service_unavailable() {
+        let api_err = crate::impls::ApiError::ServiceUnavailable("redis unavailable".to_string());
+        let app_err = AppError::from(api_err);
+        assert_eq!(
+            app_err.status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ApiError::ServiceUnavailable should map to HTTP 503"
+        );
+        assert_eq!(
+            app_err.error_code,
+            Some(crate::impls::error_codes::SERVICE_UNAVAILABLE)
         );
     }
 

@@ -14,10 +14,10 @@ use crate::cache::tiered::TieredCache;
 use crate::models::UserId;
 use crate::{cache::CacheInvalidationService, Result};
 
-/// L1 (in-memory) cache TTL in minutes.
+/// L1 (in-memory) cache TTL in seconds.
 /// Matches UserCache/RoomCache defaults so stale entries are bounded even
 /// without cross-replica invalidation.
-const L1_TTL_MINUTES: u64 = 5;
+const L1_TTL_SECONDS: u64 = 5 * 60;
 
 /// Wrapper around a username string for `TieredCache` serialization.
 ///
@@ -85,7 +85,7 @@ impl UsernameCache {
         let inner = TieredCache::new(
             l2,
             memory_cache_size as u64,
-            L1_TTL_MINUTES,
+            L1_TTL_SECONDS,
             ttl_seconds,
             key_prefix,
             "username".to_string(),
@@ -208,6 +208,11 @@ impl UsernameCache {
 
         tracing::debug!(count, "Username cache preloaded");
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn l1_ttl(&self) -> Option<std::time::Duration> {
+        self.inner.l1_ttl()
     }
 }
 
@@ -430,6 +435,22 @@ mod tests {
             result.is_err(),
             "set() should not broadcast any invalidation message; \
              invalidation should only happen on explicit invalidate() calls"
+        );
+    }
+
+    #[test]
+    fn test_l1_ttl_matches_five_minutes() {
+        let cache = UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            10,
+            0,
+        );
+
+        assert_eq!(
+            cache.l1_ttl(),
+            Some(std::time::Duration::from_secs(5 * 60)),
+            "Username cache L1 TTL must be five minutes, not five seconds"
         );
     }
 }

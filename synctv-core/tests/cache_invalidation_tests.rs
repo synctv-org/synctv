@@ -383,6 +383,54 @@ async fn test_cache_invalidation_playback_state() {
     }
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcasts() {
+    let (_container, redis_url) = start_redis().await;
+    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let shared_conn = Arc::new(RwLock::new(
+        redis::aio::ConnectionManager::new(redis_client.clone())
+            .await
+            .expect("Failed to create Redis connection manager"),
+    ));
+    let stream_key = unique_stream_key();
+
+    let service1 = Arc::new(
+        CacheInvalidationService::new(None, "node1".to_string(), stream_key.clone())
+            .with_shared_conn(shared_conn.clone()),
+    );
+    let service2 = Arc::new(
+        CacheInvalidationService::new(Some(redis_client), "node2".to_string(), stream_key)
+            .with_shared_conn(shared_conn),
+    );
+
+    service1.start().await.expect("Failed to start service1");
+    service2.start().await.expect("Failed to start service2");
+
+    let mut receiver = service2.subscribe();
+    let room_id = RoomId::new();
+
+    service1
+        .invalidate_room(&room_id)
+        .await
+        .expect("shared-conn-only service should still publish remotely");
+
+    tokio::select! {
+        msg = receiver.recv() => {
+            let msg = msg.expect("Failed to receive message");
+            match msg {
+                InvalidationMessage::Room { room_id: r } => {
+                    assert_eq!(r, room_id.as_str());
+                }
+                other => panic!("Expected Room invalidation, got {other:?}"),
+            }
+        }
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+            panic!("Timeout waiting for shared-conn invalidation message");
+        }
+    }
+}
+
 // ============================================================================
 // Cache Invalidation Timing Tests
 // ============================================================================

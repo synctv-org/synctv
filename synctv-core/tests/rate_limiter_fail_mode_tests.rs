@@ -90,9 +90,7 @@ async fn test_fail_closed_denies_requests_without_redis() {
     assert!(
         matches!(
             result,
-            Err(RateLimitError::RateLimitExceeded {
-                retry_after_seconds: 1
-            })
+            Err(RateLimitError::BackendUnavailable(_))
         ),
         "check_rate_limit_distributed should fail closed without Redis"
     );
@@ -203,6 +201,11 @@ async fn test_fail_open_does_not_propagate_redis_errors() {
         match result {
             Ok(()) => {}
             Err(RateLimitError::RateLimitExceeded { .. }) => {}
+            Err(RateLimitError::BackendUnavailable(message)) => {
+                panic!(
+                    "check_rate_limit should not return BackendUnavailable in fail-open mode: {message}"
+                );
+            }
             Err(RateLimitError::RedisError(e)) => {
                 panic!("check_rate_limit should not propagate RedisError in fail-open mode: {e}");
             }
@@ -289,7 +292,7 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
             // The distributed check should fail closed when Redis is unreachable
             let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
             assert!(
-                matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+                matches!(result, Err(RateLimitError::BackendUnavailable(_))),
                 "Redis backend check_strict should fail closed on connection error"
             );
         } else {
@@ -297,7 +300,7 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
             let limiter = RateLimiter::in_memory_only("redis_strict:".to_string());
             let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
             assert!(
-                matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+                matches!(result, Err(RateLimitError::BackendUnavailable(_))),
                 "In-memory backend check_strict should fail closed"
             );
         }
@@ -306,7 +309,7 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
         let limiter = RateLimiter::in_memory_only("redis_strict:".to_string());
         let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
         assert!(
-            matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+            matches!(result, Err(RateLimitError::BackendUnavailable(_))),
             "In-memory backend check_strict should fail closed"
         );
     }
@@ -359,23 +362,19 @@ fn test_security_considerations_documentation() {
 // Test 11: Verify retry_after_seconds values
 // ============================================================================
 
-/// Verifies that retry_after_seconds is reasonable for fail-closed mode.
+/// Verifies that fail-closed mode reports backend unavailability distinctly.
 #[tokio::test]
-async fn test_fail_closed_retry_after_is_reasonable() {
+async fn test_fail_closed_reports_backend_unavailable() {
     let limiter = RateLimiter::in_memory_only("retry_after:".to_string());
 
     let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
-    if let Err(RateLimitError::RateLimitExceeded {
-        retry_after_seconds,
-    }) = result
-    {
-        // Fail-closed should return a short retry (1 second) to allow quick recovery
-        assert_eq!(
-            retry_after_seconds, 1,
-            "fail-closed retry_after should be 1 second"
+    if let Err(RateLimitError::BackendUnavailable(message)) = result {
+        assert!(
+            message.contains("backend unavailable"),
+            "fail-closed mode should surface backend unavailability"
         );
     } else {
-        panic!("Expected RateLimitExceeded error");
+        panic!("Expected BackendUnavailable error");
     }
 }
 

@@ -23,7 +23,7 @@ use tracing::warn;
 
 use super::interceptors::GrpcRateLimitTier;
 use synctv_core::service::auth::JwtValidator;
-use synctv_core::service::RateLimiter;
+use synctv_core::service::{RateLimitError, RateLimiter};
 use synctv_core::Config;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -139,6 +139,31 @@ fn grpc_status_code_to_label(code: &str) -> &'static str {
         "16" => "unauthenticated",
         _ => "unknown",
     }
+}
+
+fn rate_limit_error_response(
+    err: RateLimitError,
+    service_label: &str,
+    method_label: &str,
+) -> http::Response<TonicBody> {
+    let status = match err {
+        RateLimitError::RateLimitExceeded { .. } => {
+            tonic::Status::resource_exhausted("Rate limit exceeded. Please retry later.")
+        }
+        RateLimitError::BackendUnavailable(_) => {
+            tonic::Status::unavailable("Rate limit service temporarily unavailable.")
+        }
+        RateLimitError::RedisError(_) => tonic::Status::internal("Internal error"),
+    };
+    let status_label = match status.code() {
+        tonic::Code::ResourceExhausted => "resource_exhausted",
+        tonic::Code::Unavailable => "unavailable",
+        _ => "internal",
+    };
+    synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+        .with_label_values(&[service_label, method_label, status_label])
+        .inc();
+    status.into_http()
 }
 
 /// Extract the gRPC status code from an HTTP response and reassemble the response.
@@ -441,22 +466,16 @@ where
                     .await
             };
 
-            if let Err(_e) = rate_limit_result {
+            if let Err(err) = rate_limit_result {
                 warn!(
                     client_id = %client_id,
                     tier = ?tier,
                     max_requests = max_reqs,
                     path = %path,
-                    "gRPC distributed rate limit exceeded"
+                    error = %err,
+                    "gRPC distributed rate limit rejected request"
                 );
-                let resource_exhausted = String::from("resource_exhausted");
-                synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-                    .with_label_values(&[&service_label, &method_label, &resource_exhausted])
-                    .inc();
-                let response =
-                    tonic::Status::resource_exhausted("Rate limit exceeded. Please retry later.")
-                        .into_http();
-                return Ok(response);
+                return Ok(rate_limit_error_response(err, &service_label, &method_label));
             }
 
             match inner.call(req).await {
@@ -486,8 +505,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use std::convert::Infallible;
+    use std::sync::Arc;
+    use tower::service_fn;
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{jwt::TokenType, JwtService};
+    use synctv_core::service::RateLimitBackend;
+    use synctv_core::Result as CoreResult;
 
     #[test]
     fn test_extract_grpc_labels() {
@@ -988,6 +1013,117 @@ mod tests {
         assert!(
             !layer.uses_strict_distributed(),
             "standalone gRPC rate limiting may use best-effort local quotas"
+        );
+    }
+
+    enum StubStrictResult {
+        RateLimited,
+        BackendUnavailable,
+    }
+
+    struct StubRateLimitBackend {
+        strict_result: StubStrictResult,
+    }
+
+    #[async_trait]
+    impl RateLimitBackend for StubRateLimitBackend {
+        async fn check(
+            &self,
+            _key: &str,
+            _max_requests: u32,
+            _window_seconds: u64,
+        ) -> Result<(), RateLimitError> {
+            Ok(())
+        }
+
+        async fn check_strict(
+            &self,
+            _key: &str,
+            _max_requests: u32,
+            _window_seconds: u64,
+        ) -> Result<(), RateLimitError> {
+            match self.strict_result {
+                StubStrictResult::RateLimited => Err(RateLimitError::RateLimitExceeded {
+                    retry_after_seconds: 1,
+                }),
+                StubStrictResult::BackendUnavailable => Err(RateLimitError::BackendUnavailable(
+                    "redis unavailable".to_string(),
+                )),
+            }
+        }
+
+        async fn get_quota(
+            &self,
+            _key: &str,
+            max_requests: u32,
+            _window_seconds: u64,
+        ) -> CoreResult<(u32, u64)> {
+            Ok((max_requests, 0))
+        }
+
+        async fn reset(&self, _key: &str) -> CoreResult<()> {
+            Ok(())
+        }
+
+        async fn health_check(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "stub"
+        }
+    }
+
+    fn cluster_mode_config() -> Config {
+        let mut config = test_config();
+        config.cluster.enabled = true;
+        config.server.cluster_secret = "cluster-secret-for-test".to_string();
+        config
+    }
+
+    async fn call_layer_with_strict_result(strict_result: StubStrictResult) -> http::Response<TonicBody> {
+        let jwt_service = create_test_jwt_service();
+        let jwt_validator = create_test_jwt_validator(&jwt_service);
+        let rate_limiter = RateLimiter::from_backend(
+            Arc::new(StubRateLimitBackend { strict_result }),
+            "grpc-test:".to_string(),
+        );
+        let layer = GrpcRateLimitLayer::new(rate_limiter, Arc::new(cluster_mode_config()), jwt_validator);
+        let mut svc = layer.layer(service_fn(|_req: http::Request<TonicBody>| async move {
+            Ok::<_, Infallible>(tonic::Status::ok("ok").into_http())
+        }));
+
+        let request = http::Request::builder()
+            .uri("/synctv.client.AuthService/Login")
+            .body(TonicBody::empty())
+            .unwrap();
+
+        svc.call(request).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_grpc_rate_limit_layer_maps_actual_limit_exceeded_to_resource_exhausted() {
+        let response = call_layer_with_strict_result(StubStrictResult::RateLimited).await;
+
+        assert_eq!(
+            response
+                .headers()
+                .get("grpc-status")
+                .and_then(|v| v.to_str().ok()),
+            Some("8")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grpc_rate_limit_layer_maps_backend_unavailable_to_unavailable() {
+        let response = call_layer_with_strict_result(StubStrictResult::BackendUnavailable).await;
+
+        assert_eq!(
+            response
+                .headers()
+                .get("grpc-status")
+                .and_then(|v| v.to_str().ok()),
+            Some("14")
         );
     }
 

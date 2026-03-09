@@ -944,6 +944,13 @@ impl ConnectionManager {
     /// limits. In cluster mode, allowing local-only admission would let replicas
     /// oversubscribe the same user concurrently.
     pub async fn register(&self, connection_id: String, user_id: UserId) -> Result<(), String> {
+        if self.connections.contains_key(&connection_id) {
+            return Err(format!(
+                "Connection '{}' is already registered",
+                connection_id
+            ));
+        }
+
         // Atomically reserve a slot in the total connection count.
         // fetch_add returns the previous value; if it was already at the limit,
         // roll back and reject.
@@ -2058,9 +2065,11 @@ impl ConnectionManager {
     /// situations where Redis was temporarily unavailable during connection
     /// registration or unregistration.
     ///
-    /// The synchronization uses a Lua script that atomically sets the counter
-    /// to the correct value if a discrepancy is detected, preventing race
-    /// conditions with concurrent connection operations.
+    /// The synchronization is intentionally one-sided: it repairs counters that
+    /// are missing or lower than this node's local contribution, but never
+    /// decreases a Redis counter based only on local state. Lowering a
+    /// distributed counter from one replica would overwrite connections that are
+    /// still legitimately active on other replicas.
     async fn sync_local_counts_to_redis(&self, conn: &mut redis::aio::ConnectionManager) {
         // Collect local counts first (avoid holding locks during Redis operations)
         let mut user_counts: std::collections::HashMap<String, usize> =
@@ -2094,15 +2103,21 @@ impl ConnectionManager {
         let local_total = self.connection_count();
         let total_key = format!("{}connections:total", self.redis_key_prefix);
 
-        // Lua script to atomically set a counter if it differs from expected value.
-        // Returns the old value (or 0 if key didn't exist) and whether it was changed (1 or 0).
+        // Lua script to atomically repair counters that are missing or lower than
+        // this node's observed minimum contribution. It never decreases the
+        // current Redis value because other replicas may have active
+        // connections that are not visible from this node's local memory.
+        //
+        // Returns `{current_value, 1}` when the counter was raised and
+        // `{current_value, 0}` when no change was needed.
         let sync_script = redis::Script::new(
             r"local current = redis.call('GET', KEYS[1])
               local current_num = 0
               if current ~= false then
                 current_num = tonumber(current)
               end
-              if current_num ~= tonumber(ARGV[1]) then
+              local expected_min = tonumber(ARGV[1])
+              if current_num < expected_min then
                 redis.call('SET', KEYS[1], ARGV[1])
                 redis.call('EXPIRE', KEYS[1], ARGV[2])
                 return {current_num, 1}
@@ -2131,7 +2146,7 @@ impl ConnectionManager {
                             key = %key,
                             old_value = old_value,
                             new_value = *local_count,
-                            "Synchronized user connection counter to Redis"
+                            "Raised user connection counter in Redis to cover local connections"
                         );
                     }
                 }
@@ -2164,7 +2179,7 @@ impl ConnectionManager {
                             key = %key,
                             old_value = old_value,
                             new_value = *local_count,
-                            "Synchronized room connection counter to Redis"
+                            "Raised room connection counter in Redis to cover local connections"
                         );
                     }
                 }
@@ -2194,7 +2209,7 @@ impl ConnectionManager {
                         key = %total_key,
                         old_value = old_value,
                         new_value = local_total,
-                        "Synchronized total connection counter to Redis (was out of sync)"
+                        "Raised total connection counter in Redis to cover local connections"
                     );
                 }
             }
@@ -2232,41 +2247,11 @@ impl ConnectionManager {
                                 continue;
                             }
 
-                            let set_result: Result<Vec<i64>, _> = sync_script
-                                .key(&redis_key)
-                                .arg(0i64)
-                                .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
-                                .invoke_async(conn)
-                                .await;
-                            match set_result {
-                                Ok(result) if result.len() >= 2 => {
-                                    let old_value = result[0];
-                                    let was_changed = result[1];
-                                    if was_changed == 1 {
-                                        sync_count += 1;
-                                        warn!(
-                                            key = %redis_key,
-                                            old_value = old_value,
-                                            new_value = 0,
-                                            "Cleared stale distributed connection counter from Redis"
-                                        );
-                                    }
-                                }
-                                Ok(_) => {
-                                    warn!(
-                                        key = %redis_key,
-                                        "Unexpected result format from Redis sync script"
-                                    );
-                                }
-                                Err(e) => {
-                                    sync_errors += 1;
-                                    warn!(
-                                        key = %redis_key,
-                                        error = %e,
-                                        "Failed to clear stale distributed connection counter"
-                                    );
-                                }
-                            }
+                            // Never zero a distributed counter based only on this
+                            // node's local view. Another replica may still own the
+                            // corresponding active connections. Stale cleanup is
+                            // handled by TTL expiry and targeted metadata/index
+                            // reconciliation elsewhere.
                         }
 
                         if cursor == 0 {
@@ -2975,6 +2960,37 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(manager.connection_count(), 1);
         assert_eq!(manager.user_connection_count(&user_id), 1);
+    }
+
+    #[tokio::test]
+    async fn test_register_duplicate_connection_id_is_rejected_without_double_counting() {
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("dup-user".to_string());
+
+        manager
+            .register("dup-conn".to_string(), user_id.clone())
+            .await
+            .expect("first register should succeed");
+
+        let duplicate = manager.register("dup-conn".to_string(), user_id.clone()).await;
+        assert!(
+            duplicate.is_err(),
+            "duplicate connection_id must be rejected deterministically"
+        );
+        assert!(
+            duplicate
+                .unwrap_err()
+                .contains("already registered"),
+            "duplicate register should report an already-registered error"
+        );
+
+        assert_eq!(manager.connection_count(), 1);
+        assert_eq!(manager.user_connection_count(&user_id), 1);
+
+        let conn = manager
+            .get_connection("dup-conn")
+            .expect("original connection should remain intact");
+        assert_eq!(conn.user_id, user_id);
     }
 
     #[tokio::test]
@@ -3709,6 +3725,51 @@ mod tests {
 
         // Cleanup
         manager.unregister("conn1").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_reconcile_with_redis_does_not_overwrite_other_replica_counters() {
+        use redis::AsyncCommands;
+
+        let (_container, client, conn, prefix) = docker_redis_connection("test5:").await;
+        let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
+
+        // Simulate another healthy replica already having active connections.
+        let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+        let user_key = format!("{prefix}connections:user:shared-user");
+        let room_key = format!("{prefix}connections:room:shared-room");
+        let total_key = format!("{prefix}connections:total");
+
+        let _: () = redis_conn.set(&user_key, 3).await.unwrap();
+        let _: () = redis_conn.expire(&user_key, DISTRIBUTED_COUNTER_TTL_SECONDS).await.unwrap();
+        let _: () = redis_conn.set(&room_key, 4).await.unwrap();
+        let _: () = redis_conn.expire(&room_key, DISTRIBUTED_COUNTER_TTL_SECONDS).await.unwrap();
+        let _: () = redis_conn.set(&total_key, 7).await.unwrap();
+        let _: () = redis_conn.expire(&total_key, DISTRIBUTED_COUNTER_TTL_SECONDS).await.unwrap();
+
+        // This node has no local connections. Reconciliation must not zero out
+        // counters that may belong to other replicas.
+        manager.reconcile_with_redis().await;
+
+        let user_count: i64 = redis_conn.get(&user_key).await.unwrap_or(0);
+        let room_count: i64 = redis_conn.get(&room_key).await.unwrap_or(0);
+        let total_count: i64 = redis_conn.get(&total_key).await.unwrap_or(0);
+
+        assert_eq!(
+            user_count, 3,
+            "reconciliation must preserve user counters that may belong to other replicas"
+        );
+        assert_eq!(
+            room_count, 4,
+            "reconciliation must preserve room counters that may belong to other replicas"
+        );
+        assert_eq!(
+            total_count, 7,
+            "reconciliation must preserve total counters that may belong to other replicas"
+        );
     }
 
     #[tokio::test]

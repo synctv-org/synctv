@@ -1421,6 +1421,10 @@ mod api_error_type_safe_mapping {
                 axum::http::StatusCode::BAD_REQUEST,
             ),
             (
+                ApiError::ServiceUnavailable("x".into()),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
                 ApiError::Internal("x".into()),
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             ),
@@ -1547,6 +1551,10 @@ mod grpc_status_mapping {
             (
                 ApiError::InvalidInput("x".into()),
                 error_codes::INVALID_ARGUMENT,
+            ),
+            (
+                ApiError::ServiceUnavailable("x".into()),
+                error_codes::SERVICE_UNAVAILABLE,
             ),
             (ApiError::Internal("x".into()), error_codes::INTERNAL_ERROR),
         ];

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    cache::{CacheL2Backend, KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::UserId,
     service::{
@@ -29,13 +29,12 @@ fn create_jwt_service() -> JwtService {
     JwtService::with_durations(JWT_SECRET, 1, 30, 4, 60).unwrap()
 }
 
-fn create_user_service_with_blacklist(
+fn create_user_service_with_components(
     pool: PgPool,
+    username_cache: UsernameCache,
     token_blacklist: Arc<dyn TokenBlacklistStore>,
 ) -> UserService {
     let jwt = create_jwt_service();
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 1000, 0);
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
@@ -48,6 +47,15 @@ fn create_user_service_with_blacklist(
         key_builder,
         brute_force,
     )
+}
+
+fn create_user_service_with_blacklist(
+    pool: PgPool,
+    token_blacklist: Arc<dyn TokenBlacklistStore>,
+) -> UserService {
+    let l2 = Arc::new(NoopCacheL2);
+    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 1000, 0);
+    create_user_service_with_components(pool, username_cache, token_blacklist)
 }
 
 fn create_user_service(pool: PgPool) -> UserService {
@@ -92,6 +100,84 @@ impl TokenBlacklistStore for FamilyRevocationFailingStore {
             "simulated family revocation persistence failure".to_string(),
         ))
     }
+}
+
+struct FailingCacheL2;
+
+#[async_trait::async_trait]
+impl CacheL2Backend for FailingCacheL2 {
+    async fn get(&self, _key: &str) -> synctv_core::Result<Option<String>> {
+        Err(Error::Internal(
+            "simulated username cache backend failure".to_string(),
+        ))
+    }
+
+    async fn set(&self, _key: &str, _json: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
+        Err(Error::Internal(
+            "simulated username cache backend failure".to_string(),
+        ))
+    }
+
+    async fn delete(&self, _key: &str) -> synctv_core::Result<()> {
+        Err(Error::Internal(
+            "simulated username cache backend failure".to_string(),
+        ))
+    }
+
+    async fn delete_with_retry(
+        &self,
+        _key: &str,
+        _max_retries: u32,
+        _cache_type: &str,
+    ) -> synctv_core::Result<()> {
+        Err(Error::Internal(
+            "simulated username cache backend failure".to_string(),
+        ))
+    }
+
+    async fn get_batch(&self, _keys: &[String]) -> synctv_core::Result<Vec<Option<String>>> {
+        Err(Error::Internal(
+            "simulated username cache backend failure".to_string(),
+        ))
+    }
+
+    async fn set_if_newer(
+        &self,
+        _key: &str,
+        _json: &str,
+        _ttl_secs: u64,
+        _new_ts_iso: &str,
+    ) -> synctv_core::Result<bool> {
+        Err(Error::Internal(
+            "simulated username cache backend failure".to_string(),
+        ))
+    }
+
+    async fn delete_by_prefix(&self, _prefix: &str) -> synctv_core::Result<()> {
+        Err(Error::Internal(
+            "simulated username cache backend failure".to_string(),
+        ))
+    }
+
+    fn is_active(&self) -> bool {
+        true
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "failing"
+    }
+}
+
+fn create_user_service_with_failing_username_cache(pool: PgPool) -> UserService {
+    let token_blacklist: Arc<dyn TokenBlacklistStore> =
+        Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let username_cache = UsernameCache::new(
+        Arc::new(FailingCacheL2),
+        "test:username:".to_string(),
+        1000,
+        60,
+    );
+    create_user_service_with_components(pool, username_cache, token_blacklist)
 }
 
 fn create_user_service_with_email_verification(pool: PgPool) -> UserService {
@@ -894,7 +980,7 @@ async fn test_set_password_bumps_password_version() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_password_fails_when_family_revocation_persistence_fails() {
+async fn test_set_password_succeeds_even_when_family_revocation_store_fails() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(FamilyRevocationFailingStore {
         inner: InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
@@ -914,24 +1000,24 @@ async fn test_set_password_fails_when_family_revocation_persistence_fails() {
 
     let result = service.set_password(&user.id, "AdminNewPass1").await;
     assert!(
-        result.is_err(),
-        "Password change must fail closed when refresh token family revocation cannot be persisted"
+        result.is_ok(),
+        "Password updates should rely on password_version, not fail on best-effort family revocation persistence"
     );
 
     let login_old = service
         .login(username.clone(), "StrongPass1".to_string(), None)
         .await;
     assert!(
-        login_old.is_ok(),
-        "Failed password reset must not partially commit the new password"
+        login_old.is_err(),
+        "Old password must stop working after password_version is updated"
     );
 
     let login_new = service
         .login(username, "AdminNewPass1".to_string(), None)
         .await;
     assert!(
-        login_new.is_err(),
-        "New password must not become active when family revocation persistence fails"
+        login_new.is_ok(),
+        "New password must become active even when best-effort family revocation persistence fails"
     );
 }
 
@@ -1047,7 +1133,7 @@ async fn test_update_profile_rolls_back_username_when_password_verification_fail
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_profile_rolls_back_username_when_family_revocation_persistence_fails() {
+async fn test_update_profile_commits_when_family_revocation_store_fails() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(FamilyRevocationFailingStore {
         inner: InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
@@ -1066,44 +1152,144 @@ async fn test_update_profile_rolls_back_username_when_family_revocation_persiste
         .await
         .expect("Registration should succeed");
 
-    let result = service
+    let updated = service
         .update_profile(
             &user.id,
             Some(new_username.clone()),
             Some("StrongPass1".to_string()),
             Some("NewStrongPass1".to_string()),
         )
-        .await;
-
-    assert!(
-        result.is_err(),
-        "Combined profile update must fail closed when refresh token family revocation cannot be persisted"
-    );
+        .await
+        .expect("Combined profile update should rely on password_version and commit");
 
     let persisted = service
         .get_user(&user.id)
         .await
-        .expect("User should still exist after failed combined update");
+        .expect("User should still exist after successful combined update");
     assert_eq!(
-        persisted.username, old_username,
-        "Username must not be partially committed when refresh token family revocation fails"
+        persisted.username, new_username,
+        "Username change must commit even when best-effort family revocation persistence fails"
     );
+    assert_eq!(updated.username, persisted.username);
 
     let login_old = service
         .login(old_username.clone(), "StrongPass1".to_string(), None)
         .await;
     assert!(
-        login_old.is_ok(),
-        "Original credentials must remain valid after a failed combined profile update"
+        login_old.is_err(),
+        "Original credentials must stop working after a successful combined profile update"
     );
 
     let login_new = service
-        .login(old_username, "NewStrongPass1".to_string(), None)
+        .login(new_username, "NewStrongPass1".to_string(), None)
         .await;
     assert!(
-        login_new.is_err(),
-        "New password must not become active when refresh token family revocation fails"
+        login_new.is_ok(),
+        "New credentials must become active after a successful combined profile update"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_register_succeeds_when_username_cache_write_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service_with_failing_username_cache(pool.clone());
+
+    let username = format!("cache_fail_register_{}", nanoid::nanoid!(6));
+    let (user, access_token, refresh_token) = service
+        .register(
+            username.clone(),
+            Some(format!("cache_fail_register_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration must succeed even when username cache write fails");
+
+    assert_eq!(user.username, username);
+    assert!(access_token.is_some());
+    assert!(refresh_token.is_some());
+
+    let persisted = service
+        .get_user(&user.id)
+        .await
+        .expect("Registered user must be durable in the database");
+    assert_eq!(persisted.username, user.username);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_finalize_registration_succeeds_when_username_cache_write_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service_with_failing_username_cache(pool.clone());
+
+    let user = service
+        .register_with_executor(
+            format!("cache_fail_finalize_{}", nanoid::nanoid!(6)),
+            Some(format!("cache_fail_finalize_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            synctv_core::models::SignupMethod::Email,
+            &pool,
+        )
+        .await
+        .expect("User creation should succeed");
+
+    let (access_token, refresh_token) = service
+        .finalize_registration(&user)
+        .await
+        .expect("Finalization must succeed even when username cache write fails");
+
+    let jwt = create_jwt_service();
+    assert!(jwt.verify_access_token(&access_token).is_ok());
+    assert!(jwt.verify_refresh_token(&refresh_token).is_ok());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_user_with_role_succeeds_when_username_cache_write_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service_with_failing_username_cache(pool.clone());
+
+    let created = service
+        .create_user_with_role(
+            format!("cache_fail_admin_{}", nanoid::nanoid!(6)),
+            Some(format!("cache_fail_admin_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            Some(synctv_core::models::UserRole::Admin),
+        )
+        .await
+        .expect("Admin user creation must succeed even when username cache write fails");
+
+    let persisted = service
+        .get_user(&created.id)
+        .await
+        .expect("Created admin user must be durable in the database");
+    assert_eq!(persisted.id, created.id);
+    assert_eq!(persisted.role, synctv_core::models::UserRole::Admin);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_username_falls_back_to_database_when_cache_read_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service_with_failing_username_cache(pool.clone());
+
+    let (user, _, _) = service
+        .register(
+            format!("cache_fail_lookup_{}", nanoid::nanoid!(6)),
+            Some(format!("cache_fail_lookup_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration must succeed");
+
+    let username = service
+        .get_username(&user.id)
+        .await
+        .expect("Username lookup should fall back to database on cache read failure");
+
+    assert_eq!(username.as_deref(), Some(user.username.as_str()));
 }
 
 // ============================================================================

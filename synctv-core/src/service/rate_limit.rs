@@ -50,6 +50,9 @@ pub enum RateLimitError {
     #[error("Rate limit exceeded. Try again in {retry_after_seconds}s")]
     RateLimitExceeded { retry_after_seconds: u64 },
 
+    #[error("Rate limit backend unavailable: {0}")]
+    BackendUnavailable(String),
+
     #[error("Redis error: {0}")]
     RedisError(#[from] redis::RedisError),
 }
@@ -62,6 +65,7 @@ impl From<RateLimitError> for crate::Error {
             } => Self::RateLimited(format!(
                 "Rate limit exceeded. Try again in {retry_after_seconds}s"
             )),
+            RateLimitError::BackendUnavailable(msg) => Self::ServiceUnavailable(msg),
             RateLimitError::RedisError(e) => {
                 Self::Internal(format!("Rate limiter Redis error: {e}"))
             }
@@ -375,9 +379,9 @@ impl RateLimitBackend for RedisRateLimitBackend {
                 tracing::error!(
                     "Redis unreachable during distributed rate limit check, denying request (fail closed): {e}"
                 );
-                return Err(RateLimitError::RateLimitExceeded {
-                    retry_after_seconds: 1,
-                });
+                return Err(RateLimitError::BackendUnavailable(
+                    "Distributed rate limit backend unavailable".to_string(),
+                ));
             }
         };
 
@@ -504,9 +508,9 @@ impl RateLimitBackend for InMemoryRateLimitBackend {
         // For security-critical operations (auth, password checks), distributed
         // coordination is required. Without Redis, we request must be denied
         // to ensure global limits are never exceeded.
-        Err(RateLimitError::RateLimitExceeded {
-            retry_after_seconds: 1,
-        })
+        Err(RateLimitError::BackendUnavailable(
+            "Distributed rate limit backend unavailable".to_string(),
+        ))
     }
 
     async fn get_quota(
@@ -1058,6 +1062,18 @@ mod tests {
     }
 
     #[test]
+    fn test_rate_limit_error_to_core_error_backend_unavailable() {
+        let err = RateLimitError::BackendUnavailable("redis unavailable".to_string());
+        let core_err: crate::Error = err.into();
+        match core_err {
+            crate::Error::ServiceUnavailable(msg) => {
+                assert!(msg.contains("redis unavailable"));
+            }
+            other => panic!("Expected ServiceUnavailable, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_rate_limit_error_display() {
         let err = RateLimitError::RateLimitExceeded {
             retry_after_seconds: 5,
@@ -1148,6 +1164,11 @@ mod tests {
         match &result {
             Ok(()) => {}
             Err(RateLimitError::RateLimitExceeded { .. }) => {}
+            Err(RateLimitError::BackendUnavailable(message)) => {
+                panic!(
+                    "check_rate_limit should NOT return BackendUnavailable in fail-open mode: {message}"
+                );
+            }
             Err(RateLimitError::RedisError(e)) => {
                 panic!(
                     "check_rate_limit should NOT propagate RedisError; expected fallback to in-memory. Got: {e}"

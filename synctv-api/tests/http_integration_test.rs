@@ -1345,6 +1345,12 @@ mod api_error_classification {
     }
 
     #[test]
+    fn test_api_error_service_unavailable_classify() {
+        let err = ApiError::ServiceUnavailable("redis unavailable".to_string());
+        assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
+    }
+
+    #[test]
     #[allow(clippy::type_complexity)]
     fn test_api_error_display_roundtrips() {
         // Ensure Display output classifies correctly when parsed back
@@ -1363,6 +1369,9 @@ mod api_error_classification {
             }),
             (ApiError::InvalidInput("x".into()), |k| {
                 matches!(k, ErrorKind::InvalidArgument)
+            }),
+            (ApiError::ServiceUnavailable("x".into()), |k| {
+                matches!(k, ErrorKind::ServiceUnavailable)
             }),
             (ApiError::Internal("x".into()), |k| {
                 matches!(k, ErrorKind::Internal)

@@ -426,14 +426,9 @@ fn test_i32_as_u32_is_dangerous() {
         "PageParams does not clamp page number down from u32::MAX"
     );
 
-    // In debug mode, offset() panics due to overflow (u32::MAX - 1) * 20.
-    // In release mode, it wraps silently to a bogus value.
-    // Either way, this is a serious bug that our fix prevents.
-    let result = std::panic::catch_unwind(|| params.offset());
-    assert!(
-        result.is_err(),
-        "PageParams::offset() should overflow with u32::MAX page (debug mode panics)"
-    );
+    // offset() must use wide arithmetic so even a wrapped caller input does not panic
+    // or silently truncate before later validation rejects the request.
+    assert_eq!(params.offset(), (u32::MAX as u64 - 1) * 20);
 }
 
 // ============================================================================

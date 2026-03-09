@@ -121,6 +121,50 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
 }
 
 // ============================================================================
+// Test 2b: remove_room also removes distributed Redis subscription state
+// ============================================================================
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn test_remove_room_removes_redis_state_across_replicas() {
+    let redis = TestRedis::start().await;
+
+    let hub_a = create_hub(&redis.redis_url, "test2b:").await;
+    let hub_b = create_hub(&redis.redis_url, "test2b:").await;
+
+    let room_id = RoomId::from_string("removed_room".to_string());
+    let user_a = UserId::from_string("remove_user_a".to_string());
+    let user_b = UserId::from_string("remove_user_b".to_string());
+
+    let _rx1 = hub_a
+        .subscribe(room_id.clone(), user_a, "remove_conn_1".to_string())
+        .await;
+    let _rx2 = hub_a
+        .subscribe(room_id.clone(), user_b, "remove_conn_2".to_string())
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let subs_before = hub_b.get_room_subscribers_distributed(&room_id).await;
+    assert_eq!(
+        subs_before.len(),
+        2,
+        "distributed state should contain both subscribers before room removal"
+    );
+
+    hub_a.remove_room(&room_id);
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let subs_after = hub_b.get_room_subscribers_distributed(&room_id).await;
+    assert!(
+        subs_after.is_empty(),
+        "remove_room must remove Redis subscription state, got {} lingering entries",
+        subs_after.len()
+    );
+}
+
+// ============================================================================
 // Test 3: Multiple users across replicas see consistent distributed count
 // ============================================================================
 

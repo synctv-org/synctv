@@ -54,12 +54,20 @@ impl UserNotificationService {
         self.event_tx.subscribe()
     }
 
+    /// Publish a pre-built notification event to live subscribers.
+    ///
+    /// This is used when the notification has already been persisted and a caller
+    /// only needs to fan out the real-time event to active connections.
+    pub fn publish_realtime_event(&self, event: NotificationCreatedEvent) {
+        let _ = self.event_tx.send(event);
+    }
+
     /// Create a new notification
     pub async fn create(&self, req: CreateNotificationRequest) -> Result<Notification> {
         let notification = self.repository.create(&req).await?;
 
         // Best-effort broadcast; ignore errors (no subscribers = no receivers).
-        let _ = self.event_tx.send(NotificationCreatedEvent {
+        self.publish_realtime_event(NotificationCreatedEvent {
             user_id: req.user_id,
             notification: notification.clone(),
         });

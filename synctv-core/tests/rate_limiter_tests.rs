@@ -255,9 +255,7 @@ async fn test_redis_rate_limiter_distributed_fails_closed_without_redis() {
     assert!(
         matches!(
             result,
-            Err(RateLimitError::RateLimitExceeded {
-                retry_after_seconds: 1
-            })
+            Err(RateLimitError::BackendUnavailable(_))
         ),
         "check_rate_limit_distributed should fail closed when Redis is not configured"
     );

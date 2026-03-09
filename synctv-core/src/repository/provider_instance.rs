@@ -139,8 +139,7 @@ impl ProviderInstanceRepository {
     pub async fn create(&self, instance: &ProviderInstance) -> Result<()> {
         let encrypted_jwt_secret = self.encrypt_field(&instance.jwt_secret)?;
         let encrypted_custom_ca = self.encrypt_field(&instance.custom_ca)?;
-
-        sqlx::query(
+        let result = sqlx::query(
             r"
             INSERT INTO media_provider_instances
             (name, endpoint, comment, jwt_secret, custom_ca, timeout, tls, insecure_tls, providers, enabled)
@@ -158,9 +157,20 @@ impl ProviderInstanceRepository {
         .bind(&instance.providers)
         .bind(instance.enabled)
         .execute(&self.pool)
-        .await?;
+        .await;
 
-        Ok(())
+        match result {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(db_err))
+                if db_err.code().as_deref() == Some("23505") =>
+            {
+                Err(crate::Error::AlreadyExists(format!(
+                    "Provider instance '{}' already exists",
+                    instance.name
+                )))
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Update an existing provider instance (encrypts sensitive fields before storage)

@@ -549,6 +549,11 @@ where
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn l1_ttl(&self) -> Option<std::time::Duration> {
+        self.l1_cache.policy().time_to_live()
+    }
+
     /// Clear both L1 (in-memory) and L2 (Redis) caches for this cache type.
     ///
     /// Used during lag-triggered full flushes so that stale L2 entries cannot

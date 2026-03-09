@@ -57,15 +57,12 @@ impl NotificationService for NotificationServiceImpl {
             .transpose()
             .map_err(|e: NotificationTypeParseError| Status::invalid_argument(e.to_string()))?;
 
-        let pagination =
-            synctv_core::models::PageParams::new(Some(req.page as u32), Some(req.page_size as u32));
-
         let result = self
             .notification_api
             .list_notifications(
                 &user_id,
-                Some(pagination.page as i32),
-                Some(pagination.page_size as i32),
+                Some(req.page),
+                Some(req.page_size),
                 req.is_read,
                 notification_type,
             )

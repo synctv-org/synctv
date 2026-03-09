@@ -1367,6 +1367,10 @@ mod tests {
                 tonic::Code::InvalidArgument,
             ),
             (
+                crate::impls::ApiError::ServiceUnavailable("x".into()),
+                tonic::Code::Unavailable,
+            ),
+            (
                 crate::impls::ApiError::Internal("x".into()),
                 tonic::Code::Internal,
             ),

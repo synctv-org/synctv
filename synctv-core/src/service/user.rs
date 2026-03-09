@@ -72,6 +72,27 @@ impl std::fmt::Debug for UserService {
 }
 
 impl UserService {
+    fn log_username_cache_write_failure(&self, user_id: &UserId, operation: &'static str, error: &Error) {
+        tracing::warn!(
+            error = %error,
+            user_id = %user_id.as_str(),
+            operation,
+            "Username cache update failed after primary user mutation; continuing with durable result"
+        );
+    }
+
+    async fn cache_username_best_effort(&self, user_id: &UserId, username: &str, operation: &'static str) {
+        if let Err(error) = self.username_cache.set(user_id, username).await {
+            self.log_username_cache_write_failure(user_id, operation, &error);
+        }
+    }
+
+    async fn invalidate_username_cache_best_effort(&self, user_id: &UserId, operation: &'static str) {
+        if let Err(error) = self.invalidate_username_cache(user_id).await {
+            self.log_username_cache_write_failure(user_id, operation, &error);
+        }
+    }
+
     #[must_use]
     pub fn new(
         pool: PgPool,
@@ -361,7 +382,8 @@ impl UserService {
         };
 
         // Populate username cache
-        self.username_cache.set(&created_user.id, &username).await?;
+        self.cache_username_best_effort(&created_user.id, &username, "register")
+            .await;
 
         // When the user starts as Pending (email verification or signup review required),
         // do NOT issue tokens. The user must either verify their email or be approved
@@ -455,19 +477,21 @@ impl UserService {
             user.role = role;
         }
         let created_user = self.repository.create(&user).await?;
-        self.username_cache.set(&created_user.id, &username).await?;
+        self.cache_username_best_effort(&created_user.id, &username, "create_user_with_role")
+            .await;
         Ok(created_user)
     }
 
     /// Generate JWT tokens and populate username cache for a newly created user.
     pub async fn finalize_registration(&self, user: &User) -> Result<(String, String)> {
-        self.username_cache.set(&user.id, &user.username).await?;
         let access_token =
             self.jwt_service
                 .sign_token(&user.id, TokenType::Access, user.password_version)?;
         let refresh_token =
             self.jwt_service
                 .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
+        self.cache_username_best_effort(&user.id, &user.username, "finalize_registration")
+            .await;
         Ok((access_token, refresh_token))
     }
 
@@ -783,7 +807,8 @@ impl UserService {
     /// it was read.
     pub async fn update_user(&self, user: &User, old_version: i32) -> Result<User> {
         let updated = self.repository.update(user, old_version).await?;
-        self.invalidate_username_cache(&user.id).await?;
+        self.invalidate_username_cache_best_effort(&user.id, "update_user")
+            .await;
         self.notify_user_invalidation(&user.id).await;
         Ok(updated)
     }
@@ -806,12 +831,10 @@ impl UserService {
 
     /// Set user password (admin use, no old password required)
     ///
-    /// After updating the password, all existing tokens for the user are
-    /// invalidated. This is done by:
-    /// 1. Updating the `password_changed_at` timestamp and incrementing `password_version`
-    ///    in the database, which causes all access tokens with old pv to be rejected.
-    /// 2. Revoking the entire refresh token family for the user, which causes all
-    ///    existing refresh tokens to be rejected on the next refresh attempt.
+    /// After updating the password, all existing access and refresh tokens for the
+    /// user are invalidated by incrementing `password_version` in the same database
+    /// write. Refresh flows re-load the user and reject tokens whose embedded
+    /// password version is stale, so no extra pre-commit side effect is needed.
     pub async fn set_password(&self, user_id: &UserId, new_password: &str) -> Result<User> {
         // Validate new password
         self.validate_password(new_password)?;
@@ -826,23 +849,6 @@ impl UserService {
         let updated_user = self
             .repository
             .update_password_with_executor(user_id, &password_hash, &mut *tx)
-            .await?;
-
-        // Revoke all refresh token families for this user so existing refresh
-        // tokens cannot be used to obtain new access tokens. The password_version
-        // check catches access tokens, but refresh tokens need explicit family
-        // revocation to prevent an attacker with a stolen refresh token from
-        // getting new access tokens after a password change.
-        let now = chrono::Utc::now().timestamp();
-        let family_key = self
-            .key_builder
-            .refresh_token_family_revoked(user_id.as_str());
-        let family_ttl = self
-            .jwt_service
-            .refresh_token_duration_seconds()
-            .saturating_add(3600);
-        self.token_blacklist
-            .set_family_revoked(&family_key, now, family_ttl)
             .await?;
 
         tx.commit().await?;
@@ -862,7 +868,8 @@ impl UserService {
     ///
     /// When changing password, `old_password` is required and verified inside
     /// the transaction against the current row version before any mutation is
-    /// committed. Refresh token family revocation is part of the same commit.
+    /// committed. Token invalidation is driven by the resulting `password_version`
+    /// change, which becomes visible only after the transaction commits.
     pub async fn update_profile(
         &self,
         user_id: &UserId,
@@ -924,24 +931,11 @@ impl UserService {
             )
             .await?;
 
-        if new_password_hash.is_some() {
-            let now = chrono::Utc::now().timestamp();
-            let family_key = self
-                .key_builder
-                .refresh_token_family_revoked(user_id.as_str());
-            let family_ttl = self
-                .jwt_service
-                .refresh_token_duration_seconds()
-                .saturating_add(3600);
-            self.token_blacklist
-                .set_family_revoked(&family_key, now, family_ttl)
-                .await?;
-        }
-
         tx.commit().await?;
 
         if updated_user.username != current_user.username {
-            self.invalidate_username_cache(user_id).await?;
+            self.invalidate_username_cache_best_effort(user_id, "update_profile")
+                .await;
         }
         self.notify_user_invalidation(user_id).await;
 
@@ -1297,7 +1291,12 @@ impl UserService {
             match self.repository.create(&user).await {
                 Ok(created_user) => {
                     // Populate username cache
-                    self.username_cache.set(&created_user.id, candidate).await?;
+                    self.cache_username_best_effort(
+                        &created_user.id,
+                        candidate,
+                        "create_or_load_by_oauth2",
+                    )
+                    .await;
 
                     if candidate == &base_username {
                         tracing::info!(
@@ -1368,15 +1367,24 @@ impl UserService {
     /// The cache is automatically populated on cache miss.
     pub async fn get_username(&self, user_id: &UserId) -> Result<Option<String>> {
         // Check cache first
-        if let Some(username) = self.username_cache.get(user_id).await? {
-            return Ok(Some(username));
+        match self.username_cache.get(user_id).await {
+            Ok(Some(username)) => return Ok(Some(username)),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    user_id = %user_id.as_str(),
+                    "Username cache read failed; falling back to database"
+                );
+            }
         }
 
         // Cache miss - fetch from database
         if let Some(user) = self.repository.get_by_id(user_id).await? {
             // Populate cache
             let username = user.username.clone();
-            self.username_cache.set(user_id, &username).await?;
+            self.cache_username_best_effort(user_id, &username, "get_username")
+                .await;
             Ok(Some(username))
         } else {
             Ok(None)
@@ -1388,7 +1396,17 @@ impl UserService {
     /// Returns a map of `user_id` -> username.
     pub async fn get_usernames(&self, user_ids: &[UserId]) -> Result<HashMap<UserId, String>> {
         // Try batch cache lookup first
-        let mut result = self.username_cache.get_batch(user_ids).await?;
+        let mut result = match self.username_cache.get_batch(user_ids).await {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    requested = user_ids.len(),
+                    "Username cache batch read failed; falling back to database"
+                );
+                HashMap::new()
+            }
+        };
         let missing_ids: Vec<UserId> = user_ids
             .iter()
             .filter(|id| !result.contains_key(*id))
@@ -1401,7 +1419,8 @@ impl UserService {
             for user in users {
                 let user_id = user.id.clone();
                 let username = user.username.clone();
-                self.username_cache.set(&user_id, &username).await?;
+                self.cache_username_best_effort(&user_id, &username, "get_usernames")
+                    .await;
                 result.insert(user_id, username);
             }
         }

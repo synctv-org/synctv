@@ -175,6 +175,7 @@ pub enum ErrorKind {
     AlreadyExists,
     InvalidArgument,
     RateLimited,
+    ServiceUnavailable,
     Internal,
 }
 
@@ -189,6 +190,7 @@ impl ErrorKind {
             Self::AlreadyExists => error_codes::ALREADY_EXISTS,
             Self::InvalidArgument => error_codes::INVALID_ARGUMENT,
             Self::RateLimited => error_codes::RESOURCE_EXHAUSTED,
+            Self::ServiceUnavailable => error_codes::SERVICE_UNAVAILABLE,
             Self::Internal => error_codes::INTERNAL_ERROR,
         }
     }
@@ -208,6 +210,7 @@ pub enum ApiError {
     AlreadyExists(String),
     InvalidInput(String),
     RateLimited(String),
+    ServiceUnavailable(String),
     Internal(String),
 }
 
@@ -223,6 +226,7 @@ impl From<synctv_core::Error> for ApiError {
             synctv_core::Error::AlreadyExists(msg) => Self::AlreadyExists(msg),
             synctv_core::Error::InvalidInput(msg) => Self::InvalidInput(msg),
             synctv_core::Error::RateLimited(msg) => Self::RateLimited(msg),
+            synctv_core::Error::ServiceUnavailable(msg) => Self::ServiceUnavailable(msg),
             other => Self::Internal(other.to_string()),
         }
     }
@@ -280,6 +284,7 @@ impl ApiError {
             Self::AlreadyExists(_) => ErrorKind::AlreadyExists,
             Self::InvalidInput(_) => ErrorKind::InvalidArgument,
             Self::RateLimited(_) => ErrorKind::RateLimited,
+            Self::ServiceUnavailable(_) => ErrorKind::ServiceUnavailable,
             Self::Internal(_) => ErrorKind::Internal,
         }
     }
@@ -294,6 +299,7 @@ impl ApiError {
             | Self::AlreadyExists(msg)
             | Self::InvalidInput(msg)
             | Self::RateLimited(msg)
+            | Self::ServiceUnavailable(msg)
             | Self::Internal(msg) => msg,
         }
     }
@@ -316,6 +322,7 @@ impl std::fmt::Display for ApiError {
             Self::AlreadyExists(msg) => write!(f, "Already exists: {msg}"),
             Self::InvalidInput(msg) => write!(f, "Invalid input: {msg}"),
             Self::RateLimited(msg) => write!(f, "Rate limited: {msg}"),
+            Self::ServiceUnavailable(msg) => write!(f, "Service unavailable: {msg}"),
             Self::Internal(msg) => write!(f, "Internal error: {msg}"),
         }
     }
@@ -338,6 +345,7 @@ impl From<String> for ApiError {
             ErrorKind::AlreadyExists => Self::AlreadyExists(msg),
             ErrorKind::InvalidArgument => Self::InvalidInput(msg),
             ErrorKind::RateLimited => Self::RateLimited(msg),
+            ErrorKind::ServiceUnavailable => Self::ServiceUnavailable(msg),
             ErrorKind::Internal => Self::Internal(msg),
         }
     }
@@ -438,6 +446,8 @@ fn classify_by_prefix(err: &str) -> Option<ErrorKind> {
         Some(ErrorKind::InvalidArgument)
     } else if err.starts_with("Rate limited: ") {
         Some(ErrorKind::RateLimited)
+    } else if err.starts_with("Service unavailable: ") {
+        Some(ErrorKind::ServiceUnavailable)
     } else if err.starts_with("Internal error: ")
         || err.starts_with("Database error: ")
         || err.starts_with("Redis error: ")
@@ -729,6 +739,9 @@ mod tests {
         let err = ApiError::RateLimited("too fast".to_string());
         assert!(matches!(err.classify(), ErrorKind::RateLimited));
 
+        let err = ApiError::ServiceUnavailable("redis unavailable".to_string());
+        assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
+
         let err = ApiError::Internal("boom".to_string());
         assert!(matches!(err.classify(), ErrorKind::Internal));
     }
@@ -755,6 +768,9 @@ mod tests {
             }),
             (ApiError::RateLimited("too fast".into()), |k| {
                 matches!(k, ErrorKind::RateLimited)
+            }),
+            (ApiError::ServiceUnavailable("down".into()), |k| {
+                matches!(k, ErrorKind::ServiceUnavailable)
             }),
             (ApiError::Internal("boom".into()), |k| {
                 matches!(k, ErrorKind::Internal)
@@ -840,6 +856,18 @@ mod tests {
     }
 
     #[test]
+    fn test_api_error_from_core_service_unavailable() {
+        let core_err = synctv_core::Error::ServiceUnavailable("redis unavailable".to_string());
+        let api_err = ApiError::from(core_err);
+        assert!(matches!(
+            api_err,
+            ApiError::ServiceUnavailable(ref msg) if msg == "redis unavailable"
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
     fn test_classify_by_prefix_rate_limited() {
         assert!(matches!(
             classify_error("Rate limited: too fast"),
@@ -852,5 +880,12 @@ mod tests {
         let err = ApiError::RateLimited("exceeded quota".to_string());
         let display = err.to_string();
         assert_eq!(display, "Rate limited: exceeded quota");
+    }
+
+    #[test]
+    fn test_api_error_service_unavailable_display() {
+        let err = ApiError::ServiceUnavailable("redis unavailable".to_string());
+        let display = err.to_string();
+        assert_eq!(display, "Service unavailable: redis unavailable");
     }
 }

@@ -98,6 +98,7 @@ pub(crate) fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
         ErrorKind::AlreadyExists => tonic::Status::already_exists(msg),
         ErrorKind::InvalidArgument => tonic::Status::invalid_argument(msg),
         ErrorKind::RateLimited => tonic::Status::resource_exhausted(msg),
+        ErrorKind::ServiceUnavailable => tonic::Status::unavailable(msg),
         ErrorKind::Internal => {
             tracing::error!("API internal error: {msg}");
             tonic::Status::internal("Internal error")

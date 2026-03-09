@@ -326,6 +326,13 @@ impl RemoteProviderManager {
         Ok(())
     }
 
+    /// Validate endpoint and timeout without creating or connecting a channel.
+    fn validate_config(config: &ProviderInstance) -> crate::Result<()> {
+        Self::validate_endpoint_ssrf(&config.endpoint)?;
+        config.parse_timeout().map_err(crate::Error::Internal)?;
+        Ok(())
+    }
+
     /// Create a gRPC channel for the given provider instance
     ///
     /// Establishes gRPC connection with configured TLS settings, timeout, and middleware.
@@ -606,24 +613,24 @@ impl RemoteProviderManager {
     /// 3. Caches the channel locally
     /// 4. Notifies other replicas via Redis
     pub async fn add(&self, config: ProviderInstance) -> crate::Result<()> {
-        // Check DB for existing instance (not just local cache)
-        if let Ok(Some(_)) = self.repository.get_by_name(&config.name).await {
-            return Err(crate::Error::AlreadyExists(format!(
-                "Instance '{}' already exists",
-                config.name
-            )));
-        }
+        Self::validate_config(&config)?;
 
-        // Create gRPC connection
-        let channel = Self::create_grpc_channel(&config).await?;
+        let channel = if config.enabled {
+            Some(Self::create_grpc_channel(&config).await?)
+        } else {
+            None
+        };
 
         // Save to database
         self.repository.create(&config).await?;
 
-        // Cache locally
-        self.channel_cache
-            .insert(config.name.clone(), channel)
-            .await;
+        if let Some(channel) = channel {
+            self.channel_cache
+                .insert(config.name.clone(), channel)
+                .await;
+        } else {
+            self.channel_cache.invalidate(&config.name).await;
+        }
 
         // Notify other replicas
         self.notify_change(&config.name).await;
@@ -639,16 +646,24 @@ impl RemoteProviderManager {
     /// 3. Replaces cached channel
     /// 4. Notifies other replicas via Redis
     pub async fn update(&self, config: ProviderInstance) -> crate::Result<()> {
-        // Create new gRPC connection
-        let channel = Self::create_grpc_channel(&config).await?;
+        Self::validate_config(&config)?;
+
+        let channel = if config.enabled {
+            Some(Self::create_grpc_channel(&config).await?)
+        } else {
+            None
+        };
 
         // Update database
         self.repository.update(&config).await?;
 
-        // Replace cached channel
-        self.channel_cache
-            .insert(config.name.clone(), channel)
-            .await;
+        if let Some(channel) = channel {
+            self.channel_cache
+                .insert(config.name.clone(), channel)
+                .await;
+        } else {
+            self.channel_cache.invalidate(&config.name).await;
+        }
 
         // Notify other replicas
         self.notify_change(&config.name).await;
@@ -680,17 +695,33 @@ impl RemoteProviderManager {
     ///
     /// Loads config from DB, creates channel, caches it, and notifies replicas.
     pub async fn enable(&self, name: &str) -> crate::Result<()> {
-        // Update database
-        self.repository.enable(name).await?;
-
-        // Reload instance from database and create channel
-        let config = self
+        let mut config = self
             .repository
             .get_by_name(name)
             .await?
             .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
 
+        if config.enabled {
+            if let Some(channel) = self.get(&config.name).await {
+                self.channel_cache
+                    .insert(config.name.clone(), channel)
+                    .await;
+            } else {
+                let channel = Self::create_grpc_channel(&config).await?;
+                self.channel_cache
+                    .insert(config.name.clone(), channel)
+                    .await;
+            }
+            self.notify_change(name).await;
+            tracing::info!("Enabled provider instance: {}", name);
+            return Ok(());
+        }
+
+        config.enabled = true;
         let channel = Self::create_grpc_channel(&config).await?;
+
+        // Persist only after a valid channel can be constructed.
+        self.repository.enable(name).await?;
         self.channel_cache
             .insert(config.name.clone(), channel)
             .await;

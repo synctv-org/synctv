@@ -8,6 +8,7 @@ use synctv_core::models::notification::{
     MarkAllAsReadRequest, MarkAsReadRequest, Notification, NotificationListQuery,
     NotificationType as CoreNotificationType,
 };
+use synctv_core::models::{PageParams, MAX_PAGE_SIZE};
 use synctv_core::service::UserNotificationService;
 use uuid::Uuid;
 
@@ -105,6 +106,22 @@ pub struct ListNotificationsResult {
     pub unread_count: i64,
 }
 
+const DEFAULT_NOTIFICATION_PAGE: i32 = 1;
+const DEFAULT_NOTIFICATION_PAGE_SIZE: i32 = synctv_core::models::DEFAULT_PAGE_SIZE as i32;
+
+fn normalize_notification_pagination(
+    page: Option<i32>,
+    page_size: Option<i32>,
+) -> Result<PageParams, ApiError> {
+    let page = page.unwrap_or(DEFAULT_NOTIFICATION_PAGE).max(DEFAULT_NOTIFICATION_PAGE) as u32;
+    let page_size = page_size
+        .unwrap_or(DEFAULT_NOTIFICATION_PAGE_SIZE)
+        .clamp(1, MAX_PAGE_SIZE as i32) as u32;
+    let pagination = PageParams::new(Some(page), Some(page_size));
+    pagination.validate().map_err(ApiError::from)?;
+    Ok(pagination)
+}
+
 impl NotificationApiImpl {
     #[must_use]
     pub const fn new(notification_service: Arc<UserNotificationService>) -> Self {
@@ -122,11 +139,9 @@ impl NotificationApiImpl {
         is_read: Option<bool>,
         notification_type: Option<CoreNotificationType>,
     ) -> Result<ListNotificationsResult, ApiError> {
+        let pagination = normalize_notification_pagination(page, page_size)?;
         let query = NotificationListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                page.map(|p| p as u32),
-                page_size.map(|s| s as u32),
-            ),
+            pagination,
             is_read,
             notification_type,
         };
@@ -135,7 +150,7 @@ impl NotificationApiImpl {
             .notification_service
             .list(user_id, query)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list notifications: {e}")))?;
+            .map_err(ApiError::from)?;
 
         let unread_count = self
             .notification_service
@@ -227,6 +242,20 @@ impl NotificationApiImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_notification_pagination_clamps_negative_inputs() {
+        let pagination =
+            normalize_notification_pagination(Some(-5), Some(-100)).expect("pagination");
+        assert_eq!(pagination.page, 1);
+        assert_eq!(pagination.page_size, 1);
+    }
+
+    #[test]
+    fn test_normalize_notification_pagination_rejects_excessive_offset() {
+        let err = normalize_notification_pagination(Some(1002), Some(100)).unwrap_err();
+        assert!(matches!(err, ApiError::InvalidInput(_)));
+    }
 
     #[test]
     fn test_proto_notification_type_to_core_valid_types() {

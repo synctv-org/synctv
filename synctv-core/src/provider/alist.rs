@@ -28,8 +28,6 @@ use std::time::Duration;
 pub struct AlistProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
-    /// Optional timeout for API requests (in seconds)
-    timeout_seconds: Option<u64>,
 }
 
 impl AlistProvider {
@@ -42,7 +40,6 @@ impl AlistProvider {
         Self {
             provider_instance_manager,
             client_manager: Arc::new(ProviderClientManager::new()),
-            timeout_seconds: None,
         }
     }
 
@@ -54,27 +51,7 @@ impl AlistProvider {
         Self {
             provider_instance_manager,
             client_manager,
-            timeout_seconds: None,
         }
-    }
-
-    /// Create a new `AlistProvider` with custom timeout configuration
-    #[must_use]
-    pub fn with_timeout(
-        provider_instance_manager: Arc<RemoteProviderManager>,
-        timeout_seconds: u64,
-    ) -> Self {
-        Self {
-            provider_instance_manager,
-            client_manager: Arc::new(ProviderClientManager::new()),
-            timeout_seconds: Some(timeout_seconds),
-        }
-    }
-
-    /// Get the configured timeout in seconds (if any)
-    #[must_use]
-    pub const fn timeout_seconds(&self) -> Option<u64> {
-        self.timeout_seconds
     }
 
     /// Get Alist client for the given instance name (remote if available, local fallback)

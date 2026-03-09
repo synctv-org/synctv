@@ -359,7 +359,9 @@ mod tests {
             .await
             .expect_err("storage errors must fail closed");
 
-        assert!(matches!(err, Error::Authentication(msg) if msg.contains("temporarily unavailable")));
+        assert!(
+            matches!(err, Error::Authentication(msg) if msg.contains("temporarily unavailable"))
+        );
     }
 
     #[tokio::test]

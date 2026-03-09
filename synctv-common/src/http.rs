@@ -18,7 +18,7 @@ use crate::ssrf::ssrf_dns_resolver;
 /// - Redirect policy set to `none` (prevents redirect-based SSRF)
 pub struct SsrfSafeClientBuilder {
     connect_timeout: Duration,
-    request_timeout: Duration,
+    request_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
     pool_max_idle_per_host: usize,
     pool_idle_timeout: Option<Duration>,
@@ -33,7 +33,7 @@ impl SsrfSafeClientBuilder {
     pub const fn provider() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
-            request_timeout: Duration::from_secs(30),
+            request_timeout: Some(Duration::from_secs(30)),
             read_timeout: None,
             pool_max_idle_per_host: 10,
             pool_idle_timeout: None,
@@ -48,7 +48,7 @@ impl SsrfSafeClientBuilder {
     pub const fn proxy() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
-            request_timeout: Duration::from_mins(1),
+            request_timeout: Some(Duration::from_mins(1)),
             read_timeout: Some(Duration::from_secs(30)),
             pool_max_idle_per_host: 100,
             pool_idle_timeout: Some(Duration::from_secs(30)),
@@ -59,7 +59,21 @@ impl SsrfSafeClientBuilder {
     /// Override the overall request timeout.
     #[must_use]
     pub const fn request_timeout(mut self, timeout: Duration) -> Self {
-        self.request_timeout = timeout;
+        self.request_timeout = Some(timeout);
+        self
+    }
+
+    /// Disable the overall request timeout.
+    #[must_use]
+    pub const fn disable_request_timeout(mut self) -> Self {
+        self.request_timeout = None;
+        self
+    }
+
+    /// Override the connection-establishment timeout.
+    #[must_use]
+    pub const fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout;
         self
     }
 
@@ -96,10 +110,12 @@ impl SsrfSafeClientBuilder {
         let mut builder = reqwest::Client::builder()
             .dns_resolver(ssrf_dns_resolver())
             .connect_timeout(self.connect_timeout)
-            .timeout(self.request_timeout)
             .pool_max_idle_per_host(self.pool_max_idle_per_host)
             .redirect(reqwest::redirect::Policy::none());
 
+        if let Some(request_timeout) = self.request_timeout {
+            builder = builder.timeout(request_timeout);
+        }
         if let Some(rt) = self.read_timeout {
             builder = builder.read_timeout(rt);
         }
@@ -136,7 +152,7 @@ mod tests {
     fn test_provider_defaults() {
         let b = SsrfSafeClientBuilder::provider();
         assert_eq!(b.connect_timeout, Duration::from_secs(10));
-        assert_eq!(b.request_timeout, Duration::from_secs(30));
+        assert_eq!(b.request_timeout, Some(Duration::from_secs(30)));
         assert!(b.read_timeout.is_none());
         assert_eq!(b.pool_max_idle_per_host, 10);
         assert!(b.pool_idle_timeout.is_none());
@@ -147,7 +163,7 @@ mod tests {
     fn test_proxy_defaults() {
         let b = SsrfSafeClientBuilder::proxy();
         assert_eq!(b.connect_timeout, Duration::from_secs(10));
-        assert_eq!(b.request_timeout, Duration::from_mins(1));
+        assert_eq!(b.request_timeout, Some(Duration::from_mins(1)));
         assert_eq!(b.read_timeout, Some(Duration::from_secs(30)));
         assert_eq!(b.pool_max_idle_per_host, 100);
         assert_eq!(b.pool_idle_timeout, Some(Duration::from_secs(30)));
@@ -157,12 +173,14 @@ mod tests {
     #[test]
     fn test_builder_customization() {
         let b = SsrfSafeClientBuilder::provider()
+            .connect_timeout(Duration::from_secs(3))
             .request_timeout(Duration::from_mins(2))
             .read_timeout(Duration::from_mins(1))
             .pool_max_idle_per_host(50)
             .pool_idle_timeout(Duration::from_secs(90))
             .user_agent("test-agent");
-        assert_eq!(b.request_timeout, Duration::from_mins(2));
+        assert_eq!(b.connect_timeout, Duration::from_secs(3));
+        assert_eq!(b.request_timeout, Some(Duration::from_mins(2)));
         assert_eq!(b.read_timeout, Some(Duration::from_mins(1)));
         assert_eq!(b.pool_max_idle_per_host, 50);
         assert_eq!(b.pool_idle_timeout, Some(Duration::from_secs(90)));
@@ -185,5 +203,11 @@ mod tests {
             .user_agent("MyApp/1.0")
             .build()
             .expect("custom provider client should build");
+    }
+
+    #[test]
+    fn test_disable_request_timeout() {
+        let builder = SsrfSafeClientBuilder::provider().disable_request_timeout();
+        assert_eq!(builder.request_timeout, None);
     }
 }

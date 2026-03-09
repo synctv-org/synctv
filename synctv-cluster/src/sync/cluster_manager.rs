@@ -232,6 +232,8 @@ impl ClusterManager {
         let critical_retry_tasks = TaskTracker::new();
 
         let (admin_event_tx, _) = broadcast::channel(4096);
+        let redis_transport_ready = config.redis_client.is_some()
+            && (config.redis_conn.is_some() || config.shared_redis_conn.is_some());
 
         // Start Redis pub/sub using the pre-built client/connection.
         // When Redis is not provided, run in single-node mode (tests).
@@ -242,14 +244,19 @@ impl ClusterManager {
             redis_pubsub,
             publisher_handle,
             critical_forwarder_handle,
-        ) = if let Some(redis_client) = config.redis_client.clone() {
+        ) = if redis_transport_ready {
+            let redis_client = config.redis_client.clone().ok_or_else(|| {
+                crate::error::Error::Configuration(
+                    "cluster.enabled=true requires Redis client".to_string(),
+                )
+            })?;
+
             // Reuse the shared connection for the message hub's distributed
             // subscription state and TTL refresh background task.
             let hub = if let Some(shared_redis_conn) = config.shared_redis_conn.clone() {
-                Arc::new(RoomMessageHub::new().with_shared_redis(
-                    shared_redis_conn,
-                    &config.key_prefix,
-                ))
+                Arc::new(
+                    RoomMessageHub::new().with_shared_redis(shared_redis_conn, &config.key_prefix),
+                )
             } else if let Some(redis_conn) = config.redis_conn.clone() {
                 Arc::new(RoomMessageHub::new().with_redis(redis_conn, &config.key_prefix))
             } else {
@@ -316,7 +323,26 @@ impl ClusterManager {
                 Some(critical_forwarder_handle),
             )
         } else {
-            warn!("Redis not provided, running in single-node mode");
+            if config.cluster_enabled
+                && (config.redis_client.is_some()
+                    || config.redis_conn.is_some()
+                    || config.shared_redis_conn.is_some())
+            {
+                return Err(crate::error::Error::Configuration(
+                    "cluster.enabled=true requires complete Redis client and connection manager wiring"
+                        .to_string(),
+                ));
+            }
+            if config.redis_client.is_some()
+                || config.redis_conn.is_some()
+                || config.shared_redis_conn.is_some()
+            {
+                warn!(
+                    "Partial Redis wiring detected while cluster mode is disabled; degrading ClusterManager to local-only mode"
+                );
+            } else {
+                warn!("Redis not provided, running in single-node mode");
+            }
             if cache_invalidation.is_some() {
                 warn!(
                     "cache_invalidation service provided but Redis is not available; \

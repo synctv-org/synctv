@@ -40,7 +40,7 @@ mod tests {
     fn test_uuid() {
         let id = Uuid::new();
         let s = id.to_string();
-        let serialized = serde_json::to_string(&id).unwrap();
+        let serialized = serde_json::to_string(&id).expect("Uuid should always serialize to JSON");
         assert!(!s.is_empty());
         assert!(serialized.contains(&s));
 

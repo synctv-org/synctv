@@ -6,6 +6,12 @@ use synctv_core::models::UserId;
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 
+fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String {
+    let rtmp_host = config.public_rtmp_host();
+    let rtmp_port = config.livestream.rtmp_port;
+    format!("rtmp://{}:{}/live/{}", rtmp_host, rtmp_port, room_id)
+}
+
 impl ClientApiImpl {
     pub async fn create_publish_key(
         &self,
@@ -63,9 +69,7 @@ impl ClientApiImpl {
 
         // Construct RTMP URL and stream key from server config
         // Use advertise_host for external clients (resolves to POD_IP in K8s, hostname otherwise)
-        let rtmp_host = self.config.advertise_host();
-        let rtmp_port = self.config.livestream.rtmp_port;
-        let rtmp_url = format!("rtmp://{}:{}/live/{}", rtmp_host, rtmp_port, rid.as_str());
+        let rtmp_url = build_publish_rtmp_url(&self.config, rid.as_str());
         let stream_key = format!("{}?key={}", media_id.as_str(), publish_key.token);
 
         tracing::info!(
@@ -236,5 +240,22 @@ impl ClientApiImpl {
             .get("url")
             .and_then(|v| v.as_str())
             .map(String::from)
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::build_publish_rtmp_url;
+
+    #[test]
+    fn build_publish_rtmp_url_prefers_explicit_public_rtmp_host() {
+        let mut config = synctv_core::Config::default();
+        config.server.advertise_host = "10.0.0.12".to_string();
+        config.livestream.public_rtmp_host = "stream.example.com".to_string();
+        config.livestream.rtmp_port = 1935;
+
+        let url = build_publish_rtmp_url(&config, "room_123");
+
+        assert_eq!(url, "rtmp://stream.example.com:1935/live/room_123");
     }
 }

@@ -21,8 +21,7 @@ use std::time::Duration;
 /// Generates playback URLs for live streams from external sources.
 /// The external URL is stored in `source_config.url` and validated on creation.
 /// Playback URLs point to synctv's own HLS/FLV endpoints.
-pub struct LiveProxyProvider {
-}
+pub struct LiveProxyProvider {}
 
 impl LiveProxyProvider {
     pub const NAME: &'static str = "live_proxy";
@@ -52,8 +51,9 @@ impl LiveProxyProvider {
 
         match rest {
             "stream" => {
-                let claims = verified_claims
-                    .ok_or_else(|| ProviderError::ApiError("Missing verified proxy claims".into()))?;
+                let claims = verified_claims.ok_or_else(|| {
+                    ProviderError::ApiError("Missing verified proxy claims".into())
+                })?;
                 Ok(ProxyAction::LiveFlv {
                     provider_name: Self::NAME.to_string(),
                     room_id: room_id.to_string(),
@@ -194,7 +194,10 @@ impl ProviderProxy for LiveProxyProvider {
         &self,
         ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
-        let (version, rest) = ctx.sub_path.split_once('/').ok_or(ProviderError::NotFound)?;
+        let (version, rest) = ctx
+            .sub_path
+            .split_once('/')
+            .ok_or(ProviderError::NotFound)?;
         let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
         self.build_live_proxy_action(rest, &versioned, ctx.verified_claims)
     }
@@ -290,8 +293,20 @@ mod tests {
             .await
             .unwrap();
 
-        let hls = result.playback_infos.get("hls").unwrap().urls.first().unwrap();
-        let flv = result.playback_infos.get("flv").unwrap().urls.first().unwrap();
+        let hls = result
+            .playback_infos
+            .get("hls")
+            .unwrap()
+            .urls
+            .first()
+            .unwrap();
+        let flv = result
+            .playback_infos
+            .get("flv")
+            .unwrap()
+            .urls
+            .first()
+            .unwrap();
         assert!(hls.starts_with("/api/providers/proxy/live_proxy/"));
         assert!(hls.contains("/m3u8?"));
         assert!(flv.starts_with("/api/providers/proxy/live_proxy/"));

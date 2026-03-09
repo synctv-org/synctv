@@ -43,6 +43,8 @@ const MAX_CONSECUTIVE_HEARTBEAT_FAILURES: u32 = 3;
 /// because Redis timeouts should not cause publisher cleanup — they likely indicate a
 /// transient network issue, not a dead publisher.
 const MAX_CONSECUTIVE_REDIS_UNREACHABLE: u32 = 10;
+/// Maximum time to wait for delivering a critical `UnPublish` control event.
+const UNPUBLISH_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Duration after which a publisher that hasn't sent any media data is
 /// considered silent and should be cleaned up (LS-5). This is separate from
@@ -813,23 +815,36 @@ impl PublisherManager {
         }
 
         // 3. Send UnPublish to StreamHub so subscribers are notified.
-        // Use try_send() instead of send().await to avoid blocking the heartbeat
-        // loop if the StreamHub event channel is full or slow.
+        // This is a critical control-plane event and must not be silently dropped.
+        // Wait briefly for backpressure to clear, then log a hard failure if even
+        // the bounded timeout cannot deliver it.
         let identifier = StreamIdentifier::Rtmp {
             app_name: room_id.to_string(),
             stream_name: media_id.to_string(),
         };
-        match self.hub_event_sender.try_send(StreamHubEvent::UnPublish {
-            identifier: identifier.clone(),
-        }) {
-            Ok(()) => {
+        match tokio::time::timeout(
+            UNPUBLISH_SEND_TIMEOUT,
+            self.hub_event_sender.send(StreamHubEvent::UnPublish {
+                identifier: identifier.clone(),
+            }),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
                 info!(
                     "Sent UnPublish event for room {} / media {} ({})",
                     room_id, media_id, reason
                 );
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 error!("Failed to send UnPublish event for {:?}: {}", identifier, e);
+            }
+            Err(_) => {
+                error!(
+                    "Timed out after {}s sending UnPublish event for {:?}",
+                    UNPUBLISH_SEND_TIMEOUT.as_secs(),
+                    identifier
+                );
             }
         }
     }
@@ -1343,6 +1358,58 @@ mod tests {
 
         // Should not panic when recording activity for a publisher that doesn't exist
         manager.record_publisher_activity("nonexistent", "publisher");
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_publisher_waits_for_unpublish_backpressure() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let manager = PublisherManager::new(registry.clone(), "test-node".to_string(), tx);
+
+        registry
+            .try_register_publisher(
+                "room-backpressure",
+                "media-backpressure",
+                "test-node",
+                "user1",
+                "",
+            )
+            .await
+            .unwrap();
+        manager.active_publishers.insert(
+            "room-backpressure:media-backpressure".to_string(),
+            Arc::new(PublisherEntry::with_user_id("user1".to_string())),
+        );
+
+        manager
+            .hub_event_sender
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name: "occupied".to_string(),
+                    stream_name: "occupied".to_string(),
+                },
+            })
+            .expect("fill channel to create backpressure");
+
+        let cleanup = manager.cleanup_publisher("room-backpressure", "media-backpressure", "test");
+        let delayed_recv = async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = rx.recv().await;
+            rx.recv().await
+        };
+
+        let ((), received) = tokio::join!(cleanup, delayed_recv);
+        let Some(StreamHubEvent::UnPublish { identifier }) = received else {
+            panic!("expected an UnPublish event after backpressure clears");
+        };
+
+        assert_eq!(
+            identifier,
+            StreamIdentifier::Rtmp {
+                app_name: "room-backpressure".to_string(),
+                stream_name: "media-backpressure".to_string(),
+            }
+        );
     }
 
     // ========================================================================

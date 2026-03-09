@@ -2488,7 +2488,7 @@ mod tests {
         let message_hub = Arc::new(RoomMessageHub::new());
         let (admin_tx, _) = broadcast::channel(256);
         let dedup = Arc::new(MessageDeduplicator::with_defaults());
-        let redis_client = RedisClient::open("redis://127.0.0.1:6379").unwrap();
+        let redis_client = RedisClient::open("redis://127.0.0.1:1").unwrap();
 
         // Create with 300 second (5 minute) catchup window
         let pubsub = RedisPubSub::with_key_prefix(
@@ -2545,7 +2545,7 @@ mod tests {
         let message_hub = Arc::new(RoomMessageHub::new());
         let (admin_tx, _) = broadcast::channel(256);
         let dedup = Arc::new(MessageDeduplicator::with_defaults());
-        let redis_client = RedisClient::open("redis://127.0.0.1:6379").unwrap();
+        let redis_client = RedisClient::open("redis://127.0.0.1:1").unwrap();
 
         // Create with 60 second catchup window
         let pubsub = RedisPubSub::with_key_prefix(

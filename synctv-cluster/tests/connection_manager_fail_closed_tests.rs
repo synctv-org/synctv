@@ -50,7 +50,7 @@ async fn redis_connection(redis_url: &str) -> redis::aio::ConnectionManager {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_register_rejects_when_distributed_user_limit_state_unavailable() {
+async fn test_register_fails_closed_when_distributed_limit_state_is_unavailable() {
     let mut redis = TestRedis::start().await;
     let conn = redis_connection(&redis.redis_url).await;
     let manager = ConnectionManager::new(ConnectionLimits::default())
@@ -67,7 +67,12 @@ async fn test_register_rejects_when_distributed_user_limit_state_unavailable() {
     .expect("register should not hang when Redis disappears");
 
     let err = result.expect_err("register should fail closed when Redis is unavailable");
-    assert!(err.contains("Distributed user connection check unavailable"));
+    assert!(
+        err.contains("Distributed")
+            && err.contains("connection check unavailable")
+            && err.contains("cluster Redis is degraded"),
+        "unexpected error: {err}"
+    );
     assert_eq!(manager.connection_count(), 0);
 }
 

@@ -426,9 +426,7 @@ mod create_ticket_validation {
                 // Simulate ws_ticket_service = None (ticket.rs:91-95)
                 let ws_ticket_service: Option<()> = None;
                 ws_ticket_service.ok_or_else(|| {
-                    AppError::internal_server_error(
-                        "WebSocket ticket service not configured",
-                    )
+                    AppError::internal_server_error("WebSocket ticket service not configured")
                 })?;
 
                 Ok(Json(serde_json::json!({"ticket": "abc"})))
@@ -938,7 +936,10 @@ mod live_streaming_validation {
         use synctv_api::http::providers::live::RoomQuery;
 
         let result: Result<RoomQuery, _> = serde_urlencoded::from_str("roomId=room123");
-        assert!(result.is_err(), "legacy camelCase roomId must not deserialize");
+        assert!(
+            result.is_err(),
+            "legacy camelCase roomId must not deserialize"
+        );
     }
 }
 
@@ -1096,8 +1097,9 @@ mod optional_services_absent {
     #[test]
     fn test_ws_ticket_service_none_error_message() {
         let ws_ticket_service: Option<()> = None;
-        let result = ws_ticket_service
-            .ok_or_else(|| AppError::internal_server_error("WebSocket ticket service not configured"));
+        let result = ws_ticket_service.ok_or_else(|| {
+            AppError::internal_server_error("WebSocket ticket service not configured")
+        });
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);

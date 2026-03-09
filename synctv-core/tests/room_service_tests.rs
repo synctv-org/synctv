@@ -1011,12 +1011,7 @@ impl synctv_core::service::distributed_lock::MigrationLock for MockDistributedLo
         Ok(Some(format!("lock-value-{key}")))
     }
 
-    async fn extend(
-        &self,
-        _key: &str,
-        _lock_value: &str,
-        _ttl_secs: u64,
-    ) -> anyhow::Result<bool> {
+    async fn extend(&self, _key: &str, _lock_value: &str, _ttl_secs: u64) -> anyhow::Result<bool> {
         Ok(self.lock_held.load(std::sync::atomic::Ordering::SeqCst))
     }
 
@@ -1025,10 +1020,6 @@ impl synctv_core::service::distributed_lock::MigrationLock for MockDistributedLo
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.released_keys.lock().unwrap().push(key.to_string());
         Ok(true)
-    }
-
-    fn boxed_clone(&self) -> Box<dyn synctv_core::service::distributed_lock::MigrationLock> {
-        Box::new(Self::default())
     }
 }
 

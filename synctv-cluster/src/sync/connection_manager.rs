@@ -857,10 +857,14 @@ impl ConnectionManager {
         let prev = self.total_connections.fetch_add(1, Ordering::AcqRel);
         if prev >= self.limits.max_total {
             self.total_connections.fetch_sub(1, Ordering::AcqRel);
-            return Err(format!(
-                "Server at capacity ({} connections)",
-                self.limits.max_total
-            ));
+            return Err(if self.redis_conn.is_some() {
+                format!(
+                    "Server at capacity across all replicas ({} connections)",
+                    self.limits.max_total
+                )
+            } else {
+                format!("Server at capacity ({} connections)", self.limits.max_total)
+            });
         }
 
         let total_key = format!("{}connections:total", self.redis_key_prefix);
@@ -2829,6 +2833,8 @@ pub struct DisconnectSignalMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::redis::Redis;
 
     #[tokio::test]
     async fn test_register_connection() {
@@ -3391,15 +3397,8 @@ mod tests {
         // Setup: Create manager with Redis
         use redis::AsyncCommands;
 
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let conn = if let Ok(conn) = redis::aio::ConnectionManager::new(client.clone()).await {
-            conn
-        } else {
-            eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
-            return;
-        };
-
-        let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "test:");
+        let (_container, client, conn, prefix) = docker_redis_connection("test:").await;
+        let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
         let user_id = UserId::from_string("user1".to_string());
         let room_id = RoomId::from_string("room1".to_string());
@@ -3416,15 +3415,21 @@ mod tests {
             .await
             .unwrap();
         let user_count: i64 = redis_conn
-            .get("test:connections:user:user1")
+            .get(format!("{prefix}connections:user:user1"))
             .await
             .unwrap_or(0);
         assert_eq!(user_count, 1);
 
         // Simulate Redis outage by clearing Redis keys manually
         // (In real scenario, Redis would be down)
-        let _: () = redis_conn.del("test:connections:user:user1").await.unwrap();
-        let _: () = redis_conn.del("test:connections:room:room1").await.unwrap();
+        let _: () = redis_conn
+            .del(format!("{prefix}connections:user:user1"))
+            .await
+            .unwrap();
+        let _: () = redis_conn
+            .del(format!("{prefix}connections:room:room1"))
+            .await
+            .unwrap();
 
         // At this point, local state has 1 connection but Redis has 0
         assert_eq!(manager.user_connection_count(&user_id), 1);
@@ -3434,7 +3439,7 @@ mod tests {
 
         // After reconciliation, Redis should match local state
         let user_count: i64 = redis_conn
-            .get("test:connections:user:user1")
+            .get(format!("{prefix}connections:user:user1"))
             .await
             .unwrap_or(0);
         assert_eq!(user_count, 1);
@@ -3451,16 +3456,8 @@ mod tests {
 
         use redis::AsyncCommands;
 
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let conn = if let Ok(conn) = redis::aio::ConnectionManager::new(client.clone()).await {
-            conn
-        } else {
-            eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
-            return;
-        };
-
-        let manager =
-            ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "test2:");
+        let (_container, client, conn, prefix) = docker_redis_connection("test2:").await;
+        let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
         let _user_id = UserId::from_string("user1".to_string());
 
@@ -3469,7 +3466,7 @@ mod tests {
         let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
-        let stale_key = "test2:conn_mgr:conn:stale_conn";
+        let stale_key = format!("{prefix}conn_mgr:conn:stale_conn");
         let stale_meta = ConnectionInfoPersistent {
             connection_id: "stale_conn".to_string(),
             user_id: "user_stale".to_string(),
@@ -3481,19 +3478,19 @@ mod tests {
             rtc_joined_at_unix: None,
         };
         let _: () = redis_conn
-            .set(stale_key, serde_json::to_string(&stale_meta).unwrap())
+            .set(&stale_key, serde_json::to_string(&stale_meta).unwrap())
             .await
             .unwrap();
 
         // Verify stale data exists
-        let exists: bool = redis_conn.exists(stale_key).await.unwrap();
+        let exists: bool = redis_conn.exists(&stale_key).await.unwrap();
         assert!(exists);
 
         // Trigger reconciliation
         manager.reconcile_with_redis().await;
 
         // Stale connection should be cleaned up since it doesn't exist locally
-        let exists: bool = redis_conn.exists(stale_key).await.unwrap();
+        let exists: bool = redis_conn.exists(&stale_key).await.unwrap();
         assert!(!exists);
     }
 
@@ -3505,16 +3502,8 @@ mod tests {
 
         use redis::AsyncCommands;
 
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let conn = if let Ok(conn) = redis::aio::ConnectionManager::new(client.clone()).await {
-            conn
-        } else {
-            eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
-            return;
-        };
-
-        let manager =
-            ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "test3:");
+        let (_container, client, conn, prefix) = docker_redis_connection("test3:").await;
+        let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
         let user_id = UserId::from_string("user1".to_string());
 
@@ -3529,14 +3518,14 @@ mod tests {
             .await
             .unwrap();
         let user_count: i64 = redis_conn
-            .get("test3:connections:user:user1")
+            .get(format!("{prefix}connections:user:user1"))
             .await
             .unwrap_or(0);
         assert_eq!(user_count, 1);
 
         // Manually corrupt the counter (simulating partial failure)
         let _: () = redis_conn
-            .set("test3:connections:user:user1", 0)
+            .set(format!("{prefix}connections:user:user1"), 0)
             .await
             .unwrap();
 
@@ -3548,7 +3537,7 @@ mod tests {
 
         // After reconciliation, Redis should be corrected
         let user_count: i64 = redis_conn
-            .get("test3:connections:user:user1")
+            .get(format!("{prefix}connections:user:user1"))
             .await
             .unwrap_or(0);
         assert_eq!(user_count, 1);
@@ -3562,19 +3551,13 @@ mod tests {
     async fn test_register_user_limit_rejection_rolls_back_distributed_total_counter() {
         use redis::AsyncCommands;
 
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let conn = if let Ok(conn) = redis::aio::ConnectionManager::new(client.clone()).await {
-            conn
-        } else {
-            eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
-            return;
-        };
+        let (_container, client, conn, prefix) = docker_redis_connection("test4:").await;
 
         let limits = ConnectionLimits {
             max_per_user: 1,
             ..ConnectionLimits::default()
         };
-        let manager = ConnectionManager::new(limits).with_redis(conn, "test4:");
+        let manager = ConnectionManager::new(limits).with_redis(conn, &prefix);
         let user_id = UserId::from_string("user-total-rollback".to_string());
 
         manager
@@ -3591,9 +3574,12 @@ mod tests {
         let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
-        let total_count: i64 = redis_conn.get("test4:connections:total").await.unwrap_or(0);
+        let total_count: i64 = redis_conn
+            .get(format!("{prefix}connections:total"))
+            .await
+            .unwrap_or(0);
         let user_count: i64 = redis_conn
-            .get("test4:connections:user:user-total-rollback")
+            .get(format!("{prefix}connections:user:user-total-rollback"))
             .await
             .unwrap_or(0);
 
@@ -3828,5 +3814,33 @@ mod tests {
         );
 
         manager.shutdown();
+    }
+
+    async fn docker_redis_connection(
+        prefix: &str,
+    ) -> (
+        testcontainers::ContainerAsync<Redis>,
+        redis::Client,
+        redis::aio::ConnectionManager,
+        String,
+    ) {
+        let container = Redis::default()
+            .start()
+            .await
+            .expect("Failed to start Redis container");
+        let host = container
+            .get_host()
+            .await
+            .expect("Failed to get Redis host");
+        let port = container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Failed to get Redis port");
+        let redis_url = format!("redis://{host}:{port}");
+        let client = redis::Client::open(redis_url.as_str()).expect("Failed to open Redis client");
+        let conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .expect("Failed to create Redis ConnectionManager");
+        (container, client, conn, prefix.to_string())
     }
 }

@@ -85,9 +85,6 @@ pub trait MigrationLock: Send + Sync {
     ///
     /// Returns `true` if the lock was released, `false` if not held or expired.
     async fn release(&self, key: &str, lock_value: &str) -> anyhow::Result<bool>;
-
-    /// Clone into a trait object for background keepalive tasks.
-    fn boxed_clone(&self) -> Box<dyn MigrationLock>;
 }
 
 /// `MigrationLock` implementation backed by the existing Redis `DistributedLock`.
@@ -109,10 +106,6 @@ impl MigrationLock for DistributedLock {
         Self::extend(self, key, lock_value, ttl_secs)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
-    }
-
-    fn boxed_clone(&self) -> Box<dyn MigrationLock> {
-        Box::new(self.clone())
     }
 }
 
@@ -200,10 +193,6 @@ impl MigrationLock for PgAdvisoryMigrationLock {
             Ok(false)
         }
     }
-
-    fn boxed_clone(&self) -> Box<dyn MigrationLock> {
-        Box::new(Self::new(self.pool.clone()))
-    }
 }
 
 /// Distributed lock service (single Redis instance)
@@ -244,9 +233,7 @@ impl DistributedLock {
     /// This keeps the lock service aligned with Sentinel failover hot-swaps so
     /// it does not keep talking to a stale master after reconnection.
     #[must_use]
-    pub fn new_shared(
-        redis: std::sync::Arc<tokio::sync::RwLock<RedisConnectionManager>>,
-    ) -> Self {
+    pub fn new_shared(redis: std::sync::Arc<tokio::sync::RwLock<RedisConnectionManager>>) -> Self {
         Self {
             backend: DistributedLockBackend::Shared(redis),
         }
@@ -1317,6 +1304,9 @@ impl Drop for RedlockGuard {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+    use synctv_core_testing::wait_for_redis_ready;
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::redis::Redis;
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -1710,35 +1700,52 @@ mod tests {
 
     // ========== Redlock Integration Tests (Require Docker) ==========
 
-    /// Helper: create a Redlock config pointing at 3 local Redis instances.
-    /// Returns None (skip) if Redis is not available on port 6379.
-    async fn redlock_test_config() -> Option<RedlockConfig> {
-        // Quick connectivity check before committing to the test
-        let client = redis::Client::open("redis://127.0.0.1:6379").ok()?;
-        if client.get_connection_manager().await.is_err() {
-            eprintln!("Skipping redlock test: Redis not available on 127.0.0.1:6379");
-            return None;
+    /// Helper: start 3 independent Redis masters for Redlock tests.
+    async fn redlock_test_config() -> (
+        RedlockConfig,
+        Vec<testcontainers::ContainerAsync<Redis>>,
+    ) {
+        let mut containers = Vec::with_capacity(3);
+        let mut master_urls = Vec::with_capacity(3);
+
+        for _ in 0..3 {
+            let container =
+                tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
+                    .await
+                    .expect("Docker container startup timed out (is Docker running?)")
+                    .expect("Failed to start Redis container");
+
+            let host = container
+                .get_host()
+                .await
+                .expect("Failed to get Redis host");
+            let port = container
+                .get_host_port_ipv4(6379)
+                .await
+                .expect("Failed to get Redis port");
+
+            master_urls.push(format!("redis://{host}:{port}"));
+            let client = redis::Client::open(master_urls.last().expect("redis url").as_str())
+                .expect("Failed to create Redis client");
+            wait_for_redis_ready(&client).await;
+            containers.push(container);
         }
-        Some(RedlockConfig {
-            master_urls: vec![
-                "redis://127.0.0.1:6379".to_string(),
-                "redis://127.0.0.1:6380".to_string(),
-                "redis://127.0.0.1:6381".to_string(),
-            ],
-            ttl_ms: 10_000,
-            acquire_timeout_ms: 5_000,
-            retry_interval_ms: 50,
-        })
+
+        (
+            RedlockConfig {
+                master_urls,
+                ttl_ms: 10_000,
+                acquire_timeout_ms: 5_000,
+                retry_interval_ms: 50,
+            },
+            containers,
+        )
     }
 
     #[tokio::test]
     #[ignore = "Requires 3 Docker Redis instances - run manually"]
     async fn test_redlock_acquire_and_release() {
-        // This test requires 3 independent Redis instances
-        // Setup: docker run -d -p 6379:6379 redis; docker run -d -p 6380:6379 redis; docker run -d -p 6381:6379 redis
-        let Some(config) = redlock_test_config().await else {
-            return;
-        };
+        let (config, _containers) = redlock_test_config().await;
 
         let redlock = Redlock::new(config).await.unwrap();
 
@@ -1764,13 +1771,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires 3 Docker Redis instances - run manually"]
     async fn test_redlock_survives_single_master_failure() {
-        // Redlock should work even if one master is down
-        // This test simulates partial unavailability
-        let Some(config) = redlock_test_config().await else {
-            return;
-        };
+        let (config, mut containers) = redlock_test_config().await;
 
         let redlock = Redlock::new(config).await.unwrap();
+
+        drop(containers.pop());
 
         // Even if one master is unavailable, we should still get quorum (2/3)
         let guard = redlock.acquire("test:redlock2").await.unwrap();
@@ -1783,9 +1788,7 @@ mod tests {
     async fn test_redlock_split_brain_prevention() {
         // This test verifies that Redlock prevents split-brain during failover
         // Simulate by having two clients compete for the same lock
-        let Some(config) = redlock_test_config().await else {
-            return;
-        };
+        let (config, _containers) = redlock_test_config().await;
         let config2 = RedlockConfig {
             retry_interval_ms: 10,
             ttl_ms: 5_000,
@@ -1814,9 +1817,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires 3 Docker Redis instances - run manually"]
     async fn test_redlock_guard_drop_releases_lock() {
-        let Some(config) = redlock_test_config().await else {
-            return;
-        };
+        let (config, _containers) = redlock_test_config().await;
 
         let redlock = Redlock::new(config).await.unwrap();
 

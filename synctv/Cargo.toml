@@ -68,6 +68,7 @@ tikv-jemallocator = { workspace = true, optional = true }
 synctv-media-providers.workspace = true
 synctv-common.workspace = true
 synctv-core-testing.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
 futures.workspace = true

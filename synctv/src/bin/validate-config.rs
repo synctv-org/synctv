@@ -223,6 +223,11 @@ server:
   grpc_port: 50051
 database:
   url: "postgresql://user:pass@localhost/db"
+  max_connections: 20
+  min_connections: 5
+  connect_timeout_seconds: 10
+  idle_timeout_seconds: 600
+  max_lifetime_seconds: 1800
 jwt:
   secret: "12345678901234567890123456789012"
 "#,

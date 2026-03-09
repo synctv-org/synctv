@@ -33,7 +33,7 @@ const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64;
 /// instances share the same Redis.
 pub async fn run_migrations(
     pool: &PgPool,
-    lock: &dyn MigrationLock,
+    lock: std::sync::Arc<dyn MigrationLock>,
     key_prefix: &str,
     cluster_mode: bool,
 ) -> Result<()> {
@@ -42,17 +42,13 @@ pub async fn run_migrations(
 
 async fn run_migrations_with_mode(
     pool: &PgPool,
-    lock: &dyn MigrationLock,
+    lock: std::sync::Arc<dyn MigrationLock>,
     key_prefix: &str,
     cluster_mode: bool,
 ) -> Result<()> {
-    run_migrations_with_runner(
-        pool,
-        std::sync::Arc::from(lock.boxed_clone()),
-        key_prefix,
-        cluster_mode,
-        &|pool| Box::pin(run_migrate(pool)),
-    )
+    run_migrations_with_runner(pool, lock, key_prefix, cluster_mode, &|pool| {
+        Box::pin(run_migrate(pool))
+    })
     .await
 }
 
@@ -65,8 +61,7 @@ async fn run_migrations_with_runner(
     key_prefix: &str,
     cluster_mode: bool,
     migrate: &(dyn for<'a> Fn(&'a PgPool) -> MigrateFuture<'a> + Send + Sync),
-) -> Result<()>
-{
+) -> Result<()> {
     info!("Running database migrations...");
 
     run_migrations_with_lock(pool, lock, key_prefix, cluster_mode, migrate).await?;
@@ -117,8 +112,7 @@ async fn run_migrations_with_lock(
     key_prefix: &str,
     cluster_mode: bool,
     migrate: &(dyn for<'a> Fn(&'a PgPool) -> MigrateFuture<'a> + Send + Sync),
-) -> Result<()>
-{
+) -> Result<()> {
     let migration_lock_key = format!("{key_prefix}migration");
 
     match lock.acquire(&migration_lock_key, MIGRATION_LOCK_TTL).await {
@@ -248,8 +242,7 @@ async fn wait_for_lock_and_migrate(
     lock_key: &str,
     cluster_mode: bool,
     migrate: &(dyn for<'a> Fn(&'a PgPool) -> MigrateFuture<'a> + Send + Sync),
-) -> Result<()>
-{
+) -> Result<()> {
     info!("Another node is running migrations, waiting...");
 
     let max_attempts = (MIGRATION_MAX_WAIT.as_secs() / MIGRATION_POLL_INTERVAL.as_secs()) as u32;
@@ -310,11 +303,32 @@ async fn run_migration_under_lock<Fut>(
 where
     Fut: std::future::Future<Output = Result<()>>,
 {
+    run_migration_under_lock_with_refresh_interval(
+        lock,
+        lock_key,
+        lock_value,
+        Duration::from_secs((MIGRATION_LOCK_TTL / 3).max(1)),
+        migrate,
+    )
+    .await
+}
+
+async fn run_migration_under_lock_with_refresh_interval<Fut>(
+    lock: std::sync::Arc<dyn MigrationLock>,
+    lock_key: String,
+    lock_value: String,
+    refresh_interval: Duration,
+    migrate: Fut,
+) -> Result<()>
+where
+    Fut: std::future::Future<Output = Result<()>>,
+{
     let keepalive_cancel = CancellationToken::new();
     let mut keepalive = spawn_lock_keepalive(
         lock,
         lock_key,
         lock_value,
+        refresh_interval,
         keepalive_cancel.clone(),
     );
     tokio::pin!(migrate);
@@ -357,10 +371,10 @@ fn spawn_lock_keepalive(
     lock: std::sync::Arc<dyn MigrationLock>,
     lock_key: String,
     lock_value: String,
+    refresh_interval: Duration,
     cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<Result<()>> {
     tokio::spawn(async move {
-        let refresh_interval = Duration::from_secs((MIGRATION_LOCK_TTL / 3).max(1));
         let mut ticker = tokio::time::interval(refresh_interval);
         ticker.tick().await;
         loop {
@@ -408,15 +422,17 @@ mod tests {
     use super::{run_migrations_with_mode, run_migrations_with_runner, MIGRATION_LOCK_TTL};
     use anyhow::anyhow;
     use sqlx::{postgres::PgPoolOptions, PgPool};
-    use std::time::Duration;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::sync::Notify;
 
+    #[derive(Clone)]
     struct FailingMigrationLock {
         acquire_called: Arc<AtomicBool>,
     }
 
+    #[derive(Clone)]
     struct WaitThenFailMigrationLock {
         acquire_calls: Arc<AtomicUsize>,
     }
@@ -441,12 +457,6 @@ mod tests {
         async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
             Ok(true)
         }
-
-        fn boxed_clone(&self) -> Box<dyn synctv_core::service::MigrationLock> {
-            Box::new(FailingMigrationLock {
-                acquire_called: self.acquire_called.clone(),
-            })
-        }
     }
 
     #[async_trait::async_trait]
@@ -462,12 +472,6 @@ mod tests {
 
         async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
             Ok(true)
-        }
-
-        fn boxed_clone(&self) -> Box<dyn synctv_core::service::MigrationLock> {
-            Box::new(WaitThenFailMigrationLock {
-                acquire_calls: self.acquire_calls.clone(),
-            })
         }
     }
 
@@ -493,10 +497,6 @@ mod tests {
             self.release_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.allow_release.load(Ordering::SeqCst))
         }
-
-        fn boxed_clone(&self) -> Box<dyn synctv_core::service::MigrationLock> {
-            Box::new(self.clone())
-        }
     }
 
     #[tokio::test]
@@ -509,7 +509,7 @@ mod tests {
             acquire_called: Arc::new(AtomicBool::new(false)),
         };
 
-        let err = run_migrations_with_mode(&pool, &lock, "test:", true)
+        let err = run_migrations_with_mode(&pool, Arc::new(lock.clone()), "test:", true)
             .await
             .expect_err("cluster mode must refuse PG advisory fallback");
 
@@ -533,7 +533,7 @@ mod tests {
 
         let err = tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            run_migrations_with_mode(&pool, &lock, "test:", false),
+            run_migrations_with_mode(&pool, Arc::new(lock.clone()), "test:", false),
         )
         .await
         .expect("wait path should complete within a single poll interval")
@@ -555,7 +555,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn acquired_migration_lock_is_extended_while_migrations_run() {
         let pool = PgPoolOptions::new()
             .max_connections(1)
@@ -566,6 +566,8 @@ mod tests {
             ..Default::default()
         });
         let lock_for_runner = Arc::clone(&lock);
+        let extend_notified = lock.notify_extend.notified();
+        tokio::pin!(extend_notified);
 
         let task = tokio::spawn(async move {
             run_migrations_with_runner(&pool, lock_for_runner, "test:", false, &|_pool: &PgPool| {
@@ -577,11 +579,15 @@ mod tests {
             .await
         });
 
-        tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 2)).await;
-        lock.notify_extend.notified().await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 2)).await;
+        extend_notified.await;
 
         let result = task.await.expect("migration task should join");
-        assert!(result.is_ok(), "migration runner should succeed: {result:?}");
+        assert!(
+            result.is_ok(),
+            "migration runner should succeed: {result:?}"
+        );
         assert_eq!(lock.acquire_calls.load(Ordering::SeqCst), 1);
         assert!(
             lock.extend_calls.load(Ordering::SeqCst) >= 1,
@@ -590,7 +596,7 @@ mod tests {
         assert_eq!(lock.release_calls.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn migration_runner_fails_when_keepalive_loses_lock() {
         let pool = PgPoolOptions::new()
             .max_connections(1)
@@ -602,25 +608,22 @@ mod tests {
             ..Default::default()
         });
         let lock_for_runner = Arc::clone(&lock);
+        let extend_notified = lock.notify_extend.notified();
+        tokio::pin!(extend_notified);
 
         let task = tokio::spawn(async move {
-            run_migrations_with_runner(
-                &pool,
-                lock_for_runner,
-                "test:",
-                false,
-                &|_pool: &PgPool| {
-                    Box::pin(async {
-                        tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 1)).await;
-                        Ok(())
-                    })
-                },
-            )
+            run_migrations_with_runner(&pool, lock_for_runner, "test:", false, &|_pool: &PgPool| {
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 1)).await;
+                    Ok(())
+                })
+            })
             .await
         });
 
-        tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 2)).await;
-        lock.notify_extend.notified().await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 2)).await;
+        extend_notified.await;
 
         let err = task
             .await
@@ -632,5 +635,4 @@ mod tests {
         );
         assert_eq!(lock.release_calls.load(Ordering::SeqCst), 1);
     }
-
 }

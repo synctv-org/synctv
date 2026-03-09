@@ -152,7 +152,7 @@ fn map_background_task_exit(
 
 async fn await_runtime_server_shutdown(
     name: &'static str,
-    mut handle: JoinHandle<anyhow::Result<()>>,
+    handle: JoinHandle<anyhow::Result<()>>,
     timeout: Duration,
 ) {
     if timeout == Duration::ZERO {
@@ -165,6 +165,7 @@ async fn await_runtime_server_shutdown(
         return;
     }
 
+    let mut handle = handle;
     match tokio::time::timeout(timeout, &mut handle).await {
         Ok(join_result) => match join_result {
             Ok(Ok(())) => info!("{name} stopped"),
@@ -188,10 +189,7 @@ async fn await_runtime_server_shutdown(
     }
 }
 
-async fn force_abort_runtime_server(
-    name: &'static str,
-    mut handle: JoinHandle<anyhow::Result<()>>,
-) {
+async fn force_abort_runtime_server(name: &'static str, handle: JoinHandle<anyhow::Result<()>>) {
     warn!("{name} exceeded the remaining shutdown budget, aborting task");
     handle.abort();
     match handle.await {
@@ -400,29 +398,47 @@ impl SyncTvServer {
         info!("All servers started successfully");
 
         // Wait for either a server to stop or a shutdown signal
-        let mut grpc_handle = self
-            .grpc_handle
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("gRPC server handle missing after startup"))?;
-        let mut http_handle = self
-            .http_handle
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("HTTP server handle missing after startup"))?;
+        let mut grpc_handle = Some(
+            self.grpc_handle
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("gRPC server handle missing after startup"))?,
+        );
+        let mut http_handle = Some(
+            self.http_handle
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("HTTP server handle missing after startup"))?,
+        );
 
         let (unexpected_exit, grpc_handle, http_handle) = tokio::select! {
-            result = &mut grpc_handle => (
+            result = async {
+                grpc_handle
+                    .as_mut()
+                    .expect("gRPC server handle should be present before select")
+                    .await
+            } => {
+                let _ = grpc_handle.take();
+                (
                 Some(map_runtime_server_exit("gRPC server", result)),
                 None,
-                Some(http_handle),
-            ),
-            result = &mut http_handle => (
+                http_handle.take(),
+            )
+            },
+            result = async {
+                http_handle
+                    .as_mut()
+                    .expect("HTTP server handle should be present before select")
+                    .await
+            } => {
+                let _ = http_handle.take();
+                (
                 Some(map_runtime_server_exit("HTTP server", result)),
-                Some(grpc_handle),
+                grpc_handle.take(),
                 None,
-            ),
+            )
+            },
             () = shutdown_signal() => {
                 info!("Shutdown signal received, starting graceful shutdown...");
-                (None, Some(grpc_handle), Some(http_handle))
+                (None, grpc_handle.take(), http_handle.take())
             }
         };
 
@@ -823,9 +839,8 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        await_task_shutdown, await_runtime_server_shutdown, build_ws_ticket_service,
-        cleanup_partial_startup,
-        map_background_task_exit, map_runtime_server_exit,
+        await_runtime_server_shutdown, await_task_shutdown, build_ws_ticket_service,
+        cleanup_partial_startup, map_background_task_exit, map_runtime_server_exit,
         shutdown_runtime_phase,
     };
     use std::sync::{
@@ -917,12 +932,32 @@ mod tests {
         assert_eq!(service.backend_name(), "memory");
     }
 
-    #[test]
-    fn test_ws_ticket_service_prefers_redis_when_available() {
-        // Standalone mode may still use Redis when configured.
-        assert!(build_ws_ticket_service(None, "synctv:", false)
-            .expect("standalone without redis should succeed")
-            .is_some());
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_ws_ticket_service_prefers_redis_when_available() {
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::redis::Redis;
+
+        let redis = Redis::default()
+            .start()
+            .await
+            .expect("redis container should start for ws ticket redis backend test");
+        let port = redis
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("redis port should be exposed");
+        let client = redis::Client::open(format!("redis://127.0.0.1:{port}"))
+            .expect("redis client should be created");
+        let manager = redis::aio::ConnectionManager::new(client)
+            .await
+            .expect("redis connection manager should be created");
+        let shared = Arc::new(tokio::sync::RwLock::new(manager));
+
+        let service = build_ws_ticket_service(Some(shared), "synctv:", false)
+            .expect("standalone with redis should succeed")
+            .expect("ws ticket service should be configured");
+
+        assert_eq!(service.backend_name(), "redis");
     }
 
     #[test]
@@ -1069,18 +1104,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_join_handle_is_not_safe_to_await_again_after_select_completion() {
-        let mut handle = tokio::spawn(async { Ok::<(), anyhow::Error>(()) });
+    async fn test_select_completion_must_consume_join_result_directly() {
+        let handle = tokio::spawn(async { Ok::<(), anyhow::Error>(()) });
 
         let first = tokio::select! {
-            result = &mut handle => result,
+            result = handle => result,
         };
-        assert!(first.is_ok(), "first completion should succeed");
 
-        let second = tokio::time::timeout(Duration::from_millis(20), async move { handle.await }).await;
+        let err = map_runtime_server_exit("HTTP server", first)
+            .expect_err("select-completed join result must be handled directly");
+
         assert!(
-            second.is_err() || second.as_ref().is_ok_and(|result| result.is_err()),
-            "re-awaiting a completed JoinHandle must not be relied on in shutdown logic"
+            err.to_string()
+                .contains("HTTP server stopped unexpectedly without an error"),
+            "Unexpected error: {err}"
         );
     }
 

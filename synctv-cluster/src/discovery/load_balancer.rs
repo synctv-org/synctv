@@ -202,7 +202,7 @@ mod tests {
     fn make_registry() -> Arc<NodeRegistry> {
         Arc::new(
             NodeRegistry::new(
-                redis::Client::open("redis://localhost:6379").unwrap(),
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
                 "self".to_string(),
                 30,
                 "test:",

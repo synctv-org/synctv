@@ -11,6 +11,7 @@ use crate::grpc::emby::{
     SystemInfoResp,
 };
 use async_trait::async_trait;
+use reqwest::Client;
 
 /// Unified Emby service interface
 ///
@@ -58,12 +59,21 @@ pub trait EmbyInterface: Send + Sync {
 ///
 /// This is the complete implementation that makes actual HTTP calls.
 /// Used by both local callers and gRPC server.
-pub struct EmbyService;
+pub struct EmbyService {
+    client: Client,
+}
 
 impl EmbyService {
+    pub fn new() -> Self {
+        Self {
+            client: synctv_common::http::build_provider_client()
+                .expect("default provider HTTP client should build"),
+        }
+    }
+
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub fn with_client(client: Client) -> Self {
+        Self { client }
     }
 }
 
@@ -76,7 +86,7 @@ impl Default for EmbyService {
 #[async_trait]
 impl EmbyInterface for EmbyService {
     async fn login(&self, request: LoginReq) -> Result<LoginResp, EmbyError> {
-        let mut client = EmbyClient::new(&request.host)?;
+        let mut client = EmbyClient::with_http_client(&request.host, self.client.clone())?;
         let (token, user_id) = client.login(&request.username, &request.password).await?;
 
         // Get server ID
@@ -90,14 +100,24 @@ impl EmbyInterface for EmbyService {
     }
 
     async fn me(&self, request: MeReq) -> Result<MeResp, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, &request.user_id)?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            &request.user_id,
+            self.client.clone(),
+        )?;
         let user_info = client.me().await?;
 
         Ok(user_info.into())
     }
 
     async fn get_items(&self, request: GetItemsReq) -> Result<GetItemsResp, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, &request.user_id)?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            &request.user_id,
+            self.client.clone(),
+        )?;
 
         let parent_id = if request.parent_id.is_empty() {
             None
@@ -117,14 +137,24 @@ impl EmbyInterface for EmbyService {
     }
 
     async fn get_item(&self, request: GetItemReq) -> Result<Item, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, &request.user_id)?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            &request.user_id,
+            self.client.clone(),
+        )?;
         let item = client.get_item(&request.item_id).await?;
 
         Ok(item.into())
     }
 
     async fn fs_list(&self, request: FsListReq) -> Result<FsListResp, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, &request.user_id)?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            &request.user_id,
+            self.client.clone(),
+        )?;
 
         let path = if request.path.is_empty() {
             None
@@ -146,20 +176,35 @@ impl EmbyInterface for EmbyService {
     }
 
     async fn get_system_info(&self, request: SystemInfoReq) -> Result<SystemInfoResp, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, String::new())?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            String::new(),
+            self.client.clone(),
+        )?;
         let info = client.get_system_info().await?;
 
         Ok(info.into())
     }
 
     async fn logout(&self, request: LogoutReq) -> Result<Empty, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, String::new())?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            String::new(),
+            self.client.clone(),
+        )?;
         client.logout().await?;
         Ok(Empty {})
     }
 
     async fn playback_info(&self, request: PlaybackInfoReq) -> Result<PlaybackInfoResp, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, &request.user_id)?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            &request.user_id,
+            self.client.clone(),
+        )?;
 
         let media_source_id = if request.media_source_id.is_empty() {
             None
@@ -202,7 +247,12 @@ impl EmbyInterface for EmbyService {
         &self,
         request: DeleteActiveEncodingsReq,
     ) -> Result<Empty, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, String::new())?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            String::new(),
+            self.client.clone(),
+        )?;
         client
             .delete_active_encodings(&request.play_session_id)
             .await?;
@@ -213,7 +263,12 @@ impl EmbyInterface for EmbyService {
         &self,
         request: ReportPlaybackStartReq,
     ) -> Result<Empty, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, String::new())?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            String::new(),
+            self.client.clone(),
+        )?;
         let media_source_id = if request.media_source_id.is_empty() {
             None
         } else {
@@ -234,7 +289,12 @@ impl EmbyInterface for EmbyService {
         &self,
         request: ReportPlaybackStopReq,
     ) -> Result<Empty, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, String::new())?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            String::new(),
+            self.client.clone(),
+        )?;
         client
             .report_playback_stop(
                 &request.item_id,
@@ -249,7 +309,12 @@ impl EmbyInterface for EmbyService {
         &self,
         request: ReportPlaybackProgressReq,
     ) -> Result<Empty, EmbyError> {
-        let client = EmbyClient::with_credentials(&request.host, &request.token, String::new())?;
+        let client = EmbyClient::with_credentials_and_http_client(
+            &request.host,
+            &request.token,
+            String::new(),
+            self.client.clone(),
+        )?;
         let media_source_id = if request.media_source_id.is_empty() {
             None
         } else {

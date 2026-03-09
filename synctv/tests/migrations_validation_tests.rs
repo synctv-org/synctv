@@ -20,11 +20,11 @@ struct MockMigrationLock {
     /// Whether release should succeed
     release_succeeds: bool,
     /// Track if acquire was called
-    acquire_called: std::sync::atomic::AtomicBool,
+    acquire_called: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Track if release was called
-    release_called: std::sync::atomic::AtomicBool,
+    release_called: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Track if extend was called
-    extend_called: std::sync::atomic::AtomicBool,
+    extend_called: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Lock value to return
     lock_value: String,
 }
@@ -34,9 +34,9 @@ impl MockMigrationLock {
         Self {
             acquire_succeeds,
             release_succeeds: true,
-            acquire_called: std::sync::atomic::AtomicBool::new(false),
-            release_called: std::sync::atomic::AtomicBool::new(false),
-            extend_called: std::sync::atomic::AtomicBool::new(false),
+            acquire_called: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            release_called: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            extend_called: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             lock_value: "test-lock-value".to_string(),
         }
     }
@@ -52,8 +52,7 @@ impl MockMigrationLock {
     }
 
     fn was_extend_called(&self) -> bool {
-        self.extend_called
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.extend_called.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -79,23 +78,6 @@ impl synctv_core::service::MigrationLock for MockMigrationLock {
         self.release_called
             .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(self.release_succeeds)
-    }
-
-    fn boxed_clone(&self) -> Box<dyn synctv_core::service::MigrationLock> {
-        Box::new(Self {
-            acquire_succeeds: self.acquire_succeeds,
-            release_succeeds: self.release_succeeds,
-            acquire_called: std::sync::atomic::AtomicBool::new(
-                self.acquire_called.load(std::sync::atomic::Ordering::SeqCst),
-            ),
-            release_called: std::sync::atomic::AtomicBool::new(
-                self.release_called.load(std::sync::atomic::Ordering::SeqCst),
-            ),
-            extend_called: std::sync::atomic::AtomicBool::new(
-                self.extend_called.load(std::sync::atomic::Ordering::SeqCst),
-            ),
-            lock_value: self.lock_value.clone(),
-        })
     }
 }
 

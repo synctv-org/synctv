@@ -5717,6 +5717,7 @@ dependencies = [
  "synctv-cluster",
  "synctv-common",
  "synctv-core",
+ "synctv-core-testing",
  "synctv-media-providers",
  "synctv-xiu",
  "tempfile",

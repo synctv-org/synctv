@@ -81,6 +81,8 @@ tonic-prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 
 [dev-dependencies]
+synctv-core-testing.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 tempfile.workspace = true
 serde_urlencoded.workspace = true

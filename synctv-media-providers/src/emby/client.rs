@@ -69,11 +69,16 @@ pub struct EmbyClient {
 impl EmbyClient {
     /// Create a new Emby client (reuses shared connection pool and per-host rate limiter)
     pub fn new(host: impl Into<String>) -> Result<Self, EmbyError> {
+        Self::with_http_client(host, shared_client()?)
+    }
+
+    /// Create a new Emby client with a prebuilt HTTP client.
+    pub fn with_http_client(host: impl Into<String>, client: Client) -> Result<Self, EmbyError> {
         Ok(Self {
             host: host.into(),
             token: None,
             user_id: None,
-            client: shared_client()?,
+            client,
             api_prefix: None,
             device_id: uuid::Uuid::new_v4().to_string(),
         })
@@ -85,11 +90,21 @@ impl EmbyClient {
         token: impl Into<String>,
         user_id: impl Into<String>,
     ) -> Result<Self, EmbyError> {
+        Self::with_credentials_and_http_client(host, token, user_id, shared_client()?)
+    }
+
+    /// Create a new Emby client with credentials and a prebuilt HTTP client.
+    pub fn with_credentials_and_http_client(
+        host: impl Into<String>,
+        token: impl Into<String>,
+        user_id: impl Into<String>,
+        client: Client,
+    ) -> Result<Self, EmbyError> {
         Ok(Self {
             host: host.into(),
             token: Some(token.into()),
             user_id: Some(user_id.into()),
-            client: shared_client()?,
+            client,
             api_prefix: None,
             device_id: uuid::Uuid::new_v4().to_string(),
         })

@@ -138,10 +138,38 @@ impl ProviderClientManager {
     /// Create a new `ProviderClientManager` with default local clients.
     #[must_use]
     pub fn new() -> Self {
+        let provider_client = synctv_common::http::build_provider_client()
+            .expect("default provider HTTP client should build");
+        Self::new_with_provider_http_client(provider_client)
+    }
+
+    /// Create a new `ProviderClientManager` with a shared local provider HTTP client.
+    #[must_use]
+    pub fn new_with_provider_http_client(client: reqwest::Client) -> Self {
         Self {
-            local_alist: Arc::new(synctv_media_providers::alist::AlistService::new()),
-            local_bilibili: Arc::new(synctv_media_providers::bilibili::BilibiliService::new()),
-            local_emby: Arc::new(synctv_media_providers::emby::EmbyService::new()),
+            local_alist: Arc::new(synctv_media_providers::alist::AlistService::with_client(
+                client.clone(),
+            )),
+            local_bilibili: Arc::new(
+                synctv_media_providers::bilibili::BilibiliService::with_client(client.clone()),
+            ),
+            local_emby: Arc::new(synctv_media_providers::emby::EmbyService::with_client(
+                client,
+            )),
+        }
+    }
+
+    /// Create a manager from concrete local service implementations.
+    #[must_use]
+    pub fn with_local_services(
+        alist: synctv_media_providers::alist::AlistService,
+        bilibili: synctv_media_providers::bilibili::BilibiliService,
+        emby: synctv_media_providers::emby::EmbyService,
+    ) -> Self {
+        Self {
+            local_alist: Arc::new(alist),
+            local_bilibili: Arc::new(bilibili),
+            local_emby: Arc::new(emby),
         }
     }
 

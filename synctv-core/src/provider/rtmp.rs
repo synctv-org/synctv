@@ -25,8 +25,7 @@ const FORBIDDEN_URL_FIELDS: &[&str] = &[
 ];
 
 /// RTMP `MediaProvider`
-pub struct RtmpProvider {
-}
+pub struct RtmpProvider {}
 
 impl RtmpProvider {
     pub const NAME: &'static str = "rtmp";
@@ -56,8 +55,9 @@ impl RtmpProvider {
 
         match rest {
             "stream" => {
-                let claims = verified_claims
-                    .ok_or_else(|| ProviderError::ApiError("Missing verified proxy claims".into()))?;
+                let claims = verified_claims.ok_or_else(|| {
+                    ProviderError::ApiError("Missing verified proxy claims".into())
+                })?;
                 Ok(ProxyAction::LiveFlv {
                     provider_name: Self::NAME.to_string(),
                     room_id: room_id.to_string(),
@@ -182,7 +182,10 @@ impl ProviderProxy for RtmpProvider {
         &self,
         ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
-        let (version, rest) = ctx.sub_path.split_once('/').ok_or(ProviderError::NotFound)?;
+        let (version, rest) = ctx
+            .sub_path
+            .split_once('/')
+            .ok_or(ProviderError::NotFound)?;
         let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
         self.build_live_proxy_action(rest, &versioned, ctx.verified_claims)
     }
@@ -255,8 +258,20 @@ mod tests {
             .await
             .unwrap();
 
-        let hls = result.playback_infos.get("hls").unwrap().urls.first().unwrap();
-        let flv = result.playback_infos.get("flv").unwrap().urls.first().unwrap();
+        let hls = result
+            .playback_infos
+            .get("hls")
+            .unwrap()
+            .urls
+            .first()
+            .unwrap();
+        let flv = result
+            .playback_infos
+            .get("flv")
+            .unwrap()
+            .urls
+            .first()
+            .unwrap();
         assert!(hls.starts_with("/api/providers/proxy/rtmp/"));
         assert!(hls.contains("/m3u8?"));
         assert!(flv.starts_with("/api/providers/proxy/rtmp/"));
@@ -293,10 +308,29 @@ mod tests {
             .await
             .unwrap();
 
-        let first_hls = first.playback_infos.get("hls").unwrap().urls.first().unwrap();
-        let second_hls = second.playback_infos.get("hls").unwrap().urls.first().unwrap();
-        assert_ne!(first_hls, second_hls, "cached playback must be re-signed per user");
-        assert!(second_hls.contains("uid=user2") || second_hls.contains("user_id=user2") || second_hls.contains("sig="));
+        let first_hls = first
+            .playback_infos
+            .get("hls")
+            .unwrap()
+            .urls
+            .first()
+            .unwrap();
+        let second_hls = second
+            .playback_infos
+            .get("hls")
+            .unwrap()
+            .urls
+            .first()
+            .unwrap();
+        assert_ne!(
+            first_hls, second_hls,
+            "cached playback must be re-signed per user"
+        );
+        assert!(
+            second_hls.contains("uid=user2")
+                || second_hls.contains("user_id=user2")
+                || second_hls.contains("sig=")
+        );
     }
 
     #[tokio::test]
@@ -329,7 +363,11 @@ mod tests {
             .build_live_proxy_action("stream", &versioned, Some(&claims))
             .unwrap();
         match action {
-            ProxyAction::LiveFlv { user_id, expires_at, .. } => {
+            ProxyAction::LiveFlv {
+                user_id,
+                expires_at,
+                ..
+            } => {
                 assert_eq!(user_id, "user1");
                 assert_eq!(expires_at, claims.expires_at);
             }

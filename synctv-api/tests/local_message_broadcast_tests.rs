@@ -413,7 +413,7 @@ async fn test_lazy_cluster_manager_creation() {
             let config = ClusterConfig {
                 redis_client: None,
                 redis_conn: None,
-        shared_redis_conn: None,
+                shared_redis_conn: None,
                 cluster_enabled: false,
                 node_id: format!("local_{}", nanoid::nanoid!(8)),
                 dedup_window: Duration::from_mins(1),

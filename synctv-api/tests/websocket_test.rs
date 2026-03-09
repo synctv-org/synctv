@@ -108,14 +108,22 @@ mod auth_method {
 // ============================================================================
 
 mod proto_codec {
+    use prost::Message;
     use synctv_api::impls::messaging::ProtoCodec;
-    use synctv_proto::client::ServerMessage;
+    use synctv_proto::client::{
+        server_message, ClientMessage, HeartbeatAck, HeartbeatMessage, ServerMessage,
+    };
 
     #[test]
     fn test_encode_server_message() {
-        let msg = ServerMessage::default();
+        let msg = ServerMessage {
+            message: Some(server_message::Message::HeartbeatAck(HeartbeatAck {
+                timestamp: 123_456,
+            })),
+        };
         let bytes = ProtoCodec::encode_server_message(&msg).unwrap();
-        assert!(!bytes.is_empty() || bytes.is_empty()); // default may encode to empty
+        let decoded = ServerMessage::decode(bytes.as_slice()).expect("encoded server message");
+        assert_eq!(decoded, msg);
     }
 
     #[test]
@@ -134,11 +142,14 @@ mod proto_codec {
 
     #[test]
     fn test_encode_decode_roundtrip() {
-        // Encode a ServerMessage, then verify the bytes are valid protobuf
-        let msg = ServerMessage::default();
-        let encoded = ProtoCodec::encode_server_message(&msg).unwrap();
-        // We can't decode ServerMessage as ClientMessage, but we can verify encoding works
-        assert!(encoded.len() < 1024, "Default message should be small");
+        let client = ClientMessage {
+            message: Some(synctv_proto::client::client_message::Message::Heartbeat(
+                HeartbeatMessage { timestamp: 42 },
+            )),
+        };
+        let bytes = client.encode_to_vec();
+        let decoded = ProtoCodec::decode_client_message(&bytes).unwrap();
+        assert_eq!(decoded, client);
     }
 }
 
@@ -545,9 +556,7 @@ mod ws_auth_scenarios {
 
     #[test]
     fn test_ticket_service_not_configured() {
-        let err = AppError::internal_server_error(
-            "WebSocket ticket service not configured",
-        );
+        let err = AppError::internal_server_error("WebSocket ticket service not configured");
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 

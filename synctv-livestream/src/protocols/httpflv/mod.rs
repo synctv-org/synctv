@@ -16,14 +16,14 @@ use tracing::{error, info, warn};
 
 use crate::api::tracker::StreamSubscriberGuard;
 use crate::api::LiveStreamingInfrastructure;
-use crate::relay::StreamRegistry;
+use crate::relay::StreamRegistryTrait;
 
 // Re-export HttpFlvSession from xiu-httpflv
 pub use synctv_xiu::httpflv::HttpFlvSession;
 
 #[derive(Clone)]
 pub struct HttpFlvState {
-    registry: Arc<StreamRegistry>,
+    registry: Arc<dyn StreamRegistryTrait>,
     stream_hub_event_sender: StreamHubEventSender,
     /// Optional infrastructure for subscriber tracking via `StreamSubscriberGuard`.
     /// When set, each FLV session holds a guard that decrements the subscriber
@@ -34,7 +34,7 @@ pub struct HttpFlvState {
 impl HttpFlvState {
     #[must_use]
     pub const fn new(
-        registry: Arc<StreamRegistry>,
+        registry: Arc<dyn StreamRegistryTrait>,
         stream_hub_event_sender: StreamHubEventSender,
     ) -> Self {
         Self {
@@ -79,7 +79,7 @@ async fn handle_flv_stream(
     );
 
     // Check if stream exists (publisher registered)
-    match state.registry.get_publisher_immut(&room_id, media_id).await {
+    match state.registry.get_publisher(&room_id, media_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
             warn!("No publisher for room {} / media {}", room_id, media_id);
@@ -149,13 +149,7 @@ mod tests {
     #[tokio::test]
     async fn test_http_flv_state_creation() {
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
-
-        let Some(redis_conn) = try_redis_connection().await else {
-            eprintln!("Redis not available, skipping test");
-            return;
-        };
-
-        let registry = StreamRegistry::new(redis_conn);
+        let registry = crate::relay::InMemoryStreamRegistry::new();
 
         let state = HttpFlvState::new(std::sync::Arc::new(registry), event_sender);
         assert!(Arc::strong_count(&state.registry) >= 1);
@@ -198,18 +192,5 @@ mod tests {
         assert!(!session.has_send_header);
         assert!(!session.has_audio);
         assert!(!session.has_video);
-    }
-
-    // Helper function for tests that need Redis
-    // Returns None if Redis is not available
-    async fn try_redis_connection() -> Option<redis::aio::ConnectionManager> {
-        let redis_client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            redis::aio::ConnectionManager::new(redis_client),
-        )
-        .await
-        .ok()?
-        .ok()
     }
 }

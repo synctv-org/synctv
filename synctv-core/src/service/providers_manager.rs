@@ -15,6 +15,30 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+fn provider_http_client_from_config(
+    config: &Value,
+    default_connect_timeout: std::time::Duration,
+) -> std::result::Result<Option<reqwest::Client>, crate::Error> {
+    let timeout_seconds = config
+        .get("timeout_seconds")
+        .and_then(serde_json::Value::as_u64);
+
+    let Some(timeout_seconds) = timeout_seconds else {
+        return Ok(None);
+    };
+
+    let client = synctv_common::http::SsrfSafeClientBuilder::provider()
+        .request_timeout(std::time::Duration::from_secs(timeout_seconds))
+        .read_timeout(std::time::Duration::from_secs(timeout_seconds))
+        .connect_timeout(default_connect_timeout)
+        .build()
+        .map_err(|e| {
+            crate::Error::Internal(format!("Failed to build provider HTTP client: {e}"))
+        })?;
+
+    Ok(Some(client))
+}
+
 /// Factory function type for creating `MediaProvider` instances
 pub type ProviderFactory = Box<
     dyn Fn(&str, &Value, Arc<RemoteProviderManager>) -> Result<Arc<dyn MediaProvider>>
@@ -54,16 +78,35 @@ pub struct ProvidersManager {
 
     /// Provider instance manager (for local/remote dispatch)
     instance_manager: Arc<RemoteProviderManager>,
+    /// Default connect timeout used when building per-instance override clients.
+    default_provider_connect_timeout: std::time::Duration,
 }
 
 impl ProvidersManager {
     /// Create a new `ProvidersManager`
     #[must_use]
     pub fn new(instance_manager: Arc<RemoteProviderManager>) -> Self {
+        let default_provider_http_client = synctv_common::http::build_provider_client()
+            .expect("default provider HTTP client should build");
+        Self::new_with_provider_http_client(
+            instance_manager,
+            default_provider_http_client,
+            std::time::Duration::from_secs(10),
+        )
+    }
+
+    /// Create a new manager with an explicit default local provider HTTP client.
+    #[must_use]
+    pub fn new_with_provider_http_client(
+        instance_manager: Arc<RemoteProviderManager>,
+        _default_provider_http_client: reqwest::Client,
+        default_provider_connect_timeout: std::time::Duration,
+    ) -> Self {
         let mut manager = Self {
             factories: HashMap::new(),
             instances: Arc::new(RwLock::new(HashMap::new())),
             instance_manager,
+            default_provider_connect_timeout,
         };
 
         // Register all built-in providers
@@ -80,17 +123,22 @@ impl ProvidersManager {
 
     /// Register all built-in provider factories
     fn register_builtin_providers(&mut self) {
+        let default_provider_connect_timeout = self.default_provider_connect_timeout;
         // Alist factory - reads optional timeout from config
         self.register_factory(
             "alist",
-            Box::new(|_instance_id, config, instance_manager| {
-                // Read optional timeout from config (in seconds)
-                let timeout_seconds = config
-                    .get("timeout_seconds")
-                    .and_then(serde_json::Value::as_u64);
-
-                let provider = if let Some(secs) = timeout_seconds {
-                    AlistProvider::with_timeout(instance_manager, secs)
+            Box::new(move |_instance_id, config, instance_manager| {
+                let provider = if let Some(client) =
+                    provider_http_client_from_config(config, default_provider_connect_timeout)?
+                {
+                    AlistProvider::with_client_manager(
+                        instance_manager,
+                        Arc::new(
+                            crate::provider::ProviderClientManager::new_with_provider_http_client(
+                                client,
+                            ),
+                        ),
+                    )
                 } else {
                     AlistProvider::new(instance_manager)
                 };
@@ -99,16 +147,21 @@ impl ProvidersManager {
         );
 
         // Bilibili factory - reads optional timeout from config
+        let default_provider_connect_timeout = self.default_provider_connect_timeout;
         self.register_factory(
             "bilibili",
-            Box::new(|_instance_id, config, instance_manager| {
-                // Read optional timeout from config (in seconds)
-                let timeout_seconds = config
-                    .get("timeout_seconds")
-                    .and_then(serde_json::Value::as_u64);
-
-                let provider = if let Some(secs) = timeout_seconds {
-                    BilibiliProvider::with_timeout(instance_manager, secs)
+            Box::new(move |_instance_id, config, instance_manager| {
+                let provider = if let Some(client) =
+                    provider_http_client_from_config(config, default_provider_connect_timeout)?
+                {
+                    BilibiliProvider::with_client_manager(
+                        instance_manager,
+                        Arc::new(
+                            crate::provider::ProviderClientManager::new_with_provider_http_client(
+                                client,
+                            ),
+                        ),
+                    )
                 } else {
                     BilibiliProvider::new(instance_manager)
                 };
@@ -117,16 +170,21 @@ impl ProvidersManager {
         );
 
         // Emby factory - reads optional timeout from config
+        let default_provider_connect_timeout = self.default_provider_connect_timeout;
         self.register_factory(
             "emby",
-            Box::new(|_instance_id, config, instance_manager| {
-                // Read optional timeout from config (in seconds)
-                let timeout_seconds = config
-                    .get("timeout_seconds")
-                    .and_then(serde_json::Value::as_u64);
-
-                let provider = if let Some(secs) = timeout_seconds {
-                    EmbyProvider::with_timeout(instance_manager, secs)
+            Box::new(move |_instance_id, config, instance_manager| {
+                let provider = if let Some(client) =
+                    provider_http_client_from_config(config, default_provider_connect_timeout)?
+                {
+                    EmbyProvider::with_client_manager(
+                        instance_manager,
+                        Arc::new(
+                            crate::provider::ProviderClientManager::new_with_provider_http_client(
+                                client,
+                            ),
+                        ),
+                    )
                 } else {
                     EmbyProvider::new(instance_manager)
                 };
@@ -137,9 +195,7 @@ impl ProvidersManager {
         // RTMP factory
         self.register_factory(
             "rtmp",
-            Box::new(|_instance_id, _config, _instance_manager| {
-                Ok(Arc::new(RtmpProvider::new()))
-            }),
+            Box::new(|_instance_id, _config, _instance_manager| Ok(Arc::new(RtmpProvider::new()))),
         );
 
         // DirectUrl factory
@@ -393,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_config_with_timeout() {
-        // Test that provider reads timeout from config
+        // Test that provider accepts per-instance HTTP timeout overrides.
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
@@ -415,7 +471,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bilibili_provider_config_with_timeout() {
-        // Test that Bilibili provider reads timeout from config
+        // Test that Bilibili provider accepts per-instance HTTP timeout overrides.
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
@@ -437,7 +493,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_emby_provider_config_with_timeout() {
-        // Test that Emby provider reads timeout from config
+        // Test that Emby provider accepts per-instance HTTP timeout overrides.
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
@@ -474,6 +530,28 @@ mod tests {
             .await;
         // Should still succeed, just ignore the invalid timeout
         assert!(provider.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_new_with_provider_http_client_accepts_explicit_default_client() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let client = synctv_common::http::SsrfSafeClientBuilder::provider()
+            .connect_timeout(std::time::Duration::from_secs(4))
+            .request_timeout(std::time::Duration::from_secs(12))
+            .build()
+            .unwrap();
+
+        let manager = ProvidersManager::new_with_provider_http_client(
+            instance_manager,
+            client,
+            std::time::Duration::from_secs(4),
+        );
+
+        assert!(manager.has_factory("alist"));
+        assert!(manager.has_factory("bilibili"));
+        assert!(manager.has_factory("emby"));
     }
 
     #[tokio::test]
@@ -804,19 +882,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_from_config_invalid_provider_skipped() {
-        // Test that providers with invalid config are skipped
+        // Startup provider wiring only validates provider instance type/transport
+        // configuration. Source-specific media identifiers are validated later by
+        // the provider's business methods, so this config still loads.
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
         let mut manager = ProvidersManager::new(instance_manager);
 
-        // Create config with invalid RTMP config (missing base_url)
+        // Create config with a syntactically incomplete Bilibili source payload.
         let config = crate::Config {
             media_providers: crate::config::MediaProvidersConfig {
                 providers: serde_json::json!({
-                    "rtmp_invalid": {
-                        "provider_type": "rtmp"
-                        // Missing base_url - will fail
+                    "bilibili_invalid": {
+                        "provider_type": "bilibili"
                     },
                     "alist_valid": {
                         "provider_type": "alist"
@@ -827,13 +906,14 @@ mod tests {
             ..Default::default()
         };
 
-        // Load from config (invalid RTMP should be skipped)
+        // Both providers load because provider instance creation does not
+        // validate source identifiers at bootstrap time.
         let count = manager.load_from_config(&config).await.unwrap();
-        assert_eq!(count, 1); // Only alist_valid loaded
+        assert_eq!(count, 2);
 
-        // Verify only valid provider exists
+        // Verify both provider instances exist.
         assert!(manager.get("alist_valid").await.is_some());
-        assert!(manager.get("rtmp_invalid").await.is_none());
+        assert!(manager.get("bilibili_invalid").await.is_some());
     }
 
     #[tokio::test]

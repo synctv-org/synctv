@@ -1,0 +1,19 @@
+[profile.default]
+fail-fast = false
+retries = 0
+slow-timeout = { period = "60s", terminate-after = 2 }
+leak-timeout = "120s"
+
+[profile.docker]
+fail-fast = false
+retries = 0
+slow-timeout = { period = "120s", terminate-after = 2 }
+leak-timeout = "180s"
+
+[[profile.default.overrides]]
+filter = 'test(/^.*::.*$/) and not test(ignored)'
+threads-required = 1
+
+[[profile.docker.overrides]]
+filter = 'test(ignored)'
+threads-required = 1

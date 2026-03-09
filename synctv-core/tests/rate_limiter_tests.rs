@@ -15,7 +15,6 @@ use tokio::sync::RwLock;
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_in_memory_rate_limiter_allows_under_limit() {
     let limiter = RateLimiter::in_memory_only("test_allow:".to_string());
 
@@ -29,7 +28,6 @@ async fn test_in_memory_rate_limiter_allows_under_limit() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_in_memory_rate_limiter_blocks_over_limit() {
     let limiter = RateLimiter::in_memory_only("test_block:".to_string());
     let key = "user:block:chat";
@@ -51,7 +49,6 @@ async fn test_in_memory_rate_limiter_blocks_over_limit() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_in_memory_rate_limiter_window_expiry() {
     let limiter = RateLimiter::in_memory_only("test_expiry:".to_string());
     let key = "user:expiry:chat";
@@ -74,7 +71,6 @@ async fn test_in_memory_rate_limiter_window_expiry() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_in_memory_independent_keys() {
     let limiter = RateLimiter::in_memory_only("test_indep:".to_string());
 
@@ -88,9 +84,8 @@ async fn test_in_memory_independent_keys() {
     assert!(limiter.check_rate_limit("key2", 5, 1).await.is_ok());
 }
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_in_memory_sync_check() {
+#[test]
+fn test_in_memory_sync_check() {
     let limiter = RateLimiter::in_memory_only("sync_test:".to_string());
 
     for _ in 0..5 {
@@ -103,7 +98,6 @@ async fn test_in_memory_sync_check() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_in_memory_distributed_uses_governor() {
     let limiter = RateLimiter::in_memory_only("dist:".to_string());
 

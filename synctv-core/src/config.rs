@@ -179,6 +179,7 @@ impl ServerConfig {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DatabaseConfig {
     pub url: String,
     pub max_connections: u32,
@@ -376,6 +377,7 @@ impl Default for RedisConfig {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JwtConfig {
     pub secret: String,
     pub access_token_duration_hours: u64,
@@ -418,6 +420,7 @@ impl Default for JwtConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LoggingConfig {
     pub level: String,
     pub format: String, // "json" or "pretty"
@@ -438,6 +441,12 @@ impl Default for LoggingConfig {
 #[serde(default)]
 pub struct LivestreamConfig {
     pub rtmp_port: u16,
+    /// Publicly reachable RTMP host returned to publishers.
+    ///
+    /// If empty, falls back to `server.advertise_host`. Use this when the
+    /// cluster advertise address is internal-only (pod IP / service DNS) but
+    /// publishers must connect via an external ingress or hostname.
+    pub public_rtmp_host: String,
     pub gop_cache_size: u32,
     /// Idle timeout before auto-stopping a pull stream (seconds)
     pub stream_timeout_seconds: u64,
@@ -492,6 +501,7 @@ impl Default for LivestreamConfig {
     fn default() -> Self {
         Self {
             rtmp_port: 1935,
+            public_rtmp_host: String::new(),
             gop_cache_size: 2,
             stream_timeout_seconds: 300,
             cleanup_check_interval_seconds: 60,
@@ -513,6 +523,7 @@ impl Default for LivestreamConfig {
 ///
 /// Stores `OAuth2` provider configurations in the main config file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OAuth2Config {
     /// Provider configurations (e.g., github, google, logto1, logto2)
     #[serde(default)]
@@ -656,6 +667,7 @@ impl Default for WebRTCConfig {
 
 /// Email configuration for SMTP
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EmailConfig {
     pub smtp_host: String,
     pub smtp_port: u16,
@@ -715,6 +727,12 @@ impl Config {
         get_env: &impl Fn(&str) -> Option<String>,
     ) -> Result<Self, ConfigError> {
         let mut builder = ConfigBuilder::builder();
+
+        // Always seed the builder with the fully-populated default config first,
+        // then layer file values and finally explicit environment overrides on top.
+        // Without this, partial config files must redundantly specify every nested
+        // field because deserialization happens against only the file source.
+        builder = builder.add_source(config::Config::try_from(&Self::default())?);
 
         // Load config file if provided
         if let Some(path) = config_file {
@@ -828,6 +846,16 @@ impl Config {
     #[must_use]
     pub fn advertise_http_address(&self) -> String {
         format!("{}:{}", self.advertise_host(), self.server.http_port)
+    }
+
+    /// Public RTMP host for publisher-facing URLs.
+    #[must_use]
+    pub fn public_rtmp_host(&self) -> String {
+        if !self.livestream.public_rtmp_host.is_empty() {
+            self.livestream.public_rtmp_host.clone()
+        } else {
+            self.advertise_host()
+        }
     }
 
     /// Apply environment variable overrides using single-underscore format.
@@ -1036,6 +1064,10 @@ impl Config {
             "SYNCTV_LIVESTREAM_RTMP_PORT",
             &mut self.livestream.rtmp_port,
         )?;
+        env_override_str(
+            "SYNCTV_LIVESTREAM_PUBLIC_RTMP_HOST",
+            &mut self.livestream.public_rtmp_host,
+        );
         env_override_parse(
             "SYNCTV_LIVESTREAM_GOP_CACHE_SIZE",
             &mut self.livestream.gop_cache_size,
@@ -1068,6 +1100,10 @@ impl Config {
             "SYNCTV_LIVESTREAM_GOP_CACHE_MAX_MEMORY_MB",
             &mut self.livestream.gop_cache_max_memory_mb,
         )?;
+        env_override_parse(
+            "SYNCTV_LIVESTREAM_HLS_MEMORY_MAX_MB",
+            &mut self.livestream.hls_memory_max_mb,
+        )?;
         env_override_bool(
             "SYNCTV_LIVESTREAM_HLS_SHARED_STORAGE",
             &mut self.livestream.hls_shared_storage,
@@ -1076,6 +1112,14 @@ impl Config {
             "SYNCTV_LIVESTREAM_HLS_STORAGE_PATH",
             &mut self.livestream.hls_storage_path,
         );
+        env_override_parse(
+            "SYNCTV_LIVESTREAM_FLV_MAX_CONNECTION_DURATION_SECONDS",
+            &mut self.livestream.flv_max_connection_duration_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_LIVESTREAM_FLV_WRITE_TIMEOUT_SECONDS",
+            &mut self.livestream.flv_write_timeout_seconds,
+        )?;
 
         // -- Email --
         env_override_str("SYNCTV_EMAIL_SMTP_HOST", &mut self.email.smtp_host);
@@ -2769,6 +2813,43 @@ mod tests {
     }
 
     #[test]
+    fn test_from_file_merges_partial_nested_sections_with_defaults() {
+        let unique = format!(
+            "synctv-config-test-{}-{}.yaml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(
+            &path,
+            r#"
+server:
+  grpc_port: 50051
+database:
+  url: "postgresql://user:pass@localhost/db"
+jwt:
+  secret: "12345678901234567890123456789012"
+"#,
+        )
+        .expect("write config");
+
+        let config = Config::from_file(path.to_str().expect("utf-8 path"))
+            .expect("partial config should merge with defaults");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(config.server.grpc_port, 50051);
+        assert_eq!(config.jwt.secret, "12345678901234567890123456789012");
+        assert_eq!(
+            config.jwt.access_token_duration_hours,
+            JwtConfig::default().access_token_duration_hours
+        );
+        assert_eq!(config.logging.level, LoggingConfig::default().level);
+    }
+
+    #[test]
     fn test_validate_default_root_password() {
         let mut config = valid_prod_config();
         config.bootstrap.root_password = "root".to_string();
@@ -2932,6 +3013,34 @@ mod tests {
         assert_eq!(config.messaging_rate_limits.chat_per_second, 17);
         assert_eq!(config.messaging_rate_limits.danmaku_per_second, 9);
         assert_eq!(config.messaging_rate_limits.window_seconds, 4);
+    }
+
+    #[test]
+    fn test_from_env_overrides_livestream_extended_runtime_limits() {
+        let config = Config::from_env_map(&env_map(&[
+            ("SYNCTV_LIVESTREAM_HLS_MEMORY_MAX_MB", "768"),
+            (
+                "SYNCTV_LIVESTREAM_FLV_MAX_CONNECTION_DURATION_SECONDS",
+                "7200",
+            ),
+            ("SYNCTV_LIVESTREAM_FLV_WRITE_TIMEOUT_SECONDS", "45"),
+            ("SYNCTV_LIVESTREAM_PUBLIC_RTMP_HOST", "stream.example.com"),
+        ]))
+        .expect("livestream env overrides should parse");
+
+        assert_eq!(config.livestream.hls_memory_max_mb, 768);
+        assert_eq!(config.livestream.flv_max_connection_duration_seconds, 7200);
+        assert_eq!(config.livestream.flv_write_timeout_seconds, 45);
+        assert_eq!(config.livestream.public_rtmp_host, "stream.example.com");
+    }
+
+    #[test]
+    fn test_public_rtmp_host_prefers_explicit_override() {
+        let mut config = Config::default();
+        config.server.advertise_host = "10.0.0.12".to_string();
+        config.livestream.public_rtmp_host = "stream.example.com".to_string();
+
+        assert_eq!(config.public_rtmp_host(), "stream.example.com");
     }
 
     #[test]

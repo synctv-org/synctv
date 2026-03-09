@@ -292,7 +292,10 @@ pub async fn init_services(
         cache_invalidation.clone(),
         brute_force.clone(),
         redis_handles.as_ref(),
-        matches!(config.redis.deployment_mode, crate::config::RedisDeploymentMode::Sentinel),
+        matches!(
+            config.redis.deployment_mode,
+            crate::config::RedisDeploymentMode::Sentinel
+        ),
     );
     info!("RoomService initialized");
 
@@ -376,13 +379,28 @@ pub async fn init_services(
 
     // Start cross-replica cache invalidation listener
     handle_provider_invalidation_listener_result(
-        provider_instance_manager.start_invalidation_listener().await,
+        provider_instance_manager
+            .start_invalidation_listener()
+            .await,
         cluster_mode,
     )?;
 
     // Initialize ProvidersManager
     info!("Initializing ProvidersManager...");
-    let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager.clone()));
+    let provider_http_client = synctv_common::http::SsrfSafeClientBuilder::provider()
+        .connect_timeout(std::time::Duration::from_secs(
+            config.media_providers.connect_timeout_seconds,
+        ))
+        .request_timeout(std::time::Duration::from_secs(
+            config.media_providers.request_timeout_seconds,
+        ))
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to build provider HTTP client: {e}"))?;
+    let providers_manager = Arc::new(ProvidersManager::new_with_provider_http_client(
+        provider_instance_manager.clone(),
+        provider_http_client,
+        std::time::Duration::from_secs(config.media_providers.connect_timeout_seconds),
+    ));
     info!("ProvidersManager initialized");
 
     // Initialize OAuth2 service (optional - requires OAuth2 provider config).
@@ -996,7 +1014,6 @@ mod tests {
             bool,
         ) -> RoomService = build_room_service;
     }
-
 
     #[test]
     fn test_cluster_enabled_without_redis_fails_at_config_validation_layer() {

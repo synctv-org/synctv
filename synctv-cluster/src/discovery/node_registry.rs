@@ -1752,7 +1752,7 @@ mod tests {
     fn test_node_registry_creation_and_fencing_token() {
         // redis::Client::open succeeds even without a running Redis server
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://localhost:6379").unwrap(),
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
             "test_node".to_string(),
             30,
             "synctv:",
@@ -1801,7 +1801,7 @@ mod tests {
     #[tokio::test]
     async fn test_merge_dns_peers_inserts_new() {
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://localhost:6379").unwrap(),
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
             "self".to_string(),
             30,
             "synctv:",
@@ -1824,7 +1824,7 @@ mod tests {
     #[tokio::test]
     async fn test_merge_dns_peers_does_not_overwrite_existing() {
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://localhost:6379").unwrap(),
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
             "self".to_string(),
             30,
             "synctv:",
@@ -1931,7 +1931,7 @@ mod tests {
     async fn test_local_cache_empty_address_scenario() {
         // Test that when local cache has empty addresses, we can detect it
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://localhost:6379").unwrap(),
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
             "test_node".to_string(),
             30,
             "synctv:",
@@ -1965,7 +1965,7 @@ mod tests {
     async fn test_local_cache_missing_scenario() {
         // Test that when local cache is missing, we can detect it
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://localhost:6379").unwrap(),
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
             "test_node".to_string(),
             30,
             "synctv:",

@@ -42,6 +42,8 @@ const MAX_RETRIES: u32 = 10;
 /// Even if individual attempts reset after successful connections,
 /// this global counter ensures we eventually give up.
 const GLOBAL_MAX_ATTEMPTS: u32 = 50;
+/// Minimum connection duration to consider "successful" for retry reset.
+const MIN_SUCCESSFUL_DURATION: std::time::Duration = std::time::Duration::from_mins(1);
 const INITIAL_BACKOFF_MS: u64 = 1000;
 const MAX_BACKOFF_MS: u64 = 30_000;
 /// Maximum total FLV buffer size (50 MB) to prevent unbounded memory growth
@@ -54,6 +56,10 @@ const FLV_TAG_HEADER_SIZE: usize = 11;
 const FLV_TAG_AUDIO: u8 = 8;
 const FLV_TAG_VIDEO: u8 = 9;
 const FLV_TAG_SCRIPT_DATA: u8 = 18;
+
+fn should_reset_retry_counters(stream_duration: std::time::Duration) -> bool {
+    stream_duration > MIN_SUCCESSFUL_DURATION
+}
 
 /// Source type for external streams
 #[derive(Debug, Clone)]
@@ -111,6 +117,33 @@ impl ExternalStreamPuller {
         source_url: String,
         stream_hub_event_sender: StreamHubEventSender,
     ) -> Result<Self> {
+        Self::new_async_with_resolver(
+            room_id,
+            media_id,
+            source_url,
+            stream_hub_event_sender,
+            |host, port| async move {
+                let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("DNS resolution failed: {e}"))?
+                    .collect();
+                Ok(addrs)
+            },
+        )
+        .await
+    }
+
+    async fn new_async_with_resolver<F, Fut>(
+        room_id: String,
+        media_id: String,
+        source_url: String,
+        stream_hub_event_sender: StreamHubEventSender,
+        resolver: F,
+    ) -> Result<Self>
+    where
+        F: Fn(String, u16) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<std::net::SocketAddr>>>,
+    {
         let source_type = ExternalSourceType::from_url(&source_url).ok_or_else(|| {
             anyhow::anyhow!(
                 "Unsupported source URL format: {source_url}. Expected rtmp:// or *.flv"
@@ -145,11 +178,7 @@ impl ExternalStreamPuller {
                         }
                     }
                 });
-                let addrs: Vec<std::net::SocketAddr> =
-                    tokio::net::lookup_host(format!("{host}:{port}"))
-                        .await
-                        .map_err(|e| anyhow::anyhow!("DNS resolution failed: {e}"))?
-                        .collect();
+                let addrs = resolver(host.to_string(), port).await?;
 
                 // Filter out blocked IPs
                 let safe_addrs: Vec<std::net::SocketAddr> = addrs
@@ -334,6 +363,7 @@ impl ExternalStreamPuller {
                 ExternalSourceType::HttpFlv => self.connect_and_stream_flv(&data_sender).await,
             };
             let stream_duration = connect_start.elapsed();
+            let startup_confirmation_pending = self.confirm_tx.is_some();
 
             // If the connection failed on the first attempt and we have a pending
             // confirm_tx, signal the failure so the caller doesn't wait forever.
@@ -362,9 +392,6 @@ impl ExternalStreamPuller {
                 return Ok(());
             }
 
-            /// Minimum connection duration to consider "successful" for retry reset
-            const MIN_SUCCESSFUL_DURATION: std::time::Duration = std::time::Duration::from_mins(1);
-
             match result {
                 Ok(()) => {
                     info!(
@@ -375,10 +402,19 @@ impl ExternalStreamPuller {
                     return Ok(());
                 }
                 Err(e) => {
+                    if startup_confirmation_pending {
+                        error!(
+                            room_id = %self.room_id,
+                            media_id = %self.media_id,
+                            "External stream startup failed before first confirmation: {e}"
+                        );
+                        return Err(e);
+                    }
+
                     // Reset retry counters if the connection was up for a meaningful duration
                     // This prevents accumulating transient failures that were followed by
                     // successful long-lived connections from triggering GLOBAL_MAX_ATTEMPTS
-                    if stream_duration > MIN_SUCCESSFUL_DURATION {
+                    if should_reset_retry_counters(stream_duration) {
                         info!(
                             room_id = %self.room_id,
                             duration_secs = stream_duration.as_secs(),
@@ -474,12 +510,10 @@ impl ExternalStreamPuller {
         })?
         .map_err(|e| anyhow::anyhow!("Failed to connect to {connect_addr}: {e}"))?;
 
-        // TCP connection established — signal confirmation
-        self.send_confirm_ok();
-
         // Create bridge channel — ClientSession sends StreamHub events here
         // instead of the real StreamHub. We intercept and redirect.
         let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<StreamHubEvent>(64);
+        let (publish_started_tx, publish_started_rx) = tokio::sync::oneshot::channel::<()>();
 
         // Clone data_sender for the bridge task
         let bridge_data_sender = data_sender.clone();
@@ -491,6 +525,7 @@ impl ExternalStreamPuller {
         // ClientSession then stores it as self.data_sender, so all subsequent on_video_data /
         // on_audio_data calls send frames through our sender into the correct local stream.
         let bridge_handle = tokio::spawn(async move {
+            let mut publish_started_tx = Some(publish_started_tx);
             while let Some(event) = bridge_rx.recv().await {
                 match event {
                     StreamHubEvent::Publish { result_sender, .. } => {
@@ -500,6 +535,9 @@ impl ExternalStreamPuller {
                             None, // No packet data sender needed
                             None, // No statistic data sender needed
                         )));
+                        if let Some(tx) = publish_started_tx.take() {
+                            let _ = tx.send(());
+                        }
                     }
                     StreamHubEvent::UnPublish { .. } => {
                         // Remote stream ended — exit bridge
@@ -527,15 +565,29 @@ impl ExternalStreamPuller {
             None, // per_stream_max_bytes: use default for external pulls
         );
 
-        let result = tokio::select! {
-            r = client.run() => r.map_err(|e| anyhow::anyhow!("RTMP client session error: {e}")),
-            () = self.cancel_token.cancelled() => {
-                info!(
-                    room_id = %self.room_id,
-                    media_id = %self.media_id,
-                    "RTMP stream puller cancelled"
-                );
-                Ok(())
+        let mut client_run = Box::pin(client.run());
+        let mut publish_started_rx = Box::pin(publish_started_rx);
+        let mut publish_confirmed = false;
+
+        let result = loop {
+            tokio::select! {
+                r = &mut client_run => {
+                    break r.map_err(|e| anyhow::anyhow!("RTMP client session error: {e}"));
+                }
+                ready = &mut publish_started_rx, if !publish_confirmed => {
+                    if ready.is_ok() {
+                        self.send_confirm_ok();
+                    }
+                    publish_confirmed = true;
+                }
+                () = self.cancel_token.cancelled() => {
+                    info!(
+                        room_id = %self.room_id,
+                        media_id = %self.media_id,
+                        "RTMP stream puller cancelled"
+                    );
+                    break Ok(());
+                }
             }
         };
 
@@ -594,9 +646,6 @@ impl ExternalStreamPuller {
             return Err(anyhow::anyhow!("HTTP error: {}", response.status()));
         }
 
-        // HTTP connection established and response OK — signal confirmation
-        self.send_confirm_ok();
-
         let mut buffer = BytesMut::new();
         let mut header_parsed = false;
         let mut dropped_frames: u64 = 0;
@@ -621,7 +670,19 @@ impl ExternalStreamPuller {
                 result = tokio::time::timeout(CHUNK_READ_TIMEOUT, response.chunk()) => {
                     match result {
                         Ok(Ok(Some(c))) => c,
-                        Ok(Ok(None)) => break, // Stream ended normally
+                        Ok(Ok(None)) => {
+                            if !header_parsed {
+                                return Err(anyhow::anyhow!(
+                                    "HTTP-FLV source closed before sending a complete FLV header"
+                                ));
+                            }
+                            if !buffer.is_empty() {
+                                return Err(anyhow::anyhow!(
+                                    "HTTP-FLV source closed with an incomplete FLV tag buffered"
+                                ));
+                            }
+                            break; // Stream ended normally
+                        }
                         Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to read HTTP chunk: {e}")),
                         Err(_) => return Err(anyhow::anyhow!("No data received for {}s, stream appears dead", CHUNK_READ_TIMEOUT.as_secs())),
                     }
@@ -660,6 +721,7 @@ impl ExternalStreamPuller {
                 // Skip FLV header (9 bytes) + PreviousTagSize0 (4 bytes)
                 buffer.advance(FLV_HEADER_SIZE + FLV_PREV_TAG_SIZE_LEN);
                 header_parsed = true;
+                self.send_confirm_ok();
             }
 
             // Parse as many complete tags as possible from the buffer
@@ -739,6 +801,16 @@ impl ExternalStreamPuller {
                 }
             }
         }
+        if !header_parsed {
+            anyhow::bail!("HTTP-FLV stream ended before a complete FLV header was received");
+        }
+        if !buffer.is_empty() {
+            anyhow::bail!(
+                "HTTP-FLV stream ended with {} buffered bytes of an incomplete FLV tag",
+                buffer.len()
+            );
+        }
+
         info!("HTTP-FLV stream ended");
         Ok(())
     }
@@ -935,6 +1007,8 @@ pub fn validate_source_url(url: &str) -> Result<ExternalSourceType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
 
     #[test]
     fn test_source_type_detection() {
@@ -981,6 +1055,151 @@ mod tests {
         assert!(validate_source_url("http://127.0.0.1/stream.flv").is_ok());
         assert!(validate_source_url("http://169.254.169.254/stream.flv").is_ok());
         assert!(validate_source_url("rtmp://localhost/app/stream").is_ok());
+    }
+
+    #[test]
+    fn test_retry_counter_reset_threshold() {
+        assert!(!should_reset_retry_counters(
+            std::time::Duration::from_secs(59)
+        ));
+        assert!(!should_reset_retry_counters(MIN_SUCCESSFUL_DURATION));
+        assert!(should_reset_retry_counters(
+            MIN_SUCCESSFUL_DURATION + std::time::Duration::from_nanos(1)
+        ));
+    }
+
+    async fn spawn_stream_hub(
+        mut receiver: tokio::sync::mpsc::Receiver<StreamHubEvent>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Some(event) = receiver.recv().await {
+                match event {
+                    StreamHubEvent::Publish { result_sender, .. } => {
+                        let (data_sender, _) = tokio::sync::mpsc::channel(8);
+                        let _ = result_sender.send(Ok((Some(data_sender), None, None)));
+                    }
+                    StreamHubEvent::UnPublish { .. } => {}
+                    _ => {}
+                }
+            }
+        })
+    }
+
+    async fn spawn_http_response_server(
+        response: Vec<u8>,
+    ) -> anyhow::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let handle = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let _ = stream.write_all(&response).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        Ok((addr, handle))
+    }
+
+    fn make_test_http_puller(
+        addr: std::net::SocketAddr,
+        sender: StreamHubEventSender,
+        confirm_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
+    ) -> ExternalStreamPuller {
+        ExternalStreamPuller {
+            room_id: "room123".to_string(),
+            media_id: "media456".to_string(),
+            source_url: format!("http://{addr}/stream.flv"),
+            source_type: ExternalSourceType::HttpFlv,
+            stream_hub_event_sender: sender,
+            confirm_tx: Some(confirm_tx),
+            http_client: Some(reqwest::Client::new()),
+            resolved_addr: Some(addr),
+            cancel_token: CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_http_flv_confirmation_waits_for_valid_flv_header() {
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nbadflvheader!"
+                .to_vec();
+        let (addr, server_handle) = spawn_http_response_server(response)
+            .await
+            .expect("test server should start");
+        let (hub_sender, hub_receiver) = tokio::sync::mpsc::channel(8);
+        let hub_handle = spawn_stream_hub(hub_receiver).await;
+        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
+
+        let puller = make_test_http_puller(addr, hub_sender, confirm_tx);
+        let result = puller.run().await;
+
+        assert!(result.is_err(), "invalid FLV header must fail startup");
+        let confirm = confirm_rx.await.expect("confirm channel should resolve");
+        let err = confirm.expect_err("startup should not be confirmed for invalid FLV");
+        assert!(
+            err.contains("Invalid FLV header"),
+            "unexpected confirmation error: {err}"
+        );
+
+        server_handle.abort();
+        hub_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_http_flv_truncated_header_fails_startup() {
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nFLV".to_vec();
+        let (addr, server_handle) = spawn_http_response_server(response)
+            .await
+            .expect("test server should start");
+        let (hub_sender, hub_receiver) = tokio::sync::mpsc::channel(8);
+        let hub_handle = spawn_stream_hub(hub_receiver).await;
+        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
+
+        let puller = make_test_http_puller(addr, hub_sender, confirm_tx);
+        let result = puller.run().await;
+
+        assert!(result.is_err(), "truncated FLV header must fail startup");
+        let confirm = confirm_rx.await.expect("confirm channel should resolve");
+        let err = confirm.expect_err("startup should not be confirmed for truncated header");
+        assert!(
+            err.contains("complete FLV header"),
+            "unexpected confirmation error: {err}"
+        );
+
+        server_handle.abort();
+        hub_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_http_flv_confirmation_succeeds_after_valid_header() {
+        let mut body = vec![b'F', b'L', b'V', 0x01, 0x00, 0x00, 0x00, 0x00, 0x09];
+        body.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        let mut response = response;
+        response.extend_from_slice(&body);
+        let (addr, server_handle) = spawn_http_response_server(response)
+            .await
+            .expect("test server should start");
+        let (hub_sender, hub_receiver) = tokio::sync::mpsc::channel(8);
+        let hub_handle = spawn_stream_hub(hub_receiver).await;
+        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
+
+        let puller = make_test_http_puller(addr, hub_sender, confirm_tx);
+        let result = puller.run().await;
+
+        assert!(result.is_ok(), "valid FLV header should allow startup");
+        let confirm = confirm_rx.await.expect("confirm channel should resolve");
+        assert!(
+            confirm.is_ok(),
+            "startup should be confirmed after FLV header"
+        );
+
+        server_handle.abort();
+        hub_handle.abort();
     }
 
     #[tokio::test]
@@ -1062,16 +1281,23 @@ mod tests {
     /// Ignored because DNS results vary by environment (VPNs, proxies, firewalls
     /// may return non-public IPs that are correctly blocked by SSRF protection).
     #[tokio::test]
-    #[ignore = "Requires DNS resolving to public IPs (fails behind VPN/proxy)"]
     async fn test_external_puller_async_sets_resolved_addr() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
+        let resolved = std::net::SocketAddr::from(([93, 184, 216, 34], 1935));
 
-        // Use example.com which is a real domain that resolves
-        let puller = ExternalStreamPuller::new_async(
+        let puller = ExternalStreamPuller::new_async_with_resolver(
             "room123".to_string(),
             "media456".to_string(),
             "rtmp://example.com/app/stream".to_string(),
             sender,
+            move |host, port| {
+                let expected = resolved;
+                async move {
+                    assert_eq!(host, "example.com");
+                    assert_eq!(port, 1935);
+                    Ok(vec![expected])
+                }
+            },
         )
         .await;
 
@@ -1088,6 +1314,7 @@ mod tests {
             puller.resolved_addr.is_some(),
             "resolved_addr should be set by new_async"
         );
+        assert_eq!(puller.resolved_addr, Some(resolved));
     }
 
     /// Test that `new_async()` rejects SSRF-protected URLs (private IPs, localhost, etc.)

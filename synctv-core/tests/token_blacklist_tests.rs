@@ -332,10 +332,12 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
     .await
     .unwrap();
 
-    sqlx::query("DROP TRIGGER IF EXISTS trg_fail_token_blacklist_timestamp_insert ON token_blacklist")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS trg_fail_token_blacklist_timestamp_insert ON token_blacklist",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query(
         r#"
         CREATE TRIGGER trg_fail_token_blacklist_timestamp_insert
@@ -354,30 +356,30 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
         "forced second write failure must bubble up as an error"
     );
 
-    let marker_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1)",
-    )
-    .bind(&key)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    let timestamp_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1)",
-    )
-    .bind(&ts_key)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let marker_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1)")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let timestamp_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1)")
+            .bind(&ts_key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert!(
         !marker_exists && !timestamp_exists,
         "family revoke must be atomic: no partial rows should remain after failure"
     );
 
-    sqlx::query("DROP TRIGGER IF EXISTS trg_fail_token_blacklist_timestamp_insert ON token_blacklist")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS trg_fail_token_blacklist_timestamp_insert ON token_blacklist",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query("DROP FUNCTION IF EXISTS fail_token_blacklist_timestamp_insert()")
         .execute(&pool)
         .await

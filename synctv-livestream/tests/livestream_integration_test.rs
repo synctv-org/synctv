@@ -367,7 +367,10 @@ async fn test_hls_url_generation_with_custom_callback() {
     .unwrap()
     .expect("playlist should exist");
 
-    assert!(playlist.contains(&format!("?token={token}")));
+    assert!(
+        playlist.contains(&format!("token={token}")),
+        "custom callback query string should be preserved: {playlist}"
+    );
 }
 
 #[tokio::test]

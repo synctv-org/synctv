@@ -84,22 +84,33 @@ pub(crate) async fn execute_live_proxy_action(
             media_id,
             user_id,
             expires_at,
-        } => execute_flv_stream(
-            state,
-            &provider_name,
-            &room_id,
-            &media_id,
-            &user_id,
-            expires_at,
-        )
-        .await,
+        } => {
+            execute_flv_stream(
+                state,
+                &provider_name,
+                &room_id,
+                &media_id,
+                &user_id,
+                expires_at,
+            )
+            .await
+        }
         ProxyAction::LiveHlsPlaylist {
             provider_name,
             room_id,
             media_id,
             version,
-        } => execute_hls_playlist(state, &provider_name, &room_id, &media_id, &version, raw_query)
-            .await,
+        } => {
+            execute_hls_playlist(
+                state,
+                &provider_name,
+                &room_id,
+                &media_id,
+                &version,
+                raw_query,
+            )
+            .await
+        }
         ProxyAction::LiveHlsSegment {
             room_id,
             media_id,
@@ -252,20 +263,20 @@ async fn execute_hls_playlist(
 
     let segment_disguised_as_png = live_segments_disguised_as_png(state);
 
-    let playlist = HlsStreamingApi::generate_playlist(
-        infrastructure,
-        room_id,
-        media_id,
-        |ts_name| build_hls_segment_path(
-            provider_name,
-            version,
-            ts_name,
-            raw_query,
-            segment_disguised_as_png,
-        ),
-    )
-    .await
-    .map_err(|e| AppError::internal_server_error(format!("Failed to generate HLS playlist: {e}")))?;
+    let playlist =
+        HlsStreamingApi::generate_playlist(infrastructure, room_id, media_id, |ts_name| {
+            build_hls_segment_path(
+                provider_name,
+                version,
+                ts_name,
+                raw_query,
+                segment_disguised_as_png,
+            )
+        })
+        .await
+        .map_err(|e| {
+            AppError::internal_server_error(format!("Failed to generate HLS playlist: {e}"))
+        })?;
 
     match playlist {
         Some(content) => Ok(Response::builder()
@@ -336,9 +347,9 @@ async fn execute_hls_segment(
 
     if disguised_as_png {
         let png_header = [
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49,
-            0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x02,
-            0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xDE,
         ];
 
         let mut disguised_data = Vec::with_capacity(png_header.len() + ts_data.len());
@@ -408,9 +419,13 @@ mod tests {
             .await
         });
 
-        assert!(matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"first")));
+        assert!(
+            matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"first"))
+        );
         assert!(send_task.await.unwrap());
-        assert!(matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"second")));
+        assert!(
+            matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"second"))
+        );
     }
 
     #[test]

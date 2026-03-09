@@ -104,10 +104,8 @@ impl RemoteProviderManager {
             repository,
             redis_conn,
             redis_client,
-            provider_change_channel: format!(
-                "{redis_key_prefix}{PROVIDER_CHANGE_CHANNEL_SUFFIX}"
-            )
-            .into(),
+            provider_change_channel: format!("{redis_key_prefix}{PROVIDER_CHANGE_CHANNEL_SUFFIX}")
+                .into(),
         }
     }
 

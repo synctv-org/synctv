@@ -13,6 +13,7 @@ use crate::grpc::bilibili::{
     UserInfoResp, VideoInfo, VideoPageInfo, VideoSegment as ProtoVideoSegment, VideoUrl,
 };
 use async_trait::async_trait;
+use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -91,13 +92,23 @@ pub trait BilibiliInterface: Send + Sync {
 /// This is the complete implementation that makes actual HTTP calls.
 /// Used by both local callers and gRPC server.
 pub struct BilibiliService {
+    client: Client,
     wbi_state: Arc<super::client::WbiState>,
 }
 
 impl BilibiliService {
-    #[must_use]
     pub fn new() -> Self {
         Self {
+            client: synctv_common::http::build_provider_client()
+                .expect("default provider HTTP client should build"),
+            wbi_state: Arc::new(super::client::WbiState::default()),
+        }
+    }
+
+    #[must_use]
+    pub fn with_client(client: Client) -> Self {
+        Self {
+            client,
             wbi_state: Arc::new(super::client::WbiState::default()),
         }
     }
@@ -110,13 +121,23 @@ impl Default for BilibiliService {
 }
 
 fn client_from_cookies_and_state(
+    client: Client,
     cookies: &HashMap<String, String>,
     wbi_state: Arc<super::client::WbiState>,
 ) -> Result<BilibiliClient, BilibiliError> {
     if cookies.is_empty() {
-        BilibiliClient::new_with_wbi_state(wbi_state)
+        BilibiliClient::new_with_transport(
+            client,
+            super::client::BilibiliEndpoints::default(),
+            wbi_state,
+        )
     } else {
-        BilibiliClient::with_cookies_and_wbi_state(cookies.clone(), wbi_state)
+        BilibiliClient::with_cookies_and_transport(
+            cookies.clone(),
+            client,
+            super::client::BilibiliEndpoints::default(),
+            wbi_state,
+        )
     }
 }
 
@@ -143,7 +164,11 @@ fn to_proto_page_info(page_info: super::client::VideoPageInfo) -> VideoPageInfo 
 #[async_trait]
 impl BilibiliInterface for BilibiliService {
     async fn new_qr_code(&self, _request: Empty) -> Result<NewQrCodeResp, BilibiliError> {
-        let client = BilibiliClient::new_with_wbi_state(self.wbi_state.clone())?;
+        let client = BilibiliClient::new_with_transport(
+            self.client.clone(),
+            super::client::BilibiliEndpoints::default(),
+            self.wbi_state.clone(),
+        )?;
         let (url, key) = client.new_qr_code().await?;
         Ok(NewQrCodeResp { url, key })
     }
@@ -152,7 +177,11 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: LoginWithQrCodeReq,
     ) -> Result<LoginWithQrCodeResp, BilibiliError> {
-        let client = BilibiliClient::new_with_wbi_state(self.wbi_state.clone())?;
+        let client = BilibiliClient::new_with_transport(
+            self.client.clone(),
+            super::client::BilibiliEndpoints::default(),
+            self.wbi_state.clone(),
+        )?;
         let (raw_status, cookies) = client.login_with_qr_code(&request.key).await?;
 
         let status = map_qr_status(raw_status);
@@ -164,7 +193,11 @@ impl BilibiliInterface for BilibiliService {
     }
 
     async fn new_captcha(&self, _request: Empty) -> Result<NewCaptchaResp, BilibiliError> {
-        let client = BilibiliClient::new_with_wbi_state(self.wbi_state.clone())?;
+        let client = BilibiliClient::new_with_transport(
+            self.client.clone(),
+            super::client::BilibiliEndpoints::default(),
+            self.wbi_state.clone(),
+        )?;
         let (token, gt, challenge) = client.new_captcha().await?;
 
         Ok(NewCaptchaResp {
@@ -175,7 +208,11 @@ impl BilibiliInterface for BilibiliService {
     }
 
     async fn new_sms(&self, request: NewSmsReq) -> Result<NewSmsResp, BilibiliError> {
-        let client = BilibiliClient::new_with_wbi_state(self.wbi_state.clone())?;
+        let client = BilibiliClient::new_with_transport(
+            self.client.clone(),
+            super::client::BilibiliEndpoints::default(),
+            self.wbi_state.clone(),
+        )?;
         let captcha_key = client
             .new_sms(
                 &request.phone,
@@ -192,7 +229,11 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: LoginWithSmsReq,
     ) -> Result<LoginWithSmsResp, BilibiliError> {
-        let client = BilibiliClient::new_with_wbi_state(self.wbi_state.clone())?;
+        let client = BilibiliClient::new_with_transport(
+            self.client.clone(),
+            super::client::BilibiliEndpoints::default(),
+            self.wbi_state.clone(),
+        )?;
         let cookies = client
             .login_with_sms(&request.phone, &request.code, &request.captcha_key)
             .await?;
@@ -204,13 +245,21 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: ParseVideoPageReq,
     ) -> Result<VideoPageInfo, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let page_info = client.parse_video_page(request.aid, &request.bvid).await?;
         Ok(to_proto_page_info(page_info))
     }
 
     async fn get_video_url(&self, request: GetVideoUrlReq) -> Result<VideoUrl, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let quality = if request.quality == 0 {
             None
         } else {
@@ -240,7 +289,11 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: GetDashVideoUrlReq,
     ) -> Result<GetDashVideoUrlResp, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let (dash, hevc_dash) = client
             .get_dash_video_url(request.aid, &request.bvid, request.cid)
             .await?;
@@ -259,7 +312,11 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: GetSubtitlesReq,
     ) -> Result<GetSubtitlesResp, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let subtitles = client
             .get_subtitles(request.aid, &request.bvid, request.cid)
             .await?;
@@ -270,13 +327,21 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: ParsePgcPageReq,
     ) -> Result<VideoPageInfo, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let page_info = client.parse_pgc_page(request.epid, request.ssid).await?;
         Ok(to_proto_page_info(page_info))
     }
 
     async fn get_pgcurl(&self, request: GetPgcurlReq) -> Result<VideoUrl, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let quality = if request.quality == 0 {
             None
         } else {
@@ -306,7 +371,11 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: GetDashPgcurlReq,
     ) -> Result<GetDashPgcurlResp, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let (dash, hevc_dash) = client.get_dash_pgc_url(request.epid, request.cid).await?;
 
         Ok(GetDashPgcurlResp {
@@ -320,7 +389,11 @@ impl BilibiliInterface for BilibiliService {
     }
 
     async fn user_info(&self, request: UserInfoReq) -> Result<UserInfoResp, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let user_info = client.user_info().await?;
 
         Ok(UserInfoResp {
@@ -343,7 +416,11 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: GetLiveStreamsReq,
     ) -> Result<GetLiveStreamsResp, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let streams = client.get_live_streams(request.cid, request.hls).await?;
 
         use crate::grpc::bilibili::LiveStream;
@@ -363,7 +440,11 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: ParseLivePageReq,
     ) -> Result<VideoPageInfo, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let page_info = client.parse_live_page(request.room_id).await?;
         Ok(to_proto_page_info(page_info))
     }
@@ -372,7 +453,11 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: GetLiveDanmuInfoReq,
     ) -> Result<GetLiveDanmuInfoResp, BilibiliError> {
-        let client = client_from_cookies_and_state(&request.cookies, self.wbi_state.clone())?;
+        let client = client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+        )?;
         let danmu_info = client.get_live_danmu_info(request.room_id).await?;
 
         use crate::grpc::bilibili::get_live_danmu_info_resp::Host;
@@ -446,11 +531,13 @@ mod tests {
             .await;
 
         let client_a = super::client_from_cookies_and_state(
+            service.client.clone(),
             &std::collections::HashMap::new(),
             service.wbi_state.clone(),
         )
         .unwrap();
         let client_b = super::client_from_cookies_and_state(
+            service.client.clone(),
             &std::collections::HashMap::new(),
             service.wbi_state.clone(),
         )

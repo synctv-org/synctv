@@ -26,6 +26,34 @@ use tracing::{debug, error, info, warn};
 /// Issue #56: Unlimited pull streams would exhaust memory on a heavily-loaded node.
 /// This default can be overridden via `ExternalPublishManager::with_max_streams()`.
 const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 100;
+const START_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
+
+async fn await_start_confirmation(
+    confirm_rx: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    handle: &tokio::task::JoinHandle<anyhow::Result<()>>,
+    timeout: Duration,
+) -> StreamResult<()> {
+    match tokio::time::timeout(timeout, confirm_rx).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(msg))) => {
+            handle.abort();
+            Err(crate::error::StreamError::ConnectionFailed(msg))
+        }
+        Ok(Err(_)) => {
+            handle.abort();
+            Err(crate::error::StreamError::ConnectionFailed(
+                "Puller task exited before confirming connection".to_string(),
+            ))
+        }
+        Err(_) => {
+            handle.abort();
+            Err(crate::error::StreamError::ConnectionFailed(format!(
+                "Puller startup timed out after {}s",
+                timeout.as_secs()
+            )))
+        }
+    }
+}
 
 /// Manages external pull-to-publish streams.
 ///
@@ -477,19 +505,14 @@ impl ExternalPublishStream {
             result
         });
 
-        // Wait for the spawned task to confirm the connection was established
-        match confirm_rx.await {
-            Ok(Ok(())) => {}
-            Ok(Err(msg)) => {
-                self.lifecycle.mark_stopping();
-                return Err(crate::error::StreamError::ConnectionFailed(msg));
-            }
-            Err(_) => {
-                self.lifecycle.mark_stopping();
-                return Err(crate::error::StreamError::ConnectionFailed(
-                    "Puller task exited before confirming connection".to_string(),
-                ));
-            }
+        // Wait for the spawned task to confirm the connection was established.
+        // Abort the task on timeout / startup failure so transient first-attempt
+        // failures do not leave a retry loop running detached in the background.
+        if let Err(error) =
+            await_start_confirmation(confirm_rx, &handle, START_CONFIRM_TIMEOUT).await
+        {
+            self.lifecycle.mark_stopping();
+            return Err(error);
         }
 
         self.lifecycle.set_task_handle(handle).await;
@@ -652,6 +675,7 @@ impl Drop for ExternalPublishStream {
 mod tests {
     use super::*;
     use crate::relay::MockStreamRegistry;
+    use std::future::pending;
 
     #[tokio::test]
     async fn test_external_publish_manager_creation() {
@@ -678,5 +702,57 @@ mod tests {
         assert_eq!(stream.subscriber_count(), 1);
         stream.decrement_subscriber_count();
         assert_eq!(stream.subscriber_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_await_start_confirmation_aborts_task_on_error_signal() {
+        let handle = tokio::spawn(async { pending::<anyhow::Result<()>>().await });
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(Err("startup failed".to_string()))
+            .expect("sender should still be open");
+
+        let result = await_start_confirmation(rx, &handle, Duration::from_secs(1)).await;
+
+        assert!(matches!(
+            result,
+            Err(crate::error::StreamError::ConnectionFailed(message))
+            if message == "startup failed"
+        ));
+        let join = handle
+            .await
+            .expect_err("aborted task should not complete normally");
+        assert!(
+            join.is_cancelled(),
+            "task should be aborted on startup failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_await_start_confirmation_aborts_task_on_timeout() {
+        let handle = tokio::spawn(async { pending::<anyhow::Result<()>>().await });
+        let (_tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
+        let result = await_start_confirmation(rx, &handle, Duration::from_millis(10)).await;
+
+        assert!(matches!(
+            result,
+            Err(crate::error::StreamError::ConnectionFailed(message))
+            if message.contains("timed out")
+        ));
+        let join = handle.await.expect_err("timed out startup must abort task");
+        assert!(join.is_cancelled(), "timed out task should be aborted");
+    }
+
+    #[tokio::test]
+    async fn test_await_start_confirmation_succeeds_without_aborting_task() {
+        let handle = tokio::spawn(async { Ok(()) });
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(Ok(())).expect("sender should still be open");
+
+        let result = await_start_confirmation(rx, &handle, Duration::from_secs(1)).await;
+
+        assert!(result.is_ok(), "successful confirmation should pass");
+        let join = handle.await.expect("join should succeed");
+        assert!(join.is_ok(), "task should continue normally after success");
     }
 }

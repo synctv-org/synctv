@@ -71,8 +71,7 @@ struct ServerComponents {
     providers: synctv_core::provider::ProviderSet,
 }
 
-type AsyncOnceTaskFactory =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+type AsyncOnceTaskFactory = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// The assembled application, ready to be started.
 pub struct Application {
@@ -99,15 +98,19 @@ const fn should_continue_startup_after_root_bootstrap_failure(has_admin_user: bo
     has_admin_user
 }
 
-fn spawn_on_first_leadership_gain(
+fn spawn_on_leadership_gain(
     name: &'static str,
     leader_runtime: Arc<dyn LeaderRuntime>,
     cancel: tokio_util::sync::CancellationToken,
     task_factory: AsyncOnceTaskFactory,
 ) -> tokio::task::JoinHandle<()> {
     synctv_core::spawn::spawn_monitored(name, async move {
+        let run_once = |task_factory: &AsyncOnceTaskFactory| task_factory();
+        let mut last_ran_epoch = None;
+
         if leader_runtime.is_leader() {
-            return;
+            last_ran_epoch = Some(leader_runtime.leader_epoch());
+            run_once(&task_factory).await;
         }
 
         let mut rx = leader_runtime.subscribe();
@@ -115,20 +118,25 @@ fn spawn_on_first_leadership_gain(
         loop {
             tokio::select! {
                 () = cancel.cancelled() => {
-                    info!("{name} cancelled before leadership was gained");
+                    info!("{name} cancelled while waiting for leadership transitions");
                     return;
                 }
                 event = rx.recv() => {
                     match event {
-                        Ok(LeadershipEvent::Gained { .. }) => {
-                            task_factory().await;
-                            return;
+                        Ok(LeadershipEvent::Gained { epoch }) => {
+                            if last_ran_epoch != Some(epoch) {
+                                run_once(&task_factory).await;
+                                last_ran_epoch = Some(epoch);
+                            }
                         }
-                        Ok(LeadershipEvent::Lost | LeadershipEvent::Vacancy) => {}
+                        Ok(LeadershipEvent::Lost | LeadershipEvent::Vacancy) => {
+                            last_ran_epoch = None;
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            if leader_runtime.is_leader() {
-                                task_factory().await;
-                                return;
+                            let epoch = leader_runtime.leader_epoch();
+                            if leader_runtime.is_leader() && last_ran_epoch != Some(epoch) {
+                                run_once(&task_factory).await;
+                                last_ran_epoch = Some(epoch);
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
@@ -340,26 +348,26 @@ impl Application {
         // Run migrations with appropriate lock strategy:
         // - Redis available: distributed lock (safe for multi-replica)
         // - No Redis: PostgreSQL advisory lock (safe for single-node)
-        let migration_lock: Box<dyn synctv_core::service::MigrationLock> =
+        let migration_lock: Arc<dyn synctv_core::service::MigrationLock> =
             if let Some(ref rh) = infra.redis_handles {
                 info!("Using Redis distributed lock for migrations");
                 let is_sentinel = matches!(
                     infra.config.redis.deployment_mode,
                     synctv_core::config::RedisDeploymentMode::Sentinel
                 );
-                Box::new(synctv_core::service::DistributedLock::new_with_mode(
+                Arc::new(synctv_core::service::DistributedLock::new_with_mode(
                     rh.conn_snapshot().await,
                     is_sentinel,
                 ))
             } else {
                 info!("Using PostgreSQL advisory lock for migrations");
-                Box::new(synctv_core::service::PgAdvisoryMigrationLock::new(
+                Arc::new(synctv_core::service::PgAdvisoryMigrationLock::new(
                     infra.pool.clone(),
                 ))
             };
         crate::migrations::run_migrations(
             &infra.pool,
-            migration_lock.as_ref(),
+            migration_lock,
             &infra.config.redis.key_prefix,
             infra.config.cluster_runtime_enabled(),
         )
@@ -667,7 +675,9 @@ impl Application {
                 Box::pin(async move {
                     info!("Leadership gained after startup; running deferred singleton initialization");
 
-                    if let Err(err) = synctv_core::service::ensure_audit_partitions_on_startup(&pool).await {
+                    if let Err(err) =
+                        synctv_core::service::ensure_audit_partitions_on_startup(&pool).await
+                    {
                         error!(error = %err, "Deferred audit partition initialization failed");
                     }
 
@@ -717,7 +727,7 @@ impl Application {
 
             shutdown.register_task(
                 "cluster_leader_startup_work",
-                spawn_on_first_leadership_gain(
+                spawn_on_leadership_gain(
                     "cluster_leader_startup_work",
                     leader_runtime,
                     cancel,
@@ -1442,10 +1452,10 @@ mod tests {
         let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let ran_clone = ran.clone();
 
-        let handle = spawn_on_first_leadership_gain(
+        let handle = spawn_on_leadership_gain(
             "test_leadership_gain",
             leader_runtime.clone(),
-            cancel,
+            cancel.clone(),
             Arc::new(move || {
                 let ran = ran_clone.clone();
                 Box::pin(async move {
@@ -1455,8 +1465,67 @@ mod tests {
         );
 
         leader_runtime.gain_leadership();
+        tokio::task::yield_now().await;
+        cancel.cancel();
         handle.await.expect("task should join");
 
         assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn deferred_startup_work_runs_immediately_when_already_leader() {
+        let leader_runtime = Arc::new(TestLeaderRuntime::new(true));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ran_clone = ran.clone();
+
+        let handle = spawn_on_leadership_gain(
+            "test_already_leader",
+            leader_runtime,
+            cancel.clone(),
+            Arc::new(move || {
+                let ran = ran_clone.clone();
+                Box::pin(async move {
+                    ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })
+            }),
+        );
+
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        handle.await.expect("task should join");
+
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn deferred_startup_work_runs_again_when_leadership_is_regained() {
+        let leader_runtime = Arc::new(TestLeaderRuntime::new(false));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ran_clone = ran.clone();
+
+        let handle = spawn_on_leadership_gain(
+            "test_leadership_regained",
+            leader_runtime.clone(),
+            cancel.clone(),
+            Arc::new(move || {
+                let ran = ran_clone.clone();
+                Box::pin(async move {
+                    ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })
+            }),
+        );
+
+        leader_runtime.gain_leadership();
+        tokio::task::yield_now().await;
+        leader_runtime.resign().await;
+        leader_runtime.gain_leadership();
+        tokio::task::yield_now().await;
+
+        cancel.cancel();
+        handle.await.expect("task should join");
+
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

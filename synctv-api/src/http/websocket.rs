@@ -138,7 +138,6 @@ async fn extract_user_id(
     // when the header is present but has an invalid format, instead of silently
     // falling through to query parameters.
     if let Some(token) = extract_authorization_bearer_token(headers)? {
-
         let claims = validator
             .validate_token(&token)
             .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
@@ -551,12 +550,6 @@ async fn handle_socket(
 
     let rid = RoomId::from_string(room_id.clone());
 
-    // Release pre-upgrade reservations. The actual connection limit enforcement
-    // now happens atomically inside register()/join_room(). The reservation
-    // only existed to prevent the TOCTOU race during the HTTP→WS upgrade gap.
-    state.connection_manager.release_room_reservation(&rid);
-    state.connection_manager.release_user_reservation(&user_id);
-
     // Check if cluster_manager is available BEFORE incrementing metrics.
     // This prevents counter drift: if we return early, we never incremented,
     // so there's nothing to decrement.
@@ -648,8 +641,18 @@ async fn handle_socket(
         raw_sender: raw_sender_for_ping,
     };
 
+    if let Err(e) = stream_handler.pre_join().await {
+        state.connection_manager.release_room_reservation(&rid);
+        state.connection_manager.release_user_reservation(&user_id);
+        error!("Failed to join WebSocket stream before message loop: {}", e);
+        return;
+    }
+
+    state.connection_manager.release_room_reservation(&rid);
+    state.connection_manager.release_user_reservation(&user_id);
+
     // Run unified message loop - ALL logic is here!
-    if let Err(e) = stream_handler.run(&mut stream).await {
+    if let Err(e) = stream_handler.run_after_join(&mut stream).await {
         error!("Stream handler error: {}", e);
     }
 
@@ -846,9 +849,7 @@ mod tests {
 
     #[test]
     fn test_internal_error_for_missing_ticket_service() {
-        let err = AppError::internal_server_error(
-            "WebSocket ticket service not configured",
-        );
+        let err = AppError::internal_server_error("WebSocket ticket service not configured");
         assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     }
 
@@ -958,6 +959,46 @@ mod tests {
         assert!(
             manager.reserve_user_slot(&user_id).is_ok(),
             "cleanup should release the leaked user reservation"
+        );
+    }
+
+    #[test]
+    fn test_websocket_reservations_are_held_until_pre_join_finishes() {
+        let manager = ConnectionManager::new(ConnectionLimits {
+            max_per_room: 1,
+            max_per_user: 1,
+            max_total: 2,
+            ..ConnectionLimits::default()
+        });
+        let room_id = RoomId::from_string("room-prejoin".to_string());
+        let user_id = UserId::from_string("user-prejoin".to_string());
+
+        manager
+            .reserve_room_slot(&room_id)
+            .expect("first room reservation should succeed");
+        manager
+            .reserve_user_slot(&user_id)
+            .expect("first user reservation should succeed");
+
+        assert!(
+            manager.reserve_room_slot(&room_id).is_err(),
+            "room reservation must remain held until pre_join completes"
+        );
+        assert!(
+            manager.reserve_user_slot(&user_id).is_err(),
+            "user reservation must remain held until pre_join completes"
+        );
+
+        manager.release_room_reservation(&room_id);
+        manager.release_user_reservation(&user_id);
+
+        assert!(
+            manager.reserve_room_slot(&room_id).is_ok(),
+            "room reservation should be reusable after explicit release"
+        );
+        assert!(
+            manager.reserve_user_slot(&user_id).is_ok(),
+            "user reservation should be reusable after explicit release"
         );
     }
 

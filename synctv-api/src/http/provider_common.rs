@@ -15,7 +15,10 @@ use synctv_core::provider::ProviderError;
 use super::middleware::AuthUser;
 use super::AppState;
 
-fn provider_registry_unavailable_error(context: &str, error: &synctv_core::Error) -> super::AppError {
+fn provider_registry_unavailable_error(
+    context: &str,
+    error: &synctv_core::Error,
+) -> super::AppError {
     tracing::error!(operation = context, error = %error, "Provider registry query failed");
     super::AppError::service_unavailable()
 }

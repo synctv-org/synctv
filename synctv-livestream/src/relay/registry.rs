@@ -26,6 +26,8 @@ const REDIS_OPERATION_TIMEOUT_SECS: u64 = 5;
 /// Format: "`stream:epoch:{room_id}:{media_id`}"
 /// Each publisher registration increments this counter atomically.
 const EPOCH_KEY_PREFIX: &str = "stream:epoch";
+const PUBLISHER_KEY_PREFIX: &str = "stream:publisher";
+const USER_PUBLISHERS_KEY_PREFIX: &str = "stream:user_publishers";
 
 /// Helper function to wrap async Redis operations with a timeout.
 /// Returns an error if the operation exceeds the specified duration.
@@ -109,13 +111,42 @@ impl PublisherInfo {
 #[derive(Clone)]
 pub struct StreamRegistry {
     redis: RedisConnectionManager,
+    key_prefix: String,
 }
 
 impl StreamRegistry {
     /// Create a new stream registry
     #[must_use]
     pub const fn new(redis: RedisConnectionManager) -> Self {
-        Self { redis }
+        Self {
+            redis,
+            key_prefix: String::new(),
+        }
+    }
+
+    /// Create a new stream registry with a Redis namespace prefix.
+    #[must_use]
+    pub fn with_key_prefix(redis: RedisConnectionManager, key_prefix: impl Into<String>) -> Self {
+        Self {
+            redis,
+            key_prefix: key_prefix.into(),
+        }
+    }
+
+    fn prefixed(&self, key: &str) -> String {
+        format!("{}{}", self.key_prefix, key)
+    }
+
+    fn publisher_key(&self, room_id: &str, media_id: &str) -> String {
+        self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:{room_id}:{media_id}"))
+    }
+
+    fn epoch_key(&self, room_id: &str, media_id: &str) -> String {
+        self.prefixed(&format!("{EPOCH_KEY_PREFIX}:{room_id}:{media_id}"))
+    }
+
+    fn user_publishers_key(&self, user_id: &str) -> String {
+        self.prefixed(&format!("{USER_PUBLISHERS_KEY_PREFIX}:{user_id}"))
     }
 
     /// Register a publisher for a media in a room (atomic operation).
@@ -174,8 +205,8 @@ impl StreamRegistry {
             ));
         }
 
-        let key = format!("stream:publisher:{room_id}:{media_id}");
-        let epoch_key = format!("{EPOCH_KEY_PREFIX}:{room_id}:{media_id}");
+        let key = self.publisher_key(room_id, media_id);
+        let epoch_key = self.epoch_key(room_id, media_id);
         let mut conn = self.redis.clone();
 
         // Create PublisherInfo template (epoch will be filled by Lua script)
@@ -250,7 +281,7 @@ impl StreamRegistry {
         let user_key = if user_id.is_empty() {
             String::new()
         } else {
-            format!("stream:user_publishers:{user_id}")
+            self.user_publishers_key(user_id)
         };
         let user_member = format!("{room_id}:{media_id}");
 
@@ -305,7 +336,7 @@ impl StreamRegistry {
         media_id: &str,
         user_id: &str,
     ) -> Result<()> {
-        let key = format!("stream:publisher:{room_id}:{media_id}");
+        let key = self.publisher_key(room_id, media_id);
 
         // Refresh publisher key TTL with timeout protection
         with_redis_timeout(|| async {
@@ -319,7 +350,7 @@ impl StreamRegistry {
 
             // Also refresh user reverse-index TTL if user_id is provided
             if !user_id.is_empty() {
-                let user_key = format!("stream:user_publishers:{user_id}");
+                let user_key = self.user_publishers_key(user_id);
                 let _: () = redis::cmd("EXPIRE")
                     .arg(&user_key)
                     .arg(PUBLISHER_TTL_SECS)
@@ -358,7 +389,7 @@ impl StreamRegistry {
         media_id: &str,
         expected_epoch: Option<u64>,
     ) -> Result<()> {
-        let key = format!("stream:publisher:{room_id}:{media_id}");
+        let key = self.publisher_key(room_id, media_id);
 
         // Use -1 to mean "no epoch check" (unconditional delete)
         let epoch_arg: i64 = match expected_epoch {
@@ -434,7 +465,7 @@ impl StreamRegistry {
 
             // Clean up user reverse index if user_id was present
             if status == 1 && !user_id.is_empty() {
-                let user_key = format!("stream:user_publishers:{user_id}");
+                let user_key = self.user_publishers_key(&user_id);
                 let member = format!("{room_id}:{media_id}");
                 let _: () = redis::cmd("SREM")
                     .arg(&user_key)
@@ -451,7 +482,7 @@ impl StreamRegistry {
     /// Get all active publishers for a user (via reverse index)
     /// Returns list of (`room_id`, `media_id`) pairs
     pub async fn get_user_publishers(&self, user_id: &str) -> Result<Vec<(String, String)>> {
-        let user_key = format!("stream:user_publishers:{user_id}");
+        let user_key = self.user_publishers_key(user_id);
 
         with_redis_timeout(|| async {
             let mut conn = self.redis.clone();
@@ -496,7 +527,7 @@ impl StreamRegistry {
         room_id: &str,
         media_id: &str,
     ) -> Result<Option<PublisherInfo>> {
-        let key = format!("stream:publisher:{room_id}:{media_id}");
+        let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
             let mut conn = self.redis.clone();
@@ -529,7 +560,7 @@ impl StreamRegistry {
         room_id: &str,
         media_id: &str,
     ) -> anyhow::Result<bool> {
-        let key = format!("stream:publisher:{room_id}:{media_id}");
+        let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
             let mut conn = self.redis.clone();
@@ -565,7 +596,7 @@ impl StreamRegistry {
                 let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
                     .arg(cursor)
                     .arg("MATCH")
-                    .arg("stream:publisher:*")
+                    .arg(self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:*")))
                     .arg("COUNT")
                     .arg(100) // Scan 100 keys per iteration for better performance
                     .query_async(&mut conn)
@@ -584,7 +615,8 @@ impl StreamRegistry {
             // split_once splits only on the FIRST ':': room_id gets everything before it,
             // media_id gets everything after (including any embedded colons in media_id).
             for k in keys {
-                if let Some(s) = k.strip_prefix("stream:publisher:") {
+                let publisher_prefix = self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:"));
+                if let Some(s) = k.strip_prefix(&publisher_prefix) {
                     if let Some((room_id, media_id)) = s.split_once(':') {
                         streams.push((room_id.to_string(), media_id.to_string()));
                     }
@@ -608,8 +640,8 @@ impl StreamRegistry {
     pub async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
         let mut media_ids = Vec::new();
         let mut cursor: u64 = 0;
-        let pattern = format!("stream:publisher:{room_id}:*");
-        let prefix = format!("stream:publisher:{room_id}:");
+        let pattern = self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:{room_id}:*"));
+        let prefix = self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:{room_id}:"));
 
         loop {
             // Each SCAN call has its own timeout
@@ -649,7 +681,7 @@ impl StreamRegistry {
     /// Returns Ok(true) if the epoch is valid, Ok(false) if stale/invalid.
     /// Used by pull streams to detect split-brain scenarios.
     pub async fn validate_epoch(&self, room_id: &str, media_id: &str, epoch: u64) -> Result<bool> {
-        let key = format!("stream:publisher:{room_id}:{media_id}");
+        let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
             let mut conn = self.redis.clone();
@@ -745,7 +777,7 @@ impl StreamRegistry {
                 let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
                     .arg(cursor)
                     .arg("MATCH")
-                    .arg("stream:publisher:*")
+                    .arg(self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:*")))
                     .arg("COUNT")
                     .arg(100)
                     .query_async(&mut conn)
@@ -760,7 +792,8 @@ impl StreamRegistry {
             // Check each key and remove if it belongs to the node
             for key in keys {
                 // Extract room_id and media_id from key: "stream:publisher:{room_id}:{media_id}"
-                let key_suffix = match key.strip_prefix("stream:publisher:") {
+                let publisher_prefix = self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:"));
+                let key_suffix = match key.strip_prefix(&publisher_prefix) {
                     Some(s) => s,
                     None => continue,
                 };
@@ -828,7 +861,7 @@ impl StreamRegistry {
                                     };
 
                                     if !user_id.is_empty() {
-                                        let user_key = format!("stream:user_publishers:{user_id}");
+                                        let user_key = self.user_publishers_key(&user_id);
                                         let member = format!("{room_id}:{media_id}");
 
                                         let _srem_result: Result<()> =
@@ -874,6 +907,7 @@ impl StreamRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core_testing::wait_for_redis_ready;
     use testcontainers::core::ImageExt;
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::redis::Redis;
@@ -903,6 +937,7 @@ mod tests {
         let redis_url = format!("redis://{redis_host}:{redis_port}");
         let redis_client =
             redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+        wait_for_redis_ready(&redis_client).await;
         let conn_mgr = RedisConnectionManager::new(redis_client.clone())
             .await
             .expect("Failed to create ConnectionManager");
@@ -942,6 +977,45 @@ mod tests {
             .unregister_publisher("room123", "media456")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_key_prefix_isolation_prevents_cross_instance_pollution() {
+        use redis::AsyncCommands;
+
+        let (_container, client, redis) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, "tenant-a:");
+
+        registry
+            .try_register_publisher_with_user(
+                "room123",
+                "media456",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
+            .await
+            .unwrap();
+
+        let mut verify_conn = RedisConnectionManager::new(client).await.unwrap();
+        let namespaced_exists: bool = verify_conn
+            .exists("tenant-a:stream:publisher:room123:media456")
+            .await
+            .unwrap();
+        let unprefixed_exists: bool = verify_conn
+            .exists("stream:publisher:room123:media456")
+            .await
+            .unwrap();
+
+        assert!(
+            namespaced_exists,
+            "registry must honor configured key prefix"
+        );
+        assert!(
+            !unprefixed_exists,
+            "registry must not leak publisher keys into the global Redis namespace"
+        );
     }
 
     #[tokio::test]
@@ -1152,5 +1226,35 @@ mod tests {
             .unregister_publisher("room123", "media456")
             .await
             .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_with_redis_timeout_returns_timeout_error() {
+        let future = with_redis_timeout(|| async {
+            tokio::time::sleep(Duration::from_secs(REDIS_OPERATION_TIMEOUT_SECS + 1)).await;
+            Ok::<(), anyhow::Error>(())
+        });
+
+        tokio::time::advance(Duration::from_secs(REDIS_OPERATION_TIMEOUT_SECS + 1)).await;
+        let err = future.await.expect_err("slow Redis op should time out");
+        assert!(
+            err.to_string().contains("timed out"),
+            "timeout error should mention timeout: {err}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_with_redis_timeout_does_not_block_fast_operations() {
+        let fast = with_redis_timeout(|| async { Ok::<u32, anyhow::Error>(7) });
+        let slow = with_redis_timeout(|| async {
+            tokio::time::sleep(Duration::from_secs(REDIS_OPERATION_TIMEOUT_SECS + 1)).await;
+            Ok::<u32, anyhow::Error>(9)
+        });
+
+        tokio::time::advance(Duration::from_secs(REDIS_OPERATION_TIMEOUT_SECS + 1)).await;
+        let (fast_result, slow_result) = tokio::join!(fast, slow);
+
+        assert_eq!(fast_result.unwrap(), 7);
+        assert!(slow_result.is_err(), "slow operation should time out");
     }
 }

@@ -9,6 +9,7 @@ use crate::grpc::alist::{
     LoginReq, MeReq, MeResp,
 };
 use async_trait::async_trait;
+use reqwest::Client;
 
 /// Unified Alist service interface
 ///
@@ -33,12 +34,21 @@ pub trait AlistInterface: Send + Sync {
 ///
 /// This is the complete implementation that makes actual HTTP calls.
 /// Used by both local callers and gRPC server.
-pub struct AlistService;
+pub struct AlistService {
+    client: Client,
+}
 
 impl AlistService {
+    pub fn new() -> Self {
+        Self {
+            client: synctv_common::http::build_provider_client()
+                .expect("default provider HTTP client should build"),
+        }
+    }
+
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub fn with_client(client: Client) -> Self {
+        Self { client }
     }
 }
 
@@ -51,7 +61,11 @@ impl Default for AlistService {
 #[async_trait]
 impl AlistInterface for AlistService {
     async fn fs_get(&self, request: FsGetReq) -> Result<FsGetResp, AlistError> {
-        let client = AlistClient::with_token(&request.host, &request.token)?;
+        let client = AlistClient::with_token_and_http_client(
+            &request.host,
+            &request.token,
+            self.client.clone(),
+        )?;
         let password = if request.password.is_empty() {
             None
         } else {
@@ -63,7 +77,11 @@ impl AlistInterface for AlistService {
     }
 
     async fn fs_list(&self, request: FsListReq) -> Result<FsListResp, AlistError> {
-        let client = AlistClient::with_token(&request.host, &request.token)?;
+        let client = AlistClient::with_token_and_http_client(
+            &request.host,
+            &request.token,
+            self.client.clone(),
+        )?;
         let password = if request.password.is_empty() {
             None
         } else {
@@ -77,7 +95,11 @@ impl AlistInterface for AlistService {
     }
 
     async fn fs_other(&self, request: FsOtherReq) -> Result<FsOtherResp, AlistError> {
-        let client = AlistClient::with_token(&request.host, &request.token)?;
+        let client = AlistClient::with_token_and_http_client(
+            &request.host,
+            &request.token,
+            self.client.clone(),
+        )?;
         let password = if request.password.is_empty() {
             None
         } else {
@@ -91,7 +113,11 @@ impl AlistInterface for AlistService {
     }
 
     async fn fs_search(&self, request: FsSearchReq) -> Result<FsSearchResp, AlistError> {
-        let client = AlistClient::with_token(&request.host, &request.token)?;
+        let client = AlistClient::with_token_and_http_client(
+            &request.host,
+            &request.token,
+            self.client.clone(),
+        )?;
         let password = if request.password.is_empty() {
             None
         } else {
@@ -112,14 +138,18 @@ impl AlistInterface for AlistService {
     }
 
     async fn me(&self, request: MeReq) -> Result<MeResp, AlistError> {
-        let client = AlistClient::with_token(&request.host, &request.token)?;
+        let client = AlistClient::with_token_and_http_client(
+            &request.host,
+            &request.token,
+            self.client.clone(),
+        )?;
         let http_resp = client.me().await?;
 
         Ok(http_resp.into())
     }
 
     async fn login(&self, request: LoginReq) -> Result<String, AlistError> {
-        let mut client = AlistClient::new(&request.host)?;
+        let mut client = AlistClient::with_http_client(&request.host, self.client.clone())?;
         client
             .login(&request.username, &request.password, request.hashed)
             .await

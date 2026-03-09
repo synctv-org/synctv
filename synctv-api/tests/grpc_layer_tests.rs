@@ -216,6 +216,7 @@ fn test_auth_interceptor_inject_user_valid_token() {
     use synctv_api::grpc::AuthInterceptor;
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{JwtService, TokenType};
+    use synctv_core::service::{AuthenticatedToken, Claims};
 
     let jwt_service =
         JwtService::new("test-secret-key-long-enough-for-entropy-check-1234567890").unwrap();
@@ -226,8 +227,22 @@ fn test_auth_interceptor_inject_user_valid_token() {
 
     let interceptor = AuthInterceptor::new(jwt_service);
     let mut request = tonic::Request::new(());
-    // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+    // Inject SecurityCheckPassed marker and authenticated identity to simulate
+    // BlacklistCheckLayer.
     request.extensions_mut().insert(SecurityCheckPassed);
+    request.extensions_mut().insert(AuthenticatedToken {
+        user_id: user_id.clone(),
+        claims: Claims {
+            sub: user_id.as_str().to_string(),
+            typ: "access".to_string(),
+            jti: "grpc-layer-test".to_string(),
+            iat: 1_700_000_000,
+            exp: 1_700_003_600,
+            pv: 0,
+            iss: None,
+            aud: None,
+        },
+    });
     request
         .metadata_mut()
         .insert("authorization", format!("Bearer {token}").parse().unwrap());
@@ -242,6 +257,7 @@ fn test_auth_interceptor_inject_room_missing_room_id() {
     use synctv_api::grpc::AuthInterceptor;
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{JwtService, TokenType};
+    use synctv_core::service::{AuthenticatedToken, Claims};
 
     let jwt_service =
         JwtService::new("test-secret-key-long-enough-for-entropy-check-1234567890").unwrap();
@@ -252,8 +268,22 @@ fn test_auth_interceptor_inject_room_missing_room_id() {
 
     let interceptor = AuthInterceptor::new(jwt_service);
     let mut request = tonic::Request::new(());
-    // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+    // Inject SecurityCheckPassed marker and authenticated identity to simulate
+    // BlacklistCheckLayer.
     request.extensions_mut().insert(SecurityCheckPassed);
+    request.extensions_mut().insert(AuthenticatedToken {
+        user_id: user_id.clone(),
+        claims: Claims {
+            sub: user_id.as_str().to_string(),
+            typ: "access".to_string(),
+            jti: "grpc-room-missing".to_string(),
+            iat: 1_700_000_000,
+            exp: 1_700_003_600,
+            pv: 0,
+            iss: None,
+            aud: None,
+        },
+    });
     request
         .metadata_mut()
         .insert("authorization", format!("Bearer {token}").parse().unwrap());
@@ -270,6 +300,7 @@ fn test_auth_interceptor_inject_room_with_room_id() {
     use synctv_api::grpc::AuthInterceptor;
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{JwtService, TokenType};
+    use synctv_core::service::{AuthenticatedToken, Claims};
 
     let jwt_service =
         JwtService::new("test-secret-key-long-enough-for-entropy-check-1234567890").unwrap();
@@ -280,8 +311,22 @@ fn test_auth_interceptor_inject_room_with_room_id() {
 
     let interceptor = AuthInterceptor::new(jwt_service);
     let mut request = tonic::Request::new(());
-    // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+    // Inject SecurityCheckPassed marker and authenticated identity to simulate
+    // BlacklistCheckLayer.
     request.extensions_mut().insert(SecurityCheckPassed);
+    request.extensions_mut().insert(AuthenticatedToken {
+        user_id: user_id.clone(),
+        claims: Claims {
+            sub: user_id.as_str().to_string(),
+            typ: "access".to_string(),
+            jti: "grpc-room-valid".to_string(),
+            iat: 1_700_000_000,
+            exp: 1_700_003_600,
+            pv: 0,
+            iss: None,
+            aud: None,
+        },
+    });
     request
         .metadata_mut()
         .insert("authorization", format!("Bearer {token}").parse().unwrap());

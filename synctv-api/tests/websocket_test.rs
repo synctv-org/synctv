@@ -3179,6 +3179,42 @@ mod websocket_e2e {
         );
     }
 
+    #[tokio::test]
+    async fn test_ws_invalid_room_id_rejected_before_upgrade() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+        let (_user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "invalid_room_user")
+                .await;
+
+        let url = format!("ws://{}/ws/rooms/room@bad1234", server.addr);
+        let request = tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header(
+                "Sec-WebSocket-Key",
+                tungstenite::handshake::client::generate_key(),
+            )
+            .header("Host", &server.addr)
+            .body(())
+            .expect("build malformed room WebSocket request");
+        let result = tokio_tungstenite::connect_async(request).await;
+
+        match result {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(
+                    response.status(),
+                    tungstenite::http::StatusCode::BAD_REQUEST,
+                    "malformed room_id must be rejected before the WebSocket upgrade completes"
+                );
+            }
+            other => panic!("Expected HTTP 400 for malformed room_id, got: {other:?}"),
+        }
+    }
+
     // ========================================================================
     // Test (#73): WebSocket connection with valid JWT succeeds
     //

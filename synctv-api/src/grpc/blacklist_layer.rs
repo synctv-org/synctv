@@ -28,7 +28,7 @@ use tonic::body::Body as TonicBody;
 use tower::{Layer, Service};
 
 use super::interceptors::SecurityCheckPassed;
-use synctv_core::service::{auth::JwtService, SecurityPipeline};
+use synctv_core::service::{auth::JwtService, AuthenticatedToken, SecurityPipeline};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -126,11 +126,21 @@ where
                 };
 
                 // Steps 2-3: Shared security pipeline (password invalidation, user status)
-                if let Err(e) = security_pipeline.check(&claims).await {
-                    tracing::warn!("gRPC request rejected by security pipeline: {e}");
-                    let response = tonic::Status::unauthenticated(format!("{e}")).into_http();
-                    return Ok(response);
-                }
+                let authenticated_token: AuthenticatedToken =
+                    match security_pipeline.check(&claims).await {
+                        Ok(authenticated_token) => authenticated_token,
+                        Err(e) => {
+                            tracing::warn!("gRPC request rejected by security pipeline: {e}");
+                            let response =
+                                tonic::Status::unauthenticated(format!("{e}")).into_http();
+                            return Ok(response);
+                        }
+                    };
+
+                // Preserve the authenticated identity so downstream gRPC
+                // interceptors and handlers can reuse it without re-running
+                // JWT verification or the security pipeline.
+                req.extensions_mut().insert(authenticated_token);
             }
 
             // Inject SecurityCheckPassed marker into request extensions.

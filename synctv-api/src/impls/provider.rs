@@ -80,9 +80,7 @@ pub async fn resolve_provider_playback_url(
     let playback_result = provider
         .generate_playback(&ctx, &media.source_config)
         .await
-        .map_err(|e| {
-            ApiError::Internal(format!("{} generate_playback failed: {e}", provider.name()))
-        })?;
+        .map_err(ApiError::from)?;
 
     let default_mode = &playback_result.default_mode;
     let playback_info = playback_result
@@ -129,7 +127,5 @@ pub async fn resolve_provider_playback_result(
     provider
         .generate_playback(&ctx, &media.source_config)
         .await
-        .map_err(|e| {
-            ApiError::Internal(format!("{} generate_playback failed: {e}", provider.name()))
-        })
+        .map_err(ApiError::from)
 }

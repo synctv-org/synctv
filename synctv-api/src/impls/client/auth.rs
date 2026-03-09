@@ -129,34 +129,38 @@ where
     F: FnOnce(String, u64) -> Fut,
     Fut: Future<Output = synctv_core::Result<()>>,
 {
-    match jwt_service.verify_access_token(raw_token) {
-        Ok(claims) => {
-            if claims.jti.is_empty() {
-                return Ok(());
-            }
+    let claims = jwt_service.verify_access_token(raw_token).map_err(|error| {
+        tracing::debug!(
+            error = %error,
+            "Rejecting logout because the presented token is not a valid access token"
+        );
+        ApiError::Authentication(error.to_string())
+    })?;
 
-            let now = chrono::Utc::now().timestamp();
-            let remaining_ttl = (claims.exp - now).max(0) as u64;
-            if remaining_ttl == 0 {
-                return Ok(());
-            }
-
-            blacklist(claims.jti.clone(), remaining_ttl)
-                .await
-                .map_err(|error| {
-                    tracing::warn!(
-                        error = %error,
-                        jti = %claims.jti,
-                        "Failed to blacklist access token during logout"
-                    );
-                    ApiError::from(error)
-                })
-        }
-        Err(error) => {
-            tracing::debug!(error = %error, "Could not parse token during logout; skipping blacklist");
-            Ok(())
-        }
+    if claims.jti.is_empty() {
+        return Err(ApiError::Authentication(
+            "Access token missing jti".to_string(),
+        ));
     }
+
+    let now = chrono::Utc::now().timestamp();
+    let remaining_ttl = (claims.exp - now).max(0) as u64;
+    if remaining_ttl == 0 {
+        return Err(ApiError::Authentication(
+            "Access token already expired".to_string(),
+        ));
+    }
+
+    blacklist(claims.jti.clone(), remaining_ttl)
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                error = %error,
+                jti = %claims.jti,
+                "Failed to blacklist access token during logout"
+            );
+            ApiError::from(error)
+        })
 }
 
 #[cfg(test)]
@@ -200,7 +204,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_logout_invalid_token_skips_blacklist() {
+    async fn test_logout_invalid_token_is_rejected() {
         let jwt_service = create_test_jwt_service();
         let blacklist_called = Arc::new(AtomicBool::new(false));
         let called = Arc::clone(&blacklist_called);
@@ -218,7 +222,70 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok());
+        match result {
+            Err(ApiError::Authentication(message)) => {
+                assert!(
+                    message.contains("Invalid token")
+                        || message.contains("verification failed")
+                        || message.contains("invalid"),
+                    "unexpected authentication error: {message}"
+                );
+            }
+            other => panic!("expected authentication failure, got {other:?}"),
+        }
         assert!(!blacklist_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_logout_refresh_token_is_rejected() {
+        let jwt_service = create_test_jwt_service();
+        let token = jwt_service
+            .sign_token(&UserId::new(), TokenType::Refresh, 0)
+            .unwrap();
+
+        let result = revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl| async {
+            Ok(())
+        })
+        .await;
+
+        match result {
+            Err(ApiError::Authentication(message)) => {
+                assert!(
+                    message.contains("Not an access token"),
+                    "unexpected authentication error: {message}"
+                );
+            }
+            other => panic!("expected refresh token rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_logout_rejects_zero_ttl_access_token() {
+        let jwt_service = JwtService::with_durations(
+            "test-secret-key-for-jwt-that-is-long-enough-1234567890",
+            0,
+            30,
+            4,
+            0,
+        )
+        .unwrap();
+        let token = jwt_service
+            .sign_token(&UserId::new(), TokenType::Access, 0)
+            .unwrap();
+
+        let result = revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl| async {
+            Ok(())
+        })
+        .await;
+
+        match result {
+            Err(ApiError::Authentication(message)) => {
+                assert!(
+                    message.contains("expired") || message.contains("Expired"),
+                    "unexpected authentication error: {message}"
+                );
+            }
+            other => panic!("expected expired token rejection, got {other:?}"),
+        }
     }
 }

@@ -1,6 +1,9 @@
 //! `PostgreSQL` test container helpers
 
+use std::fs::{File, OpenOptions};
+use std::sync::LazyLock;
 use std::process::Command;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use sqlx::postgres::PgPoolOptions;
@@ -9,12 +12,42 @@ use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
+use tokio::sync::Semaphore;
 
 /// Default `PostgreSQL` version for test containers
 pub const POSTGRES_VERSION: &str = "16-alpine";
 const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;
 const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
+static POSTGRES_START_SERIALIZER: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(1));
+
+struct ProcessLock(File);
+
+impl ProcessLock {
+    fn acquire(name: &str) -> Self {
+        let mut path = PathBuf::from("/tmp");
+        path.push(format!("synctv-{name}.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap_or_else(|e| panic!("failed to open lock file {}: {e}", path.display()));
+        file.lock()
+            .unwrap_or_else(|e| panic!("failed to acquire lock file {}: {e}", path.display()));
+        Self(file)
+    }
+}
+
+impl Drop for ProcessLock {
+    fn drop(&mut self) {
+        self.0
+            .unlock()
+            .expect("failed to release process lock for postgres test startup");
+    }
+}
 
 /// Type alias for `PostgreSQL` test container
 pub struct TestContainer {
@@ -169,13 +202,23 @@ pub async fn create_test_pool_with_options_and_label(
     acquire_timeout: Duration,
 ) -> (TestContainer, PgPool) {
     let container_name = postgres_container_name(label);
-    let postgres = tokio::time::timeout(
-        docker_startup_timeout(),
-        named_postgres_request(db_name, &container_name).start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Postgres container");
+    let postgres = {
+        let _postgres_start_permit = POSTGRES_START_SERIALIZER
+            .acquire()
+            .await
+            .expect("Postgres startup guard should not be closed");
+        let _postgres_process_lock =
+            tokio::task::spawn_blocking(|| ProcessLock::acquire("postgres-start"))
+                .await
+                .expect("postgres process lock task should not panic");
+        tokio::time::timeout(
+            docker_startup_timeout(),
+            named_postgres_request(db_name, &container_name).start(),
+        )
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Postgres container")
+    };
 
     let port = postgres
         .get_host_port_ipv4(5432)

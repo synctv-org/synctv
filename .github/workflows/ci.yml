@@ -101,6 +101,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
@@ -131,11 +134,18 @@ jobs:
       - name: Build
         run: cargo build --verbose --all
 
-      - name: Run tests
+      - name: Run tests with nextest
         env:
           SYNCTV_DATABASE_URL: postgresql://synctv:synctv@localhost:5432/synctv
           SYNCTV_REDIS_URL: redis://localhost:6379
-        run: cargo test --verbose --all
+        run: |
+          timeout 900 cargo nextest run --workspace --run-ignored all --nff -j20 > /tmp/nextest-ci.log 2>&1
+
+      - name: Print nextest log on failure
+        if: failure()
+        run: |
+          tail -n 200 /tmp/nextest-ci.log || true
+          grep -E "(FAIL|SLOW|panic|timed out|FAILED)" /tmp/nextest-ci.log || true
 
   # Security audit
   security-audit:

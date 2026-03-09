@@ -10,7 +10,7 @@ use axum::{
 use super::{middleware::AuthUser, AppResult, AppState};
 use crate::proto::client::{
     DeleteRoomResponse, GetProfileResponse, ListCreatedRoomsResponse,
-    ListParticipatedRoomsResponse, SetPasswordRequest, SetUsernameRequest,
+    ListParticipatedRoomsResponse,
 };
 
 /// Typed request for PATCH /api/user
@@ -44,64 +44,45 @@ pub async fn update_user(
     State(state): State<AppState>,
     Json(req): Json<UpdateUserRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let UpdateUserRequest {
+        username,
+        password,
+        old_password,
+    } = req;
+
     let mut updated_fields = Vec::new();
-    let mut result = serde_json::Map::new();
-
-    // Process username update if requested
-    if let Some(ref username) = req.username {
-        let set_username_req = SetUsernameRequest {
-            new_username: username.clone(),
-        };
-
-        let response = state
-            .client_api
-            .set_username(&auth.user_id.to_string(), set_username_req)
-            .await
-            .map_err(super::error::map_api_error)?;
-
-        let new_username = response
-            .user
-            .as_ref()
-            .map_or_else(|| username.clone(), |u| u.username.clone());
-        result.insert(
-            "username".to_string(),
-            serde_json::Value::String(new_username),
-        );
+    if username.is_some() {
         updated_fields.push("username");
     }
-
-    // Process password update if requested
-    if let Some(ref password) = req.password {
-        // Old password is required to prevent unauthorized password changes
-        // from stolen session tokens.
-        let old_password = req
-            .old_password
-            .as_deref()
-            .ok_or_else(|| {
-                super::AppError::bad_request("old_password is required when changing password")
-            })?
-            .to_string();
-
-        let set_password_req = SetPasswordRequest {
-            old_password,
-            new_password: password.clone(),
-        };
-
-        let _response = state
-            .client_api
-            .set_password(&auth.user_id.to_string(), set_password_req)
-            .await
-            .map_err(super::error::map_api_error)?;
-
+    if password.is_some() {
         updated_fields.push("password");
     }
-
     if updated_fields.is_empty() {
         return Err(super::AppError::bad_request(
             "No valid update fields provided (username or password)",
         ));
     }
 
+    let response = state
+        .client_api
+        .update_profile(
+            &auth.user_id.to_string(),
+            username.clone(),
+            old_password,
+            password,
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    let mut result = serde_json::Map::new();
+    if let Some(user) = response.user {
+        result.insert(
+            "username".to_string(),
+            serde_json::Value::String(user.username),
+        );
+    } else if let Some(username) = username {
+        result.insert("username".to_string(), serde_json::Value::String(username));
+    }
     result.insert(
         "message".to_string(),
         serde_json::Value::String(format!(

@@ -1304,9 +1304,7 @@ impl Drop for RedlockGuard {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
-    use synctv_core_testing::wait_for_redis_ready;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::redis::Redis;
+    use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -1701,33 +1699,14 @@ mod tests {
     // ========== Redlock Integration Tests (Require Docker) ==========
 
     /// Helper: start 3 independent Redis masters for Redlock tests.
-    async fn redlock_test_config() -> (
-        RedlockConfig,
-        Vec<testcontainers::ContainerAsync<Redis>>,
-    ) {
+    async fn redlock_test_config() -> (RedlockConfig, Vec<RedisContainer>) {
         let mut containers = Vec::with_capacity(3);
         let mut master_urls = Vec::with_capacity(3);
 
-        for _ in 0..3 {
-            let container =
-                tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-                    .await
-                    .expect("Docker container startup timed out (is Docker running?)")
-                    .expect("Failed to start Redis container");
-
-            let host = container
-                .get_host()
-                .await
-                .expect("Failed to get Redis host");
-            let port = container
-                .get_host_port_ipv4(6379)
-                .await
-                .expect("Failed to get Redis port");
-
-            master_urls.push(format!("redis://{host}:{port}"));
-            let client = redis::Client::open(master_urls.last().expect("redis url").as_str())
-                .expect("Failed to create Redis client");
-            wait_for_redis_ready(&client).await;
+        for index in 0..3 {
+            let label = format!("redlock-master-{index}");
+            let (container, redis_url) = start_redis_url_with_label(&label).await;
+            master_urls.push(redis_url);
             containers.push(container);
         }
 

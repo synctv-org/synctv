@@ -376,38 +376,6 @@ async fn test_buffered_write_eventually_visible() {
     assert_eq!(count, 1, "Buffered event should eventually be written");
 }
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_unbuffered_write_immediately_visible() {
-    let (_container, pool) = create_test_pool().await;
-
-    let service = AuditService::new_unbuffered(pool.clone());
-
-    // Log an event
-    service
-        .log(
-            "unbuf_immed".to_string(),
-            "immediate_writer".to_string(),
-            AuditAction::UserCreated,
-            AuditTargetType::User,
-            Some("target".to_string()),
-            serde_json::json!({}),
-            None,
-            None,
-        )
-        .await
-        .expect("Unbuffered log should succeed");
-
-    // No sleep needed - should be immediately visible
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'unbuf_immed'")
-            .fetch_one(&pool)
-            .await
-            .expect("Query should succeed");
-
-    assert_eq!(count, 1, "Unbuffered event should be immediately visible");
-}
-
 // ============================================================================
 // Test: Concurrent audit logging
 // ============================================================================

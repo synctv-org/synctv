@@ -363,26 +363,13 @@ mod migration_state_tests {
 // ============================================================================
 
 mod integration_tests {
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::redis::Redis;
+    use synctv_core_testing::start_redis_with_client;
 
     /// Test that Redis-based migration lock works with real Redis
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_redis_migration_lock_integration() {
-        // Start Redis container
-        let container =
-            tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-                .await
-                .expect("Docker container startup timed out (is Docker running?)")
-                .expect("Failed to start Redis");
-        let port = container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get port");
-
-        let redis_url = format!("redis://127.0.0.1:{port}");
-        let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+        let (_container, client) = start_redis_with_client().await;
         let conn = redis::aio::ConnectionManager::new(client)
             .await
             .expect("Failed to create connection manager");
@@ -424,19 +411,7 @@ mod integration_tests {
     async fn test_concurrent_migration_locks() {
         use std::sync::Arc;
 
-        // Start Redis container
-        let container =
-            tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-                .await
-                .expect("Docker container startup timed out (is Docker running?)")
-                .expect("Failed to start Redis");
-        let port = container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get port");
-
-        let redis_url = format!("redis://127.0.0.1:{port}");
-        let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+        let (_container, client) = start_redis_with_client().await;
         let conn = redis::aio::ConnectionManager::new(client)
             .await
             .expect("Failed to create connection manager");

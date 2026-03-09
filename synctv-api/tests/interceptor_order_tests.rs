@@ -123,6 +123,7 @@ fn test_refresh_token_rejected_as_access_token() {
 fn test_auth_interceptor_injects_user_context() {
     use synctv_api::grpc::interceptors::SecurityCheckPassed;
     use synctv_api::grpc::AuthInterceptor;
+    use synctv_core::service::{AuthenticatedToken, Claims};
 
     let jwt_service = JwtService::new(TEST_SECRET).expect("Should create JwtService");
     let interceptor = AuthInterceptor::new(jwt_service.clone());
@@ -133,8 +134,22 @@ fn test_auth_interceptor_injects_user_context() {
         .expect("Should sign");
 
     let mut request = tonic::Request::new(());
-    // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+    // Inject SecurityCheckPassed marker and authenticated identity to simulate
+    // BlacklistCheckLayer.
     request.extensions_mut().insert(SecurityCheckPassed);
+    request.extensions_mut().insert(AuthenticatedToken {
+        user_id: user_id.clone(),
+        claims: Claims {
+            sub: user_id.as_str().to_string(),
+            typ: "access".to_string(),
+            jti: "interceptor-order".to_string(),
+            iat: 1_700_000_000,
+            exp: 1_700_003_600,
+            pv: 0,
+            iss: None,
+            aud: None,
+        },
+    });
     request
         .metadata_mut()
         .insert("authorization", format!("Bearer {token}").parse().unwrap());

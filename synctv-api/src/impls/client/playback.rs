@@ -128,7 +128,7 @@ impl ClientApiImpl {
             let provider_result = provider
                 .generate_playback(&ctx, &media.source_config)
                 .await
-                .map_err(|e| ApiError::Internal(format!("generate_playback failed: {e}")))?;
+                .map_err(ApiError::from)?;
 
             // Build full PlaybackResult from provider result + media fields
             let mut builder = synctv_core::models::media::PlaybackResult::builder(

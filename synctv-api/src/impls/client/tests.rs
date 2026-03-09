@@ -4,6 +4,7 @@
 use super::convert::*;
 use super::{validate_password_for_set, validate_password_for_verify};
 use super::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
+use crate::impls::ApiError;
 use synctv_core::models::{
     MediaId, MemberStatus, PlaylistId, RoomId, RoomRole, RoomStatus, UserId, UserRole, UserStatus,
 };
@@ -267,6 +268,46 @@ fn test_user_to_proto_basic() {
         synctv_proto::common::UserStatus::Active as i32
     );
     assert!(proto.email_verified);
+}
+
+// === Provider Error Mapping Tests ===
+
+#[test]
+fn test_provider_error_not_found_preserves_not_found_semantics() {
+    let err = ApiError::from(synctv_core::provider::ProviderError::NotFound);
+    assert!(matches!(err, ApiError::NotFound(_)));
+}
+
+#[test]
+fn test_provider_error_credential_expired_preserves_authentication_semantics() {
+    let err = ApiError::from(synctv_core::provider::ProviderError::CredentialExpired(
+        "expired credential".to_string(),
+    ));
+    assert!(matches!(err, ApiError::Authentication(_)));
+}
+
+#[test]
+fn test_provider_error_invalid_config_preserves_invalid_input_semantics() {
+    let err = ApiError::from(synctv_core::provider::ProviderError::InvalidConfig(
+        "missing host".to_string(),
+    ));
+    assert!(matches!(err, ApiError::InvalidInput(_)));
+}
+
+#[test]
+fn test_provider_error_upstream_http_preserves_upstream_context() {
+    let err = ApiError::from(synctv_core::provider::ProviderError::UpstreamHttp {
+        status: 502,
+        url: "https://provider.example/playback".to_string(),
+    });
+
+    match err {
+        ApiError::Internal(message) => {
+            assert!(message.contains("502"));
+            assert!(message.contains("provider.example"));
+        }
+        other => panic!("expected internal upstream error, got {other:?}"),
+    }
 }
 
 #[test]

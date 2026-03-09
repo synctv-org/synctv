@@ -506,6 +506,44 @@ mod create_ticket_validation {
 
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
+
+    /// Malformed `room_id` should also produce 400 instead of reaching room lookup.
+    #[tokio::test]
+    async fn test_invalid_room_id_format_returns_400() {
+        let app = Router::new().route(
+            "/api/tickets",
+            post(|Json(req): Json<CreateTicketRequest>| async move {
+                if req.room_id.trim().is_empty() {
+                    return Err::<Json<Value>, AppError>(AppError::bad_request(
+                        "room_id is required",
+                    ));
+                }
+
+                synctv_api::room_id_validation::parse_room_id(&req.room_id)
+                    .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
+
+                Ok(Json(serde_json::json!({"ticket": "abc"})))
+            }),
+        );
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/tickets")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"room_id": "room@bad1234"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("Invalid room_id"),
+            "unexpected error response: {json:?}"
+        );
+    }
 }
 
 // ============================================================================
@@ -1417,6 +1455,31 @@ mod api_error_type_safe_mapping {
         );
         // Internal error messages should be sanitized
         assert_eq!(app_err.message, "Internal error");
+    }
+
+    #[test]
+    fn test_provider_not_found_maps_to_404() {
+        let api_err = ApiError::from(synctv_core::provider::ProviderError::NotFound);
+        let app_err = map_api_error(api_err);
+        assert_eq!(app_err.status, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_provider_credential_expired_maps_to_401() {
+        let api_err = ApiError::from(synctv_core::provider::ProviderError::CredentialExpired(
+            "credential expired".into(),
+        ));
+        let app_err = map_api_error(api_err);
+        assert_eq!(app_err.status, axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_provider_invalid_config_maps_to_400() {
+        let api_err = ApiError::from(synctv_core::provider::ProviderError::InvalidConfig(
+            "missing host".into(),
+        ));
+        let app_err = map_api_error(api_err);
+        assert_eq!(app_err.status, axum::http::StatusCode::BAD_REQUEST);
     }
 }
 

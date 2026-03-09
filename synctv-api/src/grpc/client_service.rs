@@ -56,6 +56,18 @@ const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
 
 use super::map_api_error;
 
+#[allow(clippy::result_large_err)]
+fn extract_authenticated_user_id(
+    request: &Request<impl std::fmt::Debug>,
+) -> Result<UserId, Status> {
+    let user_context = request
+        .extensions()
+        .get::<super::interceptors::UserContext>()
+        .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+
+    Ok(UserId::from_string(user_context.user_id.clone()))
+}
+
 /// Configuration for `ClientService`
 #[derive(Clone)]
 pub struct ClientServiceConfig {
@@ -177,33 +189,11 @@ impl ClientServiceImpl {
 
     /// Extract `user_id` from `UserContext` (injected by `inject_user` interceptor).
     ///
-    /// Blacklist checking is handled by [`BlacklistCheckLayer`] at the transport
-    /// level, so no duplicate check is needed here.
-    ///
-    /// Additionally checks that the user is not banned or deleted, mirroring the
-    /// HTTP `AuthUser` extractor defense-in-depth check.
+    /// Authentication and security checks are completed by the transport layer
+    /// before this service is called, so this only consumes the injected context.
     #[allow(clippy::result_large_err)]
     async fn get_user_id(&self, request: &Request<impl std::fmt::Debug>) -> Result<UserId, Status> {
-        let user_context = request
-            .extensions()
-            .get::<super::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
-
-        let user_id = UserId::from_string(user_context.user_id.clone());
-
-        // Defense-in-depth: reject banned/deleted users even if they hold a
-        // valid JWT issued before the ban. This matches the HTTP AuthUser check.
-        let user = self
-            .user_service
-            .get_user(&user_id)
-            .await
-            .map_err(|_| Status::unauthenticated("User not found"))?;
-
-        if user.is_deleted() || user.status.is_banned() {
-            return Err(Status::unauthenticated("Authentication failed"));
-        }
-
-        Ok(user_id)
+        extract_authenticated_user_id(request)
     }
 
     /// Extract `RoomContext` (injected by `inject_room` interceptor)
@@ -1302,6 +1292,7 @@ impl EmailService for ClientServiceImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grpc::interceptors::UserContext;
 
     // ==================== Error Mapping ====================
 
@@ -1438,5 +1429,27 @@ mod tests {
         // Buffer should be at least 10 and at most 1000
         const { assert!(MESSAGE_STREAM_BUFFER_SIZE >= 10) };
         const { assert!(MESSAGE_STREAM_BUFFER_SIZE <= 1000) };
+    }
+
+    #[test]
+    fn test_extract_authenticated_user_id_reads_interceptor_context() {
+        let user_id = UserId::new();
+        let mut request = tonic::Request::new(());
+        request.extensions_mut().insert(UserContext {
+            user_id: user_id.as_str().to_string(),
+            iat: 1_700_000_000,
+            pv: 2,
+        });
+
+        let extracted = extract_authenticated_user_id(&request).expect("UserContext should exist");
+        assert_eq!(extracted, user_id);
+    }
+
+    #[test]
+    fn test_extract_authenticated_user_id_requires_user_context() {
+        let request = tonic::Request::new(());
+        let result = extract_authenticated_user_id(&request);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
     }
 }

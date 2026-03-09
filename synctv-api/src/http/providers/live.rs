@@ -43,6 +43,32 @@ fn create_live_provider_router() -> Router<AppState> {
         .route("/streams", get(handle_room_streams))
 }
 
+fn map_livestream_error(context: &str, error: impl std::fmt::Display) -> AppError {
+    let message = error.to_string();
+    let lower = message.to_ascii_lowercase();
+
+    if lower.contains("max concurrent streams reached")
+        || lower.contains("too many")
+        || lower.contains("rate limit")
+        || lower.contains("exhausted")
+    {
+        return AppError::too_many_requests(format!("{context}: {message}"));
+    }
+
+    if lower.contains("no publisher")
+        || lower.contains("stream not found")
+        || lower.contains("segment not found")
+    {
+        return AppError::not_found(format!("{context}: {message}"));
+    }
+
+    if lower.contains("permission denied") || lower.contains("authentication failed") {
+        return AppError::forbidden(format!("{context}: {message}"));
+    }
+
+    AppError::internal_server_error(format!("{context}: {message}"))
+}
+
 async fn handle_stream_info(
     auth: AuthUser,
     Path(media_id): Path<String>,
@@ -154,7 +180,7 @@ async fn execute_flv_stream(
         source_url.as_deref(),
     )
     .await
-    .map_err(|e| AppError::internal_server_error(format!("Failed to create FLV session: {e}")))?;
+    .map_err(|e| map_livestream_error("Failed to create FLV session", e))?;
 
     let mut disconnect_rx = state.connection_manager.subscribe_disconnect();
     let room_id = RoomId::from_string(room_id_str.to_string());
@@ -274,9 +300,7 @@ async fn execute_hls_playlist(
             )
         })
         .await
-        .map_err(|e| {
-            AppError::internal_server_error(format!("Failed to generate HLS playlist: {e}"))
-        })?;
+        .map_err(|e| map_livestream_error("Failed to generate HLS playlist", e))?;
 
     match playlist {
         Some(content) => Ok(Response::builder()
@@ -341,8 +365,8 @@ async fn execute_hls_segment(
     let ts_data = HlsStreamingApi::get_segment(infrastructure, room_id, media_id, validated_name)
         .await
         .map_err(|e| {
-            warn!(room_id = %room_id, media_id = %media_id, segment = %validated_name, error = %e, "HLS segment not found");
-            AppError::not_found("HLS segment not found")
+            warn!(room_id = %room_id, media_id = %media_id, segment = %validated_name, error = %e, "HLS segment fetch failed");
+            map_livestream_error("Failed to get HLS segment", e)
         })?;
 
     if disguised_as_png {
@@ -392,6 +416,8 @@ async fn send_flv_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
+    use synctv_livestream::error::StreamError;
 
     #[test]
     fn room_query_deserializes_room_id() {
@@ -448,5 +474,33 @@ mod tests {
     fn build_hls_segment_path_uses_ts_suffix_when_disabled() {
         let path = build_hls_segment_path("rtmp", "ver1", "seg001", None, false);
         assert_eq!(path, "/api/providers/proxy/rtmp/ver1/segment/seg001.ts");
+    }
+
+    #[test]
+    fn livestream_invalid_state_limit_maps_to_429() {
+        let err = map_livestream_error(
+            "Failed to create FLV session",
+            StreamError::InvalidState("max concurrent streams reached (limit: 100)".to_string()),
+        );
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(err.message.contains("max concurrent streams reached"));
+    }
+
+    #[test]
+    fn livestream_no_publisher_maps_to_404() {
+        let err = map_livestream_error(
+            "Failed to generate HLS playlist",
+            StreamError::NoPublisher("room1/media1".to_string()),
+        );
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn livestream_permission_denied_maps_to_403() {
+        let err = map_livestream_error(
+            "Failed to create FLV session",
+            StreamError::PermissionDenied("not allowed".to_string()),
+        );
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
     }
 }

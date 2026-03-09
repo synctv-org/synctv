@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use std::fmt::Debug;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
-use synctv_core::service::auth::{JwtService, JwtValidator};
+use synctv_core::service::{auth::JwtService, AuthenticatedToken};
 use tonic::{Request, Status};
 use tracing::warn;
 
@@ -52,23 +52,18 @@ pub struct RoomContext {
     pub room_id: String,
 }
 
-/// Simple JWT auth interceptor (synchronous, compatible with `tonic::service::Interceptor`)
-/// Only validates JWT and extracts `user_id` into `AuthContext`
-/// Service methods should call helper functions to load entities from database
+/// gRPC auth interceptor that consumes the authenticated identity produced by
+/// `BlacklistCheckLayer` and exposes transport-agnostic request context.
 #[derive(Clone)]
-pub struct AuthInterceptor {
-    jwt_validator: Arc<JwtValidator>,
-}
+pub struct AuthInterceptor;
 
 impl AuthInterceptor {
     #[must_use]
-    pub fn new(jwt_service: JwtService) -> Self {
-        Self {
-            jwt_validator: Arc::new(JwtValidator::new(Arc::new(jwt_service))),
-        }
+    pub fn new(_jwt_service: JwtService) -> Self {
+        Self
     }
 
-    /// Inject `UserContext` - validates JWT and extracts `user_id` + `iat`
+    /// Inject `UserContext` using the authenticated token produced by `BlacklistCheckLayer`.
     /// Used for `UserService` and `AdminService`
     ///
     /// # Layer Ordering (RUNTIME CHECK)
@@ -82,31 +77,16 @@ impl AuthInterceptor {
     /// 2. Password invalidation check (tokens issued before password change)
     /// 3. Banned/deleted user check
     #[allow(clippy::result_large_err)]
-    pub fn inject_user<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
-        // RUNTIME CHECK: Verify BlacklistCheckLayer has run before this interceptor.
-        // This prevents security bypass if layer ordering is misconfigured.
-        if request.extensions().get::<SecurityCheckPassed>().is_none() {
-            tracing::error!(
-                "AuthInterceptor called without SecurityCheckPassed marker. \
-                 BlacklistCheckLayer must run before AuthInterceptor. \
-                 Check gRPC server layer ordering in grpc/mod.rs."
-            );
-            return Err(Status::internal(
-                "Server misconfiguration: security layer ordering error",
-            ));
-        }
-
-        // Extract and validate the bearer token
-        let raw_token = Self::extract_raw_token(request.metadata())?;
-
-        let claims = self
-            .jwt_validator
-            .validate_token(&raw_token)
-            .map_err(|e| Status::unauthenticated(format!("Token verification failed: {e}")))?;
+    pub fn inject_user<T: std::fmt::Debug>(
+        &self,
+        mut request: Request<T>,
+    ) -> Result<Request<T>, Status> {
+        let authenticated_token = Self::require_authenticated_token(&request)?;
+        let claims = &authenticated_token.claims;
 
         // Inject UserContext with user_id, iat, pv
         let user_context = UserContext {
-            user_id: claims.sub,
+            user_id: authenticated_token.user_id.as_str().to_string(),
             iat: claims.iat,
             pv: claims.pv,
         };
@@ -115,7 +95,7 @@ impl AuthInterceptor {
         Ok(request)
     }
 
-    /// Inject `RoomContext` - validates JWT, extracts `user_id` and `room_id` from x-room-id header
+    /// Inject `RoomContext` using the authenticated token and `x-room-id` header.
     /// Used for `RoomService` and `MediaService`
     ///
     /// # Layer Ordering (RUNTIME CHECK)
@@ -129,27 +109,12 @@ impl AuthInterceptor {
     /// - Must be exactly 12 characters
     /// - Must contain only alphanumeric characters, underscores, and hyphens
     #[allow(clippy::result_large_err)]
-    pub fn inject_room<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
-        // RUNTIME CHECK: Verify BlacklistCheckLayer has run before this interceptor.
-        // This prevents security bypass if layer ordering is misconfigured.
-        if request.extensions().get::<SecurityCheckPassed>().is_none() {
-            tracing::error!(
-                "AuthInterceptor called without SecurityCheckPassed marker. \
-                 BlacklistCheckLayer must run before AuthInterceptor. \
-                 Check gRPC server layer ordering in grpc/mod.rs."
-            );
-            return Err(Status::internal(
-                "Server misconfiguration: security layer ordering error",
-            ));
-        }
-
-        // Extract and validate the bearer token
-        let raw_token = Self::extract_raw_token(request.metadata())?;
-
-        let claims = self
-            .jwt_validator
-            .validate_token(&raw_token)
-            .map_err(|e| Status::unauthenticated(format!("Token verification failed: {e}")))?;
+    pub fn inject_room<T: std::fmt::Debug>(
+        &self,
+        mut request: Request<T>,
+    ) -> Result<Request<T>, Status> {
+        let authenticated_token = Self::require_authenticated_token(&request)?;
+        let claims = &authenticated_token.claims;
 
         // Extract room_id from x-room-id header
         let room_id_str = request
@@ -165,7 +130,7 @@ impl AuthInterceptor {
 
         // Inject UserContext (for nested structure)
         let user_context = UserContext {
-            user_id: claims.sub.clone(),
+            user_id: authenticated_token.user_id.as_str().to_string(),
             iat: claims.iat,
             pv: claims.pv,
         };
@@ -174,7 +139,7 @@ impl AuthInterceptor {
         // Inject RoomContext
         let room_context = RoomContext {
             user_ctx: UserContext {
-                user_id: claims.sub,
+                user_id: authenticated_token.user_id.as_str().to_string(),
                 iat: claims.iat,
                 pv: claims.pv,
             },
@@ -185,38 +150,38 @@ impl AuthInterceptor {
         Ok(request)
     }
 
-    /// Attempt to extract and validate a user ID from gRPC metadata without requiring auth.
-    ///
-    /// Returns `Some(UserId)` if a valid Bearer token is present in the `authorization`
-    /// metadata header. Returns `None` if no header is present or if the token is invalid.
-    ///
-    /// This is used by endpoints that support optional authentication (e.g. `OAuth2` exchange
-    /// for bind flows — login flows need no auth, but bind flows require the caller to prove
-    /// their identity).
-    #[must_use]
-    pub fn try_extract_user_id(
-        &self,
-        metadata: &tonic::metadata::MetadataMap,
-    ) -> Option<synctv_core::models::UserId> {
-        self.jwt_validator
-            .validate_grpc_extract_user_id(metadata)
-            .ok()
-    }
-
-    /// Extract the raw bearer token from gRPC metadata.
-    ///
-    /// Used to capture the token for async blacklist checking at the service layer,
-    /// since interceptors are synchronous and cannot call Redis.
+    /// Read the authenticated token that must be produced by `BlacklistCheckLayer`
+    /// before the interceptor runs.
     #[allow(clippy::result_large_err)]
-    fn extract_raw_token(metadata: &tonic::metadata::MetadataMap) -> Result<String, Status> {
-        let auth_header = metadata
-            .get("authorization")
-            .ok_or_else(|| Status::unauthenticated("Missing authorization header"))?
-            .to_str()
-            .map_err(|_| Status::unauthenticated("Invalid authorization header format"))?;
+    fn require_authenticated_token<T: std::fmt::Debug>(
+        request: &Request<T>,
+    ) -> Result<AuthenticatedToken, Status> {
+        if request.extensions().get::<SecurityCheckPassed>().is_none() {
+            tracing::error!(
+                "AuthInterceptor called without SecurityCheckPassed marker. \
+                 BlacklistCheckLayer must run before AuthInterceptor. \
+                 Check gRPC server layer ordering in grpc/mod.rs."
+            );
+            return Err(Status::internal(
+                "Server misconfiguration: security layer ordering error",
+            ));
+        }
 
-        JwtValidator::extract_bearer_token(auth_header)
-            .map_err(|e| Status::unauthenticated(format!("Token extraction failed: {e}")))
+        if let Some(authenticated_token) = request.extensions().get::<AuthenticatedToken>() {
+            return Ok(authenticated_token.clone());
+        }
+
+        if request.metadata().get("authorization").is_some() {
+            tracing::error!(
+                "AuthInterceptor called with authorization metadata but without AuthenticatedToken. \
+                 BlacklistCheckLayer must propagate authenticated identity before AuthInterceptor."
+            );
+            return Err(Status::internal(
+                "Server misconfiguration: authenticated token missing",
+            ));
+        }
+
+        Err(Status::unauthenticated("Missing authorization header"))
     }
 }
 
@@ -394,29 +359,23 @@ impl GrpcRateLimitTier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core::models::UserId;
+    use synctv_core::service::{Claims, TokenType};
 
-    #[test]
-    fn test_extract_raw_token_valid() {
-        let mut metadata = tonic::metadata::MetadataMap::new();
-        metadata.insert("authorization", "Bearer my_jwt_token_here".parse().unwrap());
-        let token = AuthInterceptor::extract_raw_token(&metadata).unwrap();
-        assert_eq!(token, "my_jwt_token_here");
-    }
-
-    #[test]
-    fn test_extract_raw_token_missing_header() {
-        let metadata = tonic::metadata::MetadataMap::new();
-        let result = AuthInterceptor::extract_raw_token(&metadata);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
-    }
-
-    #[test]
-    fn test_extract_raw_token_no_bearer_prefix() {
-        let mut metadata = tonic::metadata::MetadataMap::new();
-        metadata.insert("authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
-        let result = AuthInterceptor::extract_raw_token(&metadata);
-        assert!(result.is_err());
+    fn test_authenticated_token(user_id: &UserId) -> AuthenticatedToken {
+        AuthenticatedToken {
+            user_id: user_id.clone(),
+            claims: Claims {
+                sub: user_id.as_str().to_string(),
+                typ: "access".to_string(),
+                jti: "test-jti".to_string(),
+                iat: 1_700_000_000,
+                exp: 1_700_003_600,
+                pv: 7,
+                iss: None,
+                aud: None,
+            },
+        }
     }
 
     #[test]
@@ -511,14 +470,10 @@ mod tests {
         let mut request = tonic::Request::new(());
         // Add the SecurityCheckPassed marker (simulating BlacklistCheckLayer)
         request.extensions_mut().insert(SecurityCheckPassed);
-        // Add a valid token
         let user_id = synctv_core::models::UserId::new();
-        let token = jwt_service
-            .sign_token(&user_id, synctv_core::service::auth::TokenType::Access, 0)
-            .expect("Should sign token");
         request
-            .metadata_mut()
-            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+            .extensions_mut()
+            .insert(test_authenticated_token(&user_id));
 
         // Clone jwt_service before moving to AuthInterceptor
         let interceptor = AuthInterceptor::new(jwt_service);
@@ -529,6 +484,61 @@ mod tests {
             result.is_ok(),
             "Should accept with SecurityCheckPassed marker"
         );
+    }
+
+    #[test]
+    fn test_inject_user_rejects_when_authenticated_token_missing_after_security_layer() {
+        let jwt_service =
+            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
+                .expect("Should create JwtService");
+
+        let mut request = tonic::Request::new(());
+        request.extensions_mut().insert(SecurityCheckPassed);
+
+        let user_id = synctv_core::models::UserId::new();
+        let token = jwt_service
+            .sign_token(&user_id, TokenType::Access, 0)
+            .expect("Should sign token");
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+
+        let interceptor = AuthInterceptor::new(jwt_service);
+        let result = interceptor.inject_user(request);
+        assert!(result.is_err(), "Missing authenticated token should fail");
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Internal);
+        assert!(err.message().contains("authenticated token missing"));
+    }
+
+    #[test]
+    fn test_inject_user_uses_authenticated_token_extension_without_revalidating_metadata() {
+        let jwt_service =
+            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
+                .expect("Should create JwtService");
+        let interceptor = AuthInterceptor::new(jwt_service);
+
+        let user_id = synctv_core::models::UserId::new();
+        let expected = test_authenticated_token(&user_id);
+
+        let mut request = tonic::Request::new(());
+        request.extensions_mut().insert(SecurityCheckPassed);
+        request.extensions_mut().insert(expected.clone());
+        request
+            .metadata_mut()
+            .insert("authorization", "Bearer invalid.jwt.value".parse().unwrap());
+
+        let request = interceptor
+            .inject_user(request)
+            .expect("Existing authenticated token should be reused");
+        let ctx = request
+            .extensions()
+            .get::<UserContext>()
+            .expect("UserContext should be injected");
+
+        assert_eq!(ctx.user_id, user_id.as_str());
+        assert_eq!(ctx.iat, expected.claims.iat);
+        assert_eq!(ctx.pv, expected.claims.pv);
     }
 
     #[test]
@@ -582,14 +592,10 @@ mod tests {
         let mut request = tonic::Request::new(());
         // Add the SecurityCheckPassed marker (simulating BlacklistCheckLayer)
         request.extensions_mut().insert(SecurityCheckPassed);
-        // Add a valid token and room_id
         let user_id = synctv_core::models::UserId::new();
-        let token = jwt_service
-            .sign_token(&user_id, synctv_core::service::auth::TokenType::Access, 0)
-            .expect("Should sign token");
         request
-            .metadata_mut()
-            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+            .extensions_mut()
+            .insert(test_authenticated_token(&user_id));
         request
             .metadata_mut()
             .insert("x-room-id", "room1234_abx".parse().unwrap());
@@ -603,5 +609,39 @@ mod tests {
             result.is_ok(),
             "Should accept with SecurityCheckPassed marker"
         );
+    }
+
+    #[test]
+    fn test_inject_room_uses_authenticated_token_extension_without_revalidating_metadata() {
+        let jwt_service =
+            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
+                .expect("Should create JwtService");
+        let interceptor = AuthInterceptor::new(jwt_service);
+
+        let user_id = synctv_core::models::UserId::new();
+        let expected = test_authenticated_token(&user_id);
+
+        let mut request = tonic::Request::new(());
+        request.extensions_mut().insert(SecurityCheckPassed);
+        request.extensions_mut().insert(expected.clone());
+        request
+            .metadata_mut()
+            .insert("authorization", "Bearer invalid.jwt.value".parse().unwrap());
+        request
+            .metadata_mut()
+            .insert("x-room-id", "room1234_abx".parse().unwrap());
+
+        let request = interceptor
+            .inject_room(request)
+            .expect("Existing authenticated token should be reused");
+        let ctx = request
+            .extensions()
+            .get::<RoomContext>()
+            .expect("RoomContext should be injected");
+
+        assert_eq!(ctx.user_ctx.user_id, user_id.as_str());
+        assert_eq!(ctx.user_ctx.iat, expected.claims.iat);
+        assert_eq!(ctx.user_ctx.pv, expected.claims.pv);
+        assert_eq!(ctx.room_id, "room1234_abx");
     }
 }

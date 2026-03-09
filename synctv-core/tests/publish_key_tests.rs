@@ -12,6 +12,7 @@ use synctv_core::service::{
     publish_key::{InMemoryJtiStore, PublishKeyService},
     JtiStore,
 };
+use synctv_core_testing::start_redis_with_client;
 
 fn create_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890").unwrap()
@@ -61,7 +62,6 @@ async fn test_validate_expired_token_rejected() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_first_claim_succeeds() {
     let store = InMemoryJtiStore::new(300);
     let result = store.try_claim("jti_1", 300).await.unwrap();
@@ -69,7 +69,6 @@ async fn test_in_memory_jti_store_first_claim_succeeds() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_duplicate_returns_false() {
     let store = InMemoryJtiStore::new(300);
 
@@ -81,7 +80,6 @@ async fn test_in_memory_jti_store_duplicate_returns_false() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_different_jti_independent() {
     let store = InMemoryJtiStore::new(300);
 
@@ -93,7 +91,6 @@ async fn test_in_memory_jti_store_different_jti_independent() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_is_claimed() {
     let store = InMemoryJtiStore::new(300);
 
@@ -114,7 +111,6 @@ async fn test_in_memory_jti_store_is_claimed() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_publish_key_single_use() {
     let service = create_service();
     let room_id = RoomId::new();
@@ -152,25 +148,7 @@ async fn test_publish_key_single_use() {
 #[ignore = "Requires Docker"]
 async fn test_redis_jti_store_cross_service_dedup() {
     use synctv_core::service::publish_key::RedisJtiStore;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::redis::Redis;
-
-    let container =
-        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis container");
-
-    let host = container
-        .get_host()
-        .await
-        .expect("Failed to get Redis host");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-    let redis_url = format!("redis://{host}:{port}");
-    let client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+    let (_container, client) = start_redis_with_client().await;
     let conn = redis::aio::ConnectionManager::new(client)
         .await
         .expect("Failed to create Redis ConnectionManager");
@@ -196,25 +174,7 @@ async fn test_redis_jti_store_cross_service_dedup() {
 async fn test_publish_key_service_with_redis_full_lifecycle() {
     use synctv_core::service::auth::JwtService;
     use synctv_core::service::publish_key::PublishKeyService;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::redis::Redis;
-
-    let container =
-        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis container");
-
-    let host = container
-        .get_host()
-        .await
-        .expect("Failed to get Redis host");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-    let redis_url = format!("redis://{host}:{port}");
-    let client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+    let (_container, client) = start_redis_with_client().await;
     let conn = redis::aio::ConnectionManager::new(client)
         .await
         .expect("Failed to create Redis ConnectionManager");

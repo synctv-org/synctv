@@ -1086,46 +1086,20 @@ mod tests {
         assert_eq!(fetched.len(), 5);
     }
 
-    /// Integration test: Create batch exceeds limit
+    /// Unit test: Oversized chunks are rejected before any database I/O.
     #[tokio::test]
-    #[ignore = "Requires Docker"]
     async fn test_create_batch_chunk_too_large() {
-        use crate::repository::playlist::PlaylistRepository;
-        use crate::repository::room::RoomRepository;
-        use crate::repository::user::UserRepository;
-        use crate::test_helpers::{RoomFixture, UserFixture};
-
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
-        let media_repo = MediaRepository::new(infra.pool.clone());
-
-        // Setup
-        let owner = UserFixture::new().with_username("chunk_owner").build();
-        let owner = user_repo.create(&owner).await.unwrap();
-
-        let room = RoomFixture::new()
-            .with_name("Chunk Room")
-            .with_owner(owner.id.clone())
-            .build();
-        let room = room_repo.create(&room).await.unwrap();
-
-        // Create playlist hierarchy (root + child with name)
-        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
-            &playlist_repo,
-            room.id.clone(),
-            "Chunk Playlist",
-        )
-        .await;
-
-        // Create batch that exceeds chunk limit (1001 items)
+        let pool = PgPool::connect_lazy("postgresql://unused:unused@localhost/unused")
+            .expect("lazy pool should accept a syntactically valid URL");
+        let playlist_id = PlaylistId::new();
+        let room_id = RoomId::new();
+        let owner_id = UserId::new();
         let items: Vec<Media> = (0..1001)
             .map(|i| {
                 Media::from_provider(
-                    playlist.id.clone(),
-                    room.id.clone(),
-                    Some(owner.id.clone()),
+                    playlist_id.clone(),
+                    room_id.clone(),
+                    Some(owner_id.clone()),
                     format!("Video {i}"),
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
@@ -1135,11 +1109,20 @@ mod tests {
             })
             .collect();
 
-        // create_batch_chunk should fail
-        // Note: create_batch will succeed because it uses chunking internally
-        let result = media_repo.create_batch(&items).await;
-        assert!(result.is_ok()); // Should succeed with automatic chunking
-        assert_eq!(result.unwrap().len(), 1001);
+        let err = MediaRepository::create_batch_chunk(&items, &pool)
+            .await
+            .expect_err("oversized chunks should be rejected before touching the database");
+
+        match err {
+            crate::Error::InvalidInput(message) => {
+                assert!(message.contains("1000 row limit"), "unexpected message: {message}");
+                assert!(
+                    message.contains("10010 bind parameters"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected invalid input error, got {other:?}"),
+        }
     }
 
     /// Integration test: Swap positions

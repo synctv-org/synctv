@@ -93,6 +93,30 @@ impl UserRepository {
         Ok(u)
     }
 
+    /// Get user by ID using a provided executor and lock the row for update.
+    pub async fn get_by_id_for_update_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<Option<User>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let u = sqlx::query_as::<_, User>(
+            r"
+            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
+            FROM users
+            WHERE id = $1 AND deleted_at IS NULL
+            FOR UPDATE
+            ",
+        )
+        .bind(user_id.as_str())
+        .fetch_optional(executor)
+        .await?;
+
+        Ok(u)
+    }
+
     /// Get multiple users by IDs in a single batch query
     pub async fn get_by_ids(&self, user_ids: &[UserId]) -> Result<Vec<User>> {
         if user_ids.is_empty() {
@@ -163,6 +187,19 @@ impl UserRepository {
     /// Returns `Error::OptimisticLockConflict` when another concurrent update
     /// already changed the row, so the caller can retry with a fresh read.
     pub async fn update(&self, user: &User, old_version: i32) -> Result<User> {
+        self.update_with_executor(user, old_version, &self.pool).await
+    }
+
+    /// Update user with optimistic locking using a provided executor.
+    pub async fn update_with_executor<'e, E>(
+        &self,
+        user: &User,
+        old_version: i32,
+        executor: E,
+    ) -> Result<User>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let u = sqlx::query_as::<_, User>(
             r"
             UPDATE users
@@ -181,7 +218,7 @@ impl UserRepository {
         .bind(user.email_verified)
         .bind(Utc::now())
         .bind(old_version)
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await?;
 
         if let Some(updated) = u {
@@ -196,6 +233,65 @@ impl UserRepository {
                 Err(Error::NotFound(format!(
                     "User {} not found",
                     user.id.as_str()
+                )))
+            }
+        }
+    }
+
+    /// Update the user profile atomically with optimistic locking.
+    ///
+    /// Supports updating username alone, password alone, or both in one write.
+    /// When `password_hash` is `Some`, the password metadata is updated and
+    /// `password_version` is incremented exactly once in the same statement.
+    pub async fn update_profile_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        username: &str,
+        password_hash: Option<&str>,
+        old_version: i32,
+        executor: E,
+    ) -> Result<User>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let now = Utc::now();
+        let u = sqlx::query_as::<_, User>(
+            r"
+            UPDATE users
+            SET username = $2,
+                password_hash = COALESCE($3, password_hash),
+                updated_at = $4,
+                password_changed_at = CASE
+                    WHEN $3 IS NULL THEN password_changed_at
+                    ELSE $4
+                END,
+                password_version = CASE
+                    WHEN $3 IS NULL THEN password_version
+                    ELSE password_version + 1
+                END,
+                version = version + 1
+            WHERE id = $1 AND deleted_at IS NULL AND version = $5
+            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
+            ",
+        )
+        .bind(user_id.as_str())
+        .bind(username)
+        .bind(password_hash)
+        .bind(now)
+        .bind(old_version)
+        .fetch_optional(executor)
+        .await?;
+
+        if let Some(updated) = u {
+            Ok(updated)
+        } else {
+            let exists = self.get_by_id(user_id).await?.is_some();
+            if exists {
+                Err(Error::OptimisticLockConflict)
+            } else {
+                Err(Error::NotFound(format!(
+                    "User {} not found",
+                    user_id.as_str()
                 )))
             }
         }

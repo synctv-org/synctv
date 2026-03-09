@@ -228,6 +228,47 @@ impl From<synctv_core::Error> for ApiError {
     }
 }
 
+impl From<synctv_core::provider::ProviderError> for ApiError {
+    fn from(err: synctv_core::provider::ProviderError) -> Self {
+        use synctv_core::provider::ProviderError;
+
+        match err {
+            ProviderError::NetworkError(msg) | ProviderError::ApiError(msg) => {
+                Self::Internal(msg)
+            }
+            ProviderError::UpstreamHttp { status, url } => {
+                Self::Internal(format!("Upstream HTTP {status} error for {url}"))
+            }
+            ProviderError::ParseError(msg)
+            | ProviderError::InvalidConfig(msg)
+            | ProviderError::InvalidUrl(msg)
+            | ProviderError::MissingField(msg)
+            | ProviderError::UnsupportedFormat(msg) => Self::InvalidInput(msg),
+            ProviderError::NotFound => Self::NotFound("Resource not found".to_string()),
+            ProviderError::InstanceNotFound(msg) => Self::NotFound(msg),
+            ProviderError::MissingInstance => {
+                Self::NotFound("Provider instance not configured".to_string())
+            }
+            ProviderError::AuthRequired => Self::Authentication("Authentication required".to_string()),
+            ProviderError::CredentialRequired => {
+                Self::Authentication("Credential required".to_string())
+            }
+            ProviderError::InvalidCredentialType => {
+                Self::InvalidInput("Invalid credential type".to_string())
+            }
+            ProviderError::CredentialNotFound(msg) => Self::NotFound(msg),
+            ProviderError::CredentialExpired(msg) => Self::Authentication(msg),
+            ProviderError::RouteRegistrationFailed(msg)
+            | ProviderError::Internal(msg) => Self::Internal(msg),
+            ProviderError::IoError(e) => Self::Internal(e.to_string()),
+            ProviderError::JsonError(e) => Self::InvalidInput(format!("Invalid data format: {e}")),
+            ProviderError::EncryptionRequired(provider) => Self::Internal(format!(
+                "Credential encryption not configured for provider '{provider}'"
+            )),
+        }
+    }
+}
+
 impl ApiError {
     /// Convert this structured error into an `ErrorKind`.
     #[must_use]

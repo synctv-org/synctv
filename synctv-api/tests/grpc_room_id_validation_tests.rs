@@ -9,6 +9,7 @@
 use synctv_api::grpc::interceptors::{AuthInterceptor, RoomContext, SecurityCheckPassed};
 use synctv_core::models::UserId;
 use synctv_core::service::auth::{JwtService, TokenType};
+use synctv_core::service::{AuthenticatedToken, Claims};
 use tonic::metadata::MetadataMap;
 use tonic::Request;
 
@@ -23,6 +24,22 @@ fn create_metadata(token: &str, room_id: &str) -> MetadataMap {
     metadata.insert("authorization", format!("Bearer {token}").parse().unwrap());
     metadata.insert("x-room-id", room_id.parse().unwrap());
     metadata
+}
+
+fn authenticated_token(user_id: &UserId) -> AuthenticatedToken {
+    AuthenticatedToken {
+        user_id: user_id.clone(),
+        claims: Claims {
+            sub: user_id.as_str().to_string(),
+            typ: "access".to_string(),
+            jti: "grpc-room-id-validation".to_string(),
+            iat: 1_700_000_000,
+            exp: 1_700_003_600,
+            pv: 0,
+            iss: None,
+            aud: None,
+        },
+    }
 }
 
 // =============================================================================
@@ -55,6 +72,9 @@ async fn test_valid_room_id_format_should_pass() {
         let mut request = Request::new(());
         // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
         request.extensions_mut().insert(SecurityCheckPassed);
+        request
+            .extensions_mut()
+            .insert(authenticated_token(&user_id));
         *request.metadata_mut() = create_metadata(&token, room_id);
 
         let result = interceptor.inject_room(request);
@@ -85,6 +105,9 @@ async fn test_empty_room_id_should_be_rejected() {
     let mut request = Request::new(());
     // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
     request.extensions_mut().insert(SecurityCheckPassed);
+    request
+        .extensions_mut()
+        .insert(authenticated_token(&user_id));
     *request.metadata_mut() = create_metadata(&token, "");
 
     let result = interceptor.inject_room(request);
@@ -120,6 +143,9 @@ async fn test_too_long_room_id_should_be_rejected() {
     let mut request = Request::new(());
     // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
     request.extensions_mut().insert(SecurityCheckPassed);
+    request
+        .extensions_mut()
+        .insert(authenticated_token(&user_id));
     *request.metadata_mut() = create_metadata(&token, &too_long_room_id);
 
     let result = interceptor.inject_room(request);
@@ -191,6 +217,9 @@ async fn test_invalid_characters_in_room_id_should_be_rejected() {
         let mut request = Request::new(());
         // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
         request.extensions_mut().insert(SecurityCheckPassed);
+        request
+            .extensions_mut()
+            .insert(authenticated_token(&user_id));
         *request.metadata_mut() = create_metadata(&token, room_id);
 
         let result = interceptor.inject_room(request);
@@ -229,6 +258,9 @@ async fn test_unicode_characters_in_room_id_should_be_rejected() {
         let mut request = Request::new(());
         // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
         request.extensions_mut().insert(SecurityCheckPassed);
+        request
+            .extensions_mut()
+            .insert(authenticated_token(&user_id));
         *request.metadata_mut() = create_metadata(&token, room_id);
 
         let result = interceptor.inject_room(request);
@@ -264,6 +296,9 @@ async fn test_exactly_12_char_room_id_should_pass() {
     let mut request = Request::new(());
     // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
     request.extensions_mut().insert(SecurityCheckPassed);
+    request
+        .extensions_mut()
+        .insert(authenticated_token(&user_id));
     *request.metadata_mut() = create_metadata(&token, &boundary_room_id);
 
     let result = interceptor.inject_room(request);
@@ -307,6 +342,9 @@ async fn test_consistency_with_http_validation() {
         let mut request = Request::new(());
         // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
         request.extensions_mut().insert(SecurityCheckPassed);
+        request
+            .extensions_mut()
+            .insert(authenticated_token(&user_id));
         *request.metadata_mut() = create_metadata(&token, room_id);
         let grpc_result = interceptor.inject_room(request).is_ok();
 

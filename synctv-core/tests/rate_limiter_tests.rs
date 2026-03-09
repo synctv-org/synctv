@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 use synctv_core::service::{RateLimitError, RateLimiter};
+use synctv_core_testing::{start_redis_with_client, RedisContainer};
 use tokio::sync::RwLock;
 
 // ============================================================================
@@ -125,27 +126,9 @@ async fn test_in_memory_distributed_uses_governor() {
 
 async fn create_redis_connection_manager() -> (
     redis::aio::ConnectionManager,
-    testcontainers::ContainerAsync<testcontainers_modules::redis::Redis>,
+    RedisContainer,
 ) {
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::redis::Redis;
-
-    let container =
-        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Docker container startup timed out (is Docker running?)")
-            .expect("Failed to start Redis container");
-
-    let host = container
-        .get_host()
-        .await
-        .expect("Failed to get Redis host");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-    let redis_url = format!("redis://{host}:{port}");
-    let client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+    let (container, client) = start_redis_with_client().await;
     let conn = redis::aio::ConnectionManager::new(client)
         .await
         .expect("Failed to create Redis ConnectionManager");

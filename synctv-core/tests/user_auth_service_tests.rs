@@ -935,6 +935,177 @@ async fn test_set_password_fails_when_family_revocation_persistence_fails() {
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_profile_updates_username_and_password_atomically() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+
+    let old_username = format!("profile_atomic_{}", nanoid::nanoid!(6));
+    let new_username = format!("profile_atomic_new_{}", nanoid::nanoid!(6));
+    let (user, _, _) = service
+        .register(
+            old_username.clone(),
+            Some(format!("profile_atomic_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    let updated_user = service
+        .update_profile(
+            &user.id,
+            Some(new_username.clone()),
+            Some("StrongPass1".to_string()),
+            Some("NewStrongPass1".to_string()),
+        )
+        .await
+        .expect("Combined profile update should succeed");
+
+    assert_eq!(updated_user.username, new_username);
+    assert_eq!(
+        updated_user.password_version,
+        user.password_version + 1,
+        "Combined profile update should increment password_version exactly once"
+    );
+
+    let login_old = service
+        .login(old_username, "StrongPass1".to_string(), None)
+        .await;
+    assert!(
+        login_old.is_err(),
+        "Old username/password must stop working after a successful atomic profile update"
+    );
+
+    let login_new = service
+        .login(new_username, "NewStrongPass1".to_string(), None)
+        .await;
+    assert!(
+        login_new.is_ok(),
+        "New username/password must become active together after a successful atomic profile update"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_profile_rolls_back_username_when_password_verification_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+
+    let old_username = format!("profile_rollback_{}", nanoid::nanoid!(6));
+    let new_username = format!("profile_rollback_new_{}", nanoid::nanoid!(6));
+    let (user, _, _) = service
+        .register(
+            old_username.clone(),
+            Some(format!("profile_rollback_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    let result = service
+        .update_profile(
+            &user.id,
+            Some(new_username.clone()),
+            Some("WrongOldPass1".to_string()),
+            Some("NewStrongPass1".to_string()),
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(Error::Authentication(_))),
+        "Wrong current password must reject the combined profile update"
+    );
+
+    let persisted = service
+        .get_user(&user.id)
+        .await
+        .expect("User should still exist after rejected update");
+    assert_eq!(
+        persisted.username, old_username,
+        "Username must not be partially committed when password verification fails"
+    );
+
+    let login_old = service
+        .login(old_username, "StrongPass1".to_string(), None)
+        .await;
+    assert!(
+        login_old.is_ok(),
+        "Original credentials must remain valid after a rejected combined profile update"
+    );
+
+    let login_new = service
+        .login(new_username, "NewStrongPass1".to_string(), None)
+        .await;
+    assert!(
+        login_new.is_err(),
+        "New credentials must not become active when the combined profile update is rejected"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_profile_rolls_back_username_when_family_revocation_persistence_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(FamilyRevocationFailingStore {
+        inner: InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
+    });
+    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist);
+
+    let old_username = format!("profile_revoke_{}", nanoid::nanoid!(6));
+    let new_username = format!("profile_revoke_new_{}", nanoid::nanoid!(6));
+    let (user, _, _) = service
+        .register(
+            old_username.clone(),
+            Some(format!("profile_revoke_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    let result = service
+        .update_profile(
+            &user.id,
+            Some(new_username.clone()),
+            Some("StrongPass1".to_string()),
+            Some("NewStrongPass1".to_string()),
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Combined profile update must fail closed when refresh token family revocation cannot be persisted"
+    );
+
+    let persisted = service
+        .get_user(&user.id)
+        .await
+        .expect("User should still exist after failed combined update");
+    assert_eq!(
+        persisted.username, old_username,
+        "Username must not be partially committed when refresh token family revocation fails"
+    );
+
+    let login_old = service
+        .login(old_username.clone(), "StrongPass1".to_string(), None)
+        .await;
+    assert!(
+        login_old.is_ok(),
+        "Original credentials must remain valid after a failed combined profile update"
+    );
+
+    let login_new = service
+        .login(old_username, "NewStrongPass1".to_string(), None)
+        .await;
+    assert!(
+        login_new.is_err(),
+        "New password must not become active when refresh token family revocation fails"
+    );
+}
+
 // ============================================================================
 // S13: create_or_load_by_oauth2
 // ============================================================================

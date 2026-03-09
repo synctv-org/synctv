@@ -1,17 +1,47 @@
+use std::fs::{File, OpenOptions};
+use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use redis::AsyncCommands;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 use crate::postgres::docker_startup_timeout;
 
 pub type RedisConnectionManager = redis::aio::ConnectionManager;
 pub type RedisConnectionHandle = Arc<RwLock<redis::aio::ConnectionManager>>;
+static REDIS_START_SERIALIZER: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(1));
+
+struct ProcessLock(File);
+
+impl ProcessLock {
+    fn acquire(name: &str) -> Self {
+        let mut path = PathBuf::from("/tmp");
+        path.push(format!("synctv-{name}.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap_or_else(|e| panic!("failed to open lock file {}: {e}", path.display()));
+        file.lock()
+            .unwrap_or_else(|e| panic!("failed to acquire lock file {}: {e}", path.display()));
+        Self(file)
+    }
+}
+
+impl Drop for ProcessLock {
+    fn drop(&mut self) {
+        self.0
+            .unlock()
+            .expect("failed to release process lock for redis test startup");
+    }
+}
 
 fn sanitize_container_name(raw: &str) -> String {
     let mut name: String = raw
@@ -106,13 +136,23 @@ impl Drop for RedisContainer {
 
 async fn start_redis_inner(label: &str) -> (RedisContainer, String, redis::Client) {
     let container_name = redis_container_name(label);
-    let container = tokio::time::timeout(
-        docker_startup_timeout(),
-        named_redis_request(&container_name).start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Redis");
+    let container = {
+        let _redis_start_permit = REDIS_START_SERIALIZER
+            .acquire()
+            .await
+            .expect("Redis startup guard should not be closed");
+        let _redis_process_lock =
+            tokio::task::spawn_blocking(|| ProcessLock::acquire("redis-start"))
+                .await
+                .expect("redis process lock task should not panic");
+        tokio::time::timeout(
+            docker_startup_timeout(),
+            named_redis_request(&container_name).start(),
+        )
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Redis")
+    };
     let port = container
         .get_host_port_ipv4(6379)
         .await
@@ -156,7 +196,8 @@ pub async fn start_redis_url() -> (RedisContainer, String) {
 }
 
 pub async fn wait_for_redis_ready(client: &redis::Client) {
-    for _ in 0..120 {
+    let deadline = std::time::Instant::now() + docker_startup_timeout();
+    while std::time::Instant::now() < deadline {
         if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
             let ping_result: redis::RedisResult<String> =
                 redis::cmd("PING").query_async(&mut conn).await;

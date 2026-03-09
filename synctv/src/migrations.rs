@@ -86,22 +86,37 @@ async fn run_migrate(pool: &PgPool) -> Result<()> {
 /// the migrator's list against the `_sqlx_migrations` table.
 async fn migrations_already_applied(pool: &PgPool) -> bool {
     let migrator = sqlx::migrate!("../migrations");
-    let applied: Vec<(i64,)> =
-        match sqlx::query_as("SELECT version FROM _sqlx_migrations ORDER BY version")
-            .fetch_all(pool)
-            .await
-        {
-            Ok(rows) => rows,
-            Err(_) => return false, // table may not exist yet
-        };
+    let applied: Vec<(i64, Vec<u8>)> = match sqlx::query_as(
+        "SELECT version, checksum FROM _sqlx_migrations WHERE success = true ORDER BY version",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return false, // table may not exist yet
+    };
 
-    let applied_versions: std::collections::HashSet<i64> =
-        applied.into_iter().map(|(v,)| v).collect();
+    migrations_match_applied_set(
+        migrator
+            .migrations
+            .iter()
+            .map(|migration| (migration.version, migration.checksum.as_ref())),
+        applied.into_iter().map(|(version, checksum)| (version, checksum)),
+    )
+}
 
-    migrator
-        .migrations
-        .iter()
-        .all(|m| applied_versions.contains(&m.version))
+fn migrations_match_applied_set<'a, M, A>(migrations: M, applied: A) -> bool
+where
+    M: IntoIterator<Item = (i64, &'a [u8])>,
+    A: IntoIterator<Item = (i64, Vec<u8>)>,
+{
+    let applied_versions: std::collections::HashMap<i64, Vec<u8>> = applied.into_iter().collect();
+
+    migrations.into_iter().all(|(version, expected_checksum)| {
+        applied_versions
+            .get(&version)
+            .is_some_and(|actual_checksum| actual_checksum.as_slice() == expected_checksum)
+    })
 }
 
 /// Run migrations under a distributed lock so that only one replica in a
@@ -419,7 +434,10 @@ async fn release_lock(lock: &dyn MigrationLock, lock_key: &str, lock_value: &str
 
 #[cfg(test)]
 mod tests {
-    use super::{run_migrations_with_mode, run_migrations_with_runner, MIGRATION_LOCK_TTL};
+    use super::{
+        migrations_match_applied_set, run_migrations_with_mode, run_migrations_with_runner,
+        MIGRATION_LOCK_TTL,
+    };
     use anyhow::anyhow;
     use sqlx::{postgres::PgPoolOptions, PgPool};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -634,5 +652,47 @@ mod tests {
             "unexpected error: {err}"
         );
         assert_eq!(lock.release_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn migration_match_requires_checksum_match() {
+        let expected = vec![(1_i64, b"checksum-a".as_slice())];
+        let applied = vec![(1_i64, b"checksum-b".to_vec())];
+
+        assert!(
+            !migrations_match_applied_set(expected, applied),
+            "changed SQL checksum must force migrations to run again instead of being treated as already applied"
+        );
+    }
+
+    #[test]
+    fn migration_match_requires_every_version() {
+        let expected = vec![
+            (1_i64, b"checksum-a".as_slice()),
+            (2_i64, b"checksum-b".as_slice()),
+        ];
+        let applied = vec![(1_i64, b"checksum-a".to_vec())];
+
+        assert!(
+            !migrations_match_applied_set(expected, applied),
+            "missing applied versions must not be treated as complete migration state"
+        );
+    }
+
+    #[test]
+    fn migration_match_accepts_exact_version_and_checksum_set() {
+        let expected = vec![
+            (1_i64, b"checksum-a".as_slice()),
+            (2_i64, b"checksum-b".as_slice()),
+        ];
+        let applied = vec![
+            (1_i64, b"checksum-a".to_vec()),
+            (2_i64, b"checksum-b".to_vec()),
+        ];
+
+        assert!(
+            migrations_match_applied_set(expected, applied),
+            "matching version/checksum pairs should be treated as fully applied"
+        );
     }
 }

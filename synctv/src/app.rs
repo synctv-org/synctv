@@ -1228,20 +1228,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires Docker"]
     async fn test_init_cluster_injects_runtime_dependencies_into_cluster_manager() {
-        use testcontainers::runners::AsyncRunner;
-        use testcontainers_modules::redis::Redis;
-
-        let redis = tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Redis container startup timed out")
-            .expect("Failed to start Redis container");
-
-        let port = redis
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Redis port should be exposed");
-        let redis_url = format!("redis://127.0.0.1:{port}");
-        let client = redis::Client::open(redis_url).expect("Redis client should be created");
+        let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
         let conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .expect("Redis connection manager should be created");
@@ -1290,20 +1277,7 @@ mod tests {
     async fn test_build_connection_manager_wires_redis_in_cluster_mode() {
         use redis::AsyncCommands;
         use synctv_core::models::{RoomId, UserId};
-        use testcontainers::runners::AsyncRunner;
-        use testcontainers_modules::redis::Redis;
-
-        let redis = tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Redis container startup timed out")
-            .expect("Failed to start Redis container");
-
-        let port = redis
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Redis port should be exposed");
-        let redis_url = format!("redis://127.0.0.1:{port}");
-        let client = redis::Client::open(redis_url).expect("Redis client should be created");
+        let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
         let app_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .expect("App connection manager should be created");
@@ -1349,20 +1323,7 @@ mod tests {
     async fn test_build_connection_manager_keeps_standalone_mode_local_even_with_redis() {
         use redis::AsyncCommands;
         use synctv_core::models::{RoomId, UserId};
-        use testcontainers::runners::AsyncRunner;
-        use testcontainers_modules::redis::Redis;
-
-        let redis = tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
-            .await
-            .expect("Redis container startup timed out")
-            .expect("Failed to start Redis container");
-
-        let port = redis
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Redis port should be exposed");
-        let redis_url = format!("redis://127.0.0.1:{port}");
-        let client = redis::Client::open(redis_url).expect("Redis client should be created");
+        let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
         let app_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .expect("App connection manager should be created");

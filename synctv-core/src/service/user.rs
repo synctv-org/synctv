@@ -783,6 +783,7 @@ impl UserService {
     /// it was read.
     pub async fn update_user(&self, user: &User, old_version: i32) -> Result<User> {
         let updated = self.repository.update(user, old_version).await?;
+        self.invalidate_username_cache(&user.id).await?;
         self.notify_user_invalidation(&user.id).await;
         Ok(updated)
     }
@@ -794,19 +795,13 @@ impl UserService {
         old_password: &str,
         new_password: &str,
     ) -> Result<User> {
-        // Get user to verify old password
-        let user = self.get_user(user_id).await?;
-
-        // Verify old password
-        let is_valid = verify_password(old_password, &user.password_hash).await?;
-        if !is_valid {
-            return Err(Error::Authentication(
-                "Invalid current password".to_string(),
-            ));
-        }
-
-        // Delegate to set_password for the actual update
-        self.set_password(user_id, new_password).await
+        self.update_profile(
+            user_id,
+            None,
+            Some(old_password.to_string()),
+            Some(new_password.to_string()),
+        )
+        .await
     }
 
     /// Set user password (admin use, no old password required)
@@ -856,6 +851,99 @@ impl UserService {
         self.notify_user_invalidation(user_id).await;
 
         tracing::info!("Password updated for user {}", user_id.as_str());
+
+        Ok(updated_user)
+    }
+
+    /// Update a user's own profile atomically.
+    ///
+    /// Supports username-only updates, password-only updates, or updating both
+    /// fields in a single transaction so partial commits cannot occur.
+    ///
+    /// When changing password, `old_password` is required and verified inside
+    /// the transaction against the current row version before any mutation is
+    /// committed. Refresh token family revocation is part of the same commit.
+    pub async fn update_profile(
+        &self,
+        user_id: &UserId,
+        new_username: Option<String>,
+        old_password: Option<String>,
+        new_password: Option<String>,
+    ) -> Result<User> {
+        if new_username.is_none() && new_password.is_none() {
+            return Err(Error::InvalidInput(
+                "No valid update fields provided (username or password)".to_string(),
+            ));
+        }
+
+        let new_username = new_username.map(|username| username.trim().to_string());
+
+        if new_password.is_some() && old_password.is_none() {
+            return Err(Error::InvalidInput(
+                "old_password is required when changing password".to_string(),
+            ));
+        }
+
+        if let Some(ref username) = new_username {
+            self.validate_username(username)?;
+        }
+        if let Some(ref password) = new_password {
+            self.validate_password(password)?;
+        }
+
+        let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
+        let current_user = self
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+
+        let target_username = new_username.unwrap_or_else(|| current_user.username.clone());
+        let mut new_password_hash: Option<String> = None;
+
+        if let Some(new_password) = new_password {
+            let provided_old_password = old_password.expect("old_password validated above");
+            let is_valid = verify_password(&provided_old_password, &current_user.password_hash).await?;
+            if !is_valid {
+                return Err(Error::Authentication(
+                    "Invalid current password".to_string(),
+                ));
+            }
+
+            new_password_hash = Some(hash_password(&new_password).await?);
+        }
+
+        let updated_user = self
+            .repository
+            .update_profile_with_executor(
+                user_id,
+                &target_username,
+                new_password_hash.as_deref(),
+                current_user.version,
+                &mut *tx,
+            )
+            .await?;
+
+        if new_password_hash.is_some() {
+            let now = chrono::Utc::now().timestamp();
+            let family_key = self
+                .key_builder
+                .refresh_token_family_revoked(user_id.as_str());
+            let family_ttl = self
+                .jwt_service
+                .refresh_token_duration_seconds()
+                .saturating_add(3600);
+            self.token_blacklist
+                .set_family_revoked(&family_key, now, family_ttl)
+                .await?;
+        }
+
+        tx.commit().await?;
+
+        if updated_user.username != current_user.username {
+            self.invalidate_username_cache(user_id).await?;
+        }
+        self.notify_user_invalidation(user_id).await;
 
         Ok(updated_user)
     }

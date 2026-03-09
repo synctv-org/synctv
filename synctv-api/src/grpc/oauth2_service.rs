@@ -81,7 +81,8 @@ impl OAuth2GrpcService {
         &self,
         request: Request<T>,
     ) -> Result<(UserId, Request<T>), Status> {
-        // inject_user validates JWT and inserts UserContext into extensions
+        // inject_user consumes the authenticated identity produced by
+        // BlacklistCheckLayer and inserts UserContext into extensions
         let request = self.auth_interceptor.inject_user(request)?;
         let user_context = request
             .extensions()
@@ -166,13 +167,13 @@ impl OAuth2Service for OAuth2GrpcService {
         &self,
         request: Request<ExchangeAuthorizationCodeRequest>,
     ) -> Result<Response<ExchangeAuthorizationCodeResponse>, Status> {
-        // Optionally extract the authenticated user ID from the authorization metadata.
-        // For login flows this will be None (no auth header present).
-        // For bind flows the frontend should include the Bearer token so we can verify
-        // the caller matches the bind_user_id stored in the OAuth2 state.
-        let current_user_id: Option<UserId> = self
-            .auth_interceptor
-            .try_extract_user_id(request.metadata());
+        // Reuse the identity authenticated by BlacklistCheckLayer when present.
+        // Public login flows have no authenticated token and therefore keep
+        // `current_user_id` as `None`.
+        let current_user_id: Option<UserId> = request
+            .extensions()
+            .get::<synctv_core::service::AuthenticatedToken>()
+            .map(|authenticated| authenticated.user_id.clone());
 
         // Extract client IP for brute-force protection (Issue #24)
         let client_ip = request.remote_addr().map(|addr| addr.ip());

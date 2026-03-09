@@ -16,7 +16,6 @@
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
-use synctv_core::models::RoomId;
 
 use super::middleware::AuthUser;
 use super::{AppError, AppState};
@@ -80,7 +79,8 @@ pub async fn create_ticket(
         return Err(AppError::bad_request("room_id is required"));
     }
 
-    let room_id = RoomId::from_string(req.room_id.clone());
+    let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
+        .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
 
     // Verify room exists and is accessible
     let room = state
@@ -125,11 +125,11 @@ pub async fn create_ticket(
 
     let response = TicketResponse {
         ticket,
-        room_id: req.room_id.clone(),
+        room_id: room_id.as_str().to_string(),
         expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
         usage: format!(
             "Use in WebSocket URL: ws://host/ws/room/{}?ticket=xxx",
-            req.room_id
+            room_id.as_str()
         ),
     };
 

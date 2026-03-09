@@ -5,27 +5,13 @@
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
 
 use synctv_cluster::sync::events::{CacheTarget, ClusterEvent, NotificationLevel};
 use synctv_cluster::{ClusterConfig, ClusterManager, DedupKey, MessageDeduplicator};
 use synctv_core::models::id::{MediaId, RoomId, UserId};
+use synctv_core_testing::{start_redis_with_client, RedisContainer};
 mod integration_test_helpers;
 use integration_test_helpers::{broadcast_until_admin_event, broadcast_until_room_event};
-
-/// Default Redis version for test containers
-#[allow(dead_code)]
-const REDIS_VERSION: &str = "7-alpine";
-
-fn docker_startup_timeout() -> Duration {
-    std::env::var("SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|secs| secs.max(30))
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(120))
-}
 
 fn uid(s: &str) -> UserId {
     UserId::from_string(s.to_string())
@@ -41,42 +27,14 @@ fn mid(s: &str) -> MediaId {
 
 /// Helper to create a Redis container and connection manager.
 async fn setup_redis() -> (
-    testcontainers::ContainerAsync<Redis>,
+    RedisContainer,
     redis::Client,
     redis::aio::ConnectionManager,
 ) {
-    let redis_container = tokio::time::timeout(docker_startup_timeout(), Redis::default().start())
+    let (redis_container, redis_client) = start_redis_with_client().await;
+    let conn = redis::aio::ConnectionManager::new(redis_client.clone())
         .await
-        .expect("Docker container startup timed out (is Docker running?)")
-        .expect("Failed to start Redis container");
-
-    let redis_host = redis_container
-        .get_host()
-        .await
-        .expect("Failed to get Redis host");
-    let redis_port = redis_container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-
-    let redis_url = format!("redis://{redis_host}:{redis_port}");
-    let redis_client =
-        redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
-
-    // Wait for Redis with retries (generous timeout for parallel testcontainer startup)
-    let conn = {
-        let mut retries = 0;
-        loop {
-            match redis::aio::ConnectionManager::new(redis_client.clone()).await {
-                Ok(conn) => break conn,
-                Err(_) if retries < 60 => {
-                    retries += 1;
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
-                Err(e) => panic!("Redis ConnectionManager failed after {retries} retries: {e}"),
-            }
-        }
-    };
+        .expect("Failed to create Redis ConnectionManager");
 
     // Verify Redis
     let mut test_conn = conn.clone();
@@ -212,13 +170,8 @@ async fn test_cross_node_broadcast() {
     .await;
     assert_eq!(received.event_type(), "chat_message");
 
-    // Cleanup
     manager1.shutdown().await;
     manager2.shutdown().await;
-    container
-        .rm()
-        .await
-        .expect("redis test container should be removed");
 }
 
 // ============================================================================

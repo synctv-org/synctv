@@ -432,7 +432,8 @@ pub async fn websocket_handler(
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
     // Build the RoomId before authentication so we can pass it for ticket validation.
-    let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+    let rid = crate::room_id_validation::parse_room_id(&room_id)
+        .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
 
     // Extract user ID from authentication credentials.
     // The room_id is passed so that ticket validation can enforce room-scoping (Issue #65).
@@ -503,7 +504,7 @@ pub async fn websocket_handler(
     Ok(ws
         .max_message_size(64 * 1024)
         .on_failed_upgrade(failed_upgrade_cleanup)
-        .on_upgrade(move |socket| handle_socket(socket, state, room_id, user_id)))
+        .on_upgrade(move |socket| handle_socket(socket, state, rid, user_id)))
 }
 
 fn build_failed_upgrade_cleanup(
@@ -523,6 +524,46 @@ fn build_failed_upgrade_cleanup(
     }
 }
 
+struct ReservationGuard {
+    connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+    room_id: RoomId,
+    user_id: UserId,
+    released: bool,
+}
+
+impl ReservationGuard {
+    fn new(
+        connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+        room_id: RoomId,
+        user_id: UserId,
+    ) -> Self {
+        Self {
+            connection_manager,
+            room_id,
+            user_id,
+            released: false,
+        }
+    }
+
+    fn release(&mut self) {
+        if self.released {
+            return;
+        }
+
+        self.connection_manager
+            .release_room_reservation(&self.room_id);
+        self.connection_manager
+            .release_user_reservation(&self.user_id);
+        self.released = true;
+    }
+}
+
+impl Drop for ReservationGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 fn websocket_content_filter(filter: &Arc<ContentFilter>) -> Arc<ContentFilter> {
     Arc::clone(filter)
 }
@@ -530,9 +571,15 @@ fn websocket_content_filter(filter: &Arc<ContentFilter>) -> Arc<ContentFilter> {
 async fn handle_socket(
     socket: axum::extract::ws::WebSocket,
     state: AppState,
-    room_id: String,
+    room_id: RoomId,
     user_id: UserId,
 ) {
+    let mut reservation_guard = ReservationGuard::new(
+        state.connection_manager.clone(),
+        room_id.clone(),
+        user_id.clone(),
+    );
+
     // Get username from user service
     let username = state
         .user_service
@@ -545,10 +592,8 @@ async fn handle_socket(
     info!(
         "WebSocket connection established: user={}, room={}",
         user_id.as_str(),
-        room_id
+        room_id.as_str()
     );
-
-    let rid = RoomId::from_string(room_id.clone());
 
     // Check if cluster_manager is available BEFORE incrementing metrics.
     // This prevents counter drift: if we return early, we never incremented,
@@ -591,7 +636,7 @@ async fn handle_socket(
 
     // Create StreamMessageHandler with all configuration
     let stream_handler = StreamMessageHandler::new(
-        rid.clone(),
+        room_id.clone(),
         user_id.clone(),
         username.clone(),
         state.room_service.clone(),
@@ -642,14 +687,11 @@ async fn handle_socket(
     };
 
     if let Err(e) = stream_handler.pre_join().await {
-        state.connection_manager.release_room_reservation(&rid);
-        state.connection_manager.release_user_reservation(&user_id);
         error!("Failed to join WebSocket stream before message loop: {}", e);
         return;
     }
 
-    state.connection_manager.release_room_reservation(&rid);
-    state.connection_manager.release_user_reservation(&user_id);
+    reservation_guard.release();
 
     // Run unified message loop - ALL logic is here!
     if let Err(e) = stream_handler.run_after_join(&mut stream).await {
@@ -662,7 +704,7 @@ async fn handle_socket(
     info!(
         "WebSocket connection closed: user={}, room={}",
         user_id.as_str(),
-        room_id
+        room_id.as_str()
     );
 }
 
@@ -999,6 +1041,69 @@ mod tests {
         assert!(
             manager.reserve_user_slot(&user_id).is_ok(),
             "user reservation should be reusable after explicit release"
+        );
+    }
+
+    #[test]
+    fn test_reservation_guard_releases_on_drop() {
+        let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
+            max_per_room: 1,
+            max_per_user: 1,
+            ..ConnectionLimits::default()
+        }));
+        let room_id = RoomId::from_string("room-guard-drop".to_string());
+        let user_id = UserId::from_string("user-guard-drop".to_string());
+
+        manager
+            .reserve_room_slot(&room_id)
+            .expect("room reservation should succeed");
+        manager
+            .reserve_user_slot(&user_id)
+            .expect("user reservation should succeed");
+
+        {
+            let _guard = ReservationGuard::new(manager.clone(), room_id.clone(), user_id.clone());
+        }
+
+        assert!(
+            manager.reserve_room_slot(&room_id).is_ok(),
+            "dropping the guard should release the room reservation"
+        );
+        assert!(
+            manager.reserve_user_slot(&user_id).is_ok(),
+            "dropping the guard should release the user reservation"
+        );
+    }
+
+    #[test]
+    fn test_reservation_guard_release_is_idempotent() {
+        let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
+            max_per_room: 1,
+            max_per_user: 1,
+            ..ConnectionLimits::default()
+        }));
+        let room_id = RoomId::from_string("room-guard-idempotent".to_string());
+        let user_id = UserId::from_string("user-guard-idempotent".to_string());
+
+        manager
+            .reserve_room_slot(&room_id)
+            .expect("room reservation should succeed");
+        manager
+            .reserve_user_slot(&user_id)
+            .expect("user reservation should succeed");
+
+        let mut guard = ReservationGuard::new(manager.clone(), room_id.clone(), user_id.clone());
+        guard.release();
+        guard.release();
+        drop(guard);
+
+        assert!(
+            manager.reserve_room_slot(&room_id).is_ok(),
+            "explicit release should free the room reservation exactly once"
+        );
+        assert!(
+            manager.reserve_user_slot(&user_id).is_ok(),
+            "explicit release should free the user reservation exactly once"
         );
     }
 

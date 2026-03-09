@@ -8,6 +8,36 @@ use super::convert::user_to_proto;
 use super::ClientApiImpl;
 
 impl ClientApiImpl {
+    pub async fn update_profile(
+        &self,
+        user_id: &str,
+        username: Option<String>,
+        old_password: Option<String>,
+        new_password: Option<String>,
+    ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
+        if let Some(ref username) = username {
+            UsernameValidator::new()
+                .validate(username.trim())
+                .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        }
+
+        if let Some(ref password) = new_password {
+            crate::http::validation::validate_password(password)
+                .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        }
+
+        let uid = UserId::from_string(user_id.to_string());
+        let updated_user = self
+            .user_service
+            .update_profile(&uid, username, old_password, new_password)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(crate::proto::client::GetProfileResponse {
+            user: Some(user_to_proto(&updated_user)),
+        })
+    }
+
     pub async fn get_profile(
         &self,
         user_id: &str,
@@ -29,30 +59,13 @@ impl ClientApiImpl {
         user_id: &str,
         req: crate::proto::client::SetUsernameRequest,
     ) -> Result<crate::proto::client::SetUsernameResponse, ApiError> {
-        // Validate username using centralized validator (includes reserved word check)
-        let username = req.new_username.trim().to_string();
-        UsernameValidator::new()
-            .validate(&username)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-
-        let uid = UserId::from_string(user_id.to_string());
-        let user = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map_err(ApiError::from)?;
-
-        let old_version = user.version;
-        let updated_user = synctv_core::models::User { username, ..user };
-
-        let result_user = self
-            .user_service
-            .update_user(&updated_user, old_version)
+        let response = self
+            .update_profile(user_id, Some(req.new_username.trim().to_string()), None, None)
             .await
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::SetUsernameResponse {
-            user: Some(user_to_proto(&result_user)),
+            user: response.user,
         })
     }
 
@@ -61,18 +74,12 @@ impl ClientApiImpl {
         user_id: &str,
         req: crate::proto::client::SetPasswordRequest,
     ) -> Result<crate::proto::client::SetPasswordResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-
-        // B10 FIX: Validate new password strength at the API layer, consistent with
-        // the register endpoint. The core service also validates, but the HTTP-level
-        // check catches common/weak passwords (dictionary check) and provides
-        // user-friendly error messages before hitting the database.
-        crate::http::validation::validate_password(&req.new_password)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-
-        // Verify old password before allowing change
-        self.user_service
-            .change_password(&uid, &req.old_password, &req.new_password)
+        self.update_profile(
+            user_id,
+            None,
+            Some(req.old_password),
+            Some(req.new_password),
+        )
             .await
             .map_err(ApiError::from)?;
 

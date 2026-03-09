@@ -352,30 +352,3 @@ fn test_non_retryable_status_404() {
 fn test_non_retryable_status_501() {
     assert!(!is_retryable_status(StatusCode::NOT_IMPLEMENTED));
 }
-
-// ==================================================================
-// Integration Tests (require external services)
-// ==================================================================
-
-/// End-to-end test with real HTTP server (requires Docker)
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_proxy_full_pipeline_with_real_server() {
-    // This would test the full proxy pipeline with a real HTTP server
-    // using testcontainers to ensure consistent behavior
-}
-
-/// End-to-end test with redirect chain (requires Docker)
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_proxy_redirect_chain() {
-    // This would test redirect chain handling with a mock server
-    // that returns redirect responses
-}
-
-/// End-to-end test with large response streaming (requires Docker)
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_proxy_large_response_streaming() {
-    // This would test streaming large responses and enforcing size limits
-}

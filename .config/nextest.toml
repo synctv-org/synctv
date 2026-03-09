@@ -23,4 +23,4 @@ threads-required = 1
 test-group = "docker-integration"
 
 [test-groups.docker-integration]
-max-threads = 8
+max-threads = 6

@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
-use testcontainers::core::ImageExt;
+use testcontainers::core::{ImageExt, WaitFor};
+use testcontainers::core::wait::LogWaitStrategy;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
@@ -156,6 +157,18 @@ fn postgres_container_name(label: &str) -> String {
     )
 }
 
+fn postgres_ready_conditions() -> Vec<WaitFor> {
+    // The official postgres image emits "database system is ready to accept
+    // connections" twice on first boot: once for a transient init server and
+    // once after the final post-init restart. Waiting for the second occurrence
+    // avoids racing the final server startup without the overhead of Docker
+    // healthchecks on every container.
+    vec![WaitFor::log(
+        LogWaitStrategy::stdout_or_stderr("database system is ready to accept connections")
+            .with_times(2),
+    )]
+}
+
 fn named_postgres_request(
     db_name: &str,
     container_name: &str,
@@ -166,6 +179,7 @@ fn named_postgres_request(
         .with_password("synctv_test")
         .with_tag(POSTGRES_VERSION)
         .with_container_name(container_name.to_string())
+        .with_ready_conditions(postgres_ready_conditions())
 }
 
 /// Creates a `PostgreSQL` test container and connection pool
@@ -269,6 +283,22 @@ pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_postgres_request_waits_for_second_ready_log() {
+        let request = named_postgres_request("synctv_test", "synctv-pg-test");
+        let ready_conditions = request.ready_conditions();
+
+        assert_eq!(
+            ready_conditions.len(),
+            1,
+            "postgres test container should have a single explicit readiness condition"
+        );
+        assert!(
+            matches!(ready_conditions.as_slice(), [WaitFor::Log(_)]),
+            "postgres test container should wait for the second ready log instead of the first init-server ready log"
+        );
+    }
 
     #[test]
     fn test_docker_startup_timeout_defaults_to_extended_budget() {

@@ -1,8 +1,9 @@
 //! Database initialization
 
 use anyhow::Result;
+use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Executor, PgPool};
+use sqlx::{Executor, PgPool, Postgres};
 use std::time::Duration;
 use tracing::{error, info};
 
@@ -90,6 +91,27 @@ pub async fn init_database_with_cancel(
     Ok(pool)
 }
 
+/// Acquire a dedicated connection for migration/DDL style work with
+/// `statement_timeout` disabled for the lifetime of that session.
+///
+/// Normal OLTP queries should continue using the main pool with bounded
+/// `statement_timeout`. This helper is only for startup/schema management work
+/// that can legitimately exceed the request-path timeout budget.
+pub async fn acquire_unbounded_ddl_connection(
+    pool: &PgPool,
+) -> Result<PoolConnection<Postgres>> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to acquire DB connection for DDL: {e}"))?;
+
+    conn.execute("SET statement_timeout = 0")
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to disable statement_timeout for DDL: {e}"))?;
+
+    Ok(conn)
+}
+
 /// Mask credentials in a database URL for safe logging.
 /// Turns `postgres://user:pass@host:5432/db` into `postgres://***:***@host:5432/db`
 ///
@@ -124,5 +146,35 @@ fn mask_database_url(url: &str) -> String {
         }
         // Completely unparseable URL - return safe placeholder
         "<invalid-url>".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgRow;
+    use sqlx::Row;
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn acquire_unbounded_ddl_connection_disables_statement_timeout() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+
+        let mut conn = acquire_unbounded_ddl_connection(&pool)
+            .await
+            .expect("should acquire dedicated ddl connection");
+
+        let row: PgRow = sqlx::query("SHOW statement_timeout")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("should query session statement timeout");
+        let timeout: String = row
+            .try_get(0)
+            .expect("SHOW statement_timeout should return a string");
+
+        assert_eq!(
+            timeout, "0",
+            "DDL connection must not inherit the main pool statement_timeout"
+        );
     }
 }

@@ -73,8 +73,17 @@ async fn run_migrations_with_runner(
 /// Execute `sqlx::migrate!` against the pool. This is the single place that
 /// calls the migration macro so it is never duplicated.
 async fn run_migrate(pool: &PgPool) -> Result<()> {
+    let mut conn = pool.acquire().await.map_err(|e| {
+        anyhow::anyhow!("Failed to acquire DB connection for running migrations: {e}")
+    })?;
+
+    sqlx::query("SET statement_timeout = 0")
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to disable statement_timeout for migrations: {e}"))?;
+
     sqlx::migrate!("../migrations")
-        .run(pool)
+        .run_direct(&mut *conn)
         .await
         .map_err(|e| {
             error!("Failed to run migrations: {}", e);
@@ -439,6 +448,7 @@ mod tests {
         MIGRATION_LOCK_TTL,
     };
     use anyhow::anyhow;
+    use sqlx::Row;
     use sqlx::{postgres::PgPoolOptions, PgPool};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -693,6 +703,39 @@ mod tests {
         assert!(
             migrations_match_applied_set(expected, applied),
             "matching version/checksum pairs should be treated as fully applied"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn migrations_disable_statement_timeout_on_migration_connection() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let mut conn = pool
+            .acquire()
+            .await
+            .expect("should acquire connection");
+
+        sqlx::query("SET statement_timeout = 1")
+            .execute(&mut *conn)
+            .await
+            .expect("should set an aggressive timeout for the session");
+
+        sqlx::query("SET statement_timeout = 0")
+            .execute(&mut *conn)
+            .await
+            .expect("migrations must be able to disable session statement timeout");
+
+        let row = sqlx::query("SHOW statement_timeout")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("should read statement_timeout");
+        let timeout: String = row
+            .try_get(0)
+            .expect("SHOW statement_timeout should return a string value");
+
+        assert_eq!(
+            timeout, "0",
+            "migration connection should run with statement_timeout disabled"
         );
     }
 }

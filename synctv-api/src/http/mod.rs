@@ -455,6 +455,7 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
 /// Moderate rate limiting: 30 req/min. Room create/update body limit: 64 KB (Issue #23).
 fn register_write_routes(state: &AppState) -> Router<AppState> {
     Router::new()
+        .route("/api/tickets", post(ticket::create_ticket))
         .route("/api/rooms", post(room::create_room))
         .route(
             "/api/rooms/{room_id}",
@@ -548,7 +549,6 @@ fn register_read_routes(state: &AppState) -> Router<AppState> {
         .route("/api/user", get(user::get_me))
         .route("/api/user/rooms", get(user::get_joined_rooms))
         .route("/api/user/rooms/created", get(user::list_created_rooms))
-        .route("/api/tickets", post(ticket::create_ticket))
         .route("/api/rooms", get(room::list_or_get_rooms))
         .route("/api/rooms/hot", get(room::get_hot_rooms))
         .route("/api/rooms/{room_id}/check", get(room::check_room))
@@ -670,20 +670,33 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         .merge(
             Router::new()
                 .nest("/api/provider", provider_common::register_common_routes())
-                // Unified proxy route for all providers — each provider internally
-                // parses its sub_path (version/m3u8, room_id/media_id, thumbnail, danmu, etc.)
-                .route(
-                    "/api/providers/proxy/{provider_name}/{*sub_path}",
-                    get(providers::unified_proxy_handler)
-                        .options(providers::proxy_options_preflight),
-                )
-                // Provider API routes (no proxy handlers in them)
+                .merge(register_provider_routes(&state)),
+        )
+}
+
+fn register_provider_routes(state: &AppState) -> Router<AppState> {
+    Router::new()
+        .merge(
+            Router::new()
                 .nest(
                     "/api/providers/bilibili",
-                    providers::bilibili::bilibili_routes(),
+                    providers::bilibili::bilibili_auth_routes(),
                 )
-                .nest("/api/providers/alist", providers::alist::alist_routes())
-                .nest("/api/providers/emby", providers::emby::emby_routes())
+                .nest("/api/providers/alist", providers::alist::alist_auth_routes())
+                .nest("/api/providers/emby", providers::emby::emby_auth_routes())
+                .route_layer(axum_middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::auth_rate_limit,
+                )),
+        )
+        .merge(
+            Router::new()
+                .nest(
+                    "/api/providers/bilibili",
+                    providers::bilibili::bilibili_read_routes(),
+                )
+                .nest("/api/providers/alist", providers::alist::alist_read_routes())
+                .nest("/api/providers/emby", providers::emby::emby_read_routes())
                 .nest("/api/providers/rtmp", providers::live::rtmp_routes())
                 .nest(
                     "/api/providers/live_proxy",
@@ -692,6 +705,20 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::read_rate_limit,
+                )),
+        )
+        .merge(
+            Router::new()
+                // Unified proxy route for all providers — each provider internally
+                // parses its sub_path (version/m3u8, room_id/media_id, thumbnail, danmu, etc.)
+                .route(
+                    "/api/providers/proxy/{provider_name}/{*sub_path}",
+                    get(providers::unified_proxy_handler)
+                        .options(providers::proxy_options_preflight),
+                )
+                .route_layer(axum_middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::streaming_rate_limit,
                 )),
         )
 }
@@ -794,7 +821,9 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
 
 #[cfg(test)]
 mod tests {
-    use super::{build_app_state, register_all_routes, start_proxy_cache_lifecycle, RouterConfig};
+    use super::{
+        build_app_state, register_all_routes, start_proxy_cache_lifecycle, RouterConfig,
+    };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use bytes::Bytes;
@@ -813,6 +842,16 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_app_state() -> super::AppState {
+        test_app_state_with_rate_limits(
+            synctv_core::HttpRateLimitConfig::default(),
+            synctv_core::GrpcRateLimitConfig::default(),
+        )
+    }
+
+    fn test_app_state_with_rate_limits(
+        http_rate_limits: synctv_core::HttpRateLimitConfig,
+        grpc_rate_limits: synctv_core::GrpcRateLimitConfig,
+    ) -> super::AppState {
         let pool = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv").expect("lazy pool");
         let username_cache = UsernameCache::new(
             Arc::new(NoopCacheL2),
@@ -848,8 +887,11 @@ mod tests {
         )
         .expect("jwt");
         let (audit_service, _audit_handle) = AuditService::new(pool.clone());
+        let mut config = synctv_core::Config::default();
+        config.http_rate_limits = http_rate_limits;
+        config.grpc_rate_limits = grpc_rate_limits;
         let router_config = RouterConfig {
-            config: Arc::new(synctv_core::Config::default()),
+            config: Arc::new(config),
             user_service: user_service.clone(),
             room_service: room_service.clone(),
             content_filter: ContentFilter::new(),
@@ -976,5 +1018,234 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "request should reach the auth extractor once the route is registered"
         );
+    }
+
+    #[tokio::test]
+    async fn test_provider_login_routes_use_auth_rate_limit_tier() {
+        let state = test_app_state_with_rate_limits(
+            synctv_core::HttpRateLimitConfig {
+                auth_max_requests: 1,
+                auth_window_seconds: 60,
+                read_max_requests: 100,
+                read_window_seconds: 60,
+                ..synctv_core::HttpRateLimitConfig::default()
+            },
+            synctv_core::GrpcRateLimitConfig::default(),
+        );
+        let app = register_all_routes(state.clone()).with_state(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/alist/login")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/alist/login")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            second.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "provider login endpoints must share the stricter auth rate-limit bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ticket_route_uses_write_rate_limit_tier() {
+        let jwt = synctv_core::service::JwtService::new(
+            "test-secret-key-for-http-router-tests-minimum-32-chars",
+        )
+        .expect("jwt");
+        let user_id =
+            synctv_core::models::UserId::from_string("user-ticket-rate-limit".to_string());
+        let access_token = jwt
+            .sign_token(&user_id, synctv_core::service::TokenType::Access, 0)
+            .expect("access token");
+
+        let state = test_app_state_with_rate_limits(
+            synctv_core::HttpRateLimitConfig {
+                write_max_requests: 1,
+                write_window_seconds: 60,
+                read_max_requests: 100,
+                read_window_seconds: 60,
+                ..synctv_core::HttpRateLimitConfig::default()
+            },
+            synctv_core::GrpcRateLimitConfig::default(),
+        );
+        let app = register_all_routes(state.clone()).with_state(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tickets")
+                    .header(axum::http::header::AUTHORIZATION, format!("Bearer {access_token}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"room_id":"room123"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_ne!(
+            first.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "first ticket request should consume the write bucket"
+        );
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tickets")
+                    .header(axum::http::header::AUTHORIZATION, format!("Bearer {access_token}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"room_id":"room123"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            second.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "ticket issuance must share the write rate-limit bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() {
+        let state = test_app_state_with_rate_limits(
+            synctv_core::HttpRateLimitConfig {
+                streaming_max_requests: 1,
+                streaming_window_seconds: 60,
+                read_max_requests: 100,
+                read_window_seconds: 60,
+                ..synctv_core::HttpRateLimitConfig::default()
+            },
+            synctv_core::GrpcRateLimitConfig::default(),
+        );
+        let app = register_all_routes(state.clone()).with_state(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/providers/proxy/bilibili/v1/test.m3u8")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/providers/proxy/bilibili/v1/test.m3u8")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            second.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "provider proxy endpoints must use the streaming rate-limit bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ticket_routes_use_write_rate_limit_tier() {
+        let state = test_app_state_with_rate_limits(
+            synctv_core::HttpRateLimitConfig {
+                write_max_requests: 1,
+                write_window_seconds: 60,
+                read_max_requests: 100,
+                read_window_seconds: 60,
+                ..synctv_core::HttpRateLimitConfig::default()
+            },
+            synctv_core::GrpcRateLimitConfig::default(),
+        );
+        let app = register_all_routes(state.clone()).with_state(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tickets")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"room_id":"room1234_abx"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tickets")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"room_id":"room1234_abx"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            second.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "ticket creation must use the write rate-limit bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_key_route_is_namespaced_under_api() {
+        let state = test_app_state();
+        let app = register_all_routes(state).with_state(test_app_state());
+
+        let api_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/rooms/room1234_abx/movies/media123/live/publish-key")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(api_response.status(), StatusCode::UNAUTHORIZED);
+
+        let legacy_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/rooms/room1234_abx/movies/media123/live/publish-key")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(legacy_response.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -438,6 +438,7 @@ impl GrpcConnectionPool {
             cb_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
+                    biased;
                     _ = token.cancelled() => {
                         debug!("Connection pool cleanup task cancelled");
                         break;

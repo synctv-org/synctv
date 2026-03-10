@@ -356,6 +356,12 @@ pub struct RedisAttemptTracker {
 }
 
 impl RedisAttemptTracker {
+    fn fail_closed_backend_error(detail: &str) -> Error {
+        Error::ServiceUnavailable(format!(
+            "Brute-force protection temporarily unavailable: {detail}"
+        ))
+    }
+
     /// Create a new Redis-backed attempt tracker with fallback mode.
     ///
     /// Accepts the shared `Arc<RwLock<ConnectionManager>>` so that the tracker
@@ -503,9 +509,8 @@ impl AttemptTracker for RedisAttemptTracker {
             // Timeout
             if self.fail_closed {
                 self.log_fail_closed_rejection("get_attempts", "Redis timeout", key);
-                return Err(Error::Internal(
-                    "Brute-force protection temporarily unavailable. Please try again later."
-                        .to_string(),
+                return Err(Self::fail_closed_backend_error(
+                    "please try again later",
                 ));
             }
             self.mark_degraded();
@@ -530,9 +535,8 @@ impl AttemptTracker for RedisAttemptTracker {
                 // Redis error
                 if self.fail_closed {
                     self.log_fail_closed_rejection("get_attempts", &e.to_string(), key);
-                    return Err(Error::Internal(
-                        "Brute-force protection temporarily unavailable. Please try again later."
-                            .to_string(),
+                    return Err(Self::fail_closed_backend_error(
+                        "please try again later",
                     ));
                 }
                 self.mark_degraded();
@@ -591,9 +595,8 @@ impl AttemptTracker for RedisAttemptTracker {
                 if self.fail_closed {
                     self.log_fail_closed_rejection("record_failure", &e.to_string(), key);
                     // Still return error - caller should know tracking failed
-                    return Err(Error::Internal(
-                        "Brute-force protection temporarily unavailable. Please try again later."
-                            .to_string(),
+                    return Err(Self::fail_closed_backend_error(
+                        "please try again later",
                     ));
                 }
                 self.mark_degraded();
@@ -620,8 +623,8 @@ impl AttemptTracker for RedisAttemptTracker {
             Ok(Err(e)) => {
                 if self.fail_closed {
                     self.log_fail_closed_rejection("reset", &e.to_string(), key);
-                    return Err(Error::Internal(
-                        "Brute-force protection temporarily unavailable.".to_string(),
+                    return Err(Self::fail_closed_backend_error(
+                        "reset failed",
                     ));
                 }
                 self.mark_degraded();
@@ -631,8 +634,8 @@ impl AttemptTracker for RedisAttemptTracker {
             Err(e) => {
                 if self.fail_closed {
                     self.log_fail_closed_rejection("reset", &e.to_string(), key);
-                    return Err(Error::Internal(
-                        "Brute-force protection temporarily unavailable.".to_string(),
+                    return Err(Self::fail_closed_backend_error(
+                        "reset timed out",
                     ));
                 }
                 self.mark_degraded();
@@ -1161,5 +1164,19 @@ mod tests {
             .await
             .is_ok());
         assert!(tracker.reset(key).await.is_ok());
+    }
+
+    #[test]
+    fn test_fail_closed_backend_error_is_service_unavailable() {
+        let err = RedisAttemptTracker::fail_closed_backend_error("please try again later");
+        match err {
+            Error::ServiceUnavailable(message) => {
+                assert!(
+                    message.contains("Brute-force protection temporarily unavailable"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected ServiceUnavailable, got {other:?}"),
+        }
     }
 }

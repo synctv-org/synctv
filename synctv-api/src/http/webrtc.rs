@@ -10,7 +10,6 @@ use axum::{
 
 use crate::http::middleware::AuthUser;
 use crate::http::{error::map_api_error, AppResult, AppState};
-use synctv_core::models::RoomId;
 
 // M-10: Use proto types directly instead of duplicating response structs.
 // Proto types already derive serde::Serialize/Deserialize.
@@ -30,7 +29,8 @@ pub async fn get_ice_servers(
     Path(room_id): Path<String>,
 ) -> AppResult<impl IntoResponse> {
     let user_id = auth.user_id;
-    let room_id = RoomId::from_string(room_id);
+    let room_id = crate::room_id_validation::parse_room_id(&room_id)
+        .map_err(|e| crate::http::AppError::bad_request(format!("Invalid room_id: {e}")))?;
 
     // Membership check is performed inside client_api.get_ice_servers()
     // Errors are mapped via map_api_error for proper HTTP status codes:
@@ -116,5 +116,14 @@ mod tests {
         let app_err = map_api_error(api_err);
         // map_api_error should populate the error_code field
         assert!(app_err.error_code.is_some());
+    }
+
+    #[test]
+    fn test_webrtc_room_id_uses_shared_validation_rules() {
+        let err = crate::room_id_validation::parse_room_id("room@invalid").unwrap_err();
+        assert!(matches!(
+            err,
+            crate::http::validation::ValidationError::InvalidFormat { .. }
+        ));
     }
 }

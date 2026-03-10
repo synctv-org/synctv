@@ -46,6 +46,10 @@ impl ClusterAuthInterceptor {
     /// Validate the shared secret from request metadata
     #[allow(clippy::result_large_err)]
     pub fn validate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
+        if self.secret.is_empty() {
+            return Ok(request);
+        }
+
         let token = request
             .metadata()
             .get("x-cluster-secret")

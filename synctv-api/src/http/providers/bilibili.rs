@@ -15,17 +15,22 @@ use serde_json::json;
 
 use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
 
-/// Build Bilibili HTTP routes (API only, no proxy)
-pub fn bilibili_routes() -> Router<AppState> {
+/// Bilibili endpoints that authenticate, issue challenges, or mutate stored credentials.
+pub fn bilibili_auth_routes() -> Router<AppState> {
     Router::new()
-        .route("/parse", post(parse))
         .route("/login/qr/generate", post(login_qr))
         .route("/login/qr/check", post(qr_check))
         .route("/login/captcha", post(new_captcha))
         .route("/login/sms/send", post(sms_send))
         .route("/login/sms/login", post(sms_login))
-        .route("/me", get(user_info))
         .route("/logout", post(logout))
+}
+
+/// Bilibili read/query endpoints.
+pub fn bilibili_read_routes() -> Router<AppState> {
+    Router::new()
+        .route("/parse", post(parse))
+        .route("/me", get(user_info))
 }
 
 // ------------------------------------------------------------------

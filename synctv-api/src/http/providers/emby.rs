@@ -17,11 +17,16 @@ use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError
 
 use crate::impls::providers::get_provider_binds;
 
-/// Build Emby HTTP routes (API only, no proxy)
-pub fn emby_routes() -> Router<AppState> {
+/// Emby endpoints that perform authentication or credential mutation.
+pub fn emby_auth_routes() -> Router<AppState> {
     Router::new()
         .route("/login", post(login))
         .route("/logout", post(logout))
+}
+
+/// Emby read/query endpoints.
+pub fn emby_read_routes() -> Router<AppState> {
+    Router::new()
         .route("/list", post(list))
         .route("/me", post(me))
         .route("/binds", get(binds))

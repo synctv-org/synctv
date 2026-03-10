@@ -9,7 +9,10 @@ use redis::aio::ConnectionManager;
 use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, OnceCell};
+use tokio::task::JoinHandle;
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::models::RoomId;
@@ -95,6 +98,10 @@ pub struct CacheInvalidationService {
     /// Flag indicating if we need to broadcast a state sync on next successful Redis connection
     /// This is set when `broadcast_remote` fails due to Redis being unavailable
     needs_state_sync: Arc<std::sync::atomic::AtomicBool>,
+    /// Background subscriber task handle, joined during shutdown.
+    subscriber_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Background state sync task handle, joined during shutdown.
+    state_sync_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl Clone for CacheInvalidationService {
@@ -109,6 +116,8 @@ impl Clone for CacheInvalidationService {
             consumer_group: self.consumer_group.clone(),
             shutdown: self.shutdown.clone(),
             needs_state_sync: self.needs_state_sync.clone(),
+            subscriber_task: self.subscriber_task.clone(),
+            state_sync_task: self.state_sync_task.clone(),
         }
     }
 }
@@ -144,6 +153,8 @@ impl CacheInvalidationService {
             consumer_group,
             shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             needs_state_sync: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            subscriber_task: Arc::new(Mutex::new(None)),
+            state_sync_task: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -209,6 +220,9 @@ impl CacheInvalidationService {
             return Ok(());
         }
 
+        self.shutdown
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+
         // Clean up any stale consumer group left by a previous process with
         // the same node_id (e.g., after SIGKILL/OOM kill where stop() never ran).
         self.cleanup_stale_consumer_group().await;
@@ -221,21 +235,14 @@ impl CacheInvalidationService {
         // Use "$" so the group starts from the latest message (only new messages).
         // This prevents replaying all historical messages on every restart.
         // If the group already exists, BUSYGROUP error is expected and ignored.
-        if let Err(e) = self.create_consumer_group().await {
-            // create_consumer_group returns Ok(()) if the group was created,
-            // or Ok(()) if BUSYGROUP (already exists). Any error here is unexpected.
-            warn!(
-                error = %e,
-                "Failed to create consumer group"
-            );
-        }
+        self.create_consumer_group().await?;
 
         let local_sender = self.local_sender.clone();
         let shutdown = self.shutdown.clone();
 
         let subscriber_service = self.clone();
 
-        crate::spawn::spawn_monitored("cache_invalidation_subscriber", async move {
+        let subscriber_handle = crate::spawn::spawn_monitored("cache_invalidation_subscriber", async move {
             let mut backoff_secs: u64 = 1;
             const MAX_BACKOFF_SECS: u64 = 30;
 
@@ -256,16 +263,28 @@ impl CacheInvalidationService {
                             backoff_seconds = backoff_secs,
                             "Cache invalidation subscriber error, reconnecting..."
                         );
-                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
+                            () = async {
+                                loop {
+                                    if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                                        return;
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                }
+                            } => return,
+                        }
                         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                     }
                 }
             }
             info!("Cache invalidation listener stopped");
         });
+        self.replace_task_handle(&self.subscriber_task, subscriber_handle)
+            .await;
 
         // Spawn periodic state sync task
-        self.spawn_state_sync_task();
+        self.spawn_state_sync_task().await;
 
         Ok(())
     }
@@ -274,12 +293,12 @@ impl CacheInvalidationService {
     ///
     /// This ensures that replicas that missed invalidations during Redis outages
     /// eventually converge. The sync interval is controlled by `STATE_SYNC_INTERVAL_SECS`.
-    fn spawn_state_sync_task(&self) {
+    async fn spawn_state_sync_task(&self) {
         let service = self.clone();
 
-        crate::spawn::spawn_monitored("cache_invalidation_state_sync", async move {
+        let task = crate::spawn::spawn_monitored("cache_invalidation_state_sync", async move {
             let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
+                tokio::time::interval(Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
             interval.tick().await;
 
             loop {
@@ -320,7 +339,7 @@ impl CacheInvalidationService {
                             if service.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                                 return;
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                     } => {
                         break;
@@ -329,6 +348,19 @@ impl CacheInvalidationService {
             }
             debug!("Cache invalidation state sync task stopped");
         });
+        self.replace_task_handle(&self.state_sync_task, task).await;
+    }
+
+    async fn replace_task_handle(
+        &self,
+        slot: &Arc<Mutex<Option<JoinHandle<()>>>>,
+        handle: JoinHandle<()>,
+    ) {
+        let mut guard = slot.lock().await;
+        if let Some(existing) = guard.replace(handle) {
+            existing.abort();
+            let _ = existing.await;
+        }
     }
 
     /// Create the consumer group for the invalidation stream
@@ -954,6 +986,11 @@ impl CacheInvalidationService {
         self.shutdown
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
+        self.join_task("cache invalidation subscriber", &self.subscriber_task)
+            .await;
+        self.join_task("cache invalidation state sync", &self.state_sync_task)
+            .await;
+
         // Trim the stream on shutdown to prevent unbounded growth.
         // We do NOT call XGROUP DESTROY because that would silently drop the
         // entire PEL, losing messages that were delivered but not yet XACK'd.
@@ -990,6 +1027,25 @@ impl CacheInvalidationService {
                         "Failed to get Redis connection for stream trim on shutdown"
                     );
                 }
+            }
+        }
+    }
+
+    async fn join_task(
+        &self,
+        task_name: &'static str,
+        slot: &Arc<Mutex<Option<JoinHandle<()>>>>,
+    ) {
+        let handle = {
+            let mut guard = slot.lock().await;
+            guard.take()
+        };
+
+        if let Some(handle) = handle {
+            match handle.await {
+                Ok(()) => debug!("{task_name} stopped"),
+                Err(e) if e.is_cancelled() => debug!("{task_name} cancelled"),
+                Err(e) => warn!("{task_name} task ended with error: {e}"),
             }
         }
     }
@@ -1589,5 +1645,77 @@ mod tests {
             }
             other => panic!("Expected RoomSettings, got: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_start_without_redis_still_succeeds() {
+        let service = CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
+
+        let result = service.start().await;
+        assert!(result.is_ok(), "local-only mode should remain a no-op");
+    }
+
+    #[tokio::test]
+    async fn test_start_returns_error_when_redis_consumer_group_setup_fails() {
+        let redis_client =
+            redis::Client::open("redis://127.0.0.1:1").expect("invalid test client should parse");
+        let service = CacheInvalidationService::new(
+            Some(redis_client),
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
+
+        let err = service
+            .start()
+            .await
+            .expect_err("startup must fail when Redis-backed listener cannot create consumer group");
+        assert!(
+            err.to_string().contains("Failed to create consumer group")
+                || err.to_string().contains("Failed to create Redis ConnectionManager")
+                || err.to_string().contains("Connection refused"),
+            "unexpected startup error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stop_awaits_registered_background_tasks() {
+        let service = CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
+        let observed_shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed_shutdown_task = observed_shutdown.clone();
+        let shutdown = service.shutdown.clone();
+
+        let handle = tokio::spawn(async move {
+            loop {
+                if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    observed_shutdown_task.store(true, std::sync::atomic::Ordering::Relaxed);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+
+        {
+            let mut guard = service.subscriber_task.lock().await;
+            *guard = Some(handle);
+        }
+
+        service.stop().await;
+
+        assert!(
+            observed_shutdown.load(std::sync::atomic::Ordering::Relaxed),
+            "stop() must wait for registered background tasks to observe shutdown"
+        );
+        assert!(
+            service.subscriber_task.lock().await.is_none(),
+            "stop() must clear the subscriber task handle after join"
+        );
     }
 }

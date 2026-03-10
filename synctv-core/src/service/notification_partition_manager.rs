@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use super::LeaderCheck;
+use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::{Error, Result};
 
 /// Default retention period in months for notifications
@@ -51,10 +52,13 @@ impl NotificationPartitionManager {
             months_ahead
         );
 
+        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to acquire DDL connection: {e}")))?;
         let result =
             sqlx::query_scalar::<_, serde_json::Value>("SELECT create_notification_partitions($1)")
                 .bind(months_ahead)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *conn)
                 .await
                 .map_err(|e| {
                     Error::Internal(format!("Failed to create notification partitions: {e}"))
@@ -77,11 +81,14 @@ impl NotificationPartitionManager {
             retain_months
         );
 
+        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to acquire DDL connection: {e}")))?;
         let result = sqlx::query_scalar::<_, serde_json::Value>(
             "SELECT drop_old_notification_partitions($1)",
         )
         .bind(retain_months)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *conn)
         .await
         .map_err(|e| Error::Internal(format!("Failed to drop old notification partitions: {e}")))?;
 

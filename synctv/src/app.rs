@@ -91,12 +91,19 @@ fn should_start_cache_invalidation_listener(config: &Config, has_redis: bool) ->
     cluster_runtime_enabled(config) && has_redis
 }
 
-fn should_run_startup_partition_initialization(config: &Config) -> bool {
-    !cluster_runtime_enabled(config)
+fn should_run_startup_partition_initialization(_config: &Config) -> bool {
+    true
 }
 
 const fn should_continue_startup_after_root_bootstrap_failure(has_admin_user: bool) -> bool {
     has_admin_user
+}
+
+fn partition_startup_error(kind: &str, error: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Failed to initialize {kind} during startup: {error}. \
+         Startup must not continue before required partitions exist."
+    )
 }
 
 fn spawn_on_leadership_gain(
@@ -392,23 +399,11 @@ impl Application {
             }
         }
 
-        // In cluster mode, partition management is leader-gated and starts immediately
-        // after leader election. Running the startup path on every replica would bypass
-        // the unified leader abstraction and cause concurrent DDL/cleanup.
         if should_run_startup_partition_initialization(&infra.config) {
-            info!("Initializing audit log partitions for standalone startup...");
-            if let Err(e) =
-                synctv_core::service::ensure_audit_partitions_on_startup(&infra.pool).await
-            {
-                error!(
-                    "Failed to initialize audit partitions (non-fatal, continuing startup): {}",
-                    e
-                );
-            }
-        } else {
-            info!(
-                "Cluster mode enabled — deferring audit partition initialization to leader-gated singleton task"
-            );
+            info!("Initializing audit log partitions during startup...");
+            synctv_core::service::ensure_audit_partitions_on_startup(&infra.pool)
+                .await
+                .map_err(|e| partition_startup_error("audit partitions", e))?;
         }
 
         Ok(())
@@ -480,33 +475,19 @@ impl Application {
 
         if should_run_startup_partition_initialization(&infra.config) {
             // Initialize chat message partitions (needs settings_registry from services)
-            info!("Initializing chat message partitions for standalone startup...");
-            if let Err(e) = synctv_core::service::ensure_chat_partitions_on_startup(
+            info!("Initializing chat message partitions during startup...");
+            synctv_core::service::ensure_chat_partitions_on_startup(
                 &infra.pool,
                 synctv_services.settings_registry.clone(),
             )
             .await
-            {
-                error!(
-                    "Failed to initialize chat partitions (non-fatal, continuing startup): {}",
-                    e
-                );
-            }
+            .map_err(|e| partition_startup_error("chat partitions", e))?;
 
             // Initialize notification partitions (monthly granularity)
-            info!("Initializing notification partitions for standalone startup...");
-            if let Err(e) =
-                synctv_core::service::ensure_notification_partitions_on_startup(&infra.pool).await
-            {
-                error!(
-                    "Failed to initialize notification partitions (non-fatal, continuing startup): {}",
-                    e
-                );
-            }
-        } else {
-            info!(
-                "Cluster mode enabled — deferring chat and notification partition initialization to leader-gated singleton tasks"
-            );
+            info!("Initializing notification partitions during startup...");
+            synctv_core::service::ensure_notification_partitions_on_startup(&infra.pool)
+                .await
+                .map_err(|e| partition_startup_error("notification partitions", e))?;
         }
 
         Ok(CoreState {
@@ -674,28 +655,7 @@ impl Application {
                 let pool = pool.clone();
                 let settings_registry = settings_registry.clone();
                 Box::pin(async move {
-                    info!("Leadership gained after startup; running deferred singleton initialization");
-
-                    if let Err(err) =
-                        synctv_core::service::ensure_audit_partitions_on_startup(&pool).await
-                    {
-                        error!(error = %err, "Deferred audit partition initialization failed");
-                    }
-
-                    if let Err(err) = synctv_core::service::ensure_chat_partitions_on_startup(
-                        &pool,
-                        settings_registry.clone(),
-                    )
-                    .await
-                    {
-                        error!(error = %err, "Deferred chat partition initialization failed");
-                    }
-
-                    if let Err(err) =
-                        synctv_core::service::ensure_notification_partitions_on_startup(&pool).await
-                    {
-                        error!(error = %err, "Deferred notification partition initialization failed");
-                    }
+                    info!("Leadership gained after startup; running deferred singleton maintenance");
 
                     let cleanup_service = synctv_core::service::CleanupService::new(
                         pool.clone(),
@@ -1142,19 +1102,19 @@ mod tests {
     }
 
     #[test]
-    fn test_startup_partition_initialization_only_runs_in_standalone_mode() {
+    fn test_startup_partition_initialization_runs_in_all_modes() {
         let mut config = Config::default();
         config.server.cluster_secret = "shared-secret".to_string();
 
         assert!(
             should_run_startup_partition_initialization(&config),
-            "standalone mode must keep startup partition initialization enabled"
+            "standalone mode must initialize required partitions during startup"
         );
 
         config.cluster.enabled = true;
         assert!(
-            !should_run_startup_partition_initialization(&config),
-            "cluster mode must defer startup partition initialization to leader-gated tasks"
+            should_run_startup_partition_initialization(&config),
+            "cluster mode must also initialize required partitions before serving traffic"
         );
     }
 

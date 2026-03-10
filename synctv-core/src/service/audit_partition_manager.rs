@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::LeaderCheck;
+use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::{Error, InternalExt, Result};
 
 /// Maximum retry attempts for partition operations
@@ -94,13 +95,15 @@ impl AuditPartitionManager {
     pub async fn ensure_existing_indexes(&self, partition_count: i32) -> Result<IndexEnsureResult> {
         info!("Ensuring indexes for last {} partitions", partition_count);
 
-        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT ensure_existing_partitions_indexes($1)",
-        )
-        .bind(partition_count)
-        .fetch_one(&self.pool)
-        .await
-        .internal_with_err("Failed to ensure indexes")?;
+        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
+            .await
+            .internal_with_err("Failed to acquire DDL connection for ensuring indexes")?;
+        let result_json =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT ensure_existing_partitions_indexes($1)")
+                .bind(partition_count)
+                .fetch_one(&mut *conn)
+                .await
+                .internal_with_err("Failed to ensure indexes")?;
 
         let result: IndexEnsureResult = serde_json::from_value(result_json)
             .internal_with_err("Failed to parse index result")?;
@@ -125,10 +128,13 @@ impl AuditPartitionManager {
             months_ahead
         );
 
+        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
+            .await
+            .internal_with_err("Failed to acquire DDL connection for partition creation")?;
         let result_json =
             sqlx::query_scalar::<_, serde_json::Value>("SELECT create_audit_logs_partitions($1)")
                 .bind(months_ahead)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *conn)
                 .await
                 .internal_with_err("Failed to create partitions")?;
 
@@ -147,10 +153,13 @@ impl AuditPartitionManager {
     pub async fn create_partition(&self, date: chrono::NaiveDate) -> Result<PartitionInfo> {
         info!("Creating audit log partition for date: {}", date);
 
+        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
+            .await
+            .internal_with_err("Failed to acquire DDL connection for single partition creation")?;
         let result_json =
             sqlx::query_scalar::<_, serde_json::Value>("SELECT create_audit_logs_partition($1)")
                 .bind(date)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *conn)
                 .await
                 .internal_with_err("Failed to create partition")?;
 
@@ -174,10 +183,13 @@ impl AuditPartitionManager {
             keep_months
         );
 
+        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
+            .await
+            .internal_with_err("Failed to acquire DDL connection for dropping partitions")?;
         let result_json =
             sqlx::query_scalar::<_, serde_json::Value>("SELECT drop_old_audit_logs_partitions($1)")
                 .bind(keep_months)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *conn)
                 .await
                 .internal_with_err("Failed to drop partitions")?;
 

@@ -166,67 +166,22 @@ fn rate_limit_error_response(
     status.into_http()
 }
 
-/// Extract the gRPC status code from an HTTP response and reassemble the response.
+/// Best-effort gRPC status label extraction that never consumes the response body.
 ///
-/// gRPC protocol (RFC) places `grpc-status` in **response trailers**, not headers.
-/// Most gRPC responses use HTTP/2 trailers, so reading from `resp.headers()` returns
-/// nothing for the vast majority of calls.
-///
-/// This function:
-/// 1. Consumes the response body to collect trailers.
-/// 2. Returns the status label and a reconstructed response with a new body
-///    (trailers are inlined as headers on the rebuilt response so that downstream
-///    tonic processing continues to work).
-///
-/// If trailer collection fails or `grpc-status` is absent, falls back to the
-/// HTTP status code (success → "ok", error → "error").
-async fn extract_grpc_status_from_response(
-    resp: http::Response<TonicBody>,
-) -> (http::Response<TonicBody>, &'static str) {
-    use http_body_util::BodyExt;
+/// Collecting the body to inspect trailers breaks streaming RPCs such as
+/// `RoomService/MessageStream`, because the middleware would block until the stream
+/// finishes before returning headers to the client. For observability we prefer a
+/// conservative label over interfering with transport semantics, so this helper only
+/// inspects response headers and falls back to the HTTP status code.
+fn grpc_status_label_from_response(resp: &http::Response<TonicBody>) -> &'static str {
+    if let Some(status_val) = resp.headers().get("grpc-status") {
+        return grpc_status_code_to_label(status_val.to_str().unwrap_or(""));
+    }
 
-    let (mut parts, body) = resp.into_parts();
-
-    // Collect the body and trailers.
-    let collected = body.collect().await;
-
-    if let Ok(collected) = collected {
-        // Extract trailers as owned data before consuming `collected` for bytes.
-        // `collected.trailers()` returns `Option<&HeaderMap>`, so we clone eagerly.
-        let trailer_map: Option<axum::http::HeaderMap> = collected.trailers().cloned();
-
-        // Check trailers first (correct gRPC location per protocol spec).
-        let status_label =
-            if let Some(status_val) = trailer_map.as_ref().and_then(|t| t.get("grpc-status")) {
-                grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
-            } else if let Some(status_val) = parts.headers.get("grpc-status") {
-                // Fall back to headers for the rare case tonic puts status there
-                // (e.g. immediate error responses like resource_exhausted).
-                grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
-            } else if parts.status.is_success() {
-                "ok"
-            } else {
-                "error"
-            };
-
-        // Inline trailer headers into the response parts so that tonic
-        // downstream processing continues to see the gRPC status values.
-        if let Some(ref tm) = trailer_map {
-            for (name, value) in tm {
-                parts.headers.insert(name, value.clone());
-            }
-        }
-
-        // Reconstruct the response with the collected bytes.
-        let bytes = collected.to_bytes();
-        let new_body = TonicBody::new(http_body_util::Full::new(bytes));
-        let new_resp = http::Response::from_parts(parts, new_body);
-        (new_resp, status_label)
+    if resp.status().is_success() {
+        "ok"
     } else {
-        // Body collection failed; reconstruct with empty body and report error.
-        let new_body = TonicBody::empty();
-        let new_resp = http::Response::from_parts(parts, new_body);
-        (new_resp, "error")
+        "error"
     }
 }
 
@@ -251,7 +206,7 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
         Some("RoomService") => Some(room_service_tier(method_name)),
         Some("AdminService") => Some(GrpcRateLimitTier::Admin),
         Some("PublicService") => Some(GrpcRateLimitTier::Read),
-        Some("NotificationService") => Some(GrpcRateLimitTier::Read),
+        Some("NotificationService") => Some(notification_service_tier(method_name)),
         Some("OAuth2Service") => Some(GrpcRateLimitTier::Auth),
         // Provider services
         Some("AlistProviderService") => Some(GrpcRateLimitTier::Read),
@@ -291,6 +246,14 @@ fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     }
 }
 
+/// Classify `NotificationService` methods into Read or Write tiers.
+fn notification_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
+    match method {
+        Some("ListNotifications" | "GetNotification") => GrpcRateLimitTier::Read,
+        _ => GrpcRateLimitTier::Write,
+    }
+}
+
 /// Derive a stable rate limit key for a verified user.
 ///
 /// Uses the verified `user_id` from JWT claims, ensuring that all tokens
@@ -319,11 +282,12 @@ fn user_rate_limit_key(user_id: &str) -> String {
 ///
 /// This function validates the JWT before extracting `user_id` to prevent spoofing.
 /// Invalid or expired tokens fall back to IP-based rate limiting.
-fn extract_client_id(
-    headers: &http::HeaderMap,
+fn extract_client_id<B>(
+    req: &http::Request<B>,
     config: &Config,
     jwt_validator: &JwtValidator,
 ) -> String {
+    let headers = req.headers();
     // For authenticated requests, validate JWT and extract verified user_id.
     // This ensures that all tokens belonging to the same user share a single
     // rate limit quota, preventing quota bypass through multiple tokens.
@@ -345,12 +309,12 @@ fn extract_client_id(
         }
     }
 
-    // For anonymous requests, extract remote address from tonic's socket peer.
-    // Tonic injects the remote address as a header extension during HTTP/2 transport.
-    let remote_addr = headers
-        .get("x-real-ip-internal")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.parse::<std::net::IpAddr>().ok());
+    // For anonymous requests, extract the peer address from tonic's connection metadata.
+    let remote_addr = req
+        .extensions()
+        .get::<tonic::transport::server::TcpConnectInfo>()
+        .and_then(|info| info.remote_addr())
+        .map(|addr| addr.ip());
 
     // Only trust X-Forwarded-For/X-Real-IP when from a trusted proxy or in dev mode
     let should_trust_headers = remote_addr.is_some_and(|ip| config.server.is_trusted_proxy(&ip));
@@ -427,7 +391,7 @@ where
             return Box::pin(async move {
                 match inner.call(req).await {
                     Ok(resp) => {
-                        let (resp, status) = extract_grpc_status_from_response(resp).await;
+                        let status = grpc_status_label_from_response(&resp);
                         let status_str = status.to_string();
                         synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
                             .with_label_values(&[&service_label, &method_label, &status_str])
@@ -445,7 +409,7 @@ where
             });
         };
 
-        let client_id = extract_client_id(req.headers(), &config, &jwt_validator);
+        let client_id = extract_client_id(&req, &config, &jwt_validator);
         let grpc_rate_config = config.grpc_rate_limits.clone();
         let strict_distributed = self.strict_distributed;
 
@@ -480,10 +444,7 @@ where
 
             match inner.call(req).await {
                 Ok(resp) => {
-                    // Read grpc-status from response trailers (correct per gRPC protocol spec).
-                    // The async helper consumes the body, extracts the trailer, and reconstructs
-                    // the response so downstream processing continues normally.
-                    let (resp, status) = extract_grpc_status_from_response(resp).await;
+                    let status = grpc_status_label_from_response(&resp);
                     let status_str = status.to_string();
                     synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
                         .with_label_values(&[&service_label, &method_label, &status_str])
@@ -507,12 +468,34 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::convert::Infallible;
+    use std::net::SocketAddr;
     use std::sync::Arc;
     use tower::service_fn;
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{jwt::TokenType, JwtService};
     use synctv_core::service::RateLimitBackend;
     use synctv_core::Result as CoreResult;
+
+    fn request_with_headers(headers: http::HeaderMap) -> http::Request<TonicBody> {
+        let request = http::Request::builder()
+            .uri("/synctv.client.AuthService/Login")
+            .body(TonicBody::empty())
+            .unwrap();
+        let (mut parts, body) = request.into_parts();
+        parts.headers = headers;
+        http::Request::from_parts(parts, body)
+    }
+
+    fn request_with_peer(headers: http::HeaderMap, peer: SocketAddr) -> http::Request<TonicBody> {
+        let mut request = request_with_headers(headers);
+        request
+            .extensions_mut()
+            .insert(tonic::transport::server::TcpConnectInfo {
+                local_addr: None,
+                remote_addr: Some(peer),
+            });
+        request
+    }
 
     #[test]
     fn test_extract_grpc_labels() {
@@ -631,8 +614,16 @@ mod tests {
     #[test]
     fn test_tier_from_path_notification() {
         assert_eq!(
-            tier_from_path("/synctv.client.NotificationService/GetNotifications"),
+            tier_from_path("/synctv.client.NotificationService/ListNotifications"),
             Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.NotificationService/MarkAsRead"),
+            Some(GrpcRateLimitTier::Write)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.NotificationService/DeleteNotification"),
+            Some(GrpcRateLimitTier::Write)
         );
     }
 
@@ -749,7 +740,7 @@ mod tests {
             format!("Bearer {token}").parse().unwrap(),
         );
 
-        let id = extract_client_id(&headers, &config, &jwt_validator);
+        let id = extract_client_id(&request_with_headers(headers), &config, &jwt_validator);
         assert_eq!(id, "user:user123", "Expected user:user123, got: {id}");
     }
 
@@ -780,8 +771,8 @@ mod tests {
             format!("Bearer {token2}").parse().unwrap(),
         );
 
-        let id1 = extract_client_id(&headers1, &config, &jwt_validator);
-        let id2 = extract_client_id(&headers2, &config, &jwt_validator);
+        let id1 = extract_client_id(&request_with_headers(headers1), &config, &jwt_validator);
+        let id2 = extract_client_id(&request_with_headers(headers2), &config, &jwt_validator);
 
         // Both should produce the same key (user:userABC)
         assert_eq!(
@@ -820,8 +811,8 @@ mod tests {
             format!("Bearer {token2}").parse().unwrap(),
         );
 
-        let id1 = extract_client_id(&headers1, &config, &jwt_validator);
-        let id2 = extract_client_id(&headers2, &config, &jwt_validator);
+        let id1 = extract_client_id(&request_with_headers(headers1), &config, &jwt_validator);
+        let id2 = extract_client_id(&request_with_headers(headers2), &config, &jwt_validator);
 
         assert_ne!(
             id1, id2,
@@ -846,7 +837,7 @@ mod tests {
             format!("Bearer {token}").parse().unwrap(),
         );
 
-        let id = extract_client_id(&headers, &config, &jwt_validator);
+        let id = extract_client_id(&request_with_headers(headers), &config, &jwt_validator);
         // Should fall back to anon:unknown since no valid JWT and no IP info
         assert_eq!(
             id, "anon:unknown",
@@ -862,7 +853,7 @@ mod tests {
         let jwt_validator = create_test_jwt_validator(&jwt_service);
 
         let headers = http::HeaderMap::new();
-        let id = extract_client_id(&headers, &config, &jwt_validator);
+        let id = extract_client_id(&request_with_headers(headers), &config, &jwt_validator);
         assert_eq!(id, "anon:unknown");
     }
 
@@ -879,7 +870,7 @@ mod tests {
             "Basic dXNlcjpwYXNz".parse().unwrap(),
         );
 
-        let id = extract_client_id(&headers, &config, &jwt_validator);
+        let id = extract_client_id(&request_with_headers(headers), &config, &jwt_validator);
         assert_eq!(id, "anon:unknown");
     }
 
@@ -896,7 +887,7 @@ mod tests {
             "203.0.113.50, 70.41.3.18".parse().unwrap(),
         );
 
-        let id = extract_client_id(&headers, &config, &jwt_validator);
+        let id = extract_client_id(&request_with_headers(headers), &config, &jwt_validator);
         assert_eq!(id, "anon:unknown");
     }
 
@@ -914,7 +905,11 @@ mod tests {
         );
         headers.insert("x-real-ip-internal", "127.0.0.1".parse().unwrap());
 
-        let id = extract_client_id(&headers, &config, &jwt_validator);
+        let id = extract_client_id(
+            &request_with_peer(headers, "127.0.0.1:50051".parse().unwrap()),
+            &config,
+            &jwt_validator,
+        );
         assert_eq!(id, "anon:203.0.113.50");
     }
 
@@ -928,7 +923,11 @@ mod tests {
         headers.insert("X-Real-IP", "198.51.100.42".parse().unwrap());
         headers.insert("x-real-ip-internal", "127.0.0.1".parse().unwrap());
 
-        let id = extract_client_id(&headers, &config, &jwt_validator);
+        let id = extract_client_id(
+            &request_with_peer(headers, "127.0.0.1:50051".parse().unwrap()),
+            &config,
+            &jwt_validator,
+        );
         assert_eq!(id, "anon:198.51.100.42");
     }
 
@@ -947,7 +946,7 @@ mod tests {
         );
         headers.insert("X-Forwarded-For", "203.0.113.50".parse().unwrap());
 
-        let id = extract_client_id(&headers, &config, &jwt_validator);
+        let id = extract_client_id(&request_with_headers(headers), &config, &jwt_validator);
         // Must be user-based, not IP-based
         assert_eq!(
             id, "user:priority_user",
@@ -971,12 +970,33 @@ mod tests {
         headers.insert("X-Forwarded-For", "203.0.113.50".parse().unwrap());
         headers.insert("x-real-ip-internal", "127.0.0.1".parse().unwrap());
 
-        let id = extract_client_id(&headers, &config, &jwt_validator);
+        let id = extract_client_id(
+            &request_with_peer(headers, "127.0.0.1:50051".parse().unwrap()),
+            &config,
+            &jwt_validator,
+        );
         // Invalid JWT should fall back to IP-based rate limiting
         assert_eq!(
             id, "anon:203.0.113.50",
             "Invalid JWT should fall back to IP"
         );
+    }
+
+    #[test]
+    fn test_extract_client_id_uses_tonic_peer_addr_for_anonymous_requests() {
+        let config = test_config();
+        let jwt_service = create_test_jwt_service();
+        let jwt_validator = create_test_jwt_validator(&jwt_service);
+
+        let id = extract_client_id(
+            &request_with_peer(
+                http::HeaderMap::new(),
+                "198.51.100.42:44321".parse().unwrap(),
+            ),
+            &config,
+            &jwt_validator,
+        );
+        assert_eq!(id, "anon:198.51.100.42");
     }
 
     #[test]
@@ -1127,6 +1147,43 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_grpc_rate_limit_layer_does_not_buffer_streaming_response_bodies() {
+        use futures::stream;
+        use http_body_util::StreamBody;
+        use hyper::body::Frame;
+
+        let jwt_service = create_test_jwt_service();
+        let jwt_validator = create_test_jwt_validator(&jwt_service);
+        let layer = GrpcRateLimitLayer::new(
+            RateLimiter::in_memory_only("grpc-streaming-test:".to_string()),
+            Arc::new(test_config()),
+            jwt_validator,
+        );
+
+        let mut svc = layer.layer(service_fn(|_req: http::Request<TonicBody>| async move {
+            let stream = stream::pending::<Result<Frame<bytes::Bytes>, Infallible>>();
+            let body = TonicBody::new(StreamBody::new(stream));
+            Ok::<_, Infallible>(http::Response::builder()
+                .status(http::StatusCode::OK)
+                .body(body)
+                .unwrap())
+        }));
+
+        let request = http::Request::builder()
+            .uri("/synctv.client.RoomService/MessageStream")
+            .body(TonicBody::empty())
+            .unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(100), svc.call(request))
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "rate limit middleware must not wait for streaming bodies to complete"
+        );
+    }
+
     // ============== Security-focused tests ==============
 
     #[test]
@@ -1156,7 +1213,7 @@ mod tests {
                     http::header::AUTHORIZATION,
                     format!("Bearer {token}").parse().unwrap(),
                 );
-                extract_client_id(&headers, &config, &jwt_validator)
+                extract_client_id(&request_with_headers(headers), &config, &jwt_validator)
             })
             .collect();
 
@@ -1203,8 +1260,16 @@ mod tests {
             format!("Bearer {spoofed_token}").parse().unwrap(),
         );
 
-        let legit_id = extract_client_id(&legit_headers, &config, &jwt_validator);
-        let spoofed_id = extract_client_id(&spoofed_headers, &config, &jwt_validator);
+        let legit_id = extract_client_id(
+            &request_with_headers(legit_headers),
+            &config,
+            &jwt_validator,
+        );
+        let spoofed_id = extract_client_id(
+            &request_with_headers(spoofed_headers),
+            &config,
+            &jwt_validator,
+        );
 
         // Legitimate token gets user-based key
         assert_eq!(legit_id, "user:legitimate_user");

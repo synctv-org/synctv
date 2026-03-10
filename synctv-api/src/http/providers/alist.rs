@@ -16,11 +16,16 @@ use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError
 
 use crate::impls::providers::get_provider_binds;
 
-/// Build Alist HTTP routes (API only, no proxy)
-pub fn alist_routes() -> Router<AppState> {
+/// Alist endpoints that perform authentication or credential mutation.
+pub fn alist_auth_routes() -> Router<AppState> {
     Router::new()
         .route("/login", post(login))
         .route("/logout", post(logout))
+}
+
+/// Alist read/query endpoints.
+pub fn alist_read_routes() -> Router<AppState> {
+    Router::new()
         .route("/list", post(list))
         .route("/me", post(me))
         .route("/binds", get(binds))

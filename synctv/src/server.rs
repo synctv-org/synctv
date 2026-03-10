@@ -5,6 +5,7 @@
 //! - HTTP/REST server
 //! - RTMP livestream server
 
+use async_trait::async_trait;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +27,18 @@ use crate::shutdown::ShutdownCoordinator;
 /// Dropping the handle stops the `StreamHub` event loop and all dependent tasks.
 pub struct LivestreamState {
     pub handle: synctv_livestream::livestream::LivestreamHandle,
+}
+
+#[async_trait]
+trait LivestreamShutdown {
+    async fn shutdown_for_server(&mut self, timeout_secs: u64) -> bool;
+}
+
+#[async_trait]
+impl LivestreamShutdown for LivestreamState {
+    async fn shutdown_for_server(&mut self, timeout_secs: u64) -> bool {
+        self.handle.shutdown_graceful(timeout_secs).await
+    }
 }
 
 /// Container for shared runtime services.
@@ -202,6 +215,22 @@ async fn force_abort_runtime_server(name: &'static str, handle: JoinHandle<anyho
 
 fn remaining_budget(deadline: tokio::time::Instant) -> Duration {
     deadline.saturating_duration_since(tokio::time::Instant::now())
+}
+
+async fn shutdown_livestream_state<T>(
+    livestream_state: &mut Option<T>,
+    timeout_secs: u64,
+) where
+    T: LivestreamShutdown + Send,
+{
+    if let Some(state) = livestream_state.as_mut() {
+        info!("Stopping livestream infrastructure...");
+        let graceful = state.shutdown_for_server(timeout_secs).await;
+        if !graceful {
+            warn!("Livestream infrastructure required force-abort during shutdown");
+        }
+        info!("Livestream infrastructure shut down");
+    }
 }
 
 async fn shutdown_runtime_phase(
@@ -541,7 +570,7 @@ impl SyncTvServer {
     ///
     /// This is separate from the `ShutdownCoordinator` because these components
     /// have custom shutdown protocols (not just cancellation tokens or join handles).
-    async fn shutdown_components(&self) {
+    async fn shutdown_components(&mut self) {
         // Shut down connection manager (stops TTL refresh background task)
         info!("Shutting down connection manager...");
         self.services.connection_manager.shutdown();
@@ -560,11 +589,11 @@ impl SyncTvServer {
         }
 
         // Stop livestream
-        if let Some(ref state) = self.livestream_state {
-            info!("Stopping livestream infrastructure...");
-            state.handle.shutdown();
-            info!("Livestream infrastructure shut down");
-        }
+        shutdown_livestream_state(
+            &mut self.livestream_state,
+            self.config.server.shutdown_drain_timeout_seconds,
+        )
+        .await;
 
         // Shut down health monitor
         if let Some(ref health_monitor) = self.services.health_monitor {
@@ -841,8 +870,9 @@ mod tests {
     use super::{
         await_runtime_server_shutdown, await_task_shutdown, build_ws_ticket_service,
         cleanup_partial_startup, map_background_task_exit, map_runtime_server_exit,
-        shutdown_runtime_phase,
+        shutdown_livestream_state, shutdown_runtime_phase, LivestreamShutdown,
     };
+    use async_trait::async_trait;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -1100,6 +1130,42 @@ mod tests {
         assert!(
             cleanup_tx.send(()).is_err(),
             "cleanup task should no longer be running after shutdown phase returns"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_livestream_state_uses_graceful_shutdown() {
+        struct FakeLivestreamState {
+            called: Arc<AtomicBool>,
+            timeout_seen: Arc<std::sync::atomic::AtomicU64>,
+        }
+
+        #[async_trait]
+        impl LivestreamShutdown for FakeLivestreamState {
+            async fn shutdown_for_server(&mut self, timeout_secs: u64) -> bool {
+                self.called.store(true, Ordering::SeqCst);
+                self.timeout_seen.store(timeout_secs, Ordering::SeqCst);
+                true
+            }
+        }
+
+        let called = Arc::new(AtomicBool::new(false));
+        let timeout_seen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut livestream_state = Some(FakeLivestreamState {
+            called: Arc::clone(&called),
+            timeout_seen: Arc::clone(&timeout_seen),
+        });
+
+        shutdown_livestream_state(&mut livestream_state, 17).await;
+
+        assert!(
+            called.load(Ordering::SeqCst),
+            "server shutdown should invoke graceful livestream shutdown"
+        );
+        assert_eq!(
+            timeout_seen.load(Ordering::SeqCst),
+            17,
+            "server shutdown must pass through the configured drain timeout"
         );
     }
 

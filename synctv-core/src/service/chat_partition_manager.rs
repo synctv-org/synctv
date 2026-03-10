@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use super::LeaderCheck;
+use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::service::global_settings::SettingsRegistry;
 use crate::{Error, Result};
 
@@ -62,10 +63,13 @@ impl ChatPartitionManager {
             days_ahead
         );
 
+        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to acquire DDL connection: {e}")))?;
         let result =
             sqlx::query_scalar::<_, serde_json::Value>("SELECT create_chat_message_partitions($1)")
                 .bind(days_ahead)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *conn)
                 .await
                 .map_err(|e| Error::Internal(format!("Failed to create chat partitions: {e}")))?;
 
@@ -86,11 +90,14 @@ impl ChatPartitionManager {
             keep_days
         );
 
+        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to acquire DDL connection: {e}")))?;
         let result = sqlx::query_scalar::<_, serde_json::Value>(
             "SELECT drop_old_chat_message_partitions($1)",
         )
         .bind(keep_days)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *conn)
         .await
         .map_err(|e| Error::Internal(format!("Failed to drop old chat partitions: {e}")))?;
 

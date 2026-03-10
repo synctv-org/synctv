@@ -19,14 +19,14 @@ use crate::proto::client::CreatePublishKeyResponse;
 /// Create publish key routes
 pub fn create_publish_key_router() -> Router<AppState> {
     Router::new().route(
-        "/rooms/{room_id}/movies/{media_id}/live/publish-key",
+        "/api/rooms/{room_id}/movies/{media_id}/live/publish-key",
         post(generate_publish_key),
     )
 }
 
 /// Generate a publish key for RTMP streaming
 ///
-/// POST /rooms/:room_id/movies/:media_id/live/publish-key
+/// POST /api/rooms/:room_id/movies/:media_id/live/publish-key
 /// Requires authentication
 ///
 /// Generates a JWT token for a specific media item.

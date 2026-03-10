@@ -850,9 +850,8 @@ mod grpc_validation_tests {
 
     #[test]
     fn test_validate_required_whitespace() {
-        // Whitespace-only strings are currently "valid" (non-empty)
-        assert!(validate_required("field", " ").is_ok());
-        assert!(validate_required("field", "\t").is_ok());
+        assert!(validate_required("field", " ").is_err());
+        assert!(validate_required("field", "\t").is_err());
     }
 
     #[test]

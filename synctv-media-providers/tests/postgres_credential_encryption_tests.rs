@@ -66,6 +66,19 @@ fn test_postgres_credential_storage_has_new_constructor() {
     let _ = std::mem::size_of::<PostgresCredentialStorage>();
 }
 
+#[test]
+fn test_postgres_with_encryption_rejects_invalid_key_length() {
+    use synctv_media_providers::PostgresCredentialStorage;
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost/synctv_test")
+        .expect("lazy pool creation should not require a live database");
+
+    let err = PostgresCredentialStorage::with_encryption(pool, &[0u8; 16])
+        .expect_err("invalid encryption key length must return an error");
+    assert!(err.to_string().contains("Invalid encryption key length"));
+}
+
 // ========== FAILING TEST: This test will fail until with_encryption is implemented ==========
 
 /// This test verifies that PostgresCredentialStorage supports encryption by testing

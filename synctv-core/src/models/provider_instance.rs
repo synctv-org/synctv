@@ -106,11 +106,57 @@ impl UserProviderCredential {
     /// Fixed `server_id` for Bilibili (ensures one credential per user)
     pub const BILIBILI_SERVER_ID: &'static str = "bilibili";
 
+    fn normalized_instance_name(provider_instance_name: Option<&str>) -> Option<&str> {
+        provider_instance_name.and_then(|name| {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+    }
+
     /// Generate `server_id` for Alist/Emby from host URL
     #[must_use]
     pub fn generate_server_id(host: &str) -> String {
         use sha2::{Digest, Sha256};
         format!("{:x}", Sha256::digest(host.as_bytes()))
+    }
+
+    /// Generate a `server_id` scoped to the provider instance.
+    ///
+    /// Without an instance name this preserves the legacy identifier so existing
+    /// single-instance credentials are stable. When an instance name is present,
+    /// it becomes part of the identifier to prevent credentials for different
+    /// provider backends from overwriting each other.
+    #[must_use]
+    pub fn generate_server_id_for_instance(
+        host: &str,
+        provider_instance_name: Option<&str>,
+    ) -> String {
+        use sha2::{Digest, Sha256};
+
+        match Self::normalized_instance_name(provider_instance_name) {
+            Some(instance_name) => {
+                format!("{:x}", Sha256::digest(format!("{host}\n{instance_name}").as_bytes()))
+            }
+            None => Self::generate_server_id(host),
+        }
+    }
+
+    /// Generate the Bilibili `server_id`, optionally scoped to a provider instance.
+    #[must_use]
+    pub fn bilibili_server_id(provider_instance_name: Option<&str>) -> String {
+        use sha2::{Digest, Sha256};
+
+        match Self::normalized_instance_name(provider_instance_name) {
+            Some(instance_name) => format!(
+                "{:x}",
+                Sha256::digest(format!("{}\n{instance_name}", Self::BILIBILI_SERVER_ID).as_bytes())
+            ),
+            None => Self::BILIBILI_SERVER_ID.to_string(),
+        }
     }
 
     /// Check if this credential has expired
@@ -248,6 +294,54 @@ mod tests {
     fn test_user_credential_generate_server_id() {
         let server_id = UserProviderCredential::generate_server_id("https://alist.example.com");
         assert_eq!(server_id.len(), 64); // SHA-256 hex string is 64 chars
+    }
+
+    #[test]
+    fn test_user_credential_generate_server_id_for_instance_changes_with_instance_name() {
+        let legacy =
+            UserProviderCredential::generate_server_id_for_instance("https://alist.example.com", None);
+        let scoped = UserProviderCredential::generate_server_id_for_instance(
+            "https://alist.example.com",
+            Some("alist-main"),
+        );
+        let scoped_duplicate = UserProviderCredential::generate_server_id_for_instance(
+            "https://alist.example.com",
+            Some("alist-main"),
+        );
+        let scoped_other = UserProviderCredential::generate_server_id_for_instance(
+            "https://alist.example.com",
+            Some("alist-backup"),
+        );
+
+        assert_eq!(legacy.len(), 64);
+        assert_eq!(scoped.len(), 64);
+        assert_eq!(scoped, scoped_duplicate);
+        assert_ne!(legacy, scoped);
+        assert_ne!(scoped, scoped_other);
+    }
+
+    #[test]
+    fn test_bilibili_server_id_defaults_to_legacy_constant_without_instance() {
+        assert_eq!(
+            UserProviderCredential::bilibili_server_id(None),
+            UserProviderCredential::BILIBILI_SERVER_ID
+        );
+        assert_eq!(
+            UserProviderCredential::bilibili_server_id(Some("   ")),
+            UserProviderCredential::BILIBILI_SERVER_ID
+        );
+    }
+
+    #[test]
+    fn test_bilibili_server_id_scopes_by_instance_name() {
+        let main = UserProviderCredential::bilibili_server_id(Some("bili-main"));
+        let main_dup = UserProviderCredential::bilibili_server_id(Some("bili-main"));
+        let backup = UserProviderCredential::bilibili_server_id(Some("bili-backup"));
+
+        assert_eq!(main.len(), 64);
+        assert_eq!(main, main_dup);
+        assert_ne!(main, backup);
+        assert_ne!(main, UserProviderCredential::BILIBILI_SERVER_ID);
     }
 
     #[test]

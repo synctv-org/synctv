@@ -315,7 +315,7 @@ async fn test_documented_use_case_testing() {
 #[tokio::test]
 async fn test_documented_feature_encryption_support() {
     let key = vec![0u8; 32]; // Test encryption key
-    let storage = InMemoryCredentialStorage::with_encryption(&key);
+    let storage = InMemoryCredentialStorage::with_encryption(&key).unwrap();
 
     // Store with encryption
     let cred = storage

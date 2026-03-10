@@ -411,14 +411,41 @@ impl PullStream {
             app_name: self.room_id.clone(),
             stream_name: self.media_id.clone(),
         };
-        if let Err(e) = self
+        let room_id = self.room_id.clone();
+        let media_id = self.media_id.clone();
+        match self
             .stream_hub_event_sender
             .try_send(StreamHubEvent::UnPublish { identifier })
         {
-            warn!(
-                "Failed to send UnPublish to StreamHub for {} / {}: {}",
-                self.room_id, self.media_id, e
-            );
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                let sender = self.stream_hub_event_sender.clone();
+                warn!(
+                    "PullStream stop: channel full, spawning async UnPublish for {}/{}",
+                    room_id, media_id
+                );
+                if crate::util::try_spawn(async move {
+                    if let Err(e) = sender.send(event).await {
+                        warn!(
+                            "PullStream stop: async UnPublish failed for {}/{}: {}",
+                            room_id, media_id, e
+                        );
+                    }
+                })
+                .is_none()
+                {
+                    warn!(
+                        "PullStream stop: no Tokio runtime available, skipping async UnPublish for {}/{}",
+                        self.room_id, self.media_id
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to send UnPublish to StreamHub for {} / {}: {}",
+                    self.room_id, self.media_id, e
+                );
+            }
         }
 
         self.lifecycle.abort_task().await;
@@ -530,5 +557,69 @@ impl Drop for PullStream {
             }
         }
         // StreamLifecycle's Drop will abort the task handle
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::relay::MockStreamRegistry;
+
+    #[tokio::test]
+    async fn test_stop_retries_unpublish_when_channel_full() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        sender
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name: "existing-room".to_string(),
+                    stream_name: "existing-media".to_string(),
+                },
+            })
+            .expect("fill channel");
+
+        let stream = PullStream::new(
+            "room-1".to_string(),
+            "media-1".to_string(),
+            "127.0.0.1:50051".to_string(),
+            "node-1".to_string(),
+            Arc::new(MockStreamRegistry::new()) as Arc<dyn crate::relay::StreamRegistryTrait>,
+            sender,
+            1,
+        );
+
+        stream.stop().await.expect("stop should succeed");
+
+        let first = receiver.recv().await.expect("placeholder event");
+        match first {
+            StreamHubEvent::UnPublish { identifier } => match identifier {
+                StreamIdentifier::Rtmp {
+                    app_name,
+                    stream_name,
+                } => {
+                    assert_eq!(app_name, "existing-room");
+                    assert_eq!(stream_name, "existing-media");
+                }
+                other => panic!("unexpected identifier: {other:?}"),
+            },
+            _ => panic!("unexpected event variant"),
+        }
+
+        let retried = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("async retry should enqueue unpublish")
+            .expect("retried event should be present");
+        match retried {
+            StreamHubEvent::UnPublish { identifier } => match identifier {
+                StreamIdentifier::Rtmp {
+                    app_name,
+                    stream_name,
+                } => {
+                    assert_eq!(app_name, "room-1");
+                    assert_eq!(stream_name, "media-1");
+                }
+                other => panic!("unexpected identifier: {other:?}"),
+            },
+            _ => panic!("unexpected event variant"),
+        }
     }
 }

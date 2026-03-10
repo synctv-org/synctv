@@ -395,6 +395,10 @@ impl TokenBlacklistStore for FailingStore {
         false
     }
 
+    async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
+        Ok(false)
+    }
+
     async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
         Err(synctv_core::Error::Internal(
             "Primary store failed".to_string(),
@@ -500,6 +504,10 @@ impl ToggleableStore {
 impl TokenBlacklistStore for ToggleableStore {
     async fn is_blacklisted(&self, _key: &str) -> bool {
         false
+    }
+
+    async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
+        Ok(false)
     }
 
     async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {

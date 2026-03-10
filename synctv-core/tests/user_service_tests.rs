@@ -51,12 +51,7 @@ fn create_user_service(pool: PgPool) -> UserService {
 // Integration tests (require Docker)
 // ============================================================================
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_register_duplicate_username_error() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
-
+async fn assert_register_duplicate_username_error(service: &UserService) {
     // Register first user
     let result = service
         .register(
@@ -83,12 +78,7 @@ async fn test_register_duplicate_username_error() {
     assert!(result.is_err(), "Duplicate username should be rejected");
 }
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_register_duplicate_email_error() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
-
+async fn assert_register_duplicate_email_error(service: &UserService) {
     // Register first user
     let result = service
         .register(
@@ -112,12 +102,7 @@ async fn test_register_duplicate_email_error() {
     assert!(result.is_err(), "Duplicate email should be rejected");
 }
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_login_wrong_password() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
-
+async fn assert_login_wrong_password(service: &UserService) {
     // Register a user
     service
         .register(
@@ -169,12 +154,7 @@ fn test_password_validation() {
 // Delete User Transaction Tests
 // ============================================================================
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_delete_user_already_deleted_returns_error() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
-
+async fn assert_delete_user_already_deleted_returns_error(service: &UserService) {
     // Register a user
     let (user, _, _) = service
         .register(
@@ -208,10 +188,7 @@ async fn test_delete_user_already_deleted_returns_error() {
 }
 
 /// Test that concurrent `delete_user` calls maintain atomicity - only one should succeed
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_delete_user_concurrent_deletion_atomicity() {
-    let (_container, pool) = create_test_pool().await;
+async fn assert_delete_user_concurrent_deletion_atomicity(pool: PgPool) {
     let service = create_user_service(pool.clone());
 
     // Register a user
@@ -280,12 +257,7 @@ async fn test_delete_user_concurrent_deletion_atomicity() {
 /// Scenario: User tries to register with a username that already exists.
 /// This should fail with `AlreadyExists`, but should NOT lock out the IP
 /// because it's not a security threat - just an unfortunate choice of username.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_register_username_taken_no_brute_force_lockout() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
-
+async fn assert_register_username_taken_no_brute_force_lockout(service: &UserService) {
     let client_ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
     // Register first user
@@ -344,12 +316,7 @@ async fn test_register_username_taken_no_brute_force_lockout() {
 ///
 /// Scenario: Attacker sends malformed registration requests (validation errors).
 /// These should count against the IP lockout because they indicate automated attacks.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_register_validation_errors_trigger_brute_force_lockout() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
-
+async fn assert_register_validation_errors_trigger_brute_force_lockout(service: &UserService) {
     let client_ip: std::net::IpAddr = "192.168.1.101".parse().unwrap();
 
     // The brute-force lockout thresholds are:
@@ -386,4 +353,36 @@ async fn test_register_validation_errors_trigger_brute_force_lockout() {
         validation_error_count >= 5,
         "Should have had at least 5 validation errors before lockout, got {validation_error_count}"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_user_service_registration_login_and_delete_flows() {
+    let (_container, pool) = create_test_pool().await;
+
+    let duplicate_username_service = create_user_service(pool.clone());
+    assert_register_duplicate_username_error(&duplicate_username_service).await;
+
+    let duplicate_email_service = create_user_service(pool.clone());
+    assert_register_duplicate_email_error(&duplicate_email_service).await;
+
+    let wrong_password_service = create_user_service(pool.clone());
+    assert_login_wrong_password(&wrong_password_service).await;
+
+    let delete_twice_service = create_user_service(pool.clone());
+    assert_delete_user_already_deleted_returns_error(&delete_twice_service).await;
+
+    assert_delete_user_concurrent_deletion_atomicity(pool).await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_user_service_registration_brute_force_flows() {
+    let (_container, pool) = create_test_pool().await;
+
+    let username_taken_service = create_user_service(pool.clone());
+    assert_register_username_taken_no_brute_force_lockout(&username_taken_service).await;
+
+    let validation_error_service = create_user_service(pool);
+    assert_register_validation_errors_trigger_brute_force_lockout(&validation_error_service).await;
 }

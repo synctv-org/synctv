@@ -37,8 +37,10 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
             Status::unauthenticated(format!("{context}: authentication failed"))
         }
         ProviderClientError::Http { status, .. } => match status.as_u16() {
+            400 | 422 => Status::invalid_argument(format!("{context}: invalid request")),
             401 | 403 => Status::permission_denied(format!("{context}: access denied")),
             404 => Status::not_found(format!("{context}: resource not found")),
+            409 => Status::failed_precondition(format!("{context}: request conflict")),
             429 => Status::resource_exhausted(format!("{context}: rate limited")),
             s if s >= 500 => Status::unavailable(format!("{context}: upstream server error")),
             _ => Status::internal(format!("{context}: request failed")),
@@ -60,8 +62,10 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
             Status::resource_exhausted(format!("{context}: response too large ({size} bytes)"))
         }
         ProviderClientError::Api { code, .. } => match code {
+            400 | 422 => Status::invalid_argument(format!("{context}: invalid request")),
             401 | 403 => Status::permission_denied(format!("{context}: access denied")),
             404 => Status::not_found(format!("{context}: resource not found")),
+            409 => Status::failed_precondition(format!("{context}: request conflict")),
             -412 | 429 => Status::resource_exhausted(format!("{context}: rate limited")),
             _ => Status::internal(format!("{context}: API error (code {code})")),
         },
@@ -89,6 +93,30 @@ mod tests {
         };
         let status = map_provider_error("fs_get", &err);
         assert_eq!(status.code(), tonic::Code::NotFound);
+    }
+
+    #[test]
+    fn http_422_maps_to_invalid_argument() {
+        let err = ProviderClientError::Http {
+            status: reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            url: "https://example.com".to_string(),
+            retry_after_secs: None,
+            body: "bad field".to_string(),
+        };
+        let status = map_provider_error("fs_get", &err);
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn http_409_maps_to_failed_precondition() {
+        let err = ProviderClientError::Http {
+            status: reqwest::StatusCode::CONFLICT,
+            url: "https://example.com".to_string(),
+            retry_after_secs: None,
+            body: "conflict".to_string(),
+        };
+        let status = map_provider_error("fs_get", &err);
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
     }
 
     #[test]
@@ -152,6 +180,16 @@ mod tests {
         };
         let status = map_provider_error("get_video_url", &err);
         assert_eq!(status.code(), tonic::Code::Internal);
+    }
+
+    #[test]
+    fn api_error_422_maps_to_invalid_argument() {
+        let err = ProviderClientError::Api {
+            code: 422,
+            message: "validation failed".to_string(),
+        };
+        let status = map_provider_error("get_video_url", &err);
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]

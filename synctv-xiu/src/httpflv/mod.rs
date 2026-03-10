@@ -16,7 +16,7 @@ use crate::streamhub::{
 };
 use bytes::BytesMut;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 /// Capacity for the HTTP response channel (bounded to prevent OOM with slow clients).
 /// At ~8KB per FLV tag (typical video frame), 512 entries ≈ 4MB buffer per client.
@@ -139,10 +139,10 @@ impl HttpFlvSession {
                         continue;
                     }
 
-                    // Write FLV tag
-                    if let Err(e) = self.write_flv_tag(data) {
-                        error!("Failed to write FLV tag: {}", e);
-                    }
+                    // Write FLV tag. Slow-subscriber disconnects and closed
+                    // response channels must terminate the session so the
+                    // StreamHub subscription is released promptly.
+                    self.write_flv_tag(data)?;
                 }
                 None => {
                     // Channel closed - stream truly ended
@@ -536,6 +536,45 @@ mod tests {
         assert!(
             result.is_ok(),
             "session should exit cleanly when the stream channel closes: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_media_stream_disconnects_slow_subscriber() {
+        let (event_sender, _) = tokio::sync::mpsc::channel(64);
+        let (response_tx, _response_rx) = mpsc::channel(1);
+        let (frame_tx, frame_rx) = mpsc::channel(256);
+
+        let mut session = HttpFlvSession::new(
+            "live".to_string(),
+            "room/stream".to_string(),
+            event_sender,
+            response_tx,
+        );
+        session.data_receiver = Some(frame_rx);
+        session.has_send_header = true;
+        session.has_audio = true;
+        session.has_video = true;
+
+        for _ in 0..=MAX_CONSECUTIVE_DROPPED_FRAMES {
+            frame_tx
+                .send(FrameData::Video {
+                    timestamp: 0,
+                    data: bytes::Bytes::from_static(b"frame"),
+                })
+                .await
+                .expect("frame send should succeed while receiver is alive");
+        }
+        drop(frame_tx);
+
+        let err = session
+            .send_media_stream()
+            .await
+            .expect_err("slow subscriber should terminate the session");
+
+        assert!(
+            err.to_string().contains("Slow subscriber disconnected"),
+            "unexpected error: {err}"
         );
     }
 }

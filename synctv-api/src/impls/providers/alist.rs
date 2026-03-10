@@ -120,7 +120,7 @@ impl AlistApiImpl {
         let token = self.provider.login(login_req, instance_name).await?;
 
         // Generate server_id and persist credential
-        let server_id = UserProviderCredential::generate_server_id(&host);
+        let server_id = UserProviderCredential::generate_server_id_for_instance(&host, instance_name);
 
         // Store with hashed password for re-authentication
         let stored_password = if hashed {

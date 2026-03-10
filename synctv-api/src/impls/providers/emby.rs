@@ -98,7 +98,7 @@ impl EmbyApiImpl {
             .is_some_and(|p| p.is_administrator);
 
         // Generate server_id and persist credential
-        let server_id = UserProviderCredential::generate_server_id(&host);
+        let server_id = UserProviderCredential::generate_server_id_for_instance(&host, instance_name);
         let credential_data = ProviderCredential::emby(host, api_key, user_info.id.clone());
 
         // Upsert: delete existing then create

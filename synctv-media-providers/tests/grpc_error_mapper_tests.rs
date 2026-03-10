@@ -106,6 +106,19 @@ fn test_bilibili_http_429_to_resource_exhausted() {
 }
 
 #[test]
+fn test_bilibili_http_422_to_invalid_argument() {
+    use synctv_media_providers::bilibili::BilibiliError;
+    let err = BilibiliError::Http {
+        status: reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        url: "https://api.bilibili.com".to_string(),
+        retry_after_secs: None,
+        body: "bad request".to_string(),
+    };
+    let status = map_provider_error("bilibili_api", &err);
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+}
+
+#[test]
 fn test_bilibili_http_502_to_unavailable() {
     use synctv_media_providers::bilibili::BilibiliError;
     let err = BilibiliError::Http {
@@ -183,6 +196,19 @@ fn test_emby_http_503_to_unavailable() {
     };
     let status = map_provider_error("emby_fetch", &err);
     assert_eq!(status.code(), tonic::Code::Unavailable);
+}
+
+#[test]
+fn test_emby_http_409_to_failed_precondition() {
+    use synctv_media_providers::emby::EmbyError;
+    let err = EmbyError::Http {
+        status: reqwest::StatusCode::CONFLICT,
+        url: "https://emby.example.com".to_string(),
+        retry_after_secs: None,
+        body: "conflict".to_string(),
+    };
+    let status = map_provider_error("emby_fetch", &err);
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
 }
 
 #[test]

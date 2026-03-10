@@ -68,6 +68,17 @@ pub enum CredentialData {
 }
 
 impl CredentialData {
+    fn normalized_instance_name(provider_instance_name: Option<&str>) -> Option<&str> {
+        provider_instance_name.and_then(|name| {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+    }
+
     /// Create Bilibili credential data from cookies
     #[must_use]
     pub const fn bilibili(cookies: HashMap<String, String>) -> Self {
@@ -167,6 +178,30 @@ impl CredentialData {
             }
         }
     }
+
+    /// Get the server ID for this credential, scoped to an optional provider instance.
+    #[must_use]
+    pub fn server_id_for_instance(&self, provider_instance_name: Option<&str>) -> String {
+        use sha2::{Digest, Sha256};
+
+        match self {
+            Self::Bilibili { .. } => match Self::normalized_instance_name(provider_instance_name) {
+                Some(instance_name) => {
+                    format!("{:x}", Sha256::digest(format!("bilibili\n{instance_name}").as_bytes()))
+                }
+                None => self.server_id(),
+            },
+            Self::Alist { host, .. } | Self::Emby { host, .. } => {
+                match Self::normalized_instance_name(provider_instance_name) {
+                    Some(instance_name) => format!(
+                        "{:x}",
+                        Sha256::digest(format!("{host}\n{instance_name}").as_bytes())
+                    ),
+                    None => self.server_id(),
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -241,6 +276,25 @@ mod tests {
             "pass".into(),
         );
         assert_ne!(alist.server_id(), alist3.server_id());
+    }
+
+    #[test]
+    fn test_credential_data_server_id_for_instance_scopes_identifier() {
+        let alist =
+            CredentialData::alist("https://alist.example.com".into(), "user".into(), "pass".into());
+        assert_eq!(alist.server_id_for_instance(None), alist.server_id());
+        assert_eq!(alist.server_id_for_instance(Some("   ")), alist.server_id());
+        assert_ne!(
+            alist.server_id_for_instance(Some("alist-main")),
+            alist.server_id_for_instance(Some("alist-backup"))
+        );
+
+        let bilibili = CredentialData::bilibili(HashMap::new());
+        assert_eq!(bilibili.server_id_for_instance(None), "bilibili");
+        assert_ne!(
+            bilibili.server_id_for_instance(Some("bili-main")),
+            bilibili.server_id_for_instance(Some("bili-backup"))
+        );
     }
 
     #[test]

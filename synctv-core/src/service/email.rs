@@ -398,9 +398,13 @@ impl EmailService {
         code_ttl_minutes: i64,
     ) -> Result<Self> {
         let template_manager = EmailTemplateManager::new()?;
-        let smtp_transport = config
-            .as_ref()
-            .and_then(|c| Self::build_smtp_transport(c).ok());
+        let smtp_transport = match config.as_ref() {
+            Some(cfg) => Some(
+                Self::build_smtp_transport(cfg)
+                    .map_err(|e| Error::Internal(format!("Failed to initialize SMTP transport: {e}")))?,
+            ),
+            None => None,
+        };
         Ok(Self {
             config,
             code_store,
@@ -940,18 +944,40 @@ mod tests {
     #[tokio::test]
     async fn test_send_verification_code_returns_empty_when_email_configured() {
         // When config is Some (production), the code must NOT be returned.
-        // We create a service with a fake config. The SMTP send will fail,
-        // so we expect an error rather than a leaked code.
+        // A send failure is acceptable here, but the code must never leak.
         let fake_config = EmailConfig {
             smtp_host: "localhost".to_string(),
-            smtp_port: 0,
+            smtp_port: 2525,
             smtp_username: "test".to_string(),
             smtp_password: "test".to_string(),
             from_email: "noreply@example.com".to_string(),
             from_name: "SyncTV".to_string(),
             use_tls: false,
         };
-        let service = EmailService::new(Some(fake_config)).unwrap();
+        let service = EmailService::new(Some(fake_config)).expect("transport should build");
+
+        let result = service.send_verification_code("test@example.com").await;
+        match result {
+            Ok(code) => assert!(
+                code.is_empty(),
+                "Production mode must NOT return the verification code, got: {code}"
+            ),
+            Err(_) => {} // SMTP connection failure is fine as long as no code leaks
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_verification_code_configured_service_never_leaks_code() {
+        let fake_config = EmailConfig {
+            smtp_host: "localhost".to_string(),
+            smtp_port: 2525,
+            smtp_username: "test".to_string(),
+            smtp_password: "test".to_string(),
+            from_email: "noreply@example.com".to_string(),
+            from_name: "SyncTV".to_string(),
+            use_tls: false,
+        };
+        let service = EmailService::new(Some(fake_config)).expect("transport should build");
         // With a fake SMTP that can't connect, this should return an error,
         // which is safe (code is not leaked). The important thing is that
         // on success it would return empty string (verified by code inspection).

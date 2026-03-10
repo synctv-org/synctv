@@ -91,7 +91,7 @@ fn test_field_encryption_rejects_plaintext() {
 #[tokio::test]
 async fn test_alist_password_round_trip_with_encryption() {
     let encryption_key = test_encryption_key();
-    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key);
+    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key).unwrap();
 
     let plain_password = "my_secret_password_456";
     let host = "https://alist.example.com";
@@ -122,8 +122,8 @@ async fn test_alist_password_round_trip_with_encryption() {
     );
 
     // Retrieve the credential
-    let server_id =
-        CredentialData::alist(host.to_string(), String::new(), String::new()).server_id();
+    let server_id = CredentialData::alist(host.to_string(), String::new(), String::new())
+        .server_id_for_instance(Some("my_alist"));
     let retrieved = storage
         .get("user1", ProviderType::Alist, &server_id)
         .await
@@ -149,7 +149,7 @@ async fn test_alist_password_round_trip_with_encryption() {
 #[tokio::test]
 async fn test_multiple_alist_credentials_encrypted() {
     let encryption_key = test_encryption_key();
-    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key);
+    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key).unwrap();
 
     let password1 = "password_for_server1";
     let password2 = "password_for_server2";
@@ -188,7 +188,7 @@ async fn test_multiple_alist_credentials_encrypted() {
         String::new(),
         String::new(),
     )
-    .server_id();
+    .server_id_for_instance(Some("alist1"));
     let retrieved1 = storage
         .get("user1", ProviderType::Alist, &server_id1)
         .await
@@ -207,7 +207,7 @@ async fn test_multiple_alist_credentials_encrypted() {
         String::new(),
         String::new(),
     )
-    .server_id();
+    .server_id_for_instance(Some("alist2"));
     let retrieved2 = storage
         .get("user1", ProviderType::Alist, &server_id2)
         .await
@@ -227,7 +227,7 @@ async fn test_multiple_alist_credentials_encrypted() {
 #[tokio::test]
 async fn test_emby_api_key_round_trip_with_encryption() {
     let encryption_key = test_encryption_key();
-    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key);
+    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key).unwrap();
 
     let api_key = "secret_api_key_67890";
     let host = "https://emby.example.com";
@@ -255,8 +255,8 @@ async fn test_emby_api_key_round_trip_with_encryption() {
     assert_eq!(key, api_key, "Returned api_key should be decrypted");
 
     // Retrieve the credential
-    let server_id =
-        CredentialData::emby(host.to_string(), String::new(), String::new()).server_id();
+    let server_id = CredentialData::emby(host.to_string(), String::new(), String::new())
+        .server_id_for_instance(Some("my_emby"));
     let retrieved = storage
         .get("user1", ProviderType::Emby, &server_id)
         .await
@@ -279,7 +279,7 @@ async fn test_emby_api_key_round_trip_with_encryption() {
 #[tokio::test]
 async fn test_list_credentials_are_decrypted() {
     let encryption_key = test_encryption_key();
-    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key);
+    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key).unwrap();
 
     let password1 = "alist_password";
     let api_key = "emby_api_key";

@@ -251,3 +251,55 @@ async fn test_join_room_move_removes_old_room_from_distributed_index() {
         .expect("distributed online user counts should succeed");
     assert_eq!(online_counts, vec![0, 1]);
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_join_room_rejection_rolls_back_distributed_room_counter() {
+    use redis::AsyncCommands;
+
+    let redis = TestRedis::start().await;
+    let conn = redis_connection(&redis.redis_url).await;
+    let manager = ConnectionManager::new(ConnectionLimits {
+        max_per_room: 1,
+        ..ConnectionLimits::default()
+    })
+    .with_redis(conn, "join_room_rollback:");
+
+    let room_a = rid("room_a");
+    let room_b = rid("room_b");
+
+    manager
+        .register("conn_a".to_string(), uid("user_a"))
+        .await
+        .expect("conn_a registration should succeed");
+    manager
+        .register("conn_b".to_string(), uid("user_b"))
+        .await
+        .expect("conn_b registration should succeed");
+
+    manager
+        .join_room("conn_a", room_a.clone())
+        .await
+        .expect("conn_a should join room_a");
+    manager
+        .join_room("conn_b", room_b.clone())
+        .await
+        .expect("conn_b should join room_b");
+
+    let err = manager
+        .join_room("conn_a", room_b.clone())
+        .await
+        .expect_err("room move must fail when target room is full");
+    assert!(err.contains("Room at capacity"), "unexpected error: {err}");
+
+    let mut verify_conn = redis_connection(&redis.redis_url).await;
+    let room_b_count: i64 = verify_conn
+        .get("join_room_rollback:connections:room:room_b")
+        .await
+        .unwrap_or(0);
+
+    assert_eq!(
+        room_b_count, 1,
+        "failed room move must roll back the distributed room counter"
+    );
+}

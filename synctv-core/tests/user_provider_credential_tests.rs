@@ -9,8 +9,8 @@
 use chrono::{Duration, Utc};
 use serde_json::json;
 use synctv_core::{
-    models::{SignupMethod, User, UserProviderCredential},
-    repository::{UserProviderCredentialRepository, UserRepository},
+    models::{ProviderInstance, SignupMethod, User, UserProviderCredential},
+    repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
 };
 use synctv_core_testing::create_test_pool;
 fn make_user(username: &str) -> User {
@@ -37,6 +37,34 @@ fn make_credential(user_id: &str, provider: &str, server_id: &str) -> UserProvid
         expires_at: None,
         created_at: now,
         updated_at: now,
+    }
+}
+
+fn make_credential_with_instance(
+    user_id: &str,
+    provider: &str,
+    server_id: &str,
+    provider_instance_name: Option<&str>,
+) -> UserProviderCredential {
+    let mut credential = make_credential(user_id, provider, server_id);
+    credential.provider_instance_name = provider_instance_name.map(ToString::to_string);
+    credential
+}
+
+fn make_provider_instance(name: &str, providers: &[&str]) -> ProviderInstance {
+    ProviderInstance {
+        name: name.to_string(),
+        endpoint: format!("grpc://{name}.example.com:50051"),
+        comment: None,
+        jwt_secret: None,
+        custom_ca: None,
+        timeout: "10s".to_string(),
+        tls: false,
+        insecure_tls: false,
+        providers: providers.iter().map(|provider| (*provider).to_string()).collect(),
+        enabled: true,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
     }
 }
 
@@ -291,6 +319,74 @@ async fn test_unique_constraint_user_provider_server() {
     let result = cred_repo.create(&cred2).await;
 
     assert!(result.is_err(), "Should fail due to unique constraint");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_same_provider_host_can_be_stored_for_different_instances() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let provider_repo = ProviderInstanceRepository::new(pool.clone());
+    let cred_repo = UserProviderCredentialRepository::new(pool);
+
+    let user = user_repo
+        .create(&make_user("instance_scoped_user"))
+        .await
+        .unwrap();
+
+    provider_repo
+        .create(&make_provider_instance("alist-main", &["alist"]))
+        .await
+        .unwrap();
+    provider_repo
+        .create(&make_provider_instance("alist-backup", &["alist"]))
+        .await
+        .unwrap();
+
+    let server_main = UserProviderCredential::generate_server_id_for_instance(
+        "https://alist.example.com",
+        Some("alist-main"),
+    );
+    let server_backup = UserProviderCredential::generate_server_id_for_instance(
+        "https://alist.example.com",
+        Some("alist-backup"),
+    );
+
+    let main = make_credential_with_instance(
+        user.id.as_str(),
+        "alist",
+        &server_main,
+        Some("alist-main"),
+    );
+    let backup = make_credential_with_instance(
+        user.id.as_str(),
+        "alist",
+        &server_backup,
+        Some("alist-backup"),
+    );
+
+    cred_repo.create(&main).await.unwrap();
+    cred_repo.create(&backup).await.unwrap();
+
+    let all = cred_repo.get_by_provider(user.id.as_str(), "alist").await.unwrap();
+    assert_eq!(all.len(), 2);
+
+    let main_found = cred_repo
+        .get_by_provider_and_server(user.id.as_str(), "alist", &server_main)
+        .await
+        .unwrap()
+        .expect("main credential should exist");
+    let backup_found = cred_repo
+        .get_by_provider_and_server(user.id.as_str(), "alist", &server_backup)
+        .await
+        .unwrap()
+        .expect("backup credential should exist");
+
+    assert_eq!(main_found.provider_instance_name.as_deref(), Some("alist-main"));
+    assert_eq!(
+        backup_found.provider_instance_name.as_deref(),
+        Some("alist-backup")
+    );
 }
 
 // ========== Cascade Delete Tests ==========

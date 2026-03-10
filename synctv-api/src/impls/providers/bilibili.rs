@@ -88,7 +88,7 @@ impl BilibiliApiImpl {
         cookies: &HashMap<String, String>,
         instance_name: Option<&str>,
     ) -> Result<String, synctv_core::provider::ProviderError> {
-        let server_id = UserProviderCredential::BILIBILI_SERVER_ID.to_string();
+        let server_id = UserProviderCredential::bilibili_server_id(instance_name);
         let credential_data = ProviderCredential::bilibili(cookies.clone());
 
         // Upsert: delete existing then create
@@ -368,8 +368,9 @@ impl BilibiliApiImpl {
         caller_user_id: &str,
         req: LogoutRequest,
     ) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
+        let default_server_id = UserProviderCredential::bilibili_server_id(None);
         let server_id = if req.server_id.is_empty() {
-            UserProviderCredential::BILIBILI_SERVER_ID
+            default_server_id.as_str()
         } else {
             &req.server_id
         };

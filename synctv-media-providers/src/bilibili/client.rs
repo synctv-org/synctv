@@ -12,9 +12,10 @@ use md5::{Digest, Md5};
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
+use tokio::net::TcpStream;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{client_async_tls_with_config, tungstenite::Message};
 
 use super::error::{check_response, json_with_limit, BilibiliError};
 use super::types::{
@@ -1950,51 +1951,26 @@ impl BilibiliClient {
 
         // Build WebSocket URL (use wss:// for secure connection)
         let ws_url = format!("wss://{}:{}/sub", host.host, host.wss_port);
-
-        // SSRF validation: verify the WebSocket host is not a blocked address
-        {
-            let guard = crate::ssrf::ssrf_acl();
-            let hostname = &host.host;
-            // Check if the hostname itself is blocked
-            if guard.is_host_allowed(hostname).is_denied() {
-                return Err(BilibiliError::Network(format!(
-                    "WebSocket host is blocked by SSRF policy: {hostname}"
-                )));
-            }
-            // If hostname is a raw IP, check it directly
-            if let Ok(ip) = hostname.parse::<std::net::IpAddr>() {
-                if crate::ssrf::is_ip_blocked(&ip) {
-                    return Err(BilibiliError::Network(format!(
-                        "WebSocket host IP is blocked by SSRF policy: {ip}"
-                    )));
-                }
-            } else {
-                // Resolve hostname and check all resolved IPs
-                let addr = format!("{}:{}", hostname, host.wss_port);
-                let resolved = tokio::net::lookup_host(&addr).await.map_err(|e| {
-                    BilibiliError::Network(format!(
-                        "Failed to resolve WebSocket host {hostname}: {e}"
-                    ))
-                })?;
-                for sock_addr in resolved {
-                    if crate::ssrf::is_ip_blocked(&sock_addr.ip()) {
-                        return Err(BilibiliError::Network(format!(
-                            "WebSocket host resolves to blocked IP: {}",
-                            sock_addr.ip()
-                        )));
-                    }
-                }
-            }
-        }
+        let validated_addr = resolve_validated_danmaku_addr(&host.host, host.wss_port).await?;
 
         // Connect to WebSocket with timeout
         let ws_connect_timeout = Duration::from_secs(10);
-        let (ws_stream, _) = tokio::time::timeout(ws_connect_timeout, connect_async(&ws_url))
-            .await
-            .map_err(|_| BilibiliError::Network("WebSocket connection timeout".to_string()))?
-            .map_err(|e| {
-                BilibiliError::Network(format!("Failed to connect to danmaku WebSocket: {e}"))
+        let (ws_stream, _) = tokio::time::timeout(ws_connect_timeout, async {
+            let socket = TcpStream::connect(validated_addr).await.map_err(|e| {
+                BilibiliError::Network(format!(
+                    "Failed to connect to danmaku WebSocket socket {validated_addr}: {e}"
+                ))
             })?;
+            client_async_tls_with_config(ws_url.as_str(), socket, None, None)
+                .await
+                .map_err(|e| {
+                    BilibiliError::Network(format!(
+                        "Failed to connect to danmaku WebSocket: {e}"
+                    ))
+                })
+        })
+        .await
+        .map_err(|_| BilibiliError::Network("WebSocket connection timeout".to_string()))??;
 
         let (mut write, read) = ws_stream.split();
 
@@ -2948,6 +2924,56 @@ pub struct LiveStream {
 pub struct LiveDanmuInfo {
     pub token: String,
     pub host_list: Vec<DanmuHost>,
+}
+
+async fn resolve_validated_danmaku_addr(
+    hostname: &str,
+    port: u32,
+) -> Result<std::net::SocketAddr, BilibiliError> {
+    let port = u16::try_from(port).map_err(|_| {
+        BilibiliError::Parse(format!("WebSocket port out of range for host {hostname}: {port}"))
+    })?;
+
+    let guard = crate::ssrf::ssrf_acl();
+    if guard.is_host_allowed(hostname).is_denied() {
+        return Err(BilibiliError::Network(format!(
+            "WebSocket host is blocked by SSRF policy: {hostname}"
+        )));
+    }
+
+    if let Ok(ip) = hostname.parse::<std::net::IpAddr>() {
+        if crate::ssrf::is_ip_blocked(&ip) {
+            return Err(BilibiliError::Network(format!(
+                "WebSocket host IP is blocked by SSRF policy: {ip}"
+            )));
+        }
+        return Ok(std::net::SocketAddr::new(ip, port));
+    }
+
+    let resolved = tokio::net::lookup_host((hostname, port))
+        .await
+        .map_err(|e| {
+            BilibiliError::Network(format!("Failed to resolve WebSocket host {hostname}: {e}"))
+        })?
+        .collect::<Vec<_>>();
+
+    if resolved.is_empty() {
+        return Err(BilibiliError::Network(format!(
+            "WebSocket host resolved to no addresses: {hostname}"
+        )));
+    }
+
+    if let Some(blocked_ip) = resolved
+        .iter()
+        .map(std::net::SocketAddr::ip)
+        .find(crate::ssrf::is_ip_blocked)
+    {
+        return Err(BilibiliError::Network(format!(
+            "WebSocket host resolves to blocked IP: {blocked_ip}"
+        )));
+    }
+
+    Ok(resolved[0])
 }
 
 /// Danmaku server host
@@ -4027,6 +4053,52 @@ mod tests {
         // The first 4 bytes encode the packet length as big-endian u32
         let len = u32::from_be_bytes([packet[0], packet[1], packet[2], packet[3]]);
         assert_eq!(len as usize, packet.len());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_validated_danmaku_addr_rejects_denied_hostname() {
+        let err = resolve_validated_danmaku_addr("localhost", 443)
+            .await
+            .expect_err("localhost must be rejected by SSRF policy");
+        assert!(
+            err.to_string().contains("blocked by SSRF policy"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_validated_danmaku_addr_rejects_private_ip_literal() {
+        let err = resolve_validated_danmaku_addr("127.0.0.1", 443)
+            .await
+            .expect_err("loopback IP must be rejected by SSRF policy");
+        assert!(
+            err.to_string().contains("blocked by SSRF policy"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_validated_danmaku_addr_accepts_public_ip_literal() {
+        let addr = resolve_validated_danmaku_addr("93.184.216.34", 443)
+            .await
+            .expect("public IP literal should pass SSRF validation");
+        assert_eq!(
+            addr,
+            "93.184.216.34:443"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_validated_danmaku_addr_rejects_out_of_range_port() {
+        let err = resolve_validated_danmaku_addr("93.184.216.34", u32::from(u16::MAX) + 1)
+            .await
+            .expect_err("invalid WebSocket port must be rejected");
+        assert!(
+            err.to_string().contains("port out of range"),
+            "unexpected error: {err}"
+        );
     }
 
     // ========== parse_danmaku_packet failure case tests ==========

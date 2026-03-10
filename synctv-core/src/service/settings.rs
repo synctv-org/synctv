@@ -533,11 +533,11 @@ impl SettingsService {
                 info!("Setting '{}' reloaded from database", key);
                 Ok(())
             }
-            Err(e) => {
+            Err(Error::NotFound(_)) => {
                 // Setting was deleted, remove from cache
                 warn!(
-                    "Setting '{}' not found in database (may have been deleted): {}",
-                    key, e
+                    "Setting '{}' not found in database (may have been deleted)",
+                    key
                 );
                 self.cache.remove(key);
 
@@ -549,6 +549,7 @@ impl SettingsService {
 
                 Ok(())
             }
+            Err(e) => Err(e),
         }
     }
 }
@@ -869,6 +870,37 @@ mod tests {
             result.is_ok(),
             "Should pass when no providers are registered"
         );
+    }
+
+    #[tokio::test]
+    async fn test_reload_setting_preserves_cache_on_non_not_found_error() {
+        let pool_opts = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(1));
+        let pool = pool_opts
+            .connect_lazy("postgres://fake:fake@localhost/fake")
+            .unwrap();
+        let repo = crate::repository::SettingsRepository::new(pool.clone());
+        let service = SettingsService::new(repo, pool);
+
+        let existing = SettingsGroup::new(
+            "server".to_string(),
+            serde_json::json!({"allow_registration": true}).to_string(),
+        );
+        service.cache.insert(existing.key.clone(), existing.clone());
+
+        let result = service.reload_setting("server.default").await;
+
+        assert!(
+            result.is_err(),
+            "database connectivity errors must not be treated as setting deletion"
+        );
+
+        let cached = service
+            .cache
+            .get("server.default")
+            .expect("existing cache entry must be preserved on transient DB errors");
+        assert_eq!(cached.value().value, existing.value);
     }
 
     // ========== update_batch Cross-Validation Tests ==========

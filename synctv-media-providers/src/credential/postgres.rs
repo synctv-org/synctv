@@ -43,16 +43,14 @@ impl PostgresCredentialStorage {
     /// * `pool` - PostgreSQL connection pool
     /// * `key_bytes` - 32-byte encryption key (AES-256)
     ///
-    /// # Panics
-    /// Panics if the key is not exactly 32 bytes.
-    #[must_use]
-    pub fn with_encryption(pool: PgPool, key_bytes: &[u8]) -> Self {
-        let encryption =
-            FieldEncryption::new(key_bytes).expect("Encryption key must be exactly 32 bytes");
-        Self {
+    /// # Errors
+    /// Returns an error if the key is not exactly 32 bytes.
+    pub fn with_encryption(pool: PgPool, key_bytes: &[u8]) -> Result<Self> {
+        let encryption = FieldEncryption::new(key_bytes)?;
+        Ok(Self {
             pool,
             encryption: Some(encryption),
-        }
+        })
     }
 
     /// Generate a unique ID for new credentials using nanoid

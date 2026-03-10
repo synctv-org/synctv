@@ -205,7 +205,10 @@ async fn test_bilibili_credential_flow_pattern() {
 
     assert_eq!(stored.user_id, "user123");
     assert_eq!(stored.provider, ProviderType::Bilibili);
-    assert_eq!(stored.server_id, "bilibili");
+    assert_eq!(
+        stored.server_id,
+        CredentialData::bilibili(HashMap::new()).server_id_for_instance(Some("my_bilibili"))
+    );
     assert_eq!(
         stored.provider_instance_name,
         Some("my_bilibili".to_string())
@@ -213,7 +216,7 @@ async fn test_bilibili_credential_flow_pattern() {
 
     // Step 3: Retrieve credentials for subsequent requests
     let retrieved = storage
-        .get("user123", ProviderType::Bilibili, "bilibili")
+        .get("user123", ProviderType::Bilibili, &stored.server_id)
         .await
         .unwrap()
         .expect("credential should exist");
@@ -275,7 +278,7 @@ async fn test_alist_credential_flow_pattern() {
         .unwrap();
     assert_eq!(all_alist.len(), 2);
 
-    // Step 4: Retrieve specific server by server_id (SHA-256 of host)
+    // Step 4: Retrieve specific server by server_id (SHA-256 of host or host+instance)
     let server1_id = cred1.server_id.clone();
     let retrieved1 = storage
         .get("user123", ProviderType::Alist, &server1_id)
@@ -306,6 +309,77 @@ async fn test_alist_credential_flow_pattern() {
     assert_eq!(host, host2);
     assert_eq!(username, "user");
     assert_eq!(password, "hashed_password_2");
+}
+
+#[tokio::test]
+async fn test_same_host_different_instance_names_do_not_overwrite_each_other() {
+    let storage = InMemoryCredentialStorage::new();
+    let host = "https://alist.example.com";
+
+    let main = storage
+        .set(
+            "user123",
+            Some("alist-main"),
+            CredentialData::alist(
+                host.to_string(),
+                "main-user".to_string(),
+                "main-pass".to_string(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let backup = storage
+        .set(
+            "user123",
+            Some("alist-backup"),
+            CredentialData::alist(
+                host.to_string(),
+                "backup-user".to_string(),
+                "backup-pass".to_string(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(
+        main.server_id, backup.server_id,
+        "instance-scoped credentials must not collapse to the same server_id"
+    );
+
+    let main_retrieved = storage
+        .get("user123", ProviderType::Alist, &main.server_id)
+        .await
+        .unwrap()
+        .expect("main credential should exist");
+    let backup_retrieved = storage
+        .get("user123", ProviderType::Alist, &backup.server_id)
+        .await
+        .unwrap()
+        .expect("backup credential should exist");
+
+    assert_eq!(
+        main_retrieved.provider_instance_name.as_deref(),
+        Some("alist-main")
+    );
+    assert_eq!(
+        backup_retrieved.provider_instance_name.as_deref(),
+        Some("alist-backup")
+    );
+    assert_eq!(
+        main_retrieved.data.as_alist().expect("alist main").1,
+        "main-user"
+    );
+    assert_eq!(
+        backup_retrieved.data.as_alist().expect("alist backup").1,
+        "backup-user"
+    );
+
+    let all_alist = storage
+        .list_by_provider("user123", ProviderType::Alist)
+        .await
+        .unwrap();
+    assert_eq!(all_alist.len(), 2);
 }
 
 /// Test the Emby credential flow pattern.

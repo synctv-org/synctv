@@ -63,7 +63,7 @@ pub fn validate_host(host: &str) -> Result<(), Status> {
 /// Validate that a required string field is non-empty.
 #[allow(clippy::result_large_err)] // tonic::Status is inherently large; boxing would break gRPC API
 pub fn validate_required(field_name: &str, value: &str) -> Result<(), Status> {
-    if value.is_empty() {
+    if value.trim().is_empty() {
         return Err(Status::invalid_argument(format!(
             "{field_name} must not be empty"
         )));

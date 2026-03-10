@@ -1198,60 +1198,9 @@ impl NodeRegistry {
                     return Ok(());
                 }
             } else {
-                // No epoch provided: fetch current epoch from Redis, then use
-                // epoch-validated deletion. This prevents a stale deregister
-                // request from removing a re-registered node.
-                tracing::warn!(
-                    node_id = %node_id,
-                    "unregister_remote called without expected_epoch, fetching current epoch from Redis"
-                );
-                // Atomic Lua: GET the current epoch, then DEL only if the epoch hasn't changed
-                // between the read and the delete (single script = atomic).
-                let script = redis::Script::new(
-                    r"
-                    local key = KEYS[1]
-                    local existing = redis.call('GET', key)
-                    if not existing then
-                        return -1
-                    end
-                    local existing_info = cjson.decode(existing)
-                    local current_epoch = existing_info.epoch or 0
-                    redis.call('DEL', key)
-                    return current_epoch
-                    ",
-                );
-                let op_result: std::result::Result<i64, Error> = timeout(
-                    Duration::from_secs(REDIS_TIMEOUT_SECS),
-                    script.key(&key).invoke_async(&mut conn),
-                )
-                .await
-                .map_err(|_| {
-                    Error::Timeout(
-                        "Redis unregister_remote (no epoch) script timed out".to_string(),
-                    )
-                })
-                .and_then(|r| {
-                    r.map_err(|e| {
-                        Error::Database(format!(
-                            "Redis unregister_remote (no epoch) script failed: {e}"
-                        ))
-                    })
-                });
-                self.record_operation_result(&op_result);
-                let result = op_result?;
-
-                if result == -1 {
-                    tracing::debug!(
-                        node_id = %node_id,
-                        "unregister_remote (no epoch): key not found in Redis"
-                    );
-                } else {
-                    tracing::info!(
-                        node_id = %node_id,
-                        deleted_epoch = result,
-                        "unregister_remote (no epoch): atomically read and deleted node"
-                    );
-                }
+                return Err(Error::Configuration(format!(
+                    "expected_epoch is required to unregister remote node '{node_id}' safely"
+                )));
             }
         }
 
@@ -1977,5 +1926,57 @@ mod tests {
             let nodes = registry.local_nodes.read().await;
             assert!(!nodes.contains_key("test_node"));
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
+    async fn test_unregister_remote_without_expected_epoch_does_not_remove_newer_registration() {
+        let (redis_container, redis_url) =
+            synctv_core_testing::start_redis_url_with_label("node-registry-unregister-remote")
+                .await;
+        let redis_client = redis::Client::open(redis_url.as_str()).unwrap();
+
+        let registry = NodeRegistry::new(
+            redis_client.clone(),
+            "self-node".to_string(),
+            30,
+            "cl-unregister:",
+        )
+        .unwrap();
+
+        let original = NodeInfo::new(
+            "peer-node".to_string(),
+            "10.0.0.1:50051".to_string(),
+            "10.0.0.1:8080".to_string(),
+        )
+        .with_epoch(3);
+        registry.register_remote(original.clone()).await.unwrap();
+
+        let newer = NodeInfo::new(
+            "peer-node".to_string(),
+            "10.0.0.2:50051".to_string(),
+            "10.0.0.2:8080".to_string(),
+        )
+        .with_epoch(9);
+        registry.register_remote(newer.clone()).await.unwrap();
+
+        let err = registry
+            .unregister_remote("peer-node", None)
+            .await
+            .expect_err("missing epoch must fail closed");
+        assert!(
+            err.to_string().contains("expected_epoch is required"),
+            "unexpected error: {err}"
+        );
+
+        let nodes = registry.get_all_nodes_uncached().await.unwrap();
+        let persisted = nodes
+            .into_iter()
+            .find(|node| node.node_id == "peer-node")
+            .expect("newer remote registration must remain present");
+        assert_eq!(persisted.epoch, 9);
+        assert_eq!(persisted.grpc_address, "10.0.0.2:50051");
+
+        drop(redis_container);
     }
 }

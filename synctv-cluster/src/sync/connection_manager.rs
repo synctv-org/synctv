@@ -1281,6 +1281,14 @@ impl ConnectionManager {
                 if let Some(mut conn) = self.connections.get_mut(connection_id) {
                     conn.room_id = old_room_id.clone();
                 }
+                if redis_room_incremented {
+                    let redis_key = format!(
+                        "{}connections:room:{}",
+                        self.redis_key_prefix,
+                        room_id.as_str()
+                    );
+                    self.rollback_distributed_counter(redis_key).await;
+                }
                 return Err(format!(
                     "Room at capacity ({} connections)",
                     self.limits.max_per_room

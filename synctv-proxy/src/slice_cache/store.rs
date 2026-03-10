@@ -755,6 +755,15 @@ impl SliceCache {
         self.maybe_cleanup_locks();
     }
 
+    /// Clear the stale-while-revalidate marker for a full-body cache key.
+    ///
+    /// Background revalidation uses this on early-return and error paths where
+    /// `put_full_body()` is not reached, preventing the key from being stuck in
+    /// `UPDATING` forever after a failed refresh.
+    pub(super) fn finish_full_body_update(&self, key: &str) {
+        self.updating_keys.remove(key);
+    }
+
     // ---------------------------------------------------------------
     // Lock cleanup (L3 fix)
     // ---------------------------------------------------------------

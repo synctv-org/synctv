@@ -404,6 +404,7 @@ async fn refresh_full_body_cache_entry(
     provider_headers: &HashMap<String, String>,
     resp: reqwest::Response,
 ) -> Result<(), anyhow::Error> {
+    let key = SliceCache::full_body_key(url, provider_headers);
     let content_type = resp
         .headers()
         .get("content-type")
@@ -417,6 +418,7 @@ async fn refresh_full_body_cache_entry(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
         if buf.len().saturating_add(chunk.len()) > max_body {
+            cache.finish_full_body_update(&key);
             return Ok(());
         }
         buf.extend_from_slice(&chunk);
@@ -436,6 +438,7 @@ async fn refresh_full_body_cache_entry(
             ttl,
         )
         .await;
+    cache.finish_full_body_update(&key);
 
     Ok(())
 }

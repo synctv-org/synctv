@@ -33,6 +33,10 @@ impl TokenBlacklistStore for FailingBlacklistStore {
         false
     }
 
+    async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
+        Ok(false)
+    }
+
     async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
         Err(synctv_core::Error::Internal(
             "Blacklist store unavailable".to_string(),

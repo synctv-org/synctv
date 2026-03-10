@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::models::RoomId;
+use crate::resilience::timeout::REDIS_OPERATION_TIMEOUT;
 use crate::{Error, Result};
 
 /// Maximum approximate stream length (number of entries).
@@ -26,10 +27,10 @@ const MAX_STREAM_LENGTH: i64 = 1000;
 /// Used for periodic MINID-based trimming.
 const STREAM_RETENTION_MS: u64 = 3_600_000;
 
-/// Interval for periodic state synchronization (60 seconds).
+/// Interval for retrying a pending recovery synchronization (60 seconds).
 /// When Redis reconnects after a disconnect, other replicas may have stale caches
 /// because invalidation messages were only broadcast locally during the outage.
-/// This periodic sync ensures all replicas eventually converge.
+/// We only retry the recovery broadcast when such a gap was detected.
 const STATE_SYNC_INTERVAL_SECS: u64 = 60;
 
 /// Poll interval for stream subscribers when using a shared, non-blocking Redis
@@ -191,7 +192,10 @@ impl CacheInvalidationService {
         let conn = self
             .redis_conn
             .get_or_try_init(|| async {
-                client.get_connection_manager().await.map_err(|e| {
+                let config = redis::aio::ConnectionManagerConfig::new()
+                    .set_connection_timeout(Some(REDIS_OPERATION_TIMEOUT))
+                    .set_number_of_retries(0);
+                client.get_connection_manager_with_config(config).await.map_err(|e| {
                     Error::Internal(format!("Failed to create Redis ConnectionManager: {e}"))
                 })
             })
@@ -289,10 +293,12 @@ impl CacheInvalidationService {
         Ok(())
     }
 
-    /// Spawn a background task that periodically broadcasts a state sync message.
+    /// Spawn a background task that retries recovery synchronization when needed.
     ///
     /// This ensures that replicas that missed invalidations during Redis outages
-    /// eventually converge. The sync interval is controlled by `STATE_SYNC_INTERVAL_SECS`.
+    /// eventually converge, without continuously flushing all caches when the
+    /// system is healthy. The retry interval is controlled by
+    /// `STATE_SYNC_INTERVAL_SECS`.
     async fn spawn_state_sync_task(&self) {
         let service = self.clone();
 
@@ -311,6 +317,10 @@ impl CacheInvalidationService {
                         let pending_recovery_sync = service.needs_state_sync
                             .swap(false, std::sync::atomic::Ordering::Relaxed);
 
+                        if !pending_recovery_sync {
+                            continue;
+                        }
+
                         match service
                             .do_broadcast_to_stream_internal(&InvalidationMessage::All)
                             .await
@@ -318,15 +328,13 @@ impl CacheInvalidationService {
                             Ok(()) => {
                                 info!(
                                     node_id = %service.node_id,
-                                    recovery_sync = pending_recovery_sync,
-                                    "Periodic state sync: broadcast 'All' invalidation message"
+                                    "Recovery state sync: broadcast 'All' invalidation message"
                                 );
                             }
                             Err(e) => {
                                 warn!(
                                     error = %e,
-                                    recovery_sync = pending_recovery_sync,
-                                    "Failed to broadcast state sync message, will retry next interval"
+                                    "Failed to broadcast recovery state sync message, will retry next interval"
                                 );
                                 service
                                     .needs_state_sync
@@ -1507,11 +1515,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_state_sync_task_runs_periodically() {
-        // Test that the state sync interval constant is defined correctly
+    async fn test_state_sync_task_is_idle_without_pending_recovery_sync() {
         assert_eq!(STATE_SYNC_INTERVAL_SECS, 60);
 
-        // Create service without Redis
         let service = CacheInvalidationService::new(
             None,
             "test-node".to_string(),
@@ -1522,12 +1528,12 @@ mod tests {
             !service
                 .needs_state_sync
                 .load(std::sync::atomic::Ordering::Relaxed),
-            "Periodic state sync must not depend on prior failure flags"
+            "Recovery state sync must remain idle until a Redis failure sets the flag"
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_state_sync_does_not_fire_immediately_on_start() {
+    async fn test_state_sync_does_not_fire_without_pending_recovery_sync() {
         let service = CacheInvalidationService::new(
             None,
             "test-node".to_string(),
@@ -1570,7 +1576,76 @@ mod tests {
 
         tokio::time::advance(std::time::Duration::from_secs(1)).await;
         tokio::task::yield_now().await;
-        assert_eq!(ticks.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            ticks.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the retry loop still wakes on its interval"
+        );
+
+        service
+            .shutdown
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_state_sync_only_executes_when_recovery_is_pending() {
+        let service = CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
+        let shutdown = service.shutdown.clone();
+        let sync_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sync_attempts_for_task = sync_attempts.clone();
+        let needs_state_sync = service.needs_state_sync.clone();
+
+        crate::spawn::spawn_monitored("cache_invalidation_state_sync_test_pending", async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if !needs_state_sync.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                            continue;
+                        }
+                        sync_attempts_for_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    () = async {
+                        loop {
+                            if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                                return;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    } => {
+                        break;
+                    }
+                }
+            }
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            sync_attempts.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "healthy intervals must not broadcast global invalidations"
+        );
+
+        service
+            .needs_state_sync
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            sync_attempts.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a pending recovery sync must be executed on the next interval"
+        );
 
         service
             .shutdown

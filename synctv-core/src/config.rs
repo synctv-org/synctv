@@ -1650,6 +1650,17 @@ impl Config {
                         .to_string(),
                 );
             }
+
+            if self.cluster_runtime_enabled() {
+                errors.push(
+                    "Redis Sentinel is not supported when cluster mode is enabled. \
+                     SyncTV relies on distributed migration/coordination locks whose correctness \
+                     requires a single authoritative Redis master or a quorum-based locking design. \
+                     Sentinel failover can lose locks during asynchronous replication, so startup \
+                     must refuse this configuration. Use standalone Redis for now."
+                        .to_string(),
+                );
+            }
         }
 
         // Log info when Redis is not configured in standalone mode.
@@ -2704,12 +2715,17 @@ mod tests {
             ("POD_NAMESPACE", "default"),
         ]));
 
-        if let Err(errors) = result {
-            assert!(
-                !errors.iter().any(|e| e.contains("OAuth2 requires Redis")),
-                "Sentinel-backed Redis should satisfy OAuth2 cluster validation, got: {errors:?}"
-            );
-        }
+        let errors = result.expect_err("Sentinel + cluster mode must now be rejected");
+        assert!(
+            !errors.iter().any(|e| e.contains("OAuth2 requires Redis")),
+            "Sentinel-backed Redis should still satisfy OAuth2 backend detection, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Redis Sentinel is not supported when cluster mode is enabled")),
+            "expected Sentinel + cluster rejection, got: {errors:?}"
+        );
     }
 
     #[test]
@@ -3145,7 +3161,7 @@ jwt:
     }
 
     #[test]
-    fn test_validate_cluster_enabled_with_sentinel_without_redis_url_ok() {
+    fn test_validate_cluster_enabled_with_sentinel_is_rejected() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.redis.url = String::new();
@@ -3154,9 +3170,10 @@ jwt:
         config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
 
+        let errors = config.validate().unwrap_err();
         assert!(
-            config.validate().is_ok(),
-            "cluster mode should accept Sentinel-backed Redis without redis.url"
+            errors.iter().any(|e| e.contains("Redis Sentinel is not supported when cluster mode is enabled")),
+            "expected Sentinel + cluster error, got: {errors:?}"
         );
     }
 

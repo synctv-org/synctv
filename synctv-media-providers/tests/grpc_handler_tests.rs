@@ -21,6 +21,15 @@ fn test_bilibili_grpc_match_empty_url_invalid_argument() {
     );
 }
 
+#[test]
+fn test_validate_required_rejects_whitespace_only() {
+    let result = validate_required("token", "   ");
+    assert!(result.is_err());
+    let status = result.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("token"));
+}
+
 // === Alist gRPC validation ===
 
 #[test]

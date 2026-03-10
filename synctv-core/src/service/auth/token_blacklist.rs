@@ -49,7 +49,21 @@ use crate::Result;
 #[async_trait]
 pub trait TokenBlacklistStore: Send + Sync {
     /// Check if a JTI key is blacklisted (already used).
-    async fn is_blacklisted(&self, key: &str) -> bool;
+    ///
+    /// This convenience method is intended for tests and best-effort
+    /// introspection only. Security-sensitive authentication paths must use
+    /// [`is_blacklisted_checked`] so storage errors fail closed instead of
+    /// silently treating the token as valid.
+    async fn is_blacklisted(&self, key: &str) -> bool {
+        self.is_blacklisted_checked(key).await.unwrap_or_else(|e| {
+            tracing::error!(
+                key = %key,
+                error = %e,
+                "Token blacklist convenience lookup failed; returning not-blacklisted for non-auth usage"
+            );
+            false
+        })
+    }
 
     /// Check if a JTI key is blacklisted, propagating storage errors.
     ///
@@ -57,15 +71,9 @@ pub trait TokenBlacklistStore: Send + Sync {
     /// this method returns `Err` on storage failures so the caller can decide
     /// whether to fail-open or fail-closed.
     ///
-    /// The default implementation delegates to [`is_blacklisted`] and always
-    /// returns `Ok`, which is safe for in-memory stores that cannot fail.
-    /// Database-backed stores should override this to propagate errors.
-    ///
-    /// Used by the [`SecurityPipeline`] for access token blacklist checks
-    /// where fail-closed semantics are required for security.
-    async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
-        Ok(self.is_blacklisted(key).await)
-    }
+    /// Implementations must provide this method; authentication code relies on
+    /// it to preserve fail-closed semantics.
+    async fn is_blacklisted_checked(&self, key: &str) -> Result<bool>;
 
     /// Blacklist a JTI key with the given TTL in seconds.
     ///
@@ -90,12 +98,12 @@ pub trait TokenBlacklistStore: Send + Sync {
     ///
     /// # Default Implementation
     ///
-    /// The default implementation uses `is_blacklisted` + `blacklist` which
-    /// is NOT atomic. Implementations should override this with proper atomic
+    /// The default implementation uses `is_blacklisted_checked` + `blacklist`
+    /// which is NOT atomic. Implementations should override this with proper atomic
     /// operations (e.g., Redis SETNX, `PostgreSQL` INSERT ... ON CONFLICT DO NOTHING).
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
         // Default: non-atomic check-then-set (has TOCTOU race condition)
-        if self.is_blacklisted(key).await {
+        if self.is_blacklisted_checked(key).await? {
             return Ok(true);
         }
         self.blacklist(key, ttl_secs).await?;
@@ -178,6 +186,10 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
             Some(expiry) => Instant::now() < expiry,
             None => false,
         }
+    }
+
+    async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
+        Ok(self.is_blacklisted(key).await)
     }
 
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {

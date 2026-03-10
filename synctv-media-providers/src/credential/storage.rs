@@ -155,11 +155,7 @@ pub(crate) fn decrypt_credential_data(
             username,
             password,
         } => {
-            let decrypted_password = if FieldEncryption::is_encrypted(&password) {
-                enc.decrypt(&password)?
-            } else {
-                password
-            };
+            let decrypted_password = enc.decrypt(&password)?;
             Ok(CredentialData::Alist {
                 host,
                 username,
@@ -171,11 +167,7 @@ pub(crate) fn decrypt_credential_data(
             api_key,
             emby_user_id,
         } => {
-            let decrypted_api_key = if FieldEncryption::is_encrypted(&api_key) {
-                enc.decrypt(&api_key)?
-            } else {
-                api_key
-            };
+            let decrypted_api_key = enc.decrypt(&api_key)?;
             Ok(CredentialData::Emby {
                 host,
                 api_key: decrypted_api_key,
@@ -185,11 +177,7 @@ pub(crate) fn decrypt_credential_data(
         CredentialData::Bilibili { cookies } => {
             let mut decrypted_cookies = HashMap::new();
             for (key, value) in cookies {
-                let decrypted_value = if FieldEncryption::is_encrypted(&value) {
-                    enc.decrypt(&value)?
-                } else {
-                    value
-                };
+                let decrypted_value = enc.decrypt(&value)?;
                 decrypted_cookies.insert(key, decrypted_value);
             }
             Ok(CredentialData::Bilibili {
@@ -300,17 +288,15 @@ impl InMemoryCredentialStorage {
     /// # Arguments
     /// * `key_bytes` - 32-byte encryption key (AES-256)
     ///
-    /// # Panics
-    /// Panics if the key is not exactly 32 bytes.
-    #[must_use]
-    pub fn with_encryption(key_bytes: &[u8]) -> Self {
-        let encryption =
-            FieldEncryption::new(key_bytes).expect("Encryption key must be exactly 32 bytes");
-        Self {
+    /// # Errors
+    /// Returns an error if the key is not exactly 32 bytes.
+    pub fn with_encryption(key_bytes: &[u8]) -> Result<Self> {
+        let encryption = FieldEncryption::new(key_bytes)?;
+        Ok(Self {
             credentials: Arc::new(RwLock::new(HashMap::new())),
             encryption: Some(encryption),
             next_id: std::sync::atomic::AtomicU64::new(1),
-        }
+        })
     }
 
     /// Generate a unique key for storing credentials
@@ -370,7 +356,7 @@ impl CredentialStorage for InMemoryCredentialStorage {
         let encrypted_data = self.encrypt_data(data)?;
 
         let provider = encrypted_data.provider_type();
-        let server_id = encrypted_data.server_id();
+        let server_id = encrypted_data.server_id_for_instance(provider_instance_name);
         let key = Self::make_key(user_id, provider, &server_id);
 
         let mut credentials = self.credentials.write().await;
@@ -714,7 +700,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_encryption_alist_password_round_trip() {
-        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key());
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key()).unwrap();
 
         let plain_password = "my_secret_password_123";
 
@@ -762,7 +748,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_encryption_emby_api_key_round_trip() {
-        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key());
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key()).unwrap();
 
         let api_key = "secret_api_key_12345";
 
@@ -804,7 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_encryption_bilibili_sessdata_encrypted() {
-        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key());
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key()).unwrap();
 
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "test_session".to_string());
@@ -858,7 +844,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_encryption_bilibili_stored_encrypted_at_rest() {
-        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key());
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key()).unwrap();
 
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "test_session".to_string());
@@ -981,5 +967,44 @@ mod tests {
         let data = CredentialData::bilibili(cookies);
         let c = data.as_bilibili().unwrap();
         assert_eq!(c.get("SESSDATA"), Some(&"abc123".to_string()));
+    }
+
+    #[test]
+    fn test_with_encryption_rejects_invalid_key_length() {
+        let err = match InMemoryCredentialStorage::with_encryption(&[0u8; 16]) {
+            Ok(_) => panic!("invalid encryption key length must return an error"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("Invalid encryption key length"));
+    }
+
+    #[tokio::test]
+    async fn test_decrypt_rejects_plaintext_when_encryption_enabled() {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key()).unwrap();
+        let credential = CredentialData::alist(
+            "https://alist.example.com".to_string(),
+            "admin".to_string(),
+            "plaintext_password".to_string(),
+        );
+        let server_id = credential.server_id();
+
+        storage.credentials.write().await.insert(
+            format!("{}:{}:{}", "user1", ProviderType::Alist.as_str(), server_id),
+            StoredCredential {
+                id: "cred_plain".to_string(),
+                user_id: "user1".to_string(),
+                provider: ProviderType::Alist,
+                server_id: credential.server_id(),
+                provider_instance_name: Some("alist".to_string()),
+                data: credential,
+                expires_at: None,
+            },
+        );
+
+        let err = storage
+            .get("user1", ProviderType::Alist, &server_id)
+            .await
+            .expect_err("plaintext credentials must be rejected when encryption is enabled");
+        assert!(err.to_string().contains("not encrypted"));
     }
 }

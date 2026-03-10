@@ -452,7 +452,8 @@ pub async fn init_services(
     info!("Settings registry initialized");
 
     // Initialize Email service (optional - requires SMTP configuration)
-    let email_service = init_email_service(config, redis_handles.as_ref().map(|h| h.conn.clone()));
+    let email_service =
+        init_email_service(config, redis_handles.as_ref().map(|h| h.conn.clone()))?;
     if email_service.is_some() {
         info!("Email service initialized");
     } else {
@@ -840,10 +841,10 @@ fn init_credential_encryption() -> Option<crate::service::CredentialEncryption> 
 fn init_email_service(
     config: &Config,
     redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-) -> Option<Arc<EmailService>> {
+) -> Result<Option<Arc<EmailService>>, anyhow::Error> {
     // Check if SMTP host is configured
     if config.email.smtp_host.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let email_config = EmailConfig {
@@ -874,10 +875,12 @@ fn init_email_service(
     };
 
     match result {
-        Ok(service) => Some(Arc::new(service)),
+        Ok(service) => Ok(Some(Arc::new(service))),
         Err(e) => {
             error!("Failed to initialize email service: {}", e);
-            None
+            Err(anyhow::anyhow!(
+                "email.smtp_host is configured but EmailService initialization failed: {e}"
+            ))
         }
     }
 }

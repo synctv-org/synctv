@@ -425,10 +425,12 @@ async fn test_activity_tracking() {
 // Test 13: Duplicate register overwrites
 // ============================================================================
 
-/// Test that registering with the same connection ID overwrites the previous one.
-/// The `ConnectionManager` does not enforce duplicate connection ID rejection.
+/// Test that registering with the same connection ID is rejected.
+///
+/// Reusing a live `connection_id` would corrupt the in-memory connection indexes
+/// and make targeted disconnects ambiguous, so production code must reject it.
 #[tokio::test]
-async fn test_duplicate_register_overwrites() {
+async fn test_duplicate_register_is_rejected_and_preserves_original_connection() {
     let mgr = ConnectionManager::default();
 
     mgr.register("conn1".to_string(), uid("user1"))
@@ -436,17 +438,16 @@ async fn test_duplicate_register_overwrites() {
         .unwrap();
     assert_eq!(mgr.connection_count(), 1);
 
-    // Same connection ID with different user should overwrite
+    // Same connection ID with different user should be rejected
     let result = mgr.register("conn1".to_string(), uid("user2")).await;
-    // This currently succeeds and overwrites the previous entry
-    assert!(result.is_ok(), "Duplicate connection ID overwrites");
+    assert!(result.is_err(), "Duplicate connection ID must be rejected");
 
     // Still only 1 connection
     assert_eq!(mgr.connection_count(), 1);
 
-    // Should have user2's info now
+    // Original connection must remain intact
     let conn = mgr.get_connection("conn1").unwrap();
-    assert_eq!(conn.user_id, uid("user2"));
+    assert_eq!(conn.user_id, uid("user1"));
 }
 
 // ============================================================================

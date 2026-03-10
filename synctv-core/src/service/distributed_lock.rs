@@ -301,6 +301,11 @@ impl DistributedLock {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn uses_shared_backend(&self) -> bool {
+        matches!(self.backend, DistributedLockBackend::Shared(_))
+    }
+
     /// Generate a fencing token for a lock key using Redis INCR
     ///
     /// Uses Redis INCR on a per-key counter to ensure monotonic tokens

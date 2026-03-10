@@ -730,6 +730,9 @@ impl ClusterManager {
             cm.shutdown();
         }
 
+        // Shut down RoomMessageHub background tasks (Redis TTL refresh and stale cleanup)
+        self.message_hub.shutdown();
+
         // Await the publisher task so any in-flight events are fully flushed before
         // we return. A 10-second timeout prevents hanging indefinitely when Redis is
         // unreachable during shutdown.
@@ -1419,6 +1422,39 @@ mod tests {
         assert!(
             finished.load(Ordering::SeqCst),
             "tracked critical retry task should finish before shutdown returns"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_also_cancels_room_message_hub_background_tasks() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "shutdown-room-hub-node".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1,
+            publish_channel_capacity: 1,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            shared_redis_conn: None,
+            parent_cancel_token: None,
+        };
+
+        let manager = ClusterManager::new(config, None, None).await.unwrap();
+
+        assert!(
+            !manager.message_hub().background_shutdown_requested(),
+            "room hub cancellation tokens should not be pre-cancelled"
+        );
+
+        manager.shutdown().await;
+
+        assert!(
+            manager.message_hub().background_shutdown_requested(),
+            "cluster shutdown must also cancel room hub background tasks"
         );
     }
 

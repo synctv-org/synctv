@@ -26,9 +26,10 @@ pub struct PullStreamManager {
     /// Shared across all `PullStream`/`GrpcStreamPuller` instances managed by this manager.
     connection_pool: GrpcConnectionPool,
     /// Handle for the background gRPC connection pool cleanup task.
-    /// Kept alive for the lifetime of the manager; dropped (aborted) when the
-    /// manager is dropped.
-    _pool_cleanup_handle: tokio::task::JoinHandle<()>,
+    /// Kept alive for the lifetime of the manager and rebuilt if the pool is replaced.
+    pool_cleanup_handle: tokio::task::JoinHandle<()>,
+    /// Cancellation token for the background gRPC connection pool cleanup task.
+    pool_cleanup_cancel: tokio_util::sync::CancellationToken,
     /// Cluster authentication secret passed to `GrpcStreamPuller` for inter-node gRPC requests.
     cluster_secret: Option<String>,
     /// Optional HLS proxy client for cache invalidation on stale epoch detection.
@@ -55,7 +56,15 @@ impl PullStreamManager {
     /// Set a shared gRPC connection pool (for sharing with `HlsProxyClient` etc.).
     #[must_use]
     pub fn with_connection_pool(mut self, pool: GrpcConnectionPool) -> Self {
+        self.pool_cleanup_cancel.cancel();
+        self.pool_cleanup_handle.abort();
         self.connection_pool = pool;
+        self.pool_cleanup_cancel = tokio_util::sync::CancellationToken::new();
+        let cleanup_interval = self.connection_pool.max_idle();
+        self.pool_cleanup_handle = self.connection_pool.spawn_cleanup_task(
+            cleanup_interval,
+            self.pool_cleanup_cancel.clone(),
+        );
         self
     }
 
@@ -85,7 +94,7 @@ impl PullStreamManager {
         // Evict stale gRPC connections every 5 minutes in the background
         let cleanup_token = tokio_util::sync::CancellationToken::new();
         let pool_cleanup_handle =
-            connection_pool.spawn_cleanup_task(Duration::from_mins(5), cleanup_token);
+            connection_pool.spawn_cleanup_task(Duration::from_mins(5), cleanup_token.clone());
         let pool = StreamPool::new(
             Duration::from_secs(cleanup_check_interval_secs),
             Duration::from_secs(idle_timeout_secs),
@@ -95,7 +104,8 @@ impl PullStreamManager {
             registry,
             stream_hub_event_sender,
             connection_pool,
-            _pool_cleanup_handle: pool_cleanup_handle,
+            pool_cleanup_handle,
+            pool_cleanup_cancel: cleanup_token,
             cluster_secret: None,
             hls_proxy: None,
         }
@@ -305,11 +315,19 @@ impl PullStreamManager {
     }
 }
 
+impl Drop for PullStreamManager {
+    fn drop(&mut self) {
+        self.pool_cleanup_cancel.cancel();
+        self.pool_cleanup_handle.abort();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::livestream::managed_stream::ManagedStream;
     use crate::relay::MockStreamRegistry;
+    use tonic::transport::Channel;
 
     #[tokio::test]
     async fn test_pull_stream_manager_creation() {
@@ -421,5 +439,36 @@ mod tests {
         assert!(result.is_none());
         // Subscriber count should still be 1 (not 2)
         assert_eq!(pull_stream.subscriber_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_with_connection_pool_rebuilds_cleanup_for_replaced_pool() {
+        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
+        let shared_pool = GrpcConnectionPool::new(Duration::from_millis(5), 8);
+        let channel = Channel::from_static("http://[::1]:50051").connect_lazy();
+
+        shared_pool.insert_test_channel_with_age(
+            "publisher-node:50051",
+            channel,
+            Duration::from_secs(1),
+        );
+
+        let manager = PullStreamManager::with_timeouts(
+            registry,
+            stream_hub_event_sender,
+            1,
+            300,
+        )
+        .with_connection_pool(shared_pool.clone());
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(
+            shared_pool.is_empty(),
+            "the active shared pool should inherit its own idle cleanup cadence after replacement"
+        );
+
+        drop(manager);
     }
 }

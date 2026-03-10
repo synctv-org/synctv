@@ -354,7 +354,7 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
 /// must drive those counters back to 0 instead of leaving them to expire by TTL.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_reconcile_clears_stale_zero_count_counters() {
+async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
     let (_container, conn) = setup_redis().await;
 
     let manager = ConnectionManager::new(ConnectionLimits::default())
@@ -405,9 +405,9 @@ async fn test_reconcile_clears_stale_zero_count_counters() {
         .await
         .unwrap();
 
-    assert_eq!(total.unwrap_or_default(), 0);
-    assert_eq!(user.unwrap_or_default(), 0);
-    assert_eq!(room.unwrap_or_default(), 0);
+    assert_eq!(total.unwrap_or_default(), 1);
+    assert_eq!(user.unwrap_or_default(), 1);
+    assert_eq!(room.unwrap_or_default(), 1);
 }
 
 // ============================================================================

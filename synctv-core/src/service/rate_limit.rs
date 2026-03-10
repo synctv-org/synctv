@@ -943,8 +943,8 @@ mod tests {
     }
 
     /// Test that InMemoryRateLimitBackend::check_strict fails closed when Redis is not configured.
-    /// For security-critical operations, all requests should be denied when Redis is unavailable
-    /// to ensure global limits are never exceeded.
+    /// The caller gets an explicit backend-unavailable error so transports can map
+    /// it to 503/Unavailable instead of pretending the quota itself was exceeded.
 
     #[tokio::test]
     async fn test_strict_distributed_flag_makes_check_rate_limit_fail_closed() {
@@ -953,7 +953,7 @@ mod tests {
 
         let result = limiter.check_rate_limit("key", 5, 60).await;
         assert!(
-            matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+            matches!(result, Err(RateLimitError::BackendUnavailable(_))),
             "strict distributed mode should fail closed through check_rate_limit"
         );
     }
@@ -973,48 +973,33 @@ mod tests {
     async fn test_in_memory_check_strict_fails_closed() {
         let limiter = RateLimiter::in_memory_only("strict_test:".to_string());
 
-        // Should deny ALL requests when Redis is not configured (fail-closed)
+        // Should reject because distributed coordination is unavailable.
         let result = limiter
             .check_rate_limit_distributed("strict_key", 5, 1)
             .await;
         assert!(
-            matches!(
-                result,
-                Err(RateLimitError::RateLimitExceeded {
-                    retry_after_seconds: 1
-                })
-            ),
-            "check_strict should deny all requests when Redis is not configured (fail-closed)"
+            matches!(result, Err(RateLimitError::BackendUnavailable(_))),
+            "check_strict should fail closed when Redis is not configured"
         );
     }
 
-    /// Test that check_strict with in-memory backend denies all requests regardless of key
+    /// Test that check_strict with in-memory backend fails closed for every key.
     #[tokio::test]
-    async fn test_in_memory_check_strict_denies_all_keys() {
+    async fn test_in_memory_check_strict_rejects_all_keys() {
         let limiter = RateLimiter::in_memory_only("strict_keys:".to_string());
 
-        // key1 should be denied (fail-closed)
+        // key1 should fail closed
         let result1 = limiter.check_rate_limit_distributed("key1", 5, 1).await;
         assert!(
-            matches!(
-                result1,
-                Err(RateLimitError::RateLimitExceeded {
-                    retry_after_seconds: 1
-                })
-            ),
-            "check_strict should deny key1 when Redis is not configured"
+            matches!(result1, Err(RateLimitError::BackendUnavailable(_))),
+            "check_strict should fail closed for key1 when Redis is not configured"
         );
 
-        // key2 should also be denied (fail-closed)
+        // key2 should also fail closed
         let result2 = limiter.check_rate_limit_distributed("key2", 5, 1).await;
         assert!(
-            matches!(
-                result2,
-                Err(RateLimitError::RateLimitExceeded {
-                    retry_after_seconds: 1
-                })
-            ),
-            "check_strict should deny key2 when Redis is not configured"
+            matches!(result2, Err(RateLimitError::BackendUnavailable(_))),
+            "check_strict should fail closed for key2 when Redis is not configured"
         );
     }
 

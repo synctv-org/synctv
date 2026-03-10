@@ -356,8 +356,8 @@ impl Application {
                     infra.config.redis.deployment_mode,
                     synctv_core::config::RedisDeploymentMode::Sentinel
                 );
-                Arc::new(synctv_core::service::DistributedLock::new_with_mode(
-                    rh.conn_snapshot().await,
+                Arc::new(synctv_core::service::DistributedLock::new_shared_with_mode(
+                    rh.conn.clone(),
                     is_sentinel,
                 ))
             } else {

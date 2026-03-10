@@ -239,6 +239,11 @@ impl RoomMessageHub {
         self.stale_cleanup_cancel.cancel();
     }
 
+    #[cfg(test)]
+    pub(crate) fn background_shutdown_requested(&self) -> bool {
+        self.ttl_refresh_cancel.is_cancelled() && self.stale_cleanup_cancel.is_cancelled()
+    }
+
     /// Set the TTL for Redis subscription keys (crash-safety mechanism).
     ///
     /// If a node crashes without properly unsubscribing, stale keys will expire

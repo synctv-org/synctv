@@ -333,9 +333,13 @@ pub struct StreamMessageHandler {
     /// Tracks whether this connection has an active WebRTC session.
     /// Used by `cleanup()` to decrement `WEBRTC_PEERS_ACTIVE` on ungraceful disconnect.
     has_webrtc_session: Arc<std::sync::atomic::AtomicBool>,
-    /// R-10/R-11: When true, `cleanup()` skips broadcasting `UserLeft` because the
-    /// event was already published by an explicit API call (`leave_room/delete_room`)
-    /// and the WS handler is disconnecting in response to that cluster event.
+    /// When true, `cleanup()` skips broadcasting `UserLeft`.
+    ///
+    /// Used when:
+    /// - the event was already published by an explicit API call (`leave_room/delete_room`)
+    /// - the connection never completed its initial join handshake, so broadcasting
+    ///   `UserLeft` would create a ghost offline event for a user that was never
+    ///   actually announced as online
     skip_cleanup_user_left: Arc<std::sync::atomic::AtomicBool>,
     /// Cached membership status for heartbeat validation.
     /// Uses TTL-based expiration (30 seconds) to reduce database load while
@@ -504,6 +508,11 @@ impl StreamMessageHandler {
         self
     }
 
+    #[must_use]
+    pub fn connection_id(&self) -> &str {
+        &self.connection_id
+    }
+
     /// Invalidate the membership cache entry for a specific user in a room.
     ///
     /// Called when a `KickUser` or `KickUserFromRoom` admin event is received,
@@ -613,8 +622,17 @@ impl StreamMessageHandler {
             .ok()
             .flatten();
 
-        // Send initial user joined notification
-        stream.send(self.create_user_joined_message(&room_id_str, member_data.as_ref()))?;
+        // Send initial user joined notification.
+        // If the transport is already gone here, we still need to run cleanup()
+        // because pre_join() already registered the connection and subscribed state
+        // will be established below.
+        if let Err(error) = stream.send(self.create_user_joined_message(&room_id_str, member_data.as_ref())) {
+            tracing::error!("Failed to send initial UserJoined message in run_after_join(): {error}");
+            self.skip_cleanup_user_left
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.cleanup(&room_id_str).await;
+            return Ok(());
+        }
 
         // Broadcast UserJoined event to other replicas
         self.broadcast_user_joined(member_data.as_ref()).await;
@@ -1575,11 +1593,16 @@ impl StreamMessageHandler {
         let initial_msg = self.create_user_joined_message(&room_id_str, member_data.as_ref());
         if let Err(e) = self.sender.send(initial_msg) {
             tracing::error!("Failed to send initial UserJoined message in start(): {e}");
+            self.skip_cleanup_user_left
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             cancel_token.cancel();
+        } else {
+            // Broadcast UserJoined event to other replicas only after the
+            // connection has observed the initial join payload locally.
+            // Otherwise we can create a transient ghost-presence event for a
+            // connection that never became usable.
+            self.broadcast_user_joined(member_data.as_ref()).await;
         }
-
-        // Broadcast UserJoined event to other replicas (mirrors run() behavior)
-        self.broadcast_user_joined(member_data.as_ref()).await;
 
         // Use bounded channel to prevent memory exhaustion from fast clients
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(256);
@@ -3563,6 +3586,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_start_does_not_broadcast_presence_events_when_initial_send_fails() {
+        let cluster_manager = test_cluster_manager("test_start_no_broadcast_on_initial_failure").await;
+        let connection_manager = test_connection_manager();
+        let sender = FailingMessageSender::immediate();
+        let handler =
+            test_message_handler(sender, Arc::clone(&cluster_manager), connection_manager.clone());
+
+        let room = handler.room_id.clone();
+        let user = handler.user_id.clone();
+        let (mut rx, conn_id) = cluster_manager.subscribe(room, user).await;
+        let (_tx, cancel_token) = handler.start().await.expect("start should return");
+
+        let maybe_presence_event =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
+
+        assert!(
+            maybe_presence_event.is_err(),
+            "initial send failure must not broadcast UserJoined/UserLeft presence events"
+        );
+
+        cluster_manager.unsubscribe(&conn_id);
+        wait_for_start_cleanup(&handler, &connection_manager, &cancel_token, true).await;
+        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+    }
+
+    #[tokio::test]
     async fn test_start_cancels_and_cleans_up_when_cluster_event_send_fails() {
         let cluster_manager = test_cluster_manager("test_start_event_send_failure").await;
         let connection_manager = test_connection_manager();
@@ -3669,6 +3718,34 @@ mod tests {
             color: None,
         });
 
+        wait_for_run_after_join_cleanup(&handler, &connection_manager, run_task).await;
+        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+    }
+
+    #[tokio::test]
+    async fn test_run_after_join_cleans_up_when_initial_send_fails() {
+        let cluster_manager = test_cluster_manager("test_run_after_join_initial_failure").await;
+        let connection_manager = test_connection_manager();
+        let handler = test_message_handler(
+            FailingMessageSender::fail_after(usize::MAX),
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+        );
+        handler.pre_join().await.expect("pre_join should succeed");
+
+        let (mut rx, conn_id) = cluster_manager.subscribe(handler.room_id.clone(), handler.user_id.clone()).await;
+        let (mut stream, _stream_state) = FailingStream::fail_after(0);
+        let task_handler = handler.clone();
+        let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
+
+        let maybe_presence_event =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
+        assert!(
+            maybe_presence_event.is_err(),
+            "initial run_after_join send failure must not broadcast UserJoined/UserLeft presence events"
+        );
+
+        cluster_manager.unsubscribe(&conn_id);
         wait_for_run_after_join_cleanup(&handler, &connection_manager, run_task).await;
         shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
     }

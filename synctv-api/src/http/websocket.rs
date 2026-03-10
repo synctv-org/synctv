@@ -271,6 +271,29 @@ impl WebSocketMessageSender {
     }
 }
 
+async fn forward_websocket_messages<S>(
+    mut outbound_messages: tokio::sync::mpsc::Receiver<axum::extract::ws::Message>,
+    mut ws_sender_sink: S,
+    is_alive: Arc<std::sync::atomic::AtomicBool>,
+    connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+    connection_id: String,
+) where
+    S: futures::Sink<axum::extract::ws::Message, Error = axum::Error> + Unpin,
+{
+    while let Some(msg) = outbound_messages.recv().await {
+        if let Err(e) = ws_sender_sink.send(msg).await {
+            error!(
+                connection_id = %connection_id,
+                error = %e,
+                "Failed to send WebSocket message"
+            );
+            is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+            connection_manager.disconnect_connection(&connection_id);
+            break;
+        }
+    }
+}
+
 /// Returns `true` if the given `ServerMessage` carries a critical payload that
 /// MUST be delivered (playback state changes, kick/ban notifications, room
 /// deletion). Critical messages use a blocking send with timeout so they are
@@ -616,7 +639,7 @@ async fn handle_socket(
 
     // Create channel for sending messages to WebSocket with bounded capacity.
     // Buffer size of 1000 messages provides backpressure for slow clients.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(1000);
+    let (tx, rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(1000);
     let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     // Create WebSocket sender - wrapped in Arc for sharing with handler.
@@ -662,20 +685,23 @@ async fn handle_socket(
     } else {
         stream_handler
     };
+    let connection_id = stream_handler.connection_id().to_string();
 
     // Split WebSocket into sender and receiver
     let (mut ws_sender_sink, ws_receiver) = socket.split();
 
     // Spawn task to handle server messages -> WebSocket
     let is_alive_clone = is_alive.clone();
+    let connection_manager = state.connection_manager.clone();
     tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if let Err(e) = ws_sender_sink.send(msg).await {
-                error!("Failed to send WebSocket message: {}", e);
-                is_alive_clone.store(false, std::sync::atomic::Ordering::Relaxed);
-                break;
-            }
-        }
+        forward_websocket_messages(
+            rx,
+            &mut ws_sender_sink,
+            is_alive_clone,
+            connection_manager,
+            connection_id,
+        )
+        .await;
     });
 
     // Create WebSocketStream and run unified message loop
@@ -1132,5 +1158,91 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.contains("stateful message"));
         assert!(err.contains("UserJoined"));
+    }
+
+    #[tokio::test]
+    async fn test_forward_websocket_messages_disconnects_connection_on_sink_failure() {
+        use axum::Error;
+        use futures::task::{Context, Poll};
+        use std::pin::Pin;
+
+        struct FailingSink;
+
+        impl futures::Sink<axum::extract::ws::Message> for FailingSink {
+            type Error = Error;
+
+            fn poll_ready(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn start_send(
+                self: Pin<&mut Self>,
+                _item: axum::extract::ws::Message,
+            ) -> Result<(), Self::Error> {
+                Ok(())
+            }
+
+            fn poll_flush(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Err(Error::new(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "synthetic sink failure",
+                ))))
+            }
+
+            fn poll_close(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let connection_id = "conn-forward-failure".to_string();
+        let user_id = UserId::from_string("user-forward-failure".to_string());
+        let manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+        manager
+            .register(connection_id.clone(), user_id)
+            .await
+            .expect("register connection");
+
+        let mut disconnect_rx = manager.subscribe_disconnect();
+        let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(axum::extract::ws::Message::Text("payload".into()))
+            .await
+            .expect("enqueue outbound message");
+        drop(tx);
+
+        forward_websocket_messages(
+            rx,
+            FailingSink,
+            is_alive.clone(),
+            manager,
+            connection_id.clone(),
+        )
+        .await;
+
+        assert!(
+            !is_alive.load(std::sync::atomic::Ordering::Relaxed),
+            "sink failure must mark the connection dead immediately"
+        );
+
+        let signal = tokio::time::timeout(std::time::Duration::from_secs(1), disconnect_rx.recv())
+            .await
+            .expect("disconnect signal should be sent promptly")
+            .expect("disconnect channel should remain open");
+
+        match signal {
+            synctv_cluster::sync::DisconnectSignal::Connection(id) => {
+                assert_eq!(id, connection_id);
+            }
+            other => panic!("expected connection disconnect signal, got {other:?}"),
+        }
     }
 }

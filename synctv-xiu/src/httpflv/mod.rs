@@ -94,18 +94,9 @@ impl HttpFlvSession {
         let mut max_av_frame_num_to_guess_av = 0;
         let mut cached_frames = Vec::new();
 
-        // Use a timeout-based approach for stream end detection
-        // This is more reliable than counting retries
-        const RECV_TIMEOUT_SECS: u64 = 5; // 5 seconds of no data = stream ended
-
         loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(RECV_TIMEOUT_SECS),
-                data_receiver.recv(),
-            )
-            .await
-            {
-                Ok(Some(data)) => {
+            match data_receiver.recv().await {
+                Some(data) => {
                     // Detect audio/video before sending header
                     if !self.has_send_header {
                         max_av_frame_num_to_guess_av += 1;
@@ -153,14 +144,9 @@ impl HttpFlvSession {
                         error!("Failed to write FLV tag: {}", e);
                     }
                 }
-                Ok(None) => {
+                None => {
                     // Channel closed - stream truly ended
                     info!("Stream channel closed");
-                    break;
-                }
-                Err(_timeout) => {
-                    // Timeout - no data for 5 seconds, consider stream ended
-                    info!("Stream timeout (no data for {}s)", RECV_TIMEOUT_SECS);
                     break;
                 }
             }
@@ -517,6 +503,39 @@ mod tests {
         assert_eq!(
             session.total_dropped_frames, 1,
             "Total should still reflect the one drop"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_session_waits_for_stream_without_idle_timeout_disconnect() {
+        let (event_sender, _) = tokio::sync::mpsc::channel(64);
+        let (response_tx, _response_rx) = mpsc::channel(FLV_RESPONSE_CHANNEL_CAPACITY);
+        let (frame_tx, frame_rx) = mpsc::channel(8);
+
+        let mut session = HttpFlvSession::new(
+            "live".to_string(),
+            "room/stream".to_string(),
+            event_sender,
+            response_tx,
+        );
+        session.data_receiver = Some(frame_rx);
+
+        let session_task = tokio::spawn(async move { session.send_media_stream().await });
+
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !session_task.is_finished(),
+            "session must stay alive during temporary publisher silence"
+        );
+
+        drop(frame_tx);
+
+        let result = session_task.await.expect("session task should join");
+        assert!(
+            result.is_ok(),
+            "session should exit cleanly when the stream channel closes: {result:?}"
         );
     }
 }

@@ -1,6 +1,7 @@
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -171,10 +172,30 @@ const TTL_REFRESH_BATCH_SIZE: usize = 1000;
 const CONNECTION_METADATA_TTL_SECONDS: i64 = 90_000; // 25 hours
 
 /// A failed Redis counter operation that should be retried.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingRedisOp {
     /// Decrement a counter key
     Decr(String),
+}
+
+struct ConnectionIdClaim<'a> {
+    manager: &'a ConnectionManager,
+    connection_id: String,
+    committed: bool,
+}
+
+impl ConnectionIdClaim<'_> {
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for ConnectionIdClaim<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.manager.release_connection_id_claim(&self.connection_id);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -197,6 +218,12 @@ impl RedisConnHandle {
 pub struct ConnectionManager {
     /// All active connections by `connection_id`
     connections: Arc<DashMap<String, ConnectionInfo>>,
+
+    /// Tracks connection IDs that are either fully registered or currently
+    /// in-flight through `register()`. This closes the async TOCTOU window
+    /// where two concurrent `register()` calls for the same connection_id
+    /// could both pass an existence check before either inserts the connection.
+    claimed_connection_ids: Arc<std::sync::Mutex<HashSet<String>>>,
 
     /// Connections by `user_id`
     user_connections: Arc<DashMap<UserId, Vec<String>>>,
@@ -319,6 +346,7 @@ impl ConnectionManager {
         // and hand it to spawn_pending_retries_task when Redis is configured.
         Self {
             connections: Arc::new(DashMap::new()),
+            claimed_connection_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
             user_connections: Arc::new(DashMap::new()),
             room_connections: Arc::new(DashMap::new()),
             limits: Arc::new(limits),
@@ -546,6 +574,46 @@ impl ConnectionManager {
     fn enqueue_retry(&self, op: PendingRedisOp) {
         if let Err(e) = self.pending_retries_tx.try_send(op) {
             warn!("Failed to enqueue pending Redis retry (channel full or closed): {e}");
+        }
+    }
+
+    fn try_claim_connection_id(&self, connection_id: &str) -> Result<ConnectionIdClaim<'_>, String> {
+        let mut claimed = self
+            .claimed_connection_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        if claimed.contains(connection_id) || self.connections.contains_key(connection_id) {
+            return Err(format!(
+                "Connection '{}' is already registered",
+                connection_id
+            ));
+        }
+
+        claimed.insert(connection_id.to_string());
+
+        Ok(ConnectionIdClaim {
+            manager: self,
+            connection_id: connection_id.to_string(),
+            committed: false,
+        })
+    }
+
+    fn release_connection_id_claim(&self, connection_id: &str) {
+        self.claimed_connection_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(connection_id);
+    }
+
+    async fn rollback_distributed_counter(&self, key: String) {
+        if let Err(error) = self.redis_decr(&key).await {
+            warn!(
+                key = %key,
+                error = %error,
+                "Failed to roll back distributed Redis counter; enqueueing retry"
+            );
+            self.enqueue_retry(PendingRedisOp::Decr(key));
         }
     }
 
@@ -944,12 +1012,7 @@ impl ConnectionManager {
     /// limits. In cluster mode, allowing local-only admission would let replicas
     /// oversubscribe the same user concurrently.
     pub async fn register(&self, connection_id: String, user_id: UserId) -> Result<(), String> {
-        if self.connections.contains_key(&connection_id) {
-            return Err(format!(
-                "Connection '{}' is already registered",
-                connection_id
-            ));
-        }
+        let claim = self.try_claim_connection_id(&connection_id)?;
 
         // Atomically reserve a slot in the total connection count.
         // fetch_add returns the previous value; if it was already at the limit,
@@ -980,9 +1043,7 @@ impl ConnectionManager {
                 Ok(true) => {}
                 Ok(false) => {
                     self.total_connections.fetch_sub(1, Ordering::AcqRel);
-                    if self.redis_decr(&total_key).await.is_err() {
-                        self.enqueue_retry(PendingRedisOp::Decr(total_key.clone()));
-                    }
+                    self.rollback_distributed_counter(total_key.clone()).await;
                     return Err(format!(
                         "Server at capacity across all replicas ({} connections)",
                         self.limits.max_total
@@ -1027,10 +1088,8 @@ impl ConnectionManager {
                     // Distributed limit exceeded -- roll back total counter and
                     // the Redis per-user counter that was just incremented.
                     self.total_connections.fetch_sub(1, Ordering::AcqRel);
-                    if self.redis_decr(&total_key).await.is_err() {
-                        self.enqueue_retry(PendingRedisOp::Decr(total_key.clone()));
-                    }
-                    let _ = self.redis_decr(&redis_key).await;
+                    self.rollback_distributed_counter(total_key.clone()).await;
+                    self.rollback_distributed_counter(redis_key.clone()).await;
                     return Err(format!(
                         "Too many connections for this user across all replicas (max {})",
                         self.limits.max_per_user
@@ -1038,9 +1097,7 @@ impl ConnectionManager {
                 }
                 Err(e) => {
                     self.total_connections.fetch_sub(1, Ordering::AcqRel);
-                    if self.redis_decr(&total_key).await.is_err() {
-                        self.enqueue_retry(PendingRedisOp::Decr(total_key.clone()));
-                    }
+                    self.rollback_distributed_counter(total_key.clone()).await;
                     warn!("Distributed user connection check failed; rejecting connection: {e}");
                     return Err(
                         "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
@@ -1130,6 +1187,8 @@ impl ConnectionManager {
             "Connection registered"
         );
 
+        claim.commit();
+
         Ok(())
     }
 
@@ -1177,7 +1236,7 @@ impl ConnectionManager {
             {
                 Ok(true) => true,
                 Ok(false) => {
-                    let _ = self.redis_decr(&redis_key).await;
+                    self.rollback_distributed_counter(redis_key.clone()).await;
                     return Err(format!(
                         "Room at capacity across all replicas ({} connections)",
                         self.limits.max_per_room
@@ -1208,7 +1267,7 @@ impl ConnectionManager {
                     self.redis_key_prefix,
                     room_id.as_str()
                 );
-                let _ = self.redis_decr(&redis_key).await;
+                self.rollback_distributed_counter(redis_key).await;
             }
             return Err("Connection not found".to_string());
         };
@@ -1249,9 +1308,7 @@ impl ConnectionManager {
                 self.redis_key_prefix,
                 old_room.as_str()
             );
-            if self.redis_decr(&old_key).await.is_err() {
-                self.enqueue_retry(PendingRedisOp::Decr(old_key));
-            }
+            self.rollback_distributed_counter(old_key).await;
         }
 
         // Update Redis metadata with new room_id (best-effort)
@@ -1453,6 +1510,8 @@ impl ConnectionManager {
                 message_count = conn_info.message_count,
                 "Connection unregistered"
             );
+
+            self.release_connection_id_claim(connection_id);
         }
     }
 
@@ -2951,6 +3010,24 @@ mod tests {
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::redis::Redis;
 
+    impl ConnectionManager {
+        fn drain_pending_retries_for_test(&self) -> Vec<PendingRedisOp> {
+            let mut guard = self
+                .pending_retries_rx
+                .try_lock()
+                .expect("pending retries receiver should be lockable in tests");
+            let rx = guard
+                .as_mut()
+                .expect("pending retries receiver is only available before with_redis()");
+
+            let mut ops = Vec::new();
+            while let Ok(op) = rx.try_recv() {
+                ops.push(op);
+            }
+            ops
+        }
+    }
+
     #[tokio::test]
     async fn test_register_connection() {
         let manager = ConnectionManager::default();
@@ -2991,6 +3068,135 @@ mod tests {
             .get_connection("dup-conn")
             .expect("original connection should remain intact");
         assert_eq!(conn.user_id, user_id);
+    }
+
+    #[tokio::test]
+    async fn test_connection_id_claim_rejects_concurrent_duplicate_attempts() {
+        let manager = Arc::new(ConnectionManager::default());
+        let claimed = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+
+        let first = {
+            let manager = Arc::clone(&manager);
+            let claimed = Arc::clone(&claimed);
+            let release = Arc::clone(&release);
+            tokio::spawn(async move {
+                let claim = manager
+                    .try_claim_connection_id("local-claim-race")
+                    .expect("first claim should succeed");
+                claimed.notify_one();
+                release.notified().await;
+                drop(claim);
+            })
+        };
+
+        claimed.notified().await;
+
+        let duplicate = manager.try_claim_connection_id("local-claim-race");
+        assert!(
+            duplicate.is_err(),
+            "concurrent duplicate claim must fail while the first registration is in flight"
+        );
+
+        release.notify_one();
+        first.await.expect("first claim task");
+
+        let retry = manager.try_claim_connection_id("local-claim-race");
+        assert!(
+            retry.is_ok(),
+            "connection_id claim should be released after the in-flight registration finishes"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_failed_rollback_enqueues_retry_operation() {
+        let manager = ConnectionManager::default();
+
+        manager
+            .rollback_distributed_counter("rollback:test:key".to_string())
+            .await;
+
+        assert_eq!(
+            manager.drain_pending_retries_for_test(),
+            vec![PendingRedisOp::Decr("rollback:test:key".to_string())],
+            "failed rollback must enqueue a retry instead of silently dropping the counter repair"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_register_same_connection_id_concurrently_with_redis_rejects_one_attempt() {
+        use redis::AsyncCommands;
+
+        let (_container, client, conn, prefix) = docker_redis_connection("dup-race:").await;
+        let manager = Arc::new(
+            ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix),
+        );
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let user1 = UserId::from_string("dup-race-user-1".to_string());
+        let user2 = UserId::from_string("dup-race-user-2".to_string());
+
+        let task1 = {
+            let manager = Arc::clone(&manager);
+            let barrier = Arc::clone(&barrier);
+            let user1 = user1.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                manager.register("dup-race-conn".to_string(), user1).await
+            })
+        };
+        let task2 = {
+            let manager = Arc::clone(&manager);
+            let barrier = Arc::clone(&barrier);
+            let user2 = user2.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                manager.register("dup-race-conn".to_string(), user2).await
+            })
+        };
+
+        barrier.wait().await;
+
+        let result1 = task1.await.expect("task1 join");
+        let result2 = task2.await.expect("task2 join");
+        let success_count = usize::from(result1.is_ok()) + usize::from(result2.is_ok());
+
+        assert_eq!(
+            success_count, 1,
+            "only one concurrent register should succeed for the same connection_id"
+        );
+        assert_eq!(
+            manager.connection_count(),
+            1,
+            "duplicate concurrent register must not double-count local connections"
+        );
+        assert_eq!(
+            manager.user_connection_count(&user1) + manager.user_connection_count(&user2),
+            1,
+            "duplicate concurrent register must not corrupt per-user indexes"
+        );
+
+        let registered = manager
+            .get_connection("dup-race-conn")
+            .expect("winning registration should remain present");
+        assert!(
+            registered.user_id == user1 || registered.user_id == user2,
+            "the surviving connection must belong to exactly one of the contenders"
+        );
+
+        let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .expect("redis verification connection");
+        let total_count: i64 = redis_conn
+            .get(format!("{prefix}connections:total"))
+            .await
+            .unwrap_or(0);
+        assert_eq!(
+            total_count, 1,
+            "duplicate concurrent register must not over-increment distributed total count"
+        );
+
+        manager.unregister("dup-race-conn").await;
     }
 
     #[tokio::test]

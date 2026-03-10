@@ -211,6 +211,12 @@ impl GrpcConnectionPool {
         self.max_size
     }
 
+    /// Returns the maximum idle age for pooled connections before they are stale.
+    #[must_use]
+    pub const fn max_idle(&self) -> Duration {
+        self.max_idle
+    }
+
     /// Get or create a gRPC channel for the given address.
     ///
     /// Returns a cached channel if one exists and is not stale, otherwise
@@ -469,6 +475,26 @@ impl GrpcConnectionPool {
             .get(address)
             .map(|e| e.consecutive_errors.load(Ordering::Acquire))
     }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_channel_with_age(
+        &self,
+        address: &str,
+        channel: Channel,
+        age: Duration,
+    ) {
+        let created_at = Instant::now()
+            .checked_sub(age)
+            .unwrap_or_else(Instant::now);
+        self.connections.insert(
+            address.to_string(),
+            PooledChannel {
+                channel,
+                created_at,
+                consecutive_errors: AtomicU32::new(0),
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -697,5 +723,33 @@ mod tests {
             "Only non-idle CB should remain"
         );
         assert!(pool.circuit_breakers.contains_key("node-3:50051"));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_task_stops_after_cancellation() {
+        let pool = GrpcConnectionPool::new(Duration::from_millis(5), 8);
+        let channel = Channel::from_static("http://[::1]:50051").connect_lazy();
+
+        pool.insert_test_channel_with_age("node-a:50051", channel.clone(), Duration::from_secs(1));
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let handle = pool.spawn_cleanup_task(Duration::from_millis(10), cancel.clone());
+
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(
+            pool.is_empty(),
+            "cleanup task should evict stale pooled connections while active"
+        );
+
+        pool.insert_test_channel_with_age("node-b:50051", channel, Duration::from_secs(1));
+        cancel.cancel();
+        handle.await.expect("cleanup task should join cleanly");
+
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(
+            pool.len(),
+            1,
+            "cancelled cleanup task must stop evicting pooled connections"
+        );
     }
 }

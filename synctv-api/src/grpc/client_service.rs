@@ -56,6 +56,25 @@ const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
 
 use super::map_api_error;
 
+#[derive(Debug)]
+enum GrpcReceiveOutcome<T, E> {
+    Message(Result<Option<T>, E>),
+    ResponseStreamClosed,
+}
+
+async fn await_grpc_receive_or_response_close<T, E, F>(
+    receive_future: F,
+    response_sender: tokio::sync::mpsc::Sender<ServerMessage>,
+) -> GrpcReceiveOutcome<T, E>
+where
+    F: std::future::Future<Output = Result<Option<T>, E>>,
+{
+    tokio::select! {
+        result = receive_future => GrpcReceiveOutcome::Message(result),
+        _ = response_sender.closed() => GrpcReceiveOutcome::ResponseStreamClosed,
+    }
+}
+
 #[allow(clippy::result_large_err)]
 fn extract_authenticated_user_id(
     request: &Request<impl std::fmt::Debug>,
@@ -66,6 +85,20 @@ fn extract_authenticated_user_id(
         .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
 
     Ok(UserId::from_string(user_context.user_id.clone()))
+}
+
+#[allow(clippy::result_large_err)]
+fn map_message_stream_join_error(error: String) -> Status {
+    if error.contains("unavailable") || error.contains("degraded") {
+        return Status::unavailable(error);
+    }
+
+    if error.contains("capacity") || error.contains("Too many connections") {
+        return Status::resource_exhausted(error);
+    }
+
+    tracing::error!("Unexpected MessageStream pre_join failure: {error}");
+    Status::internal("Failed to establish message stream")
 }
 
 /// Configuration for `ClientService`
@@ -698,7 +731,7 @@ impl RoomService for ClientServiceImpl {
         stream_handler
             .pre_join()
             .await
-            .map_err(|e| Status::resource_exhausted(format!("Failed to join room: {e}")))?;
+            .map_err(map_message_stream_join_error)?;
 
         // Create unified GrpcStreamMessage adapter (shares the same sender)
         let mut grpc_stream = GrpcStreamMessage {
@@ -715,7 +748,6 @@ impl RoomService for ClientServiceImpl {
             }
         });
 
-        // Convert outgoing channel to stream, wrapping items in Ok()
         let output_stream = ReceiverStream::new(outgoing_rx).map(Ok::<_, Status>);
 
         Ok(Response::new(
@@ -797,6 +829,10 @@ impl MessageSender for GrpcMessageSender {
             }
         })
     }
+
+    fn is_alive(&self) -> bool {
+        !self.sender.is_closed()
+    }
 }
 
 /// gRPC stream implementation of `StreamMessage` trait
@@ -812,17 +848,27 @@ struct GrpcStreamMessage {
 #[async_trait::async_trait]
 impl StreamMessage for GrpcStreamMessage {
     async fn recv(&mut self) -> Option<Result<ClientMessage, String>> {
-        match self.client_stream.message().await {
-            Ok(Some(msg)) => Some(Ok(msg)),
-            Ok(None) => {
+        match await_grpc_receive_or_response_close(
+            self.client_stream.message(),
+            self.sender.sender.clone(),
+        )
+        .await
+        {
+            GrpcReceiveOutcome::Message(Ok(Some(msg))) => Some(Ok(msg)),
+            GrpcReceiveOutcome::Message(Ok(None)) => {
                 self.alive
                     .store(false, std::sync::atomic::Ordering::Relaxed);
                 None
             }
-            Err(e) => {
+            GrpcReceiveOutcome::Message(Err(e)) => {
                 self.alive
                     .store(false, std::sync::atomic::Ordering::Relaxed);
                 Some(Err(format!("gRPC stream error: {e}")))
+            }
+            GrpcReceiveOutcome::ResponseStreamClosed => {
+                self.alive
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                None
             }
         }
     }
@@ -832,7 +878,7 @@ impl StreamMessage for GrpcStreamMessage {
     }
 
     fn is_alive(&self) -> bool {
-        self.alive.load(std::sync::atomic::Ordering::Relaxed)
+        self.alive.load(std::sync::atomic::Ordering::Relaxed) && self.sender.is_alive()
     }
 
     // gRPC uses HTTP/2 PING frames automatically, no application-level ping needed
@@ -1426,6 +1472,53 @@ mod tests {
         assert!(result.unwrap_err().contains("full"));
     }
 
+    #[test]
+    fn test_grpc_message_sender_is_alive_until_receiver_closes() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<ServerMessage>(1);
+        let sender = GrpcMessageSender::new(tx);
+
+        assert!(sender.is_alive(), "open response channel must be reported alive");
+        drop(rx);
+        assert!(
+            !sender.is_alive(),
+            "closed response channel must be reported dead immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_await_grpc_receive_or_response_close_notices_closed_response_stream() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<ServerMessage>(1);
+        drop(rx);
+
+        let outcome = await_grpc_receive_or_response_close(
+            std::future::pending::<Result<Option<ClientMessage>, tonic::Status>>(),
+            tx,
+        )
+        .await;
+
+        assert!(matches!(
+            outcome,
+            GrpcReceiveOutcome::ResponseStreamClosed
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_await_grpc_receive_or_response_close_prefers_received_message() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<ServerMessage>(1);
+        let expected = ClientMessage::default();
+
+        let outcome = await_grpc_receive_or_response_close(
+            std::future::ready(Ok::<_, tonic::Status>(Some(expected.clone()))),
+            tx,
+        )
+        .await;
+
+        match outcome {
+            GrpcReceiveOutcome::Message(Ok(Some(actual))) => assert_eq!(actual, expected),
+            other => panic!("expected received message outcome, got {other:?}"),
+        }
+    }
+
     // ==================== Constants ====================
 
     #[test]
@@ -1455,5 +1548,32 @@ mod tests {
         let result = extract_authenticated_user_id(&request);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn test_map_message_stream_join_error_maps_capacity_to_resource_exhausted() {
+        let status = map_message_stream_join_error(
+            "Room at capacity across all replicas (200 connections)".to_string(),
+        );
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert!(status.message().contains("capacity"));
+    }
+
+    #[test]
+    fn test_map_message_stream_join_error_maps_distributed_degradation_to_unavailable() {
+        let status = map_message_stream_join_error(
+            "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
+                .to_string(),
+        );
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert!(status.message().contains("unavailable"));
+    }
+
+    #[test]
+    fn test_map_message_stream_join_error_hides_unexpected_internal_details() {
+        let status =
+            map_message_stream_join_error("Connection 'conn123' is already registered".to_string());
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert_eq!(status.message(), "Failed to establish message stream");
     }
 }

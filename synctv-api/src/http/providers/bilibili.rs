@@ -196,6 +196,25 @@ async fn user_info(
     }
 }
 
+/// Logout (delete stored credential)
+async fn logout(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<crate::proto::providers::bilibili::LogoutRequest>,
+) -> impl IntoResponse {
+    tracing::info!("Bilibili logout request");
+
+    let api = &state.bilibili_api;
+
+    match api.logout(&auth.user_id.to_string(), req).await {
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
+        Err(e) => {
+            tracing::error!("Bilibili logout failed: {}", e);
+            AppError::from(e).into_response()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::user_info_server_id;
@@ -221,24 +240,5 @@ mod tests {
             UserProviderCredential::bilibili_server_id(Some("bili-main"))
         );
         assert_ne!(scoped, UserProviderCredential::BILIBILI_SERVER_ID);
-    }
-}
-
-/// Logout (delete stored credential)
-async fn logout(
-    auth: AuthUser,
-    State(state): State<AppState>,
-    Json(req): Json<crate::proto::providers::bilibili::LogoutRequest>,
-) -> impl IntoResponse {
-    tracing::info!("Bilibili logout request");
-
-    let api = &state.bilibili_api;
-
-    match api.logout(&auth.user_id.to_string(), req).await {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
-            tracing::error!("Bilibili logout failed: {}", e);
-            AppError::from(e).into_response()
-        }
     }
 }

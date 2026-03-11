@@ -124,9 +124,7 @@ async fn migrations_already_applied(pool: &PgPool) -> bool {
             .migrations
             .iter()
             .map(|migration| (migration.version, migration.checksum.as_ref())),
-        applied
-            .into_iter()
-            .map(|(version, checksum)| (version, checksum)),
+        applied,
     )
 }
 
@@ -433,7 +431,7 @@ fn spawn_lock_keepalive(
         ticker.tick().await;
         loop {
             tokio::select! {
-                _ = cancel.cancelled() => return Ok(()),
+                () = cancel.cancelled() => return Ok(()),
                 _ = ticker.tick() => {
                     match lock.extend(&lock_key, &lock_value, MIGRATION_LOCK_TTL).await {
                         Ok(true) => {}

@@ -158,15 +158,15 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     let ws_ticket_status = state.ws_ticket_service.as_ref().map(|svc| {
         let is_cluster_mode = state.config.cluster_runtime_enabled();
         let health = check_ws_ticket_health(svc);
-        if !ws_ticket_backend_is_safe_for_mode(svc, is_cluster_mode) {
+        if ws_ticket_backend_is_safe_for_mode(svc, is_cluster_mode) {
+            health
+        } else {
             error_messages.push(
                 "WsTicketService: memory mode is not safe in cluster mode (tickets created on one node cannot be validated on another)".to_string()
             );
             is_healthy = false;
             warn!("WsTicketService is using memory storage in cluster mode — cross-replica ticket validation will fail");
             "unhealthy (memory, cluster mode)".to_string()
-        } else {
-            health
         }
     });
 

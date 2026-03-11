@@ -964,7 +964,7 @@ impl ClusterManager {
         self.message_hub.get_room_subscribers(room_id)
     }
 
-    fn heartbeat_shutdown_timeout(&self) -> Duration {
+    const fn heartbeat_shutdown_timeout(&self) -> Duration {
         #[cfg(test)]
         {
             self.heartbeat_shutdown_timeout
@@ -982,7 +982,7 @@ impl ClusterManager {
     }
 
     #[cfg(test)]
-    pub fn test_with_heartbeat_shutdown_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn test_with_heartbeat_shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.heartbeat_shutdown_timeout = timeout;
         self
     }

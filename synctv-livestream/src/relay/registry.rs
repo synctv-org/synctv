@@ -125,7 +125,7 @@ impl StreamRegistry {
 
     /// Create a new stream registry backed by a shared Redis connection handle.
     #[must_use]
-    pub fn new_with_shared_conn(redis: Arc<RwLock<RedisConnectionManager>>) -> Self {
+    pub const fn new_with_shared_conn(redis: Arc<RwLock<RedisConnectionManager>>) -> Self {
         Self {
             redis,
             key_prefix: String::new(),

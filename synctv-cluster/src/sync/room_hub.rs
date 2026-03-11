@@ -46,7 +46,7 @@ const SUBSCRIBER_CHANNEL_CAPACITY: usize = 512;
 /// prematurely disconnecting clients on slower networks.
 const MAX_CONSECUTIVE_DROPS: u32 = 50;
 
-fn requires_reliable_target_delivery(event: &ClusterEvent) -> bool {
+const fn requires_reliable_target_delivery(event: &ClusterEvent) -> bool {
     event.is_critical() || matches!(event, ClusterEvent::WebRTCSignaling { .. })
 }
 
@@ -877,7 +877,7 @@ impl RoomMessageHub {
                     }
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         if reliable_target_delivery {
-                            let retry_event = event.clone();
+                            let retry_event = event;
                             spawn_reliable_target_delivery(
                                 subscriber.sender.clone(),
                                 retry_event,

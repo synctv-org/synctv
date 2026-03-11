@@ -330,7 +330,7 @@ impl PlaybackService {
     }
 
     #[cfg(test)]
-    pub(crate) fn has_l2_cache(&self) -> bool {
+    pub(crate) const fn has_l2_cache(&self) -> bool {
         self.l2_cache.is_some()
     }
 

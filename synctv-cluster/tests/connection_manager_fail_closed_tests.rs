@@ -113,7 +113,7 @@ async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() 
         .get_connection("conn1")
         .expect("connection should remain tracked");
     assert_eq!(
-        conn.room_id.as_ref().map(|room| room.as_str()),
+        conn.room_id.as_ref().map(synctv_core::models::RoomId::as_str),
         Some("room_a")
     );
 }

@@ -71,7 +71,7 @@ where
 {
     tokio::select! {
         result = receive_future => GrpcReceiveOutcome::Message(result),
-        _ = response_sender.closed() => GrpcReceiveOutcome::ResponseStreamClosed,
+        () = response_sender.closed() => GrpcReceiveOutcome::ResponseStreamClosed,
     }
 }
 

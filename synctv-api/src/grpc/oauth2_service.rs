@@ -64,7 +64,7 @@ pub struct OAuth2GrpcService {
 
 impl OAuth2GrpcService {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         oauth2_api: Arc<crate::impls::OAuth2ApiImpl>,
         config: Arc<Config>,
         auth_interceptor: super::interceptors::AuthInterceptor,

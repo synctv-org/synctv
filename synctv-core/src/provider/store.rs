@@ -224,7 +224,7 @@ pub struct RedisProviderStore {
 }
 
 impl RedisProviderStore {
-    pub fn new(shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
+    pub const fn new(shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
         Self { shared_conn }
     }
 
@@ -605,7 +605,7 @@ mod tests {
         let registry = ProviderStoreRegistry::new(None, "tenant-a:");
         let store = registry.load("bilibili");
         store
-            .set_raw("cache-key", b"value", Duration::from_secs(60))
+            .set_raw("cache-key", b"value", Duration::from_mins(1))
             .await
             .unwrap();
 

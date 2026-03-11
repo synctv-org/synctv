@@ -597,7 +597,7 @@ impl RateLimiter {
 
     /// Enable strict distributed checks for operations that must fail closed.
     #[must_use]
-    pub fn with_strict_distributed(mut self) -> Self {
+    pub const fn with_strict_distributed(mut self) -> Self {
         self.strict_distributed = true;
         self
     }
@@ -1121,7 +1121,7 @@ mod tests {
         )
         .await
         .ok()
-        .and_then(|r| r.ok());
+        .and_then(std::result::Result::ok);
 
         if conn.is_none() {
             let limiter = RateLimiter::in_memory_only("fallback_test:".to_string());

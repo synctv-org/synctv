@@ -68,7 +68,7 @@ pub struct AdminServiceImpl {
 
 impl AdminServiceImpl {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         user_service: Arc<UserService>,
         admin_api: Arc<AdminApiImpl>,
         config: Arc<Config>,

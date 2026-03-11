@@ -72,7 +72,7 @@ impl EmbyService {
     }
 
     #[must_use]
-    pub fn with_client(client: Client) -> Self {
+    pub const fn with_client(client: Client) -> Self {
         Self { client }
     }
 }

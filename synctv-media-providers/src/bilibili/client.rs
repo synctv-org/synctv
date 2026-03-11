@@ -339,7 +339,7 @@ impl BilibiliClient {
         Self::new_with_transport(shared_client()?, BilibiliEndpoints::default(), wbi_state)
     }
 
-    pub(crate) fn new_with_transport(
+    pub(crate) const fn new_with_transport(
         client: Client,
         endpoints: BilibiliEndpoints,
         wbi_state: Arc<WbiState>,
@@ -376,7 +376,7 @@ impl BilibiliClient {
         )
     }
 
-    pub(crate) fn with_cookies_and_transport(
+    pub(crate) const fn with_cookies_and_transport(
         cookies: HashMap<String, String>,
         client: Client,
         endpoints: BilibiliEndpoints,

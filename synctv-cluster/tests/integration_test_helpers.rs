@@ -26,9 +26,7 @@ fn docker_startup_timeout() -> Duration {
     std::env::var(DOCKER_STARTUP_TIMEOUT_ENV)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS))
+        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS)).map_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS), Duration::from_secs)
 }
 
 /// Redis test infrastructure that manages a single Redis container.
@@ -103,11 +101,9 @@ impl TestRedis {
                 return;
             }
 
-            if retries >= 60 {
-                panic!(
-                    "Redis not ready after {retries} retries: manager_ready={manager_ready}, multiplexed_ready={multiplexed_ready}"
-                );
-            }
+            assert!(retries < 60, 
+                "Redis not ready after {retries} retries: manager_ready={manager_ready}, multiplexed_ready={multiplexed_ready}"
+            );
 
             retries += 1;
             tokio::time::sleep(Duration::from_millis(500)).await;

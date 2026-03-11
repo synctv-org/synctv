@@ -355,7 +355,7 @@ fn extract_client_id<B>(
     let remote_addr = req
         .extensions()
         .get::<tonic::transport::server::TcpConnectInfo>()
-        .and_then(|info| info.remote_addr())
+        .and_then(tonic::transport::server::TcpConnectInfo::remote_addr)
         .map(|addr| addr.ip());
 
     // Only trust X-Forwarded-For/X-Real-IP when from a trusted proxy or in dev mode

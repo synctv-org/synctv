@@ -1383,7 +1383,7 @@ mod tests {
             "127.0.0.1:8080".parse::<SocketAddr>().expect("socket addr"),
         ));
 
-        let (mut parts, _) = request.into_parts();
+        let (mut parts, ()) = request.into_parts();
         let ctx = ReqCtx::from_request_parts(&mut parts, &state)
             .await
             .expect("extractor should not fail");
@@ -1407,7 +1407,7 @@ mod tests {
                 .expect("socket addr"),
         ));
 
-        let (mut parts, _) = request.into_parts();
+        let (mut parts, ()) = request.into_parts();
         let ctx = ReqCtx::from_request_parts(&mut parts, &state)
             .await
             .expect("extractor should not fail");

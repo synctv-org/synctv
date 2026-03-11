@@ -54,8 +54,7 @@ impl<B> GrpcStatusHeaders for HttpResponse<B> {
 fn grpc_status_code(headers: &HeaderMap) -> Code {
     headers
         .get(Status::GRPC_STATUS)
-        .map(|value| Code::from_bytes(value.as_bytes()))
-        .unwrap_or(Code::Ok)
+        .map_or(Code::Ok, |value| Code::from_bytes(value.as_bytes()))
 }
 
 fn should_record_circuit_breaker_success(headers: &HeaderMap) -> bool {

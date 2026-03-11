@@ -161,7 +161,7 @@ pub(crate) fn extract_client_ip<T>(
     let remote_addr = request
         .extensions()
         .get::<tonic::transport::server::TcpConnectInfo>()
-        .and_then(|info| info.remote_addr())
+        .and_then(tonic::transport::server::TcpConnectInfo::remote_addr)
         .map(|addr| addr.ip());
 
     let should_trust_headers = remote_addr.is_some_and(|ip| config.server.is_trusted_proxy(&ip));
@@ -190,7 +190,7 @@ pub(crate) fn extract_client_ip<T>(
     remote_addr
 }
 
-fn should_register_cluster_grpc_service(
+const fn should_register_cluster_grpc_service(
     config: &synctv_core::Config,
     node_registry_available: bool,
 ) -> bool {
@@ -199,7 +199,7 @@ fn should_register_cluster_grpc_service(
         && node_registry_available
 }
 
-fn should_register_livestream_relay_service(
+const fn should_register_livestream_relay_service(
     config: &synctv_core::Config,
     live_streaming_infrastructure_available: bool,
 ) -> bool {
@@ -208,33 +208,33 @@ fn should_register_livestream_relay_service(
         && live_streaming_infrastructure_available
 }
 
-fn should_mark_livestream_relay_serving(
+const fn should_mark_livestream_relay_serving(
     config: &synctv_core::Config,
     live_streaming_infrastructure_available: bool,
 ) -> bool {
     should_register_livestream_relay_service(config, live_streaming_infrastructure_available)
 }
 
-fn should_mark_notification_service_serving(notification_service_available: bool) -> bool {
+const fn should_mark_notification_service_serving(notification_service_available: bool) -> bool {
     notification_service_available
 }
 
-fn should_mark_oauth2_service_serving(oauth2_service_available: bool) -> bool {
+const fn should_mark_oauth2_service_serving(oauth2_service_available: bool) -> bool {
     oauth2_service_available
 }
 
-fn should_mark_provider_services_serving(providers_available: bool) -> bool {
+const fn should_mark_provider_services_serving(providers_available: bool) -> bool {
     providers_available
 }
 
-fn should_mark_cluster_service_serving(
+const fn should_mark_cluster_service_serving(
     config: &synctv_core::Config,
     node_registry_available: bool,
 ) -> bool {
     should_register_cluster_grpc_service(config, node_registry_available)
 }
 
-fn effective_grpc_request_timeout() -> std::time::Duration {
+const fn effective_grpc_request_timeout() -> std::time::Duration {
     // Match the existing HTTP global timeout budget so one transport cannot
     // hang indefinitely while the other fails fast.
     std::time::Duration::from_secs(30)

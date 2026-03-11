@@ -192,7 +192,7 @@ async fn test_join_room_rejection_preserves_previous_room_membership() {
 
     let conn = mgr.get_connection("conn_a").unwrap();
     assert_eq!(
-        conn.room_id.as_ref().map(|room| room.as_str()),
+        conn.room_id.as_ref().map(synctv_core::models::RoomId::as_str),
         Some("room_a")
     );
 }

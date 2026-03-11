@@ -80,9 +80,7 @@ fn current_test_label() -> String {
     std::env::var("NEXTEST_TEST_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::thread::current().name().map(str::to_owned))
-        .map(|value| sanitize_container_name(&value))
-        .unwrap_or_else(|| "unknown-test".to_string())
+        .or_else(|| std::thread::current().name().map(str::to_owned)).map_or_else(|| "unknown-test".to_string(), |value| sanitize_container_name(&value))
 }
 
 fn redis_container_name(label: &str) -> String {
@@ -104,7 +102,7 @@ pub struct RedisContainer {
 }
 
 impl RedisContainer {
-    fn new(inner: ContainerAsync<Redis>, name: String) -> Self {
+    const fn new(inner: ContainerAsync<Redis>, name: String) -> Self {
         Self {
             inner: Some(inner),
             name,
@@ -117,7 +115,7 @@ impl RedisContainer {
         }
     }
 
-    pub fn raw(&self) -> &ContainerAsync<Redis> {
+    pub const fn raw(&self) -> &ContainerAsync<Redis> {
         self.inner
             .as_ref()
             .expect("redis container should still be present")

@@ -126,7 +126,7 @@ fn proxy_cache_enabled(
         .map(|value: Option<bool>| value.unwrap_or(false))
 }
 
-fn should_use_proxy_cache(cache_enabled: bool, range_header: Option<&str>) -> bool {
+const fn should_use_proxy_cache(cache_enabled: bool, range_header: Option<&str>) -> bool {
     cache_enabled && range_header.is_some()
 }
 

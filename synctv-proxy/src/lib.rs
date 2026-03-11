@@ -186,7 +186,7 @@ enum ProxyError {
 }
 
 impl ProxyError {
-    fn kind(&self) -> ProxyErrorKind {
+    const fn kind(&self) -> ProxyErrorKind {
         match self {
             Self::Timeout(_) => ProxyErrorKind::Timeout,
             Self::Connection(_) => ProxyErrorKind::Connection,

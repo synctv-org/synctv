@@ -58,7 +58,7 @@ impl BilibiliProvider {
     }
 
     #[must_use]
-    pub fn with_client_manager(
+    pub const fn with_client_manager(
         provider_instance_manager: Arc<RemoteProviderManager>,
         client_manager: Arc<ProviderClientManager>,
     ) -> Self {

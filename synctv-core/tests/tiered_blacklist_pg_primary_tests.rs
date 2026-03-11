@@ -37,7 +37,7 @@ async fn test_blacklist_if_not_exists_requires_pg_success_before_redis_cache_wri
     ));
     let key_prefix = "pg-primary:".to_string();
     let key = "jti:pg_primary_required";
-    let redis_key = format!("{}bl:{}", key_prefix, key);
+    let redis_key = format!("{key_prefix}bl:{key}");
 
     let store = TieredTokenBlacklistStore::new(
         unavailable_pg_store(),

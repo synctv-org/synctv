@@ -66,8 +66,7 @@ impl ClientApiImpl {
                 None,
                 None,
             )
-            .await
-            .map_err(ApiError::from)?;
+            .await?;
 
         Ok(crate::proto::client::SetUsernameResponse {
             user: response.user,
@@ -85,8 +84,7 @@ impl ClientApiImpl {
             Some(req.old_password),
             Some(req.new_password),
         )
-        .await
-        .map_err(ApiError::from)?;
+        .await?;
 
         Ok(crate::proto::client::SetPasswordResponse { success: true })
     }

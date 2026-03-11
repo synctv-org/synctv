@@ -713,7 +713,7 @@ impl SliceCache {
                     .meta
                     .get(&Self::meta_key(url, provider_headers))
                     .and_then(|m| m.content_type.clone());
-                return Some((entry.data.clone(), ct, CacheStatus::Hit));
+                return Some((entry.data, ct, CacheStatus::Hit));
             }
             // Check stale window.
             if self.config.stale_while_revalidate && entry.is_stale(self.config.stale_max_age) {
@@ -727,7 +727,7 @@ impl SliceCache {
                     let _ = self.updating_keys.insert(key);
                     CacheStatus::Stale
                 };
-                return Some((entry.data.clone(), ct, status));
+                return Some((entry.data, ct, status));
             }
             // Expired beyond stale window -- do NOT remove here. The
             // re-fetch will overwrite the entry, and removing eagerly can

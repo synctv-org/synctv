@@ -129,7 +129,7 @@ impl ShutdownCoordinator {
                         match handle.await {
                             Ok(()) => info!("Background task '{name}' aborted cleanly"),
                             Err(e) if e.is_cancelled() => {
-                                info!("Background task '{name}' aborted")
+                                info!("Background task '{name}' aborted");
                             }
                             Err(e) => {
                                 warn!("Background task '{name}' failed after abort: {e}");

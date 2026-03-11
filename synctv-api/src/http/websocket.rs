@@ -418,14 +418,10 @@ const fn requires_state_resync(message: &ServerMessage) -> bool {
     use crate::proto::client::server_message::Message;
     matches!(
         &message.message,
-        Some(Message::UserJoined(_))
-            | Some(Message::UserLeft(_))
-            | Some(Message::MediaAdded(_))
-            | Some(Message::MediaRemoved(_))
-            | Some(Message::PlaylistCreated(_))
-            | Some(Message::PlaylistUpdated(_))
-            | Some(Message::PlaylistDeleted(_))
-            | Some(Message::Notification(_))
+        Some(Message::UserJoined(_) | Message::UserLeft(_) | Message::MediaAdded(_) |
+Message::MediaRemoved(_) | Message::PlaylistCreated(_) |
+Message::PlaylistUpdated(_) | Message::PlaylistDeleted(_) |
+Message::Notification(_))
     )
 }
 
@@ -658,7 +654,7 @@ struct ReservationGuard {
 }
 
 impl ReservationGuard {
-    fn new(
+    const fn new(
         connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
         room_id: RoomId,
         user_id: UserId,

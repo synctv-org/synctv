@@ -154,9 +154,8 @@ impl CredentialEncryption {
         match value {
             serde_json::Value::String(s) => self.decrypt(s),
             other => Err(Error::Internal(format!(
-                "Expected encrypted string value (enc:...), got {}. \
-                 Plaintext credentials are no longer supported.",
-                other
+                "Expected encrypted string value (enc:...), got {other}. \
+                 Plaintext credentials are no longer supported."
             ))),
         }
     }

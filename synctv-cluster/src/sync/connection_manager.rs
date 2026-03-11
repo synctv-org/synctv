@@ -389,7 +389,7 @@ impl ConnectionManager {
         self.disconnect_retry_started.load(Ordering::Acquire)
     }
 
-    fn redis_enabled(&self) -> bool {
+    const fn redis_enabled(&self) -> bool {
         self.redis_conn.is_some()
     }
 
@@ -585,8 +585,7 @@ impl ConnectionManager {
 
         if claimed.contains(connection_id) || self.connections.contains_key(connection_id) {
             return Err(format!(
-                "Connection '{}' is already registered",
-                connection_id
+                "Connection '{connection_id}' is already registered"
             ));
         }
 

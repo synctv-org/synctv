@@ -172,7 +172,7 @@ impl CacheInvalidationService {
         self
     }
 
-    fn redis_enabled(&self) -> bool {
+    const fn redis_enabled(&self) -> bool {
         self.redis_client.is_some() || self.redis_conn_shared.is_some()
     }
 
@@ -265,7 +265,7 @@ impl CacheInvalidationService {
                                 "Cache invalidation subscriber error, reconnecting..."
                             );
                             tokio::select! {
-                                _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
+                                () = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
                                 () = async {
                                     loop {
                                         if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1562,7 +1562,7 @@ mod tests {
         });
 
         tokio::task::yield_now().await;
-        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        tokio::time::advance(std::time::Duration::from_mins(1)).await;
         tokio::task::yield_now().await;
         assert_eq!(
             sync_attempts.load(std::sync::atomic::Ordering::Relaxed),
@@ -1574,7 +1574,7 @@ mod tests {
             .needs_state_sync
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
-        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        tokio::time::advance(std::time::Duration::from_mins(1)).await;
         tokio::task::yield_now().await;
         assert_eq!(
             sync_attempts.load(std::sync::atomic::Ordering::Relaxed),

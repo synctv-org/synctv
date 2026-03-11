@@ -449,7 +449,7 @@ mod tests {
 
         assert_eq!(
             cache.l1_ttl(),
-            Some(std::time::Duration::from_secs(5 * 60)),
+            Some(std::time::Duration::from_mins(5)),
             "Username cache L1 TTL must be five minutes, not five seconds"
         );
     }

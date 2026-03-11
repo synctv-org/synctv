@@ -448,14 +448,14 @@ impl SyncTvRtmpAuth {
                 .validate_publish_key(token)
                 .await
                 .and_then(|claims| {
-                    if claims.room_id != expected_room_id.as_str() {
+                    if claims.room_id == expected_room_id.as_str() {
+                        Ok(claims)
+                    } else {
                         Err(synctv_core::Error::Authorization(format!(
                             "Token room mismatch: expected {}, got {}",
                             expected_room_id.as_str(),
                             claims.room_id
                         )))
-                    } else {
-                        Ok(claims)
                     }
                 })
         }

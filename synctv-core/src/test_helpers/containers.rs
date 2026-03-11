@@ -65,9 +65,7 @@ fn docker_startup_timeout() -> Duration {
         .ok()
         .as_deref()
         .and_then(|value| value.parse::<u64>().ok())
-        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS))
+        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS)).map_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS), Duration::from_secs)
 }
 
 fn docker_startup_parallelism() -> usize {
@@ -75,8 +73,7 @@ fn docker_startup_parallelism() -> usize {
         .ok()
         .as_deref()
         .and_then(|value| value.parse::<usize>().ok())
-        .map(|slots| slots.max(MIN_DOCKER_STARTUP_PARALLELISM))
-        .unwrap_or(DEFAULT_DOCKER_STARTUP_PARALLELISM)
+        .map_or(DEFAULT_DOCKER_STARTUP_PARALLELISM, |slots| slots.max(MIN_DOCKER_STARTUP_PARALLELISM))
 }
 
 async fn acquire_docker_start_slot(
@@ -128,9 +125,7 @@ fn current_test_label() -> String {
     std::env::var("NEXTEST_TEST_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::thread::current().name().map(str::to_owned))
-        .map(|value| sanitize_container_name(&value))
-        .unwrap_or_else(|| "unknown-test".to_string())
+        .or_else(|| std::thread::current().name().map(str::to_owned)).map_or_else(|| "unknown-test".to_string(), |value| sanitize_container_name(&value))
 }
 
 fn postgres_container_name(label: &str) -> String {

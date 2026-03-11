@@ -233,7 +233,7 @@ impl DistributedLock {
     /// This keeps the lock service aligned with Sentinel failover hot-swaps so
     /// it does not keep talking to a stale master after reconnection.
     #[must_use]
-    pub fn new_shared(redis: std::sync::Arc<tokio::sync::RwLock<RedisConnectionManager>>) -> Self {
+    pub const fn new_shared(redis: std::sync::Arc<tokio::sync::RwLock<RedisConnectionManager>>) -> Self {
         Self {
             backend: DistributedLockBackend::Shared(redis),
         }

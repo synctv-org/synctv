@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn test_offset_uses_wide_arithmetic_for_large_pages() {
         let params = PageParams::new(Some(u32::MAX), Some(20));
-        assert_eq!(params.offset(), (u32::MAX as u64 - 1) * 20);
+        assert_eq!(params.offset(), (u64::from(u32::MAX) - 1) * 20);
     }
 
     #[test]

@@ -363,9 +363,7 @@ impl CredentialStorage for InMemoryCredentialStorage {
 
         // Preserve existing ID on upsert (matches PostgreSQL ON CONFLICT behavior)
         let id = credentials
-            .get(&key)
-            .map(|existing| existing.id.clone())
-            .unwrap_or_else(|| self.generate_id());
+            .get(&key).map_or_else(|| self.generate_id(), |existing| existing.id.clone());
 
         let credential = StoredCredential {
             id,

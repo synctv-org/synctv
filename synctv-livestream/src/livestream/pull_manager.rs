@@ -207,7 +207,7 @@ impl PullStreamManager {
         // during registration for reliable cross-node proxying.
         let publisher_address = publisher_info
             .validate_grpc_address()
-            .map(|addr| addr.to_string())
+            .map(std::string::ToString::to_string)
             .map_err(|_| {
                 error!(
                     node_id = %publisher_info.node_id,

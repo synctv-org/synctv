@@ -287,13 +287,13 @@ async fn execute_flv_stream(
         }
     });
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "video/x-flv")
         .header(header::CACHE_CONTROL, "no-cache")
         .header("X-Accel-Buffering", "no")
         .body(Body::from_stream(ReceiverStream::new(rx_wrapped)))
-        .map_err(|_| AppError::internal_server_error("Failed to build response"))?)
+        .map_err(|_| AppError::internal_server_error("Failed to build response"))
 }
 
 async fn execute_hls_playlist(
@@ -404,22 +404,22 @@ async fn execute_hls_segment(
         disguised_data.extend_from_slice(&png_header);
         disguised_data.extend_from_slice(&ts_data);
 
-        return Ok(Response::builder()
+        return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/png")
             .header(header::CACHE_CONTROL, "public, max-age=90")
             .header("X-Accel-Buffering", "no")
             .body(Body::from(disguised_data))
-            .map_err(|_| AppError::internal_server_error("Failed to build response"))?);
+            .map_err(|_| AppError::internal_server_error("Failed to build response"));
     }
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "video/mp2t")
         .header(header::CACHE_CONTROL, "public, max-age=90")
         .header("X-Accel-Buffering", "no")
         .body(Body::from(ts_data))
-        .map_err(|_| AppError::internal_server_error("Failed to build response"))?)
+        .map_err(|_| AppError::internal_server_error("Failed to build response"))
 }
 
 async fn send_flv_chunk(
@@ -427,13 +427,13 @@ async fn send_flv_chunk(
     chunk: Result<Bytes, std::io::Error>,
     write_timeout: std::time::Duration,
 ) -> bool {
-    if !write_timeout.is_zero() {
+    if write_timeout.is_zero() {
+        tx.send(chunk).await.is_ok()
+    } else {
         matches!(
             tokio::time::timeout(write_timeout, tx.send(chunk)).await,
             Ok(Ok(()))
         )
-    } else {
-        tx.send(chunk).await.is_ok()
     }
 }
 

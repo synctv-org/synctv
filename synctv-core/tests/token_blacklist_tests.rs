@@ -339,7 +339,7 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
     let key = format!("family:pg_atomicity_guard:{}", nanoid::nanoid!(8));
     let timestamp = chrono::Utc::now().timestamp();
 
-    let trigger_fn_sql = r#"
+    let trigger_fn_sql = r"
         CREATE OR REPLACE FUNCTION fail_token_blacklist_family_insert()
         RETURNS trigger AS $$
         BEGIN
@@ -349,7 +349,7 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
-        "#
+        "
     .replace("REPLACE_ME", &key);
 
     sqlx::query(&trigger_fn_sql).execute(&pool).await.unwrap();
@@ -359,12 +359,12 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
         .await
         .unwrap();
     sqlx::query(
-        r#"
+        r"
         CREATE TRIGGER trg_fail_token_blacklist_family_insert
         BEFORE INSERT OR UPDATE ON token_blacklist
         FOR EACH ROW
         EXECUTE FUNCTION fail_token_blacklist_family_insert()
-        "#,
+        ",
     )
     .execute(&pool)
     .await

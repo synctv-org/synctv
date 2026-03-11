@@ -191,25 +191,22 @@ async fn await_runtime_server_shutdown(
     }
 
     let mut handle = handle;
-    match tokio::time::timeout(timeout, &mut handle).await {
-        Ok(join_result) => match join_result {
-            Ok(Ok(())) => info!("{name} stopped"),
-            Ok(Err(err)) => warn!("{name} stopped with error during shutdown: {err}"),
-            Err(err) if err.is_cancelled() => info!("{name} task cancelled during shutdown"),
-            Err(err) => warn!("{name} panicked during shutdown: {err}"),
-        },
-        Err(_) => {
-            warn!(
-                "{name} did not stop within {}s, aborting task",
-                timeout.as_secs()
-            );
-            handle.abort();
-            match handle.await {
-                Ok(Ok(())) => info!("{name} aborted cleanly"),
-                Ok(Err(err)) => warn!("{name} returned error after abort: {err}"),
-                Err(err) if err.is_cancelled() => info!("{name} aborted"),
-                Err(err) => warn!("{name} failed after abort: {err}"),
-            }
+    if let Ok(join_result) = tokio::time::timeout(timeout, &mut handle).await { match join_result {
+        Ok(Ok(())) => info!("{name} stopped"),
+        Ok(Err(err)) => warn!("{name} stopped with error during shutdown: {err}"),
+        Err(err) if err.is_cancelled() => info!("{name} task cancelled during shutdown"),
+        Err(err) => warn!("{name} panicked during shutdown: {err}"),
+    } } else {
+        warn!(
+            "{name} did not stop within {}s, aborting task",
+            timeout.as_secs()
+        );
+        handle.abort();
+        match handle.await {
+            Ok(Ok(())) => info!("{name} aborted cleanly"),
+            Ok(Err(err)) => warn!("{name} returned error after abort: {err}"),
+            Err(err) if err.is_cancelled() => info!("{name} aborted"),
+            Err(err) => warn!("{name} failed after abort: {err}"),
         }
     }
 }
@@ -1253,7 +1250,7 @@ mod tests {
                 redis_conn: None,
                 cluster_enabled: false,
                 node_id: "test-node".to_string(),
-                dedup_window: Duration::from_secs(60),
+                dedup_window: Duration::from_mins(1),
                 cleanup_interval: Duration::from_secs(30),
                 critical_channel_capacity: 8,
                 publish_channel_capacity: 8,

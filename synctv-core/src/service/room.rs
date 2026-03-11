@@ -328,17 +328,17 @@ impl RoomService {
     }
 
     #[cfg(test)]
-    pub(crate) fn has_brute_force_service(&self) -> bool {
+    pub(crate) const fn has_brute_force_service(&self) -> bool {
         self.brute_force_service.is_some()
     }
 
     #[cfg(test)]
-    pub(crate) fn has_distributed_lock(&self) -> bool {
+    pub(crate) const fn has_distributed_lock(&self) -> bool {
         self.distributed_lock.is_some()
     }
 
     #[cfg(test)]
-    pub(crate) fn has_settings_registry(&self) -> bool {
+    pub(crate) const fn has_settings_registry(&self) -> bool {
         self.settings_registry.is_some()
     }
 

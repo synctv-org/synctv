@@ -1003,19 +1003,19 @@ mod tests {
         config.grpc_rate_limits = grpc_rate_limits;
         let router_config = RouterConfig {
             config: Arc::new(config),
-            user_service: user_service.clone(),
-            room_service: room_service.clone(),
+            user_service: user_service,
+            room_service: room_service,
             content_filter: ContentFilter::new(),
-            provider_instance_manager: provider_instance_manager.clone(),
+            provider_instance_manager: provider_instance_manager,
             user_provider_credential_repository: Arc::new(
-                synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()),
+                synctv_core::repository::UserProviderCredentialRepository::new(pool),
             ),
             providers,
             cluster_manager: None,
             connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
                 synctv_cluster::sync::ConnectionLimits::default(),
             )),
-            jwt_service: jwt_service.clone(),
+            jwt_service: jwt_service,
             redis_publish_tx: None,
             oauth2_service: None,
             settings_service: None,
@@ -1190,7 +1190,7 @@ mod tests {
             turn_health_checker: None,
             credential_encryption: None,
             proxy_slice_cache: injected_cache.clone(),
-            proxy_http_client: injected_proxy_http_client.clone(),
+            proxy_http_client: injected_proxy_http_client,
             messaging_rate_limit_config: RateLimitConfig::default(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: None,
@@ -1207,7 +1207,7 @@ mod tests {
         assert!(
             state
                 .proxy_http_client
-                .clone()
+                
                 .get("https://example.com")
                 .build()
                 .is_ok(),

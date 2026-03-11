@@ -65,7 +65,7 @@ const MEMBERSHIP_CACHE_TTL: Duration = Duration::from_secs(30);
 /// When exceeded, new messages receive a `ResourceExhausted` error.
 pub const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
 
-fn should_fail_webrtc_signal_broadcast(
+const fn should_fail_webrtc_signal_broadcast(
     result: synctv_cluster::sync::BroadcastResult,
     cluster_redis_enabled: bool,
 ) -> bool {
@@ -3086,7 +3086,7 @@ fn cluster_event_to_server_messages(
     }
 }
 
-fn should_retry_user_left_broadcast(
+const fn should_retry_user_left_broadcast(
     result: synctv_cluster::sync::BroadcastResult,
     cluster_redis_enabled: bool,
 ) -> bool {
@@ -3097,7 +3097,7 @@ fn should_retry_user_left_broadcast(
     }
 }
 
-fn should_transition_webrtc_membership(
+const fn should_transition_webrtc_membership(
     current_rtc_joined: Option<bool>,
     target_joined: bool,
 ) -> Result<bool, &'static str> {
@@ -3501,7 +3501,7 @@ mod tests {
                     shared_redis_conn: None,
                     cluster_enabled: false,
                     node_id: node_id.to_string(),
-                    dedup_window: Duration::from_secs(60),
+                    dedup_window: Duration::from_mins(1),
                     cleanup_interval: Duration::from_secs(10),
                     critical_channel_capacity: 100,
                     publish_channel_capacity: 1000,
@@ -3533,7 +3533,7 @@ mod tests {
             user_id(),
             "tester".to_string(),
             test_room_service(pool.clone()),
-            test_chat_service(pool.clone()),
+            test_chat_service(pool),
             cluster_manager,
             connection_manager,
             Arc::new(RateLimiter::in_memory_only("test:handler:".to_string())),
@@ -3543,7 +3543,7 @@ mod tests {
         )
         .with_heartbeat_schedule(HeartbeatSchedule::for_tests(
             Duration::from_millis(10),
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         ))
     }
 

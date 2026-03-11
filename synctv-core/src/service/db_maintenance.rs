@@ -48,7 +48,7 @@ impl DatabaseMaintenanceService {
     /// Override cleanup retention/buffer configuration so maintenance and
     /// runtime cleanup share the same source of truth.
     #[must_use]
-    pub fn with_cleanup_config(mut self, config: CleanupConfig) -> Self {
+    pub const fn with_cleanup_config(mut self, config: CleanupConfig) -> Self {
         self.config = config;
         self
     }
@@ -68,15 +68,15 @@ impl DatabaseMaintenanceService {
             .unwrap_or(DEFAULT_CHAT_MESSAGE_RETENTION_DAYS)
     }
 
-    fn notification_retention_days(&self) -> i32 {
+    const fn notification_retention_days(&self) -> i32 {
         self.config.notification_retention_days as i32
     }
 
-    fn notification_max_retention_days(&self) -> i32 {
+    const fn notification_max_retention_days(&self) -> i32 {
         self.config.notification_max_retention_days as i32
     }
 
-    fn expired_credential_buffer_hours(&self) -> i32 {
+    const fn expired_credential_buffer_hours(&self) -> i32 {
         self.config.expired_credential_buffer_hours as i32
     }
 

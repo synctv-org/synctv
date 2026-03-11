@@ -22,6 +22,12 @@ use std::time::Duration;
 /// Playback URLs point to synctv's own HLS/FLV endpoints.
 pub struct LiveProxyProvider {}
 
+impl Default for LiveProxyProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LiveProxyProvider {
     pub const NAME: &'static str = "live_proxy";
 

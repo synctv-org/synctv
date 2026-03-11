@@ -81,8 +81,7 @@ where
         let now = tokio::time::Instant::now();
         assert!(
             now < deadline,
-            "condition not satisfied within {:?}",
-            timeout
+            "condition not satisfied within {timeout:?}"
         );
         tokio::time::sleep(interval.min(deadline - now)).await;
     }
@@ -453,7 +452,7 @@ async fn scenario_tls_configuration_insecure() {
     let result = tokio::time::timeout(Duration::from_secs(5), manager.add(instance.clone())).await;
 
     // If it succeeds (unlikely with port 1), verify the stored config
-    if let Ok(Ok(())) = &result {
+    if matches!(&result, Ok(Ok(()))) {
         let repo = ProviderInstanceRepository::new(infra.pool.clone());
         let fetched = repo.get_by_name("test-instance-9").await.unwrap();
         assert!(fetched.is_some());
@@ -840,10 +839,7 @@ async fn scenario_concurrent_duplicate_add_returns_one_success_and_one_already_e
     let success_count = results.iter().filter(|result| result.is_ok()).count();
     let duplicate_errors = results
         .iter()
-        .filter_map(|result| match result {
-            Ok(()) => None,
-            Err(err) => Some(err),
-        })
+        .filter_map(|result| result.as_ref().err())
         .collect::<Vec<_>>();
 
     assert_eq!(success_count, 1, "exactly one create must succeed");

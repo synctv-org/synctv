@@ -66,8 +66,7 @@ async fn test_critical_events_high_priority() {
 
         assert!(
             tokio::time::Instant::now() < deadline,
-            "Timed out waiting for critical event; last broadcast result: {:?}",
-            result
+            "Timed out waiting for critical event; last broadcast result: {result:?}"
         );
     };
 

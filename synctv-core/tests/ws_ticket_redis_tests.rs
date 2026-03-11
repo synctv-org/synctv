@@ -40,9 +40,7 @@ struct StaticUserValidator {
 #[async_trait::async_trait]
 impl UserValidator for StaticUserValidator {
     async fn validate_for_ticket(&self, _user_id: &UserId) -> Result<UserValidationResult> {
-        self.result
-            .as_ref()
-            .map(Clone::clone)
+        self.result.clone()
             .map_err(|message| Error::Authorization((*message).to_string()))
     }
 }

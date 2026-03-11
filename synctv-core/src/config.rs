@@ -851,10 +851,10 @@ impl Config {
     /// Public RTMP host for publisher-facing URLs.
     #[must_use]
     pub fn public_rtmp_host(&self) -> String {
-        if !self.livestream.public_rtmp_host.is_empty() {
-            self.livestream.public_rtmp_host.clone()
-        } else {
+        if self.livestream.public_rtmp_host.is_empty() {
             self.advertise_host()
+        } else {
+            self.livestream.public_rtmp_host.clone()
         }
     }
 
@@ -2000,20 +2000,20 @@ impl Config {
         // Without an explicit external address, STUN reflexive candidates will
         // contain internal IPs and WebRTC connections will fail.
         if self.webrtc.enable_builtin_stun && self.webrtc.stun_external_addr.is_empty() {
-            if !self.cluster_runtime_enabled() {
-                tracing::warn!(
-                    "webrtc.enable_builtin_stun=true but stun_external_addr is not set. \
-                         STUN server will advertise reflexive candidates using advertise_host. \
-                         This may not work correctly behind NAT or load balancers. \
-                         Set webrtc.stun_external_addr to the server's public IP:port."
-                );
-            } else {
+            if self.cluster_runtime_enabled() {
                 errors.push(
                     "webrtc.stun_external_addr must be set when running in cluster mode \
                          (cluster.enabled=true). In NAT/K8s environments, STUN needs \
                          the server's public IP:port to generate valid reflexive candidates. \
                          Example: webrtc.stun_external_addr = \"203.0.113.1:3478\""
                         .to_string(),
+                );
+            } else {
+                tracing::warn!(
+                    "webrtc.enable_builtin_stun=true but stun_external_addr is not set. \
+                         STUN server will advertise reflexive candidates using advertise_host. \
+                         This may not work correctly behind NAT or load balancers. \
+                         Set webrtc.stun_external_addr to the server's public IP:port."
                 );
             }
         }

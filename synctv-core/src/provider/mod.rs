@@ -263,7 +263,7 @@ pub fn maybe_sign_versioned_playback(
     result
 }
 
-fn signed_proxy_playback_requested(ctx: &ProviderContext<'_>) -> bool {
+const fn signed_proxy_playback_requested(ctx: &ProviderContext<'_>) -> bool {
     ctx.signing_key.is_some() && ctx.room_id.is_some() && ctx.user_id.is_some()
 }
 
@@ -470,7 +470,7 @@ mod tests {
             playback_result(),
             "direct_url",
             "playback:test",
-            std::time::Duration::from_secs(60),
+            std::time::Duration::from_mins(1),
             &ctx,
         )
         .await
@@ -498,7 +498,7 @@ mod tests {
             playback_result(),
             "direct_url",
             "playback:test",
-            std::time::Duration::from_secs(60),
+            std::time::Duration::from_mins(1),
             &ctx,
         )
         .await

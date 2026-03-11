@@ -439,7 +439,7 @@ impl GrpcConnectionPool {
             loop {
                 tokio::select! {
                     biased;
-                    _ = token.cancelled() => {
+                    () = token.cancelled() => {
                         debug!("Connection pool cleanup task cancelled");
                         break;
                     }

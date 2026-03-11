@@ -70,7 +70,7 @@ pub struct TestContainer {
 }
 
 impl TestContainer {
-    fn new(inner: ContainerAsync<Postgres>, name: String) -> Self {
+    const fn new(inner: ContainerAsync<Postgres>, name: String) -> Self {
         Self {
             inner: Some(inner),
             name,
@@ -83,7 +83,7 @@ impl TestContainer {
         }
     }
 
-    pub fn raw(&self) -> &ContainerAsync<Postgres> {
+    pub const fn raw(&self) -> &ContainerAsync<Postgres> {
         self.inner
             .as_ref()
             .expect("postgres test container should still be present")
@@ -134,17 +134,14 @@ pub fn docker_startup_parallelism() -> usize {
 fn docker_startup_timeout_from(value: Option<&str>) -> Duration {
     value
         .and_then(|value| value.parse::<u64>().ok())
-        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS))
+        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS)).map_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS), Duration::from_secs)
 }
 
 #[must_use]
 fn docker_startup_parallelism_from(value: Option<&str>) -> usize {
     value
         .and_then(|value| value.parse::<usize>().ok())
-        .map(|slots| slots.max(MIN_DOCKER_STARTUP_PARALLELISM))
-        .unwrap_or(DEFAULT_DOCKER_STARTUP_PARALLELISM)
+        .map_or(DEFAULT_DOCKER_STARTUP_PARALLELISM, |slots| slots.max(MIN_DOCKER_STARTUP_PARALLELISM))
 }
 
 async fn acquire_docker_start_slot(name: &str) -> ProcessLock {
@@ -194,9 +191,7 @@ fn current_test_label() -> String {
     std::env::var("NEXTEST_TEST_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::thread::current().name().map(str::to_owned))
-        .map(|value| sanitize_container_name(&value))
-        .unwrap_or_else(|| "unknown-test".to_string())
+        .or_else(|| std::thread::current().name().map(str::to_owned)).map_or_else(|| "unknown-test".to_string(), |value| sanitize_container_name(&value))
 }
 
 fn postgres_container_name(label: &str) -> String {
@@ -371,7 +366,7 @@ mod tests {
     fn test_docker_startup_timeout_honors_valid_override() {
         assert_eq!(
             docker_startup_timeout_from(Some("180")),
-            Duration::from_secs(180)
+            Duration::from_mins(3)
         );
     }
 

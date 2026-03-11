@@ -428,7 +428,7 @@ fn test_i32_as_u32_is_dangerous() {
 
     // offset() must use wide arithmetic so even a wrapped caller input does not panic
     // or silently truncate before later validation rejects the request.
-    assert_eq!(params.offset(), (u32::MAX as u64 - 1) * 20);
+    assert_eq!(params.offset(), (u64::from(u32::MAX) - 1) * 20);
 }
 
 // ============================================================================

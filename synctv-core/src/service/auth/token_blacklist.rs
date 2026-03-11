@@ -371,14 +371,14 @@ impl PgTokenBlacklistStore {
     /// signature so cleanup continues to work on upgraded databases.
     pub async fn cleanup_expired(&self) -> Result<u64> {
         let deleted_count = sqlx::query_scalar::<_, i64>(
-            r#"
+            r"
             WITH deleted AS (
                 DELETE FROM token_blacklist
                 WHERE expires_at < CURRENT_TIMESTAMP
                 RETURNING 1
             )
             SELECT COUNT(*)::BIGINT FROM deleted
-            "#,
+            ",
         )
         .fetch_one(&self.pool)
         .await

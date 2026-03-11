@@ -108,60 +108,57 @@ impl HttpFlvSession {
         let mut cached_frames = Vec::new();
 
         loop {
-            match data_receiver.recv().await {
-                Some(data) => {
-                    // Detect audio/video before sending header
-                    if !self.has_send_header {
-                        max_av_frame_num_to_guess_av += 1;
+            if let Some(data) = data_receiver.recv().await {
+                // Detect audio/video before sending header
+                if !self.has_send_header {
+                    max_av_frame_num_to_guess_av += 1;
 
-                        match data {
-                            FrameData::Audio { .. } => {
-                                self.has_audio = true;
-                                cached_frames.push(data);
-                            }
-                            FrameData::Video { .. } => {
-                                self.has_video = true;
-                                cached_frames.push(data);
-                            }
-                            FrameData::MetaData { .. } => cached_frames.push(data),
-                            _ => {}
+                    match data {
+                        FrameData::Audio { .. } => {
+                            self.has_audio = true;
+                            cached_frames.push(data);
                         }
-
-                        // Send header after detecting A/V or after 10 frames
-                        if (self.has_audio && self.has_video) || max_av_frame_num_to_guess_av > 10 {
-                            self.has_send_header = true;
-
-                            // Write FLV header
-                            self.muxer
-                                .write_flv_header(self.has_audio, self.has_video)
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to write FLV header: {e:?}")
-                                })?;
-                            self.muxer
-                                .write_previous_tag_size(0)
-                                .map_err(|e| anyhow::anyhow!("Failed to write tag size: {e:?}"))?;
-                            self.flush_response_data()?;
-
-                            // Write cached frames
-                            for frame in &cached_frames {
-                                self.write_flv_tag(frame.clone())?;
-                            }
-                            cached_frames.clear();
+                        FrameData::Video { .. } => {
+                            self.has_video = true;
+                            cached_frames.push(data);
                         }
-
-                        continue;
+                        FrameData::MetaData { .. } => cached_frames.push(data),
+                        _ => {}
                     }
 
-                    // Write FLV tag. Slow-subscriber disconnects and closed
-                    // response channels must terminate the session so the
-                    // StreamHub subscription is released promptly.
-                    self.write_flv_tag(data)?;
+                    // Send header after detecting A/V or after 10 frames
+                    if (self.has_audio && self.has_video) || max_av_frame_num_to_guess_av > 10 {
+                        self.has_send_header = true;
+
+                        // Write FLV header
+                        self.muxer
+                            .write_flv_header(self.has_audio, self.has_video)
+                            .map_err(|e| {
+                                anyhow::anyhow!("Failed to write FLV header: {e:?}")
+                            })?;
+                        self.muxer
+                            .write_previous_tag_size(0)
+                            .map_err(|e| anyhow::anyhow!("Failed to write tag size: {e:?}"))?;
+                        self.flush_response_data()?;
+
+                        // Write cached frames
+                        for frame in &cached_frames {
+                            self.write_flv_tag(frame.clone())?;
+                        }
+                        cached_frames.clear();
+                    }
+
+                    continue;
                 }
-                None => {
-                    // Channel closed - stream truly ended
-                    info!("Stream channel closed");
-                    break;
-                }
+
+                // Write FLV tag. Slow-subscriber disconnects and closed
+                // response channels must terminate the session so the
+                // StreamHub subscription is released promptly.
+                self.write_flv_tag(data)?;
+            } else {
+                // Channel closed - stream truly ended
+                info!("Stream channel closed");
+                break;
             }
         }
         Ok(())

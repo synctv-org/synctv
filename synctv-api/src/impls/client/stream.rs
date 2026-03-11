@@ -9,7 +9,7 @@ use crate::impls::ApiError;
 fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String {
     let rtmp_host = config.public_rtmp_host();
     let rtmp_port = config.livestream.rtmp_port;
-    format!("rtmp://{}:{}/live/{}", rtmp_host, rtmp_port, room_id)
+    format!("rtmp://{rtmp_host}:{rtmp_port}/live/{room_id}")
 }
 
 impl ClientApiImpl {

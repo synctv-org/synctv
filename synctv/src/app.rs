@@ -84,15 +84,15 @@ pub struct Application {
     shutdown: ShutdownCoordinator,
 }
 
-fn cluster_runtime_enabled(config: &Config) -> bool {
+const fn cluster_runtime_enabled(config: &Config) -> bool {
     config.cluster_runtime_enabled()
 }
 
-fn should_start_cache_invalidation_listener(config: &Config, has_redis: bool) -> bool {
+const fn should_start_cache_invalidation_listener(config: &Config, has_redis: bool) -> bool {
     cluster_runtime_enabled(config) && has_redis
 }
 
-fn should_run_startup_partition_initialization(_config: &Config) -> bool {
+const fn should_run_startup_partition_initialization(_config: &Config) -> bool {
     true
 }
 
@@ -216,9 +216,9 @@ async fn build_local_cluster_manager(
     Ok(Arc::new(cluster_manager))
 }
 
-fn require_cluster_redis_conn<'a>(
-    redis_conn: Option<&'a Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-) -> Result<&'a Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>> {
+fn require_cluster_redis_conn(
+    redis_conn: Option<&Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+) -> Result<&Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>> {
     redis_conn.ok_or_else(|| {
         anyhow::anyhow!(
             "startup invariant violated: cluster runtime reached without Redis connection wiring"
@@ -226,9 +226,9 @@ fn require_cluster_redis_conn<'a>(
     })
 }
 
-fn require_cluster_redis_handles<'a>(
-    redis_handles: Option<&'a RedisHandles>,
-) -> Result<&'a RedisHandles> {
+fn require_cluster_redis_handles(
+    redis_handles: Option<&RedisHandles>,
+) -> Result<&RedisHandles> {
     redis_handles.ok_or_else(|| {
         anyhow::anyhow!(
             "startup invariant violated: cluster runtime reached without Redis handle wiring"
@@ -657,7 +657,7 @@ impl Application {
             let pool = infra.pool.clone();
             let settings_registry = core.services.settings_registry.clone();
             let leader_runtime = leader.leader_runtime.clone();
-            let deferred_cleanup_config = cleanup_config.clone();
+            let deferred_cleanup_config = cleanup_config;
             let cancel = shutdown.register_token("cluster_leader_startup_work");
             let task_factory: AsyncOnceTaskFactory = Arc::new(move || {
                 let pool = pool.clone();
@@ -1071,11 +1071,7 @@ mod tests {
         }
 
         fn leader_epoch(&self) -> u64 {
-            if self.is_leader.load(std::sync::atomic::Ordering::SeqCst) {
-                1
-            } else {
-                0
-            }
+            u64::from(self.is_leader.load(std::sync::atomic::Ordering::SeqCst))
         }
 
         async fn resign(&self) {

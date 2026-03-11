@@ -168,6 +168,27 @@ async fn test_emby_client_jellyfin_detection() {
     assert_eq!(user_id, "jf-user-1");
 }
 
+#[tokio::test]
+async fn test_emby_client_respects_host_path_prefix() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/proxy/emby/System/Info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Id": "server-1",
+            "ServerName": "Reverse Proxy Emby",
+            "Version": "4.8.0.0"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::new(format!("{}/proxy/emby", server.uri())).unwrap();
+    let info = client.get_system_info().await.unwrap();
+    assert_eq!(info.id, "server-1");
+    assert_eq!(info.server_name, "Reverse Proxy Emby");
+}
+
 // ============================================================================
 // MP5: Emby playback reporting wiremock tests
 // ============================================================================

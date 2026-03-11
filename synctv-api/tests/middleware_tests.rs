@@ -276,3 +276,121 @@ async fn test_request_id_in_generated_error_response() {
     assert_eq!(body["status"], 404);
     assert_eq!(body["request_id"], req_id_header);
 }
+
+#[tokio::test]
+async fn test_hsts_not_added_without_https_forwarding() {
+    use synctv_api::http::{create_router_with_state_from_config, RouterConfig};
+    use synctv_api::http::AppState;
+    use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
+    use synctv_core::provider::{
+        AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
+        ProviderSet, RtmpProvider,
+    };
+    use synctv_core::service::{
+        AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
+        RemoteProviderManager, RoomService, UserService,
+    };
+    use synctv_proxy::slice_cache::{SliceCache, SliceCacheConfig};
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+        .expect("lazy pool");
+    let username_cache =
+        UsernameCache::new(std::sync::Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+    let user_service = std::sync::Arc::new(UserService::new(
+        pool.clone(),
+        synctv_core::service::JwtService::new(
+            "test-secret-key-for-http-router-tests-minimum-32-chars",
+        )
+        .expect("jwt"),
+        username_cache,
+        synctv_core::config::PasswordComplexityConfig::default(),
+        std::sync::Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+        KeyBuilder::new("test"),
+        synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
+    ));
+    let room_service = std::sync::Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let provider_instance_manager = std::sync::Arc::new(RemoteProviderManager::new(
+        std::sync::Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
+            pool.clone(),
+        )),
+        None,
+        None,
+        "test:",
+    ));
+    let providers = ProviderSet {
+        alist: std::sync::Arc::new(AlistProvider::new(provider_instance_manager.clone())),
+        bilibili: std::sync::Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
+        emby: std::sync::Arc::new(EmbyProvider::new(provider_instance_manager.clone())),
+        direct_url: std::sync::Arc::new(DirectUrlProvider::new()),
+        rtmp: std::sync::Arc::new(RtmpProvider::new()),
+        live_proxy: std::sync::Arc::new(LiveProxyProvider::new()),
+    };
+    let (audit_service, _audit_handle) = AuditService::new(pool.clone());
+
+    let mut config = synctv_core::Config::default();
+    config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
+
+    let (app, _state): (_, AppState) = create_router_with_state_from_config(RouterConfig {
+        config: std::sync::Arc::new(config),
+        user_service,
+        room_service,
+        content_filter: ContentFilter::new(),
+        provider_instance_manager,
+        user_provider_credential_repository: std::sync::Arc::new(
+            synctv_core::repository::UserProviderCredentialRepository::new(pool),
+        ),
+        providers,
+        cluster_manager: None,
+        connection_manager: std::sync::Arc::new(synctv_cluster::sync::ConnectionManager::new(
+            synctv_cluster::sync::ConnectionLimits::default(),
+        )),
+        jwt_service: synctv_core::service::JwtService::new(
+            "test-secret-key-for-http-router-tests-minimum-32-chars",
+        )
+        .expect("jwt"),
+        redis_publish_tx: None,
+        oauth2_service: None,
+        settings_service: None,
+        settings_registry: None,
+        email_service: None,
+        email_token_service: None,
+        publish_key_service: None,
+        notification_service: None,
+        chat_service: None,
+        audit_service: std::sync::Arc::new(audit_service),
+        live_streaming_infrastructure: None,
+        rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
+        ws_ticket_service: None,
+        redis_conn: None,
+        builtin_stun_url: None,
+        turn_health_checker: None,
+        credential_encryption: None,
+        proxy_slice_cache: std::sync::Arc::new(SliceCache::new(SliceCacheConfig {
+            enabled: false,
+            ..SliceCacheConfig::default()
+        })),
+        messaging_rate_limit_config: RateLimitConfig::default(),
+        heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
+        providers_manager: None,
+    });
+
+    let request = Request::builder()
+        .uri("/health/live")
+        .extension(axum::extract::ConnectInfo(
+            "127.0.0.1:12345"
+                .parse::<std::net::SocketAddr>()
+                .expect("socket addr"),
+        ))
+        .body(Body::empty())
+        .expect("request");
+
+    let response = app.oneshot(request).await.expect("response");
+    assert!(
+        response
+            .headers()
+            .get(axum::http::header::STRICT_TRANSPORT_SECURITY)
+            .is_none(),
+        "HSTS must not be injected for non-HTTPS requests"
+    );
+}

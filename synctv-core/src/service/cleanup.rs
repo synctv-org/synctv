@@ -262,8 +262,11 @@ impl CleanupService {
 
         // 7. Cleanup expired token blacklist entries (prevents unbounded table growth)
         match self.cleanup_token_blacklist().await {
-            Ok(()) => {
-                // The DB function doesn't return a count; log at debug level.
+            Ok(count) => {
+                result.token_blacklist_deleted = count;
+                if count > 0 {
+                    info!(count, "Deleted expired token blacklist entries");
+                }
             }
             Err(e) => warn!(error = %e, "Failed to cleanup token blacklist"),
         }
@@ -406,14 +409,22 @@ impl CleanupService {
 
     /// Remove expired entries from the token blacklist table.
     ///
-    /// Calls the `cleanup_expired_token_blacklist()` database function which
-    /// deletes all rows with `expires_at < CURRENT_TIMESTAMP`.
-    async fn cleanup_token_blacklist(&self) -> Result<()> {
-        sqlx::query("SELECT cleanup_expired_token_blacklist()")
-            .execute(&self.pool)
-            .await
-            .internal_with_err("Failed to cleanup token blacklist")?;
-        Ok(())
+    /// Deletes expired token blacklist rows directly in PostgreSQL.
+    async fn cleanup_token_blacklist(&self) -> Result<u64> {
+        let deleted_count = sqlx::query_scalar::<_, i64>(
+            r#"
+            WITH deleted AS (
+                DELETE FROM token_blacklist
+                WHERE expires_at < CURRENT_TIMESTAMP
+                RETURNING 1
+            )
+            SELECT COUNT(*)::BIGINT FROM deleted
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .internal_with_err("Failed to cleanup token blacklist")?;
+        Ok(deleted_count.max(0) as u64)
     }
 
     /// Cleanup chat messages exceeding per-room cap

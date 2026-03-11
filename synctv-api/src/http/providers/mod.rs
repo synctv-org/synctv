@@ -273,6 +273,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_proxy_cache_enabled_reads_runtime_setting() {
         let (_pg, pool) = create_test_pool().await;
 

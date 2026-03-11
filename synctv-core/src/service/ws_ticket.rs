@@ -17,9 +17,8 @@
 //! ## Security: TOCTOU Prevention (Issue #17)
 //!
 //! The `validate_and_consume_checked` method accepts a user validator callback
-//! to prevent Time-Of-Check to Time-Of-Use race conditions. The validator is
-//! called AFTER the ticket is consumed, ensuring the user status check happens
-//! at the last possible moment before the connection is accepted.
+//! so callers can reject banned/deleted users without burning an otherwise
+//! valid one-time ticket on a retriable authorization failure.
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -98,9 +97,20 @@ pub trait TicketStore: Send + Sync {
     /// Store a ticket with its associated data. The ticket must expire after `ttl_secs`.
     async fn store(&self, ticket: &str, data: &WsTicketData, ttl_secs: u64) -> Result<()>;
 
-    /// Atomically get and delete a ticket. Returns `None` if the ticket does not
-    /// exist or has expired.
-    async fn consume(&self, ticket: &str) -> Result<Option<WsTicketData>>;
+    /// Load a ticket scoped to the expected room without consuming it.
+    ///
+    /// Returns `None` if the ticket does not exist or has expired.
+    async fn load(&self, ticket: &str, expected_room_id: &RoomId) -> Result<Option<WsTicketData>>;
+
+    /// Try to claim a ticket after validation succeeds.
+    ///
+    /// Returns `true` if the ticket was successfully consumed by this caller,
+    /// `false` if it had already expired or been consumed concurrently.
+    async fn claim(&self, ticket: &str, expected_room_id: &RoomId) -> Result<bool>;
+
+    /// Atomically get and delete a ticket scoped to the expected room.
+    /// Returns `None` if the ticket does not exist or has expired.
+    async fn consume(&self, ticket: &str, expected_room_id: &RoomId) -> Result<Option<WsTicketData>>;
 
     /// A label for logging/debug purposes (e.g. "redis", "memory").
     fn backend_name(&self) -> &'static str;
@@ -145,8 +155,8 @@ impl RedisTicketStore {
         self.shared_conn.read().await.clone()
     }
 
-    fn redis_key(&self, ticket: &str) -> String {
-        format!("{}ws_ticket:{}", self.key_prefix, ticket)
+    fn redis_key(&self, ticket: &str, room_id: &RoomId) -> String {
+        format!("{}ws_ticket:{}:{}", self.key_prefix, room_id.as_str(), ticket)
     }
 }
 
@@ -155,7 +165,8 @@ impl TicketStore for RedisTicketStore {
     async fn store(&self, ticket: &str, data: &WsTicketData, ttl_secs: u64) -> Result<()> {
         use redis::AsyncCommands;
 
-        let key = self.redis_key(ticket);
+        let room_id = RoomId::from_string(data.room_id.clone());
+        let key = self.redis_key(ticket, &room_id);
         let json = serde_json::to_string(data)
             .map_err(|e| Error::Internal(format!("Failed to serialize ticket data: {e}")))?;
 
@@ -171,8 +182,47 @@ impl TicketStore for RedisTicketStore {
         Ok(())
     }
 
-    async fn consume(&self, ticket: &str) -> Result<Option<WsTicketData>> {
-        let key = self.redis_key(ticket);
+    async fn load(&self, ticket: &str, expected_room_id: &RoomId) -> Result<Option<WsTicketData>> {
+        use redis::AsyncCommands;
+
+        let key = self.redis_key(ticket, expected_room_id);
+        let mut conn = self.conn().await;
+
+        let json: Option<String> = tokio::time::timeout(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            conn.get(&key),
+        )
+        .await
+        .map_err(|_| Error::Internal("Redis timeout: load ticket".to_string()))?
+        .map_err(|e| Error::Internal(format!("Failed to load ticket: {e}")))?;
+
+        let Some(json) = json else {
+            return Ok(None);
+        };
+
+        let data: WsTicketData = serde_json::from_str(&json)
+            .map_err(|e| Error::Internal(format!("Failed to deserialize ticket data: {e}")))?;
+
+        Ok(Some(data))
+    }
+
+    async fn claim(&self, ticket: &str, expected_room_id: &RoomId) -> Result<bool> {
+        let key = self.redis_key(ticket, expected_room_id);
+        let mut conn = self.conn().await;
+
+        let deleted: i64 = tokio::time::timeout(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            redis::cmd("DEL").arg(&key).query_async(&mut conn),
+        )
+        .await
+        .map_err(|_| Error::Internal("Redis timeout: claim ticket".to_string()))?
+        .map_err(|e| Error::Internal(format!("Failed to claim ticket: {e}")))?;
+
+        Ok(deleted > 0)
+    }
+
+    async fn consume(&self, ticket: &str, expected_room_id: &RoomId) -> Result<Option<WsTicketData>> {
+        let key = self.redis_key(ticket, expected_room_id);
         let mut conn = self.conn().await;
 
         // Get and delete atomically using Lua script
@@ -256,7 +306,7 @@ impl TicketStore for InMemoryTicketStore {
     async fn store(&self, ticket: &str, data: &WsTicketData, ttl_secs: u64) -> Result<()> {
         self.cache
             .insert(
-                ticket.to_string(),
+                format!("{}:{ticket}", data.room_id),
                 TtlTicketData {
                     data: data.clone(),
                     ttl: std::time::Duration::from_secs(ttl_secs),
@@ -266,11 +316,36 @@ impl TicketStore for InMemoryTicketStore {
         Ok(())
     }
 
-    async fn consume(&self, ticket: &str) -> Result<Option<WsTicketData>> {
+    async fn load(&self, ticket: &str, expected_room_id: &RoomId) -> Result<Option<WsTicketData>> {
+        let cache_key = format!("{}:{ticket}", expected_room_id.as_str());
+        let Some(entry) = self.cache.get(&cache_key).await else {
+            return Ok(None);
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now.saturating_sub(entry.data.created_at) > entry.ttl.as_secs() {
+            self.cache.remove(&cache_key).await;
+            return Ok(None);
+        }
+
+        Ok(Some(entry.data))
+    }
+
+    async fn claim(&self, ticket: &str, expected_room_id: &RoomId) -> Result<bool> {
+        let cache_key = format!("{}:{ticket}", expected_room_id.as_str());
+        let removed = self.cache.remove(&cache_key).await;
+        Ok(removed.is_some())
+    }
+
+    async fn consume(&self, ticket: &str, expected_room_id: &RoomId) -> Result<Option<WsTicketData>> {
         // Use remove() for atomic get-and-delete to prevent TOCTOU race conditions.
         // Since moka uses lazy eviction, remove() may return entries that haven't
         // been evicted yet, so we manually check TTL expiry on the returned value.
-        let entry = match self.cache.remove(ticket).await {
+        let cache_key = format!("{}:{ticket}", expected_room_id.as_str());
+        let entry = match self.cache.remove(&cache_key).await {
             Some(e) => e,
             None => return Ok(None),
         };
@@ -434,7 +509,7 @@ impl WsTicketService {
     ) -> Result<ValidatedTicket> {
         let mode = self.store.backend_name();
 
-        let Some(ticket_data) = self.store.consume(ticket).await? else {
+        let Some(ticket_data) = self.store.consume(ticket, expected_room_id).await? else {
             debug!(ticket = %ticket, mode = %mode, "WebSocket ticket not found or expired");
             return Err(Error::Authorization(
                 "Invalid or expired ticket".to_string(),
@@ -467,16 +542,12 @@ impl WsTicketService {
         })
     }
 
-    /// Validate and consume a ticket with user status check (TOCTOU-safe).
+    /// Validate and consume a ticket with user status check.
     ///
     /// This is the recommended method for WebSocket ticket validation. It:
-    /// 1. Consumes the ticket (one-time use)
-    /// 2. Validates room binding
-    /// 3. Calls the `user_validator` to check user status and password version
-    ///
-    /// The user validator is called AFTER ticket consumption, ensuring the user
-    /// status check happens at the latest possible moment, preventing TOCTOU
-    /// race conditions (Issue #17).
+    /// 1. Validates room-scoped ticket presence
+    /// 2. Calls the `user_validator` to check user status and password version
+    /// 3. Consumes the ticket only after all validation succeeds
     ///
     /// Returns [`ValidatedTicket`] if all checks pass.
     pub async fn validate_and_consume_checked(
@@ -485,32 +556,19 @@ impl WsTicketService {
         expected_room_id: &RoomId,
         user_validator: &dyn UserValidator,
     ) -> Result<ValidatedTicket> {
-        // Step 1: Consume the ticket (one-time use)
         let mode = self.store.backend_name();
 
-        let Some(ticket_data) = self.store.consume(ticket).await? else {
+        let Some(ticket_data) = self.store.load(ticket, expected_room_id).await? else {
             debug!(ticket = %ticket, mode = %mode, "WebSocket ticket not found or expired");
             return Err(Error::Authorization(
                 "Invalid or expired ticket".to_string(),
             ));
         };
 
-        // Step 2: Validate room binding
-        if ticket_data.room_id != expected_room_id.as_str() {
-            debug!(
-                ticket_room = %ticket_data.room_id,
-                expected_room = %expected_room_id.as_str(),
-                mode = %mode,
-                "WebSocket ticket rejected: room mismatch"
-            );
-            return Err(Error::Authorization(
-                "Ticket not valid for this room".to_string(),
-            ));
-        }
-
         let user_id = UserId::from_string(ticket_data.user_id.clone());
 
-        // Step 3: Validate user status (TOCTOU-safe: happens after ticket consumption)
+        // Room binding is enforced by the storage key. A ticket fetched here
+        // is already scoped to `expected_room_id`.
         let user_validation = user_validator
             .validate_for_ticket(&user_id)
             .await
@@ -524,7 +582,7 @@ impl WsTicketService {
                 Error::Authorization("Authentication failed".to_string())
             })?;
 
-        // Step 4: Check password version (ticket must be invalidated if password changed)
+        // Check password version after loading the current user state.
         if ticket_data.password_version < user_validation.password_version {
             debug!(
                 user_id = %user_id.as_str(),
@@ -534,6 +592,17 @@ impl WsTicketService {
                 "WebSocket ticket rejected: password changed after ticket issued"
             );
             return Err(Error::Authorization("Authentication failed".to_string()));
+        }
+
+        if !self.store.claim(ticket, expected_room_id).await? {
+            debug!(
+                ticket = %ticket,
+                mode = %mode,
+                "WebSocket ticket already consumed during checked validation"
+            );
+            return Err(Error::Authorization(
+                "Invalid or expired ticket".to_string(),
+            ));
         }
 
         debug!(
@@ -645,6 +714,108 @@ mod tests {
         assert!(
             result.is_err(),
             "Ticket for room A should not be valid for room B"
+        );
+    }
+
+    struct StaticUserValidator {
+        result: std::result::Result<UserValidationResult, &'static str>,
+    }
+
+    #[async_trait]
+    impl UserValidator for StaticUserValidator {
+        async fn validate_for_ticket(&self, _user_id: &UserId) -> Result<UserValidationResult> {
+            self.result
+                .as_ref()
+                .map(Clone::clone)
+                .map_err(|message| Error::Authorization((*message).to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ticket_room_mismatch_does_not_consume_ticket() {
+        let service = WsTicketService::with_memory(Some(30));
+        let user_id = create_test_user_id("user1");
+        let room_a = create_test_room_id("room-a");
+        let room_b = create_test_room_id("room-b");
+
+        let ticket = service.create_ticket(&user_id, &room_a, 7).await.unwrap();
+
+        let wrong_room_result = service.validate_and_consume(&ticket, &room_b).await;
+        assert!(
+            matches!(wrong_room_result, Err(Error::Authorization(_))),
+            "room mismatch should be rejected"
+        );
+
+        let correct_room_result = service.validate_and_consume(&ticket, &room_a).await;
+        assert!(
+            correct_room_result.is_ok(),
+            "room mismatch must not consume the ticket"
+        );
+        let validated = correct_room_result.unwrap();
+        assert_eq!(validated.user_id.as_str(), "user1");
+        assert_eq!(validated.password_version, 7);
+    }
+
+    #[tokio::test]
+    async fn test_ticket_user_validation_failure_does_not_consume_ticket() {
+        let service = WsTicketService::with_memory(Some(30));
+        let user_id = create_test_user_id("user1");
+        let room_id = create_test_room_id("room-a");
+        let ticket = service.create_ticket(&user_id, &room_id, 4).await.unwrap();
+
+        let rejecting_validator = StaticUserValidator {
+            result: Err("banned"),
+        };
+        let allow_validator = StaticUserValidator {
+            result: Ok(UserValidationResult {
+                password_version: 4,
+            }),
+        };
+
+        let first_result = service
+            .validate_and_consume_checked(&ticket, &room_id, &rejecting_validator)
+            .await;
+        assert!(
+            matches!(first_result, Err(Error::Authorization(_))),
+            "user validation failure should reject the ticket"
+        );
+
+        let second_result = service
+            .validate_and_consume_checked(&ticket, &room_id, &allow_validator)
+            .await;
+        assert!(
+            second_result.is_ok(),
+            "user validation rejection must not consume the ticket"
+        );
+        let validated = second_result.unwrap();
+        assert_eq!(validated.user_id.as_str(), "user1");
+        assert_eq!(validated.password_version, 4);
+    }
+
+    #[tokio::test]
+    async fn test_ticket_checked_validation_is_still_one_time_use() {
+        let service = WsTicketService::with_memory(Some(30));
+        let user_id = create_test_user_id("user1");
+        let room_id = create_test_room_id("room-a");
+        let ticket = service.create_ticket(&user_id, &room_id, 2).await.unwrap();
+
+        let allow_validator = StaticUserValidator {
+            result: Ok(UserValidationResult {
+                password_version: 2,
+            }),
+        };
+
+        let first_result = service
+            .validate_and_consume_checked(&ticket, &room_id, &allow_validator)
+            .await;
+        assert!(first_result.is_ok(), "first checked validation should succeed");
+
+        let second_result = service
+            .validate_and_consume_checked(&ticket, &room_id, &allow_validator)
+            .await;
+        assert!(
+            matches!(second_result, Err(Error::Authorization(_))),
+            "checked validation must still enforce one-time use"
         );
     }
 

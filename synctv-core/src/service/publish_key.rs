@@ -326,6 +326,68 @@ impl std::fmt::Debug for PublishKeyService {
 }
 
 impl PublishKeyService {
+    fn decode_publish_claims(&self, token: &str) -> Result<PublishClaims> {
+        let claims_value = self.jwt_service.verify_custom(token)?;
+
+        let claims: PublishClaims = serde_json::from_value(claims_value)
+            .map_err(|e| Error::Authentication(format!("Invalid token format: {e}")))?;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| Error::Internal(format!("Time error: {e}")))?
+            .as_secs() as i64;
+
+        if now > claims.exp {
+            return Err(Error::Authentication("Token has expired".to_string()));
+        }
+
+        if !claims.perm_start_live {
+            return Err(Error::Authorization(
+                "Token does not have START_LIVE permission".to_string(),
+            ));
+        }
+
+        Ok(claims)
+    }
+
+    async fn claim_publish_key(&self, claims: &PublishClaims) -> Result<()> {
+        let ttl_secs = (claims.exp - claims.iat).max(0) as u64 + 300;
+        if !self.jti_store.try_claim(&claims.jti, ttl_secs).await? {
+            return Err(Error::Authentication(
+                "Publish key has already been used (single-use token)".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn decode_stream_publish_claims(
+        &self,
+        token: &str,
+        room_id: &RoomId,
+        media_id: &MediaId,
+    ) -> Result<PublishClaims> {
+        let claims = self.decode_publish_claims(token)?;
+
+        if claims.room_id != room_id.as_str() {
+            return Err(Error::Authorization(format!(
+                "Token room mismatch: expected {}, got {}",
+                room_id.as_str(),
+                claims.room_id
+            )));
+        }
+
+        if claims.media_id != media_id.as_str() {
+            return Err(Error::Authorization(format!(
+                "Token media mismatch: expected {}, got {}",
+                media_id.as_str(),
+                claims.media_id
+            )));
+        }
+
+        Ok(claims)
+    }
+
     /// Create a new publish key service with a custom JTI store.
     pub fn from_store(
         jwt_service: JwtService,
@@ -466,33 +528,24 @@ impl PublishKeyService {
     /// Each publish key can only be validated once. Subsequent calls with the
     /// same token (same `jti`) will fail with an authentication error.
     pub async fn validate_publish_key(&self, token: &str) -> Result<PublishClaims> {
-        let claims_value = self.jwt_service.verify_custom(token)?;
+        let claims = self.decode_publish_claims(token)?;
+        self.claim_publish_key(&claims).await?;
 
-        let claims: PublishClaims = serde_json::from_value(claims_value)
-            .map_err(|e| Error::Authentication(format!("Invalid token format: {e}")))?;
+        Ok(claims)
+    }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| Error::Internal(format!("Time error: {e}")))?
-            .as_secs() as i64;
-
-        if now > claims.exp {
-            return Err(Error::Authentication("Token has expired".to_string()));
-        }
-
-        if !claims.perm_start_live {
-            return Err(Error::Authorization(
-                "Token does not have START_LIVE permission".to_string(),
-            ));
-        }
-
-        // Single-use enforcement via JTI store
-        let ttl_secs = (claims.exp - claims.iat).max(0) as u64 + 300;
-        if !self.jti_store.try_claim(&claims.jti, ttl_secs).await? {
-            return Err(Error::Authentication(
-                "Publish key has already been used (single-use token)".to_string(),
-            ));
-        }
+    /// Validate a publish key for a specific stream and then consume it.
+    ///
+    /// Stream binding is checked before the single-use JTI claim so callers do
+    /// not burn a valid token on a mismatched route.
+    pub async fn validate_publish_key_for_stream_claims(
+        &self,
+        token: &str,
+        room_id: &RoomId,
+        media_id: &MediaId,
+    ) -> Result<PublishClaims> {
+        let claims = self.decode_stream_publish_claims(token, room_id, media_id)?;
+        self.claim_publish_key(&claims).await?;
 
         Ok(claims)
     }
@@ -504,34 +557,20 @@ impl PublishKeyService {
         room_id: &RoomId,
         media_id: &MediaId,
     ) -> Result<UserId> {
-        let claims = self.validate_publish_key(token).await?;
-
-        if claims.room_id != room_id.as_str() {
-            return Err(Error::Authorization(format!(
-                "Token room mismatch: expected {}, got {}",
-                room_id.as_str(),
-                claims.room_id
-            )));
-        }
-
-        if claims.media_id != media_id.as_str() {
-            return Err(Error::Authorization(format!(
-                "Token media mismatch: expected {}, got {}",
-                media_id.as_str(),
-                claims.media_id
-            )));
-        }
+        let claims = self
+            .validate_publish_key_for_stream_claims(token, room_id, media_id)
+            .await?;
 
         Ok(UserId::from_string(claims.user_id))
     }
 
     /// Verify a publish key for a specific room/media with user status check.
     ///
-    /// This is the recommended method for RTMP publish key validation. After
-    /// validating the JWT and consuming the single-use JTI, it calls the
-    /// `user_validator` callback to check the user's current status (e.g.,
-    /// banned, deleted). This prevents a user from using a publish key issued
-    /// before they were banned.
+    /// This is the recommended method for RTMP publish key validation. It
+    /// validates the JWT and stream binding, checks the user's current status
+    /// (e.g., banned, deleted), and only then consumes the single-use JTI.
+    /// This prevents retriable authorization failures from burning a valid
+    /// publish key.
     ///
     /// The `user_validator` receives the `UserId` extracted from the token and
     /// should return `Ok(())` if the user is allowed to publish, or an `Err`
@@ -546,12 +585,12 @@ impl PublishKeyService {
     where
         F: FnOnce(&UserId) -> Result<()>,
     {
-        let user_id = self
-            .verify_publish_key_for_stream(token, room_id, media_id)
-            .await?;
+        let claims = self.decode_stream_publish_claims(token, room_id, media_id)?;
+        let user_id = UserId::from_string(claims.user_id.clone());
 
-        // Check user status after JWT validation and JTI consumption
         user_validator(&user_id)?;
+
+        self.claim_publish_key(&claims).await?;
 
         Ok(user_id)
     }
@@ -751,6 +790,68 @@ mod tests {
         } else {
             panic!("Expected Authorization error with media mismatch");
         }
+    }
+
+    #[tokio::test]
+    async fn test_verify_publish_key_room_mismatch_does_not_consume_token() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+        let wrong_room_id = RoomId::new();
+
+        let key = service
+            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+            .await
+            .unwrap();
+
+        let first_attempt = service
+            .verify_publish_key_for_stream(&key.token, &wrong_room_id, &media_id)
+            .await;
+        assert!(
+            matches!(first_attempt, Err(Error::Authorization(_))),
+            "room mismatch should reject without consuming the token"
+        );
+
+        let second_attempt = service
+            .verify_publish_key_for_stream(&key.token, &room_id, &media_id)
+            .await;
+        assert!(
+            second_attempt.is_ok(),
+            "room mismatch must not consume an otherwise valid publish key"
+        );
+        assert_eq!(second_attempt.unwrap(), user_id);
+    }
+
+    #[tokio::test]
+    async fn test_verify_publish_key_media_mismatch_does_not_consume_token() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+        let wrong_media_id = MediaId::new();
+
+        let key = service
+            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+            .await
+            .unwrap();
+
+        let first_attempt = service
+            .verify_publish_key_for_stream(&key.token, &room_id, &wrong_media_id)
+            .await;
+        assert!(
+            matches!(first_attempt, Err(Error::Authorization(_))),
+            "media mismatch should reject without consuming the token"
+        );
+
+        let second_attempt = service
+            .verify_publish_key_for_stream(&key.token, &room_id, &media_id)
+            .await;
+        assert!(
+            second_attempt.is_ok(),
+            "media mismatch must not consume an otherwise valid publish key"
+        );
+        assert_eq!(second_attempt.unwrap(), user_id);
     }
 
     #[test]

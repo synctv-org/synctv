@@ -2,6 +2,7 @@ use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use redis::AsyncCommands;
 use testcontainers::core::ImageExt;
@@ -10,28 +11,38 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
 use tokio::sync::{RwLock, Semaphore};
 
-use crate::postgres::docker_startup_timeout;
+use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 
 pub type RedisConnectionManager = redis::aio::ConnectionManager;
 pub type RedisConnectionHandle = Arc<RwLock<redis::aio::ConnectionManager>>;
-static REDIS_START_SERIALIZER: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(1));
+static REDIS_START_SERIALIZER: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
 
 struct ProcessLock(File);
 
 impl ProcessLock {
-    fn acquire(name: &str) -> Self {
+    fn try_acquire(name: &str) -> Option<Self> {
         let mut path = PathBuf::from("/tmp");
         path.push(format!("synctv-{name}.lock"));
-        let file = OpenOptions::new()
+        Self::try_acquire_path(path)
+    }
+
+    fn try_acquire_path(path: PathBuf) -> Option<Self> {
+        let file = Self::open_lock_file(&path);
+        match file.try_lock() {
+            Ok(()) => Some(Self(file)),
+            Err(_) => None,
+        }
+    }
+
+    fn open_lock_file(path: &PathBuf) -> File {
+        OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(&path)
-            .unwrap_or_else(|e| panic!("failed to open lock file {}: {e}", path.display()));
-        file.lock()
-            .unwrap_or_else(|e| panic!("failed to acquire lock file {}: {e}", path.display()));
-        Self(file)
+            .open(path)
+            .unwrap_or_else(|e| panic!("failed to open lock file {}: {e}", path.display()))
     }
 }
 
@@ -137,14 +148,7 @@ impl Drop for RedisContainer {
 async fn start_redis_inner(label: &str) -> (RedisContainer, String, redis::Client) {
     let container_name = redis_container_name(label);
     let container = {
-        let _redis_start_permit = REDIS_START_SERIALIZER
-            .acquire()
-            .await
-            .expect("Redis startup guard should not be closed");
-        let _redis_process_lock =
-            tokio::task::spawn_blocking(|| ProcessLock::acquire("redis-start"))
-                .await
-                .expect("redis process lock task should not panic");
+        let _redis_process_lock = acquire_docker_start_slot("redis-start").await;
         tokio::time::timeout(
             docker_startup_timeout(),
             named_redis_request(&container_name).start(),
@@ -165,6 +169,27 @@ async fn start_redis_inner(label: &str) -> (RedisContainer, String, redis::Clien
         redis_url,
         client,
     )
+}
+
+async fn acquire_docker_start_slot(name: &str) -> ProcessLock {
+    let slots = docker_startup_parallelism();
+    let _local_permit = REDIS_START_SERIALIZER
+        .acquire()
+        .await
+        .expect("Redis startup guard should not be closed");
+    let prefix = name.to_string();
+
+    tokio::task::spawn_blocking(move || loop {
+        for slot in 0..slots {
+            let slot_name = format!("{prefix}-slot-{slot}");
+            if let Some(lock) = ProcessLock::try_acquire(&slot_name) {
+                return lock;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    })
+    .await
+    .expect("redis process slot task should not panic")
 }
 
 pub async fn start_redis_with_client() -> (RedisContainer, redis::Client) {

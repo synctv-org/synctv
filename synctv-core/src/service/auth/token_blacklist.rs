@@ -285,13 +285,17 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
 /// by queries) and can be purged periodically via
 /// `DELETE FROM token_blacklist WHERE expires_at < NOW()`.
 ///
-/// Family revocation is stored in the same table with a `family:` key prefix
-/// and the revocation timestamp as the JTI value.
+/// Family revocation uses two rows in the same table so it remains compatible
+/// with historical deployments that only have `(jti, expires_at)` columns:
+/// - the original family key stores the TTL-bearing marker;
+/// - a derived metadata key stores the stable revocation timestamp inside `jti`.
 pub struct PgTokenBlacklistStore {
     pool: PgPool,
 }
 
 impl PgTokenBlacklistStore {
+    const FAMILY_TIMESTAMP_PREFIX: &str = "__family_revoked_at__:";
+
     /// Create a new PostgreSQL-backed token blacklist store.
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -304,25 +308,85 @@ impl PgTokenBlacklistStore {
         &self.pool
     }
 
+    fn family_timestamp_key_prefix(key: &str) -> String {
+        format!("{}{key}:", Self::FAMILY_TIMESTAMP_PREFIX)
+    }
+
+    fn family_timestamp_key(key: &str, timestamp: i64) -> String {
+        format!("{}{}", Self::family_timestamp_key_prefix(key), timestamp)
+    }
+
+    fn parse_family_timestamp_key(meta_key: &str, family_key: &str) -> Option<i64> {
+        meta_key
+            .strip_prefix(&Self::family_timestamp_key_prefix(family_key))?
+            .parse()
+            .ok()
+    }
+
+    fn escape_like_pattern(value: &str) -> String {
+        let mut escaped = String::with_capacity(value.len());
+        for ch in value.chars() {
+            match ch {
+                '\\' | '%' | '_' => {
+                    escaped.push('\\');
+                    escaped.push(ch);
+                }
+                _ => escaped.push(ch),
+            }
+        }
+        escaped
+    }
+
+    async fn load_family_revocation_meta_key(&self, key: &str) -> std::result::Result<Option<String>, sqlx::Error> {
+        let meta_like = format!(
+            "{}%",
+            Self::escape_like_pattern(&Self::family_timestamp_key_prefix(key))
+        );
+
+        sqlx::query_scalar::<_, String>(
+            "SELECT meta.jti
+             FROM token_blacklist AS marker
+             JOIN token_blacklist AS meta
+               ON meta.jti LIKE $2 ESCAPE '\\'
+              AND meta.expires_at > NOW()
+             WHERE marker.jti = $1
+               AND marker.expires_at > NOW()
+             ORDER BY meta.expires_at DESC, meta.jti DESC
+             LIMIT 1",
+        )
+        .bind(key)
+        .bind(meta_like)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     /// Clean up expired token blacklist entries.
     ///
-    /// This calls the `cleanup_expired_token_blacklist()` `PostgreSQL` function
-    /// which deletes all rows where `expires_at < CURRENT_TIMESTAMP`.
+    /// Delete expired token blacklist entries directly in PostgreSQL.
     ///
-    /// Should be called periodically to prevent unbounded table growth.
+    /// This intentionally avoids depending on a historical migration function
+    /// signature so cleanup continues to work on upgraded databases.
     pub async fn cleanup_expired(&self) -> Result<u64> {
-        let result = sqlx::query("SELECT cleanup_expired_token_blacklist()")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    error = %e,
-                    "Failed to cleanup expired token blacklist entries"
-                );
-                crate::Error::Internal("Failed to cleanup token blacklist".to_string())
-            })?;
-        // The function returns void, but we can check rows_affected for diagnostic purposes
-        Ok(result.rows_affected())
+        let deleted_count = sqlx::query_scalar::<_, i64>(
+            r#"
+            WITH deleted AS (
+                DELETE FROM token_blacklist
+                WHERE expires_at < CURRENT_TIMESTAMP
+                RETURNING 1
+            )
+            SELECT COUNT(*)::BIGINT FROM deleted
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                "Failed to cleanup expired token blacklist entries"
+            );
+            crate::Error::Internal("Failed to cleanup token blacklist".to_string())
+        })?;
+        Ok(deleted_count.max(0) as u64)
     }
 }
 
@@ -414,31 +478,24 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT revoked_at
-             FROM token_blacklist
-             WHERE jti = $1
-               AND expires_at > NOW()
-               AND revoked_at IS NOT NULL",
-        )
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()?;
-        row.map(|(revoked_at,)| revoked_at)
+        let meta_key = self.load_family_revocation_meta_key(key).await.ok()?;
+        meta_key.and_then(|meta_key| {
+            let parsed = Self::parse_family_timestamp_key(&meta_key, key);
+            if parsed.is_none() {
+                tracing::error!(
+                    family_key = %key,
+                    meta_key = %meta_key,
+                    "Malformed PostgreSQL family revocation metadata key"
+                );
+            }
+            parsed
+        })
     }
 
     async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT revoked_at
-             FROM token_blacklist
-             WHERE jti = $1
-               AND expires_at > NOW()
-               AND revoked_at IS NOT NULL",
-        )
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await
+        let meta_key = self
+            .load_family_revocation_meta_key(key)
+            .await
         .map_err(|e| {
             tracing::error!(
                 key = %key,
@@ -448,11 +505,26 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
             crate::Error::Internal("Failed to validate refresh token family".to_string())
         })?;
 
-        Ok(row.map(|(revoked_at,)| revoked_at))
+        match meta_key {
+            Some(meta_key) => Self::parse_family_timestamp_key(&meta_key, key).map(Some).ok_or_else(|| {
+                tracing::error!(
+                    family_key = %key,
+                    meta_key = %meta_key,
+                    "Malformed PostgreSQL family revocation metadata key (fail-closed)"
+                );
+                crate::Error::Internal("Failed to validate refresh token family".to_string())
+            }),
+            None => Ok(None),
+        }
     }
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+        let meta_key = Self::family_timestamp_key(key, timestamp);
+        let meta_like = format!(
+            "{}%",
+            Self::escape_like_pattern(&Self::family_timestamp_key_prefix(key))
+        );
         let mut tx = self.pool.begin().await.map_err(|e| {
             tracing::error!(
                 key = %key,
@@ -462,16 +534,45 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
             crate::Error::Internal("Failed to revoke refresh token family".to_string())
         })?;
 
-        // Store the family revocation marker
+        sqlx::query("DELETE FROM token_blacklist WHERE jti LIKE $1 ESCAPE '\\'")
+            .bind(&meta_like)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    key = %key,
+                    error = %e,
+                    "Failed to clear stale refresh token family revocation metadata in PostgreSQL"
+                );
+                crate::Error::Internal("Failed to revoke refresh token family".to_string())
+            })?;
+
         sqlx::query(
-            "INSERT INTO token_blacklist (jti, expires_at, revoked_at) VALUES ($1, $2, $3) \
-             ON CONFLICT (jti) DO UPDATE
-             SET expires_at = EXCLUDED.expires_at,
-                 revoked_at = EXCLUDED.revoked_at",
+            "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
+             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
+        )
+        .bind(&meta_key)
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                key = %key,
+                meta_key = %meta_key,
+                error = %e,
+                "Failed to persist refresh token family revocation metadata in PostgreSQL"
+            );
+            crate::Error::Internal("Failed to revoke refresh token family".to_string())
+        })?;
+
+        // Store the family revocation marker after metadata so any failure on
+        // the canonical key rolls back the entire transaction.
+        sqlx::query(
+            "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
+             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
         )
         .bind(key)
         .bind(expires_at)
-        .bind(timestamp)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -1865,6 +1966,29 @@ mod tests {
             let expected_ts = 1700000000_i64 + i;
             assert_eq!(store.get_family_revoked_at(&key).await, Some(expected_ts));
         }
+    }
+
+    #[test]
+    fn test_pg_family_timestamp_key_roundtrip() {
+        let family_key = "family:user%_42\\segment";
+        let timestamp = 1_700_000_123_i64;
+        let meta_key = PgTokenBlacklistStore::family_timestamp_key(family_key, timestamp);
+
+        assert_eq!(
+            PgTokenBlacklistStore::parse_family_timestamp_key(&meta_key, family_key),
+            Some(timestamp)
+        );
+    }
+
+    #[test]
+    fn test_pg_family_timestamp_like_pattern_escapes_wildcards() {
+        let family_key = "family:user%_42\\segment";
+        let prefix = PgTokenBlacklistStore::family_timestamp_key_prefix(family_key);
+        let escaped = PgTokenBlacklistStore::escape_like_pattern(&prefix);
+
+        assert!(escaped.contains("\\%"));
+        assert!(escaped.contains("\\_"));
+        assert!(escaped.contains("\\\\"));
     }
 
     // ---- FallbackTokenBlacklistStore tests ----

@@ -140,6 +140,69 @@ async fn test_publish_key_single_use() {
     }
 }
 
+#[tokio::test]
+async fn test_publish_key_room_mismatch_does_not_consume_token() {
+    let service = create_service();
+    let room_id = RoomId::new();
+    let wrong_room_id = RoomId::new();
+    let media_id = MediaId::new();
+    let user_id = UserId::new();
+
+    let key = service
+        .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+        .await
+        .unwrap();
+
+    let first_result = service
+        .verify_publish_key_for_stream(&key.token, &wrong_room_id, &media_id)
+        .await;
+    assert!(
+        matches!(first_result, Err(synctv_core::Error::Authorization(_))),
+        "room mismatch should return authorization error"
+    );
+
+    let second_result = service
+        .verify_publish_key_for_stream(&key.token, &room_id, &media_id)
+        .await;
+    assert!(
+        second_result.is_ok(),
+        "room mismatch must not consume a valid single-use publish key"
+    );
+    assert_eq!(second_result.unwrap(), user_id);
+}
+
+#[tokio::test]
+async fn test_publish_key_user_validator_failure_does_not_consume_token() {
+    let service = create_service();
+    let room_id = RoomId::new();
+    let media_id = MediaId::new();
+    let user_id = UserId::new();
+
+    let key = service
+        .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+        .await
+        .unwrap();
+
+    let first_result = service
+        .verify_publish_key_for_stream_checked(&key.token, &room_id, &media_id, |_uid| {
+            Err(synctv_core::Error::Authorization("user banned".to_string()))
+        })
+        .await;
+    assert!(
+        matches!(first_result, Err(synctv_core::Error::Authorization(_))),
+        "user validator failure should propagate as authorization error"
+    );
+
+    let second_result = service
+        .verify_publish_key_for_stream_checked(&key.token, &room_id, &media_id, |_uid| Ok(()))
+        .await;
+    assert!(
+        second_result.is_ok(),
+        "user validator rejection must not consume a valid single-use publish key"
+    );
+    assert_eq!(second_result.unwrap(), user_id);
+}
+
 // ============================================================================
 // Redis JTI store tests (require Docker)
 // ============================================================================

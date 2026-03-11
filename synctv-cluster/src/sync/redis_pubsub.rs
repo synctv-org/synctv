@@ -73,10 +73,6 @@ const CRITICAL_STREAM_INITIAL_BACKOFF_MS: u64 = 100;
 /// Can be overridden via `ClusterChannelConfig::stream_max_length`.
 const DEFAULT_MAX_STREAM_LENGTH: usize = 10000;
 
-/// Milliseconds to wait after broadcasting a RoomDeleted event before removing
-/// room subscriptions, giving WebSocket read loops time to drain queued messages.
-const ROOM_DELETED_BROADCAST_DRAIN_MS: u64 = 100;
-
 // ---- Unified Pub/Sub channel naming ----
 //
 // Both admin and room events use the same channel naming scheme and are published
@@ -1849,14 +1845,11 @@ impl RedisPubSub {
             }
 
             // Handle RoomDeleted: broadcast to local subscribers then clean up the room.
-            // A small delay between broadcast and remove_room ensures that the
-            // WebSocket read loops have time to dequeue and forward the RoomDeleted
-            // event to clients before the senders are dropped.
+            // Critical delivery must complete before local senders are dropped;
+            // otherwise the queued RoomDeleted notification can be lost for slow
+            // subscribers even though the room cleanup proceeds.
             if matches!(&event, ClusterEvent::RoomDeleted { .. }) {
-                // Notify local subscribers so WebSocket clients learn the room is gone
-                let sent_count = self.message_hub.broadcast(&room_id, event);
-                // Allow WebSocket tasks to process the queued event before cleanup
-                tokio::time::sleep(Duration::from_millis(ROOM_DELETED_BROADCAST_DRAIN_MS)).await;
+                let sent_count = self.message_hub.broadcast_reliably(&room_id, event).await;
                 // Remove all local subscriptions for the deleted room
                 self.message_hub.remove_room(&room_id);
                 info!(
@@ -1868,35 +1861,25 @@ impl RedisPubSub {
             }
 
             // Route WebRTC signaling to the specific target connection instead of
-            // broadcasting to all subscribers. The `to` field is formatted as
-            // "user_id:conn_id" -- we parse the conn_id and use targeted delivery.
+            // broadcasting to all subscribers. The sender side validates
+            // "user_id:conn_id", but defensive routing here also supports the
+            // historical conn_id-only form by treating the whole field as a
+            // connection ID rather than mis-routing it as a user-targeted send.
             if let ClusterEvent::WebRTCSignaling { ref to, .. } = event {
                 let to_owned = to.clone();
-                // Parse "user_id:conn_id" format
-                if let Some((_target_user, target_conn)) = to_owned.rsplit_once(':') {
-                    let target_conn = target_conn.to_string();
-                    let sent =
-                        self.message_hub
-                            .broadcast_to_connection(&room_id, &target_conn, event);
-                    debug!(
-                        room_id = %room_id.as_str(),
-                        target_connection = %target_conn,
-                        sent = sent,
-                        "Routed WebRTC signaling to specific connection"
-                    );
-                } else {
-                    // Fallback: if `to` doesn't contain ':', broadcast to user
-                    let target_user_id = synctv_core::models::UserId::from_string(to_owned.clone());
-                    let sent = self
-                        .message_hub
-                        .broadcast_to_user(&room_id, &target_user_id, event);
-                    debug!(
-                        room_id = %room_id.as_str(),
-                        target_user = %to_owned,
-                        sent = sent,
-                        "Routed WebRTC signaling to user (no conn_id)"
-                    );
-                }
+                let target_conn = to_owned.rsplit_once(':').map_or_else(
+                    || to_owned.clone(),
+                    |(_target_user, conn_id)| conn_id.to_string(),
+                );
+                let sent = self
+                    .message_hub
+                    .broadcast_to_connection(&room_id, &target_conn, event);
+                debug!(
+                    room_id = %room_id.as_str(),
+                    target_connection = %target_conn,
+                    sent = sent,
+                    "Routed WebRTC signaling to specific connection"
+                );
                 return;
             }
 
@@ -2303,6 +2286,96 @@ mod tests {
         let deserialized: EventEnvelope = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.node_id, "node1");
         assert_eq!(deserialized.event.event_type(), "chat_message");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup() {
+        let message_hub = Arc::new(RoomMessageHub::new());
+        let room_id = RoomId::from_string("deleted-room".to_string());
+        let user_id = UserId::from_string("user-1".to_string());
+        let mut rx = message_hub
+            .subscribe(room_id.clone(), user_id.clone(), "conn-1".to_string())
+            .await;
+
+        for _ in 0..512 {
+            let sent = message_hub.broadcast(
+                &room_id,
+                ClusterEvent::ChatMessage {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: room_id.clone(),
+                    user_id: user_id.clone(),
+                    username: "filler".to_string(),
+                    message: "fill".to_string(),
+                    timestamp: Utc::now(),
+                    position: None,
+                    color: None,
+                },
+            );
+            assert_eq!(sent, 1, "filler message should enqueue");
+        }
+
+        let redis_client = RedisClient::open("redis://127.0.0.1:6379").expect("valid redis URL");
+        let (admin_tx, _) = broadcast::channel(8);
+        let pubsub = RedisPubSub::new(
+            redis_client,
+            message_hub.clone(),
+            "node-1".to_string(),
+            admin_tx,
+            None,
+            None,
+            Arc::new(MessageDeduplicator::with_defaults()),
+        )
+        .expect("pubsub should be created");
+
+        let event = ClusterEvent::RoomDeleted {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            deleted_by: user_id.clone(),
+            timestamp: Utc::now(),
+        };
+
+        let room_for_task = room_id.clone();
+        let dispatch_task = tokio::spawn(async move {
+            pubsub
+                .dispatch_event("synctv:room:deleted-room", event)
+                .await;
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !dispatch_task.is_finished(),
+            "room cleanup must wait for reliable delivery when subscriber channels are full"
+        );
+
+        let drained = rx.recv().await.expect("filler message should be present");
+        assert!(matches!(drained, ClusterEvent::ChatMessage { .. }));
+
+        tokio::time::timeout(Duration::from_secs(1), dispatch_task)
+            .await
+            .expect("dispatch should complete once delivery can proceed")
+            .expect("dispatch task should not panic");
+
+        let mut saw_room_deleted = false;
+        for _ in 0..512 {
+            let msg = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("queued message should arrive")
+                .expect("channel should remain open until room deletion is delivered");
+            if matches!(msg, ClusterEvent::RoomDeleted { .. }) {
+                saw_room_deleted = true;
+                break;
+            }
+        }
+
+        assert!(
+            saw_room_deleted,
+            "RoomDeleted should be delivered before cleanup"
+        );
+        assert_eq!(
+            message_hub.subscriber_count(&room_for_task),
+            0,
+            "room should be cleaned up after reliable delivery"
+        );
     }
 
     // Integration tests require Redis running
@@ -2918,6 +2991,65 @@ mod tests {
         assert!(
             parse_stream_id(&fallback).is_some(),
             "fallback cursor should remain a valid Redis stream ID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_event_routes_conn_id_only_webrtc_to_specific_connection() {
+        let message_hub = Arc::new(RoomMessageHub::new());
+        let (admin_tx, _) = broadcast::channel(256);
+        let dedup = Arc::new(MessageDeduplicator::with_defaults());
+        let redis_client = RedisClient::open("redis://127.0.0.1:1").unwrap();
+
+        let pubsub = RedisPubSub::with_key_prefix(
+            redis_client,
+            message_hub.clone(),
+            "test-node".to_string(),
+            "synctv:",
+            admin_tx,
+            None,
+            None,
+            dedup,
+            300,
+            1000,
+        )
+        .unwrap();
+
+        let room_id = RoomId::from_string("dispatch-room".to_string());
+        let user1 = synctv_core::models::id::UserId::from_string("user1".to_string());
+        let user2 = synctv_core::models::id::UserId::from_string("user2".to_string());
+        let mut rx1 = message_hub
+            .subscribe(room_id.clone(), user1, "conn1".to_string())
+            .await;
+        let mut rx2 = message_hub
+            .subscribe(room_id.clone(), user2, "conn2".to_string())
+            .await;
+
+        pubsub
+            .dispatch_event(
+                "synctv:room:dispatch-room",
+                ClusterEvent::WebRTCSignaling {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: room_id.clone(),
+                    message_type: "offer".to_string(),
+                    from: "user1|conn1".to_string(),
+                    to: "conn2".to_string(),
+                    data: "SDP".to_string(),
+                    timestamp: chrono::Utc::now(),
+                },
+            )
+            .await;
+
+        let target = tokio::time::timeout(Duration::from_millis(100), rx2.recv())
+            .await
+            .expect("target connection should receive event")
+            .expect("target channel should remain open");
+        assert!(matches!(target, ClusterEvent::WebRTCSignaling { .. }));
+
+        let non_target = tokio::time::timeout(Duration::from_millis(100), rx1.recv()).await;
+        assert!(
+            non_target.is_err(),
+            "non-target connection must not receive conn_id-only signaling"
         );
     }
 }

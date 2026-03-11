@@ -397,20 +397,31 @@ impl SyncTvRtmpAuth {
         let token = token_owned.as_deref().unwrap_or(stream_name);
 
         // Validate JWT stream_key
-        let claims = self
-            .publish_key_service
-            .validate_publish_key(token)
-            .await
-            .map_err(|e| format!("Invalid stream key: {e}"))?;
-
-        // Verify room_id matches
-        if claims.room_id != app_name {
-            return Err(format!(
-                "Room ID mismatch: token for room {}, but connecting to room {}",
-                claims.room_id, app_name
-            )
-            .into());
+        let expected_room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
+        let claims = if token_owned.is_some() {
+            let expected_media_id =
+                synctv_core::models::MediaId::from_string(stream_name.to_string());
+            self.publish_key_service
+                .validate_publish_key_for_stream_claims(token, &expected_room_id, &expected_media_id)
+                .await
+        } else {
+            // Legacy RTMP publish URLs use /{room_id}/{JWT_TOKEN}, so stream_name is
+            // the token itself rather than the media ID. Preserve that format by
+            // validating the token and room here, then enforcing media ownership
+            // against the claims below before registration.
+            self.publish_key_service.validate_publish_key(token).await.and_then(|claims| {
+                if claims.room_id != expected_room_id.as_str() {
+                    Err(synctv_core::Error::Authorization(format!(
+                        "Token room mismatch: expected {}, got {}",
+                        expected_room_id.as_str(),
+                        claims.room_id
+                    )))
+                } else {
+                    Ok(claims)
+                }
+            })
         }
+        .map_err(|e| format!("Invalid stream key: {e}"))?;
 
         // Re-verify user status at connection time
         let user_id = UserId::from_string(claims.user_id.clone());
@@ -837,6 +848,37 @@ mod tests {
         let result = extract_token_from_query("token=abc+def");
         // percent_decode_str does NOT convert `+` to space (only %20 is space in strict mode)
         assert_eq!(result.as_deref(), Some("abc+def"));
+    }
+
+    #[test]
+    fn test_legacy_rtmp_publish_without_query_uses_stream_name_as_token() {
+        let query = None;
+        let stream_name = "legacy_jwt_token";
+        let token_owned: Option<String> = query.and_then(extract_token_from_query);
+        let token = token_owned.as_deref().unwrap_or(stream_name);
+
+        assert_eq!(
+            token, stream_name,
+            "legacy RTMP path-token publish must continue treating stream_name as the token"
+        );
+        assert!(
+            token_owned.is_none(),
+            "legacy path-token mode must not require a query parameter"
+        );
+    }
+
+    #[test]
+    fn test_query_token_mode_keeps_stream_name_for_media_binding() {
+        let query = Some("token=query_jwt_token");
+        let stream_name = "media_123";
+        let token_owned: Option<String> = query.and_then(extract_token_from_query);
+        let token = token_owned.as_deref().unwrap_or(stream_name);
+
+        assert_eq!(token, "query_jwt_token");
+        assert_eq!(
+            stream_name, "media_123",
+            "query token mode must still reserve stream_name for media binding"
+        );
     }
 
     // ========== StreamLifecycleEvent ==========

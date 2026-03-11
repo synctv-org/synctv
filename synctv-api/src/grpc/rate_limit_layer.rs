@@ -212,10 +212,12 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
         Some("AlistProviderService") => Some(GrpcRateLimitTier::Read),
         Some("BilibiliProviderService") => Some(GrpcRateLimitTier::Read),
         Some("EmbyProviderService") => Some(GrpcRateLimitTier::Read),
-        // Cluster service uses its own auth; no rate limiting needed
-        Some("ClusterService") => None,
-        // Unknown services: no rate limiting (they may have their own auth)
-        _ => None,
+        // Internal infrastructure services are explicitly exempt.
+        Some("ClusterService" | "StreamRelayService" | "Health" | "ServerReflection") => None,
+        // Unknown services default to the conservative read tier so newly added
+        // business RPCs cannot silently bypass rate limiting.
+        Some(_) => Some(GrpcRateLimitTier::Read),
+        None => None,
     }
 }
 
@@ -703,8 +705,24 @@ mod tests {
     }
 
     #[test]
-    fn test_tier_from_path_unknown() {
-        assert_eq!(tier_from_path("/unknown.UnknownService/Method"), None);
+    fn test_tier_from_path_internal_services_are_exempt() {
+        assert_eq!(tier_from_path("/grpc.health.v1.Health/Check"), None);
+        assert_eq!(
+            tier_from_path("/grpc.reflection.v1.ServerReflection/ServerReflectionInfo"),
+            None
+        );
+        assert_eq!(
+            tier_from_path("/synctv.livestream.StreamRelayService/RelayStream"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_tier_from_path_unknown_defaults_to_read() {
+        assert_eq!(
+            tier_from_path("/unknown.UnknownService/Method"),
+            Some(GrpcRateLimitTier::Read)
+        );
     }
 
     #[test]

@@ -29,6 +29,18 @@ fn chat_event(room: &RoomId, user: &UserId) -> ClusterEvent {
     }
 }
 
+fn webrtc_event(room: &RoomId) -> ClusterEvent {
+    ClusterEvent::WebRTCSignaling {
+        event_id: nanoid::nanoid!(16),
+        room_id: room.clone(),
+        message_type: "offer".to_string(),
+        from: "sender|conn-from".to_string(),
+        to: "receiver:conn-target".to_string(),
+        data: "{\"sdp\":\"test\"}".to_string(),
+        timestamp: chrono::Utc::now(),
+    }
+}
+
 // ============================================================================
 // Test 1: broadcast_to_connection delivers only to target
 // ============================================================================
@@ -63,6 +75,47 @@ async fn test_broadcast_to_connection_targeted() {
     assert!(
         r.is_err(),
         "c1 should not have received the targeted message"
+    );
+}
+
+#[tokio::test]
+async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full() {
+    let hub = RoomMessageHub::new();
+    let room = rid("r1");
+    let user = uid("u1");
+
+    let mut rx = hub
+        .subscribe(room.clone(), user, "conn-target".to_string())
+        .await;
+
+    for _ in 0..512 {
+        let sent = hub.broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")));
+        assert_eq!(sent, 1, "prefill targeted messages should enqueue until channel fills");
+    }
+
+    let sent = hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room));
+    assert_eq!(
+        sent, 1,
+        "WebRTC signaling should be accepted for reliable delivery even when the channel is full"
+    );
+
+    let _drained = rx.recv().await.expect("prefill message should exist");
+
+    let mut delivered_webrtc = false;
+    for _ in 0..512 {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("message should arrive after draining one slot")
+            .expect("channel should remain open");
+        if matches!(msg, ClusterEvent::WebRTCSignaling { .. }) {
+            delivered_webrtc = true;
+            break;
+        }
+    }
+
+    assert!(
+        delivered_webrtc,
+        "reliable targeted delivery must eventually enqueue the WebRTC signaling event"
     );
 }
 

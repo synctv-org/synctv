@@ -1169,6 +1169,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_handshake_and_initial_user_joined() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1207,6 +1208,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_heartbeat_ping_pong() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1255,6 +1257,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_graceful_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1298,6 +1301,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_unauthenticated_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1318,6 +1322,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_invalid_token_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1349,6 +1354,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_non_member_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1387,6 +1393,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_multi_client_room_sync() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1451,6 +1458,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_chat_message_broadcast() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1522,6 +1530,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_multiple_heartbeats() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1566,6 +1575,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_user_left_on_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1627,6 +1637,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_room_isolation() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1705,6 +1716,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_reconnect_after_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1783,6 +1795,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_forced_disconnect_via_kick() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1841,6 +1854,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_forced_disconnect_via_kick_does_not_broadcast_user_left() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1915,6 +1929,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_admin_kick_event_does_not_broadcast_user_left() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2002,6 +2017,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_cross_replica_chat_via_redis() {
         let infra = TestInfra::new().await;
 
@@ -2077,6 +2093,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_cross_replica_same_user_partial_disconnect_does_not_emit_user_left() {
         let infra = TestInfra::new().await;
 
@@ -2191,6 +2208,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_cross_replica_same_user_second_connection_does_not_emit_duplicate_user_joined()
     {
         let infra = TestInfra::new().await;
@@ -2267,6 +2285,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_rate_limiter_blocks_excess_chat() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server_with_chat_rate_limit(
@@ -2345,6 +2364,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_content_filter_strips_xss() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2423,6 +2443,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_connection_cleanup_on_tcp_drop() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2481,6 +2502,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_connection_manager_state_consistency() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2538,6 +2560,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_empty_chat_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2612,6 +2635,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_danmaku_broadcast() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2696,6 +2720,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_concurrent_connections_same_user() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2768,6 +2793,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_same_user_second_connection_does_not_emit_duplicate_user_joined() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2834,6 +2860,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_same_user_one_of_multiple_connections_disconnect_does_not_emit_user_left() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2941,6 +2968,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_webrtc_join_marks_current_connection_for_same_user_multi_conn() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -3021,6 +3049,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_webrtc_offer_rejects_recipient_without_conn_id() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -3180,6 +3209,7 @@ mod websocket_e2e {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_webrtc_offer_requires_target_connection_to_join_webrtc() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -3295,6 +3325,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_invalid_ticket_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -3318,6 +3349,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_expired_ticket_rejected() {
         // The standalone test setup now wires an in-memory WsTicketService.
         // A fake/expired ticket must still be rejected after validation against the
@@ -3338,6 +3370,7 @@ mod websocket_e2e {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_invalid_room_id_rejected_before_upgrade() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -3386,6 +3419,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_valid_token_query_auth_succeeds() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -3424,6 +3458,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_invalid_message_format_returns_error() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -3516,6 +3551,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_heartbeat_receives_ack() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -4016,6 +4052,7 @@ mod websocket_connection_limit_timing {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_connection_limit_returns_429_before_upgrade() {
         let infra = TestInfra::new().await;
         let server = setup_server_with_low_user_limit(&infra).await;
@@ -4081,6 +4118,7 @@ mod websocket_connection_limit_timing {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_normal_connection_within_limits() {
         let infra = TestInfra::new().await;
         let server = setup_server_with_low_user_limit(&infra).await;
@@ -4113,6 +4151,7 @@ mod websocket_connection_limit_timing {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_different_users_can_connect_within_limits() {
         let infra = TestInfra::new().await;
         let server = setup_server_with_low_user_limit(&infra).await;
@@ -4169,6 +4208,7 @@ mod websocket_connection_limit_timing {
     // ========================================================================
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_ws_can_reconnect_after_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_server_with_low_user_limit(&infra).await;

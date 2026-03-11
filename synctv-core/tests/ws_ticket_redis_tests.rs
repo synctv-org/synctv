@@ -13,7 +13,8 @@
 use redis::AsyncCommands;
 use std::sync::Arc;
 use synctv_core::models::{RoomId, UserId};
-use synctv_core::service::WsTicketService;
+use synctv_core::service::{UserValidationResult, UserValidator, WsTicketService};
+use synctv_core::{Error, Result};
 use synctv_core_testing::start_redis_handle as start_test_redis_handle;
 use tokio::sync::RwLock;
 
@@ -30,6 +31,20 @@ fn user_id(id: &str) -> UserId {
 
 fn room_id(id: &str) -> RoomId {
     RoomId::from_string(id.to_string())
+}
+
+struct StaticUserValidator {
+    result: std::result::Result<UserValidationResult, &'static str>,
+}
+
+#[async_trait::async_trait]
+impl UserValidator for StaticUserValidator {
+    async fn validate_for_ticket(&self, _user_id: &UserId) -> Result<UserValidationResult> {
+        self.result
+            .as_ref()
+            .map(Clone::clone)
+            .map_err(|message| Error::Authorization((*message).to_string()))
+    }
 }
 
 #[tokio::test]
@@ -90,6 +105,12 @@ async fn test_redis_ticket_room_mismatch_rejected() {
         result.is_err(),
         "Ticket for room A should not work for room B"
     );
+
+    let retry_result = service.validate_and_consume(&ticket, &room_a).await;
+    assert!(
+        retry_result.is_ok(),
+        "room mismatch must not consume a valid Redis-backed ticket"
+    );
 }
 
 #[tokio::test]
@@ -147,6 +168,72 @@ async fn test_redis_ticket_concurrent_consumption() {
         "Exactly 1 of 10 concurrent consumers should succeed"
     );
     assert_eq!(failures, 9, "9 consumers should fail");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_redis_ticket_user_validation_failure_does_not_consume_ticket() {
+    let (_container, conn) = start_redis().await;
+    let service = WsTicketService::with_redis(conn, "synctv:", Some(30));
+
+    let uid = user_id("user_checked_1");
+    let rid = room_id("room_checked_1");
+    let ticket = service.create_ticket(&uid, &rid, 9).await.unwrap();
+
+    let rejecting_validator = StaticUserValidator {
+        result: Err("banned"),
+    };
+    let allow_validator = StaticUserValidator {
+        result: Ok(UserValidationResult {
+            password_version: 9,
+        }),
+    };
+
+    let first_result = service
+        .validate_and_consume_checked(&ticket, &rid, &rejecting_validator)
+        .await;
+    assert!(
+        matches!(first_result, Err(Error::Authorization(_))),
+        "user validation failure should reject the ticket"
+    );
+
+    let second_result = service
+        .validate_and_consume_checked(&ticket, &rid, &allow_validator)
+        .await;
+    assert!(
+        second_result.is_ok(),
+        "user validation rejection must not consume a valid Redis-backed ticket"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_redis_ticket_checked_validation_is_still_one_time_use() {
+    let (_container, conn) = start_redis().await;
+    let service = WsTicketService::with_redis(conn, "synctv:", Some(30));
+
+    let uid = user_id("user_checked_once");
+    let rid = room_id("room_checked_once");
+    let ticket = service.create_ticket(&uid, &rid, 3).await.unwrap();
+
+    let allow_validator = StaticUserValidator {
+        result: Ok(UserValidationResult {
+            password_version: 3,
+        }),
+    };
+
+    let first_result = service
+        .validate_and_consume_checked(&ticket, &rid, &allow_validator)
+        .await;
+    assert!(first_result.is_ok(), "first checked validation should succeed");
+
+    let second_result = service
+        .validate_and_consume_checked(&ticket, &rid, &allow_validator)
+        .await;
+    assert!(
+        matches!(second_result, Err(Error::Authorization(_))),
+        "checked validation must still enforce one-time use"
+    );
 }
 
 // ============================================================================
@@ -252,7 +339,7 @@ async fn test_redis_ticket_uses_configured_key_prefix() {
 
     let mut redis_conn = conn.read().await.clone();
     let payload: Option<String> = redis_conn
-        .get(format!("tenant-a:ws_ticket:{ticket}"))
+        .get(format!("tenant-a:ws_ticket:{}:{ticket}", rid.as_str()))
         .await
         .unwrap();
     assert!(
@@ -261,7 +348,7 @@ async fn test_redis_ticket_uses_configured_key_prefix() {
     );
 
     let old_key_payload: Option<String> = redis_conn
-        .get(format!("synctv:ws_ticket:{ticket}"))
+        .get(format!("synctv:ws_ticket:{}:{ticket}", rid.as_str()))
         .await
         .unwrap();
     assert!(

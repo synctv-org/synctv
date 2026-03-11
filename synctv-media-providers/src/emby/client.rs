@@ -21,6 +21,20 @@ fn url_encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
+fn normalize_api_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return "/".to_string();
+    }
+
+    let trimmed = trimmed.trim_end_matches('/');
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
 /// Validate that an item ID contains only safe characters.
 /// Emby/Jellyfin item IDs are typically numeric or alphanumeric UUIDs.
 /// Uses a whitelist approach: only alphanumeric characters, hyphens, and underscores are allowed.
@@ -116,6 +130,11 @@ impl EmbyClient {
         self.api_prefix = Some(prefix.into());
     }
 
+    fn parsed_host_url(&self) -> Result<url::Url, EmbyError> {
+        url::Url::parse(&self.host)
+            .map_err(|e| EmbyError::InvalidConfig(format!("Invalid host URL: {e}")))
+    }
+
     /// Set authentication token and user ID
     pub fn set_credentials(&mut self, token: impl Into<String>, user_id: impl Into<String>) {
         self.token = Some(token.into());
@@ -125,21 +144,37 @@ impl EmbyClient {
     /// Get API prefix (/emby or /jellyfin).
     /// Uses the explicitly set prefix if available, otherwise auto-detects
     /// based on whether the host URL's hostname contains "jellyfin".
-    fn get_api_prefix(&self) -> &str {
+    fn get_api_prefix(&self) -> Result<String, EmbyError> {
         if let Some(ref prefix) = self.api_prefix {
-            return prefix;
+            return Ok(normalize_api_prefix(prefix));
         }
+
+        let parsed = self.parsed_host_url()?;
+        let host_path = parsed.path().trim_end_matches('/');
+        if !host_path.is_empty() {
+            return Ok(host_path.to_string());
+        }
+
         // Parse the host URL and check only the hostname component to avoid
         // false matches from "jellyfin" appearing in paths or query strings.
-        let is_jellyfin = url::Url::parse(&self.host)
-            .ok()
-            .and_then(|u| u.host_str().map(String::from))
-            .is_some_and(|host| host.contains("jellyfin"));
+        let is_jellyfin = parsed.host_str().is_some_and(|host| host.contains("jellyfin"));
         if is_jellyfin {
-            "/jellyfin"
+            Ok("/jellyfin".to_string())
         } else {
-            "/emby"
+            Ok("/emby".to_string())
         }
+    }
+
+    fn endpoint_url(&self, endpoint_path: &str) -> Result<String, EmbyError> {
+        let parsed = self.parsed_host_url()?;
+        let origin = parsed.origin().unicode_serialization();
+        let prefix = self.get_api_prefix()?;
+        Ok(format!(
+            "{}{}/{}",
+            origin.trim_end_matches('/'),
+            prefix,
+            endpoint_path.trim_start_matches('/')
+        ))
     }
 
     /// Build request headers
@@ -168,8 +203,7 @@ impl EmbyClient {
         username: &str,
         password: &str,
     ) -> Result<(String, String), EmbyError> {
-        let prefix = self.get_api_prefix();
-        let url = format!("{}{}/Users/authenticatebyname", self.host, prefix);
+        let url = self.endpoint_url("Users/authenticatebyname")?;
 
         let body = json!({
             "Username": username,
@@ -210,16 +244,14 @@ impl EmbyClient {
     pub async fn get_item(&self, item_id: &str) -> Result<Item, EmbyError> {
         validate_item_id(item_id)?;
 
-        let prefix = self.get_api_prefix();
-        let url = format!(
-            "{}{}/Users/{}/Items?Ids={}&Fields=MediaSources%2CParentId%2CContainer",
-            self.host,
-            prefix,
-            url_encode(
-                self.user_id
-                    .as_ref()
-                    .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?
-            ),
+        let user_id = self
+            .user_id
+            .as_ref()
+            .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
+        let mut url = self.endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))?;
+        let _ = write!(
+            url,
+            "?Ids={}&Fields=MediaSources%2CParentId%2CContainer",
             url_encode(item_id)
         );
         let headers = self.build_headers()?;
@@ -259,8 +291,7 @@ impl EmbyClient {
             .as_ref()
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
-        let prefix = self.get_api_prefix();
-        let url = format!("{}{}/Users/{}", self.host, prefix, url_encode(user_id));
+        let url = self.endpoint_url(&format!("Users/{}", url_encode(user_id)))?;
         let headers = self.build_headers()?;
         let client = self.client.clone();
 
@@ -294,13 +325,8 @@ impl EmbyClient {
             .as_ref()
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
-        let prefix = self.get_api_prefix();
-        let mut url = format!(
-            "{}{}/Users/{}/Items?SortBy=SortName&SortOrder=Ascending&Fields=MediaSources%2CParentId%2CContainer",
-            self.host,
-            prefix,
-            url_encode(user_id)
-        );
+        let mut url = self.endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))?;
+        url.push_str("?SortBy=SortName&SortOrder=Ascending&Fields=MediaSources%2CParentId%2CContainer");
 
         if let Some(pid) = parent_id {
             let _ = write!(url, "&ParentId={}", url_encode(pid));
@@ -332,8 +358,7 @@ impl EmbyClient {
 
     /// Get system information
     pub async fn get_system_info(&self) -> Result<SystemInfo, EmbyError> {
-        let prefix = self.get_api_prefix();
-        let url = format!("{}{}/System/Info", self.host, prefix);
+        let url = self.endpoint_url("System/Info")?;
         let headers = self.build_headers()?;
         let client = self.client.clone();
 
@@ -369,16 +394,9 @@ impl EmbyClient {
             .as_ref()
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
-        let prefix = self.get_api_prefix();
-
         // Get user views (libraries) if no path specified
         if path.is_none() && search_term.is_none() {
-            let url = format!(
-                "{}{}/Users/{}/Views",
-                self.host,
-                prefix,
-                url_encode(user_id)
-            );
+            let url = self.endpoint_url(&format!("Users/{}/Views", url_encode(user_id)))?;
             let headers = self.build_headers()?;
             let client = self.client.clone();
 
@@ -407,14 +425,8 @@ impl EmbyClient {
         }
 
         // Query items with filters
-        let mut url = format!(
-            "{}{}/Users/{}/Items?StartIndex={}&Limit={}",
-            self.host,
-            prefix,
-            url_encode(user_id),
-            start_index,
-            limit
-        );
+        let mut url = self.endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))?;
+        let _ = write!(url, "?StartIndex={start_index}&Limit={limit}");
 
         if let Some(p) = path {
             let _ = write!(url, "&ParentId={}", url_encode(p));
@@ -465,8 +477,7 @@ impl EmbyClient {
 
     /// Logout
     pub async fn logout(&self) -> Result<(), EmbyError> {
-        let prefix = self.get_api_prefix();
-        let url = format!("{}{}/Sessions/Logout", self.host, prefix);
+        let url = self.endpoint_url("Sessions/Logout")?;
         let mut headers = self.build_headers()?;
         headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
         let client = self.client.clone();
@@ -500,13 +511,7 @@ impl EmbyClient {
             .as_ref()
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
-        let prefix = self.get_api_prefix();
-        let url = format!(
-            "{}{}/Items/{}/PlaybackInfo",
-            self.host,
-            prefix,
-            url_encode(item_id)
-        );
+        let url = self.endpoint_url(&format!("Items/{}/PlaybackInfo", url_encode(item_id)))?;
 
         let mut body = json!({
             "UserId": user_id,
@@ -554,13 +559,8 @@ impl EmbyClient {
     pub async fn delete_active_encodings(&self, play_session_id: &str) -> Result<(), EmbyError> {
         validate_item_id(play_session_id)?;
 
-        let prefix = self.get_api_prefix();
-        let url = format!(
-            "{}{}/Videos/ActiveEncodings?PlaySessionId={}",
-            self.host,
-            prefix,
-            url_encode(play_session_id)
-        );
+        let mut url = self.endpoint_url("Videos/ActiveEncodings")?;
+        let _ = write!(url, "?PlaySessionId={}", url_encode(play_session_id));
         let mut headers = self.build_headers()?;
         headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
         let client = self.client.clone();
@@ -588,8 +588,7 @@ impl EmbyClient {
     ) -> Result<(), EmbyError> {
         validate_item_id(item_id)?;
 
-        let prefix = self.get_api_prefix();
-        let url = format!("{}{}/Sessions/Playing", self.host, prefix);
+        let url = self.endpoint_url("Sessions/Playing")?;
 
         let mut body = json!({
             "ItemId": item_id,
@@ -632,8 +631,7 @@ impl EmbyClient {
     ) -> Result<(), EmbyError> {
         validate_item_id(item_id)?;
 
-        let prefix = self.get_api_prefix();
-        let url = format!("{}{}/Sessions/Playing/Stopped", self.host, prefix);
+        let url = self.endpoint_url("Sessions/Playing/Stopped")?;
 
         let body = json!({
             "ItemId": item_id,
@@ -674,8 +672,7 @@ impl EmbyClient {
     ) -> Result<(), EmbyError> {
         validate_item_id(item_id)?;
 
-        let prefix = self.get_api_prefix();
-        let url = format!("{}{}/Sessions/Playing/Progress", self.host, prefix);
+        let url = self.endpoint_url("Sessions/Playing/Progress")?;
 
         let mut body = json!({
             "ItemId": item_id,
@@ -742,25 +739,25 @@ mod tests {
     #[test]
     fn test_api_prefix_detection() {
         let emby_client = EmbyClient::new("https://emby.example.com").unwrap();
-        assert_eq!(emby_client.get_api_prefix(), "/emby");
+        assert_eq!(emby_client.get_api_prefix().unwrap(), "/emby");
 
         let jellyfin_client = EmbyClient::new("https://jellyfin.example.com").unwrap();
-        assert_eq!(jellyfin_client.get_api_prefix(), "/jellyfin");
+        assert_eq!(jellyfin_client.get_api_prefix().unwrap(), "/jellyfin");
     }
 
     #[test]
     fn test_api_prefix_custom() {
         let mut client = EmbyClient::new("https://media.example.com").unwrap();
         client.set_api_prefix("/custom");
-        assert_eq!(client.get_api_prefix(), "/custom");
+        assert_eq!(client.get_api_prefix().unwrap(), "/custom");
     }
 
     #[test]
     fn test_api_prefix_custom_overrides_auto() {
         let mut client = EmbyClient::new("https://jellyfin.example.com").unwrap();
-        assert_eq!(client.get_api_prefix(), "/jellyfin");
+        assert_eq!(client.get_api_prefix().unwrap(), "/jellyfin");
         client.set_api_prefix("/emby");
-        assert_eq!(client.get_api_prefix(), "/emby");
+        assert_eq!(client.get_api_prefix().unwrap(), "/emby");
     }
 
     #[test]
@@ -1000,14 +997,23 @@ mod tests {
 
     #[test]
     fn test_api_prefix_no_false_positive_on_path() {
-        // "jellyfin" in path should NOT trigger jellyfin prefix
+        // When host includes a deployment path, preserve it exactly.
         let client = EmbyClient::new("https://media.example.com/jellyfin").unwrap();
-        assert_eq!(client.get_api_prefix(), "/emby");
+        assert_eq!(client.get_api_prefix().unwrap(), "/jellyfin");
     }
 
     #[test]
     fn test_api_prefix_hostname_detection() {
         let client = EmbyClient::new("https://jellyfin.home.local:8096").unwrap();
-        assert_eq!(client.get_api_prefix(), "/jellyfin");
+        assert_eq!(client.get_api_prefix().unwrap(), "/jellyfin");
+    }
+
+    #[test]
+    fn test_endpoint_url_uses_host_path_prefix() {
+        let client = EmbyClient::new("https://media.example.com/custom-prefix").unwrap();
+        assert_eq!(
+            client.endpoint_url("System/Info").unwrap(),
+            "https://media.example.com/custom-prefix/System/Info"
+        );
     }
 }

@@ -3,8 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS token_blacklist (
     jti TEXT PRIMARY KEY,
-    expires_at TIMESTAMPTZ NOT NULL,
-    revoked_at BIGINT
+    expires_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX idx_token_blacklist_expires ON token_blacklist(expires_at);

@@ -423,9 +423,10 @@ impl StreamMessageHandler {
     }
 
     fn current_connection_matches_webrtc_recipient(&self, recipient: &str) -> bool {
-        let Some((target_user_id, target_conn_id)) = recipient.split_once(':') else {
-            return false;
-        };
+        let (target_user_id, target_conn_id) = recipient
+            .split_once(':')
+            .map_or((None, recipient), |(user_id, conn_id)| (Some(user_id), conn_id));
+
         if target_conn_id != self.connection_id {
             return false;
         }
@@ -434,9 +435,9 @@ impl StreamMessageHandler {
             return false;
         };
 
-        current.user_id.as_str() == target_user_id
-            && current.room_id.as_ref() == Some(&self.room_id)
-            && current.rtc_joined
+        let user_matches = target_user_id.is_none_or(|user_id| current.user_id.as_str() == user_id);
+
+        user_matches && current.room_id.as_ref() == Some(&self.room_id) && current.rtc_joined
     }
 
     /// Create a new stream message handler
@@ -4807,6 +4808,88 @@ mod tests {
     fn test_webrtc_membership_transition_ignores_duplicate_leave() {
         let result = super::should_transition_webrtc_membership(Some(false), false);
         assert_eq!(result, Ok(false));
+    }
+
+    #[tokio::test]
+    async fn test_current_connection_matches_webrtc_recipient_accepts_conn_id_only() {
+        let room_id = room_id();
+        let user_id = user_id();
+        let manager = test_connection_manager();
+        let pool = test_pool();
+        let cluster_manager = test_cluster_manager("node-test").await;
+
+        let handler = super::StreamMessageHandler::new(
+            room_id.clone(),
+            user_id.clone(),
+            "user".to_string(),
+            test_room_service(pool.clone()),
+            test_chat_service(pool),
+            cluster_manager,
+            manager.clone(),
+            Arc::new(RateLimiter::in_memory_only(
+                "test:conn-id-only-match:".to_string(),
+            )),
+            Arc::new(RateLimitConfig::default()),
+            Arc::new(ContentFilter::new()),
+            FailingMessageSender::fail_after(usize::MAX),
+        );
+        let connection_id = handler.connection_id().to_string();
+
+        manager
+            .register(connection_id.clone(), user_id.clone())
+            .await
+            .expect("register");
+        manager
+            .join_room(&connection_id, room_id.clone())
+            .await
+            .expect("join room");
+        manager.mark_rtc_joined(&room_id, &user_id, &connection_id, true);
+
+        assert!(
+            handler.current_connection_matches_webrtc_recipient(&connection_id),
+            "conn_id-only WebRTC recipient should match the current connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_current_connection_matches_webrtc_recipient_rejects_other_conn_id_only() {
+        let room_id = room_id();
+        let user_id = user_id();
+        let manager = test_connection_manager();
+        let pool = test_pool();
+        let cluster_manager = test_cluster_manager("node-test").await;
+
+        let handler = super::StreamMessageHandler::new(
+            room_id.clone(),
+            user_id.clone(),
+            "user".to_string(),
+            test_room_service(pool.clone()),
+            test_chat_service(pool),
+            cluster_manager,
+            manager.clone(),
+            Arc::new(RateLimiter::in_memory_only(
+                "test:conn-id-only-reject:".to_string(),
+            )),
+            Arc::new(RateLimitConfig::default()),
+            Arc::new(ContentFilter::new()),
+            FailingMessageSender::fail_after(usize::MAX),
+        );
+        let connection_id = handler.connection_id().to_string();
+
+        manager
+            .register(connection_id.clone(), user_id.clone())
+            .await
+            .expect("register");
+        manager
+            .join_room(&connection_id, room_id.clone())
+            .await
+            .expect("join room");
+        manager.mark_rtc_joined(&room_id, &user_id, &connection_id, true);
+
+        assert!(
+            !handler.current_connection_matches_webrtc_recipient("other-conn"),
+            "conn_id-only WebRTC recipient must not match a different connection"
+        );
     }
 
     #[test]

@@ -256,7 +256,11 @@ fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
     if !state.config.cluster_runtime_enabled() {
         return None;
     }
-    let cm = state.cluster_manager.as_ref()?;
+    let Some(cm) = state.cluster_manager.as_ref() else {
+        return Some(Err(
+            "Cluster runtime is enabled but ClusterManager is not available".to_string(),
+        ));
+    };
     let metrics = cm.metrics();
 
     // Verify node has a valid ID (non-empty)

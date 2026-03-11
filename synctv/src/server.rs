@@ -95,6 +95,15 @@ pub struct SyncTvServer {
 
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
+fn build_proxy_slice_cache_config(
+    settings_registry: &Arc<synctv_core::service::SettingsRegistry>,
+) -> synctv_proxy::slice_cache::SliceCacheConfig {
+    synctv_proxy::slice_cache::SliceCacheConfig {
+        enabled: settings_registry.proxy_cache_enable.get().unwrap_or(false),
+        ..synctv_proxy::slice_cache::SliceCacheConfig::default()
+    }
+}
+
 fn build_ws_ticket_service(
     redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     redis_key_prefix: &str,
@@ -729,7 +738,7 @@ impl SyncTvServer {
             is_cluster_mode,
         )?;
         let proxy_slice_cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-            synctv_proxy::slice_cache::SliceCacheConfig::default(),
+            build_proxy_slice_cache_config(&self.services.settings_registry),
         ));
 
         let (http_router, http_state) = synctv_api::http::create_router_with_state_from_config(
@@ -899,7 +908,8 @@ async fn shutdown_signal() {
 mod tests {
     use super::{
         await_runtime_server_shutdown, await_task_shutdown, build_ws_ticket_service,
-        cleanup_partial_startup, map_background_task_exit, map_runtime_server_exit,
+        build_proxy_slice_cache_config, cleanup_partial_startup, map_background_task_exit,
+        map_runtime_server_exit,
         shutdown_livestream_state, shutdown_runtime_phase, spawn_admin_event_listener,
         LivestreamShutdown,
     };
@@ -911,6 +921,17 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::{oneshot, watch};
     use tokio_util::sync::CancellationToken;
+
+    fn test_settings_registry() -> Arc<synctv_core::service::SettingsRegistry> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+        let settings_service = Arc::new(synctv_core::service::SettingsService::new(
+            synctv_core::repository::SettingsRepository::new(pool.clone()),
+            pool,
+        ));
+        Arc::new(synctv_core::service::SettingsRegistry::new(settings_service))
+    }
 
     /// Test that invalid HTTP address format returns an error
     #[test]
@@ -1031,6 +1052,17 @@ mod tests {
                 "cluster.enabled=true requires Redis-backed WebSocket ticket service wiring"
             ),
             "Unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_slice_cache_defaults_to_disabled_until_setting_enables_it() {
+        let registry = test_settings_registry();
+        let config = build_proxy_slice_cache_config(&registry);
+
+        assert!(
+            !config.enabled,
+            "proxy slice cache must stay disabled until runtime setting enables it"
         );
     }
 

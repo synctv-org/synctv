@@ -20,24 +20,37 @@ pub const POSTGRES_VERSION: &str = "16-alpine";
 const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;
 const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
-static POSTGRES_START_SERIALIZER: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(1));
+const DEFAULT_DOCKER_STARTUP_PARALLELISM: usize = 4;
+const MIN_DOCKER_STARTUP_PARALLELISM: usize = 1;
+const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLELISM";
+static POSTGRES_START_SERIALIZER: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
 
 struct ProcessLock(File);
 
 impl ProcessLock {
-    fn acquire(name: &str) -> Self {
+    fn try_acquire(name: &str) -> Option<Self> {
         let mut path = PathBuf::from("/tmp");
         path.push(format!("synctv-{name}.lock"));
-        let file = OpenOptions::new()
+        Self::try_acquire_path(path)
+    }
+
+    fn try_acquire_path(path: PathBuf) -> Option<Self> {
+        let file = Self::open_lock_file(&path);
+        match file.try_lock() {
+            Ok(()) => Some(Self(file)),
+            Err(_) => None,
+        }
+    }
+
+    fn open_lock_file(path: &PathBuf) -> File {
+        OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(&path)
-            .unwrap_or_else(|e| panic!("failed to open lock file {}: {e}", path.display()));
-        file.lock()
-            .unwrap_or_else(|e| panic!("failed to acquire lock file {}: {e}", path.display()));
-        Self(file)
+            .open(path)
+            .unwrap_or_else(|e| panic!("failed to open lock file {}: {e}", path.display()))
     }
 }
 
@@ -108,12 +121,48 @@ pub fn docker_startup_timeout() -> Duration {
 }
 
 #[must_use]
+pub fn docker_startup_parallelism() -> usize {
+    docker_startup_parallelism_from(
+        std::env::var(DOCKER_STARTUP_PARALLELISM_ENV).ok().as_deref(),
+    )
+}
+
+#[must_use]
 fn docker_startup_timeout_from(value: Option<&str>) -> Duration {
     value
         .and_then(|value| value.parse::<u64>().ok())
         .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS))
+}
+
+#[must_use]
+fn docker_startup_parallelism_from(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(|slots| slots.max(MIN_DOCKER_STARTUP_PARALLELISM))
+        .unwrap_or(DEFAULT_DOCKER_STARTUP_PARALLELISM)
+}
+
+async fn acquire_docker_start_slot(name: &str) -> ProcessLock {
+    let slots = docker_startup_parallelism();
+    let _local_permit = POSTGRES_START_SERIALIZER
+        .acquire()
+        .await
+        .expect("Postgres startup guard should not be closed");
+    let prefix = name.to_string();
+
+    tokio::task::spawn_blocking(move || loop {
+        for slot in 0..slots {
+            let slot_name = format!("{prefix}-slot-{slot}");
+            if let Some(lock) = ProcessLock::try_acquire(&slot_name) {
+                return lock;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    })
+    .await
+    .expect("postgres process slot task should not panic")
 }
 
 fn sanitize_container_name(raw: &str) -> String {
@@ -216,14 +265,7 @@ pub async fn create_test_pool_with_options_and_label(
 ) -> (TestContainer, PgPool) {
     let container_name = postgres_container_name(label);
     let postgres = {
-        let _postgres_start_permit = POSTGRES_START_SERIALIZER
-            .acquire()
-            .await
-            .expect("Postgres startup guard should not be closed");
-        let _postgres_process_lock =
-            tokio::task::spawn_blocking(|| ProcessLock::acquire("postgres-start"))
-                .await
-                .expect("postgres process lock task should not panic");
+        let _postgres_process_lock = acquire_docker_start_slot("postgres-start").await;
         tokio::time::timeout(
             docker_startup_timeout(),
             named_postgres_request(db_name, &container_name).start(),
@@ -320,6 +362,27 @@ mod tests {
         assert_eq!(
             docker_startup_timeout_from(Some("5")),
             Duration::from_secs(MIN_DOCKER_STARTUP_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn test_docker_startup_parallelism_defaults_to_multiple_slots() {
+        assert_eq!(
+            docker_startup_parallelism_from(None),
+            DEFAULT_DOCKER_STARTUP_PARALLELISM
+        );
+    }
+
+    #[test]
+    fn test_docker_startup_parallelism_honors_valid_override() {
+        assert_eq!(docker_startup_parallelism_from(Some("6")), 6);
+    }
+
+    #[test]
+    fn test_docker_startup_parallelism_rejects_zero_override() {
+        assert_eq!(
+            docker_startup_parallelism_from(Some("0")),
+            MIN_DOCKER_STARTUP_PARALLELISM
         );
     }
 

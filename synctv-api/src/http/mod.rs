@@ -351,10 +351,6 @@ fn build_app_state(config: RouterConfig) -> AppState {
 pub fn start_proxy_cache_lifecycle(
     cache: Arc<synctv_proxy::slice_cache::SliceCache>,
 ) -> Option<ProxyCacheLifecycleRuntime> {
-    if !cache.config().enabled {
-        return None;
-    }
-
     let manager = synctv_proxy::slice_cache::CacheLifecycleManager::new(
         cache.backend().clone(),
         cache.config().clone(),
@@ -786,6 +782,7 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
 /// request ID propagation, and tracing) and bind state.
 fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Router {
     let cors = build_cors_layer(&state.config);
+    let trusted_proxies = state.config.server.trusted_proxies.clone();
 
     // Global 10 MB safety net (prevents runaway uploads from reaching handlers).
     // Sensitive endpoints (login, register, chat, room create/update) apply a
@@ -803,17 +800,44 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
             middleware::security_headers_middleware,
         ));
 
-    // Apply HSTS
+    // Apply HSTS only when the request is known to have arrived over HTTPS.
     let hsts_value = middleware::hsts_header(63_072_000, true, false);
     let router = router.layer(axum_middleware::from_fn(
         move |request: axum::extract::Request, next: axum::middleware::Next| {
             let hsts = hsts_value.clone();
+            let trusted_proxies = trusted_proxies.clone();
             async move {
+                let remote_addr = request
+                    .extensions()
+                    .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                    .map(|ci| ci.0.ip());
+                let forwarded_proto_https = remote_addr.is_some_and(|ip| {
+                    let trusted = trusted_proxies.iter().any(|proxy| {
+                        proxy
+                            .parse::<ipnet::IpNet>()
+                            .map(|network| network.contains(&ip))
+                            .or_else(|_| proxy.parse::<std::net::IpAddr>().map(|proxy_ip| proxy_ip == ip))
+                            .unwrap_or(false)
+                    });
+                    trusted
+                        && request
+                            .headers()
+                            .get("x-forwarded-proto")
+                            .and_then(|v| v.to_str().ok())
+                            .is_some_and(|value| value.eq_ignore_ascii_case("https"))
+                });
+
                 let mut response = next.run(request).await;
-                if let Ok(value) = axum::http::HeaderValue::from_str(&hsts) {
+                if forwarded_proto_https {
+                    if let Ok(value) = axum::http::HeaderValue::from_str(&hsts) {
+                        response
+                            .headers_mut()
+                            .insert(axum::http::header::STRICT_TRANSPORT_SECURITY, value);
+                    }
+                } else {
                     response
                         .headers_mut()
-                        .insert(axum::http::header::STRICT_TRANSPORT_SECURITY, value);
+                        .remove(axum::http::header::STRICT_TRANSPORT_SECURITY);
                 }
                 response
             }
@@ -986,16 +1010,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_proxy_cache_lifecycle_skips_disabled_cache() {
+    async fn test_start_proxy_cache_lifecycle_starts_even_when_runtime_toggle_is_off() {
         let cache = Arc::new(SliceCache::new(SliceCacheConfig {
             enabled: false,
             ..SliceCacheConfig::default()
         }));
 
-        assert!(
-            start_proxy_cache_lifecycle(cache).is_none(),
-            "disabled proxy cache must not start lifecycle task"
-        );
+        let lifecycle = start_proxy_cache_lifecycle(cache)
+            .expect("cache lifecycle should start so runtime settings can enable caching later");
+        lifecycle.cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), lifecycle.handle)
+            .await
+            .expect("lifecycle task should stop after cancellation")
+            .expect("lifecycle join should succeed");
     }
 
     #[tokio::test]

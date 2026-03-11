@@ -235,20 +235,13 @@ impl AuthCallback for RtmpAuthCallbackImpl {
             stream_name
         };
 
+        let expected_room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
+        let expected_media_id = synctv_core::models::MediaId::from_string(stream_name.to_string());
         let claims = self
             .publish_key_service
-            .validate_publish_key(token)
+            .validate_publish_key_for_stream_claims(token, &expected_room_id, &expected_media_id)
             .await
             .map_err(|e| format!("Authentication failed: {e}"))?;
-
-        // Verify room_id matches app_name
-        if claims.room_id != app_name {
-            return Err(format!(
-                "Room ID mismatch: token has {}, request is for {}",
-                claims.room_id, app_name
-            )
-            .into());
-        }
 
         info!(
             "RTMP publisher authenticated: room_id={}, media_id={}, user_id={}",

@@ -46,6 +46,72 @@ const SUBSCRIBER_CHANNEL_CAPACITY: usize = 512;
 /// prematurely disconnecting clients on slower networks.
 const MAX_CONSECUTIVE_DROPS: u32 = 50;
 
+fn requires_reliable_target_delivery(event: &ClusterEvent) -> bool {
+    event.is_critical() || matches!(event, ClusterEvent::WebRTCSignaling { .. })
+}
+
+fn spawn_reliable_target_delivery(
+    sender: MessageSender,
+    event: ClusterEvent,
+    room_id: RoomId,
+    connection_id: ConnectionId,
+) {
+    let event_type = event.event_type().to_string();
+    tokio::spawn(async move {
+        match tokio::time::timeout(CRITICAL_EVENT_SEND_TIMEOUT, sender.send(event)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                warn!(
+                    room_id = %room_id.as_str(),
+                    connection_id = %connection_id,
+                    event_type = %event_type,
+                    "Failed to deliver targeted reliable event (channel closed): {e}"
+                );
+            }
+            Err(_) => {
+                warn!(
+                    room_id = %room_id.as_str(),
+                    connection_id = %connection_id,
+                    event_type = %event_type,
+                    timeout_secs = CRITICAL_EVENT_SEND_TIMEOUT.as_secs(),
+                    "Targeted reliable event delivery timed out"
+                );
+            }
+        }
+    });
+}
+
+async fn deliver_reliable_event(
+    sender: MessageSender,
+    event: ClusterEvent,
+    room_id: RoomId,
+    connection_id: ConnectionId,
+) -> bool {
+    let event_type = event.event_type().to_string();
+    match tokio::time::timeout(CRITICAL_EVENT_SEND_TIMEOUT, sender.send(event)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            warn!(
+                room_id = %room_id.as_str(),
+                connection_id = %connection_id,
+                event_type = %event_type,
+                "Failed to deliver reliable event (channel closed): {e}"
+            );
+            false
+        }
+        Err(_) => {
+            warn!(
+                room_id = %room_id.as_str(),
+                connection_id = %connection_id,
+                event_type = %event_type,
+                timeout_secs = CRITICAL_EVENT_SEND_TIMEOUT.as_secs(),
+                "Reliable event delivery timed out"
+            );
+            false
+        }
+    }
+}
+
 fn try_spawn<F>(future: F) -> Option<JoinHandle<F::Output>>
 where
     F: std::future::Future + Send + 'static,
@@ -603,6 +669,66 @@ impl RoomMessageHub {
         sent_count
     }
 
+    /// Broadcast an event to all subscribers in a room and await reliable
+    /// delivery for critical events whose senders must remain alive until the
+    /// message is queued.
+    ///
+    /// This is used for destructive follow-up actions such as `RoomDeleted`,
+    /// where callers need to know that critical notifications were either
+    /// queued or timed out before they tear down the room state.
+    pub async fn broadcast_reliably(&self, room_id: &RoomId, event: ClusterEvent) -> usize {
+        let mut sent_count = 0;
+        let mut failed_connections = Vec::new();
+        let is_critical = event.is_critical();
+        let mut reliable_deliveries = Vec::new();
+
+        {
+            let subscribers_guard = self.rooms.get(room_id);
+            if let Some(subscribers) = &subscribers_guard {
+                for subscriber in subscribers.values() {
+                    match subscriber.sender.try_send(event.clone()) {
+                        Ok(()) => {
+                            subscriber.consecutive_drops.store(0, Ordering::Relaxed);
+                            sent_count += 1;
+                        }
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            if is_critical {
+                                reliable_deliveries.push(deliver_reliable_event(
+                                    subscriber.sender.clone(),
+                                    event.clone(),
+                                    room_id.clone(),
+                                    subscriber.connection_id.clone(),
+                                ));
+                            } else {
+                                let drops =
+                                    subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed)
+                                        + 1;
+                                if drops >= MAX_CONSECUTIVE_DROPS {
+                                    failed_connections.push(subscriber.connection_id.clone());
+                                }
+                            }
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            failed_connections.push(subscriber.connection_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        for delivery in reliable_deliveries {
+            if delivery.await {
+                sent_count += 1;
+            }
+        }
+
+        for conn_id in failed_connections {
+            self.unsubscribe(&conn_id);
+        }
+
+        sent_count
+    }
+
     /// Broadcast an event to a specific user in a room.
     ///
     /// Like `broadcast()`, critical events bypass the slow-consumer drop logic
@@ -734,11 +860,12 @@ impl RoomMessageHub {
     ) -> usize {
         let mut result = 0;
         let mut failed_connection: Option<ConnectionId> = None;
+        let reliable_target_delivery = requires_reliable_target_delivery(&event);
 
         if let Some(subscribers) = self.rooms.get(room_id) {
             if let Some(subscriber) = subscribers.get(connection_id) {
                 let event_type = event.event_type().to_string();
-                match subscriber.sender.try_send(event) {
+                match subscriber.sender.try_send(event.clone()) {
                     Ok(()) => {
                         debug!(
                             room_id = %room_id.as_str(),
@@ -749,11 +876,23 @@ impl RoomMessageHub {
                         result = 1;
                     }
                     Err(mpsc::error::TrySendError::Full(_)) => {
-                        warn!(
-                            room_id = %room_id.as_str(),
-                            connection_id = %connection_id,
-                            "Subscriber channel full, dropping targeted event"
-                        );
+                        if reliable_target_delivery {
+                            let retry_event = event.clone();
+                            spawn_reliable_target_delivery(
+                                subscriber.sender.clone(),
+                                retry_event,
+                                room_id.clone(),
+                                subscriber.connection_id.clone(),
+                            );
+                            result = 1;
+                        } else {
+                            warn!(
+                                room_id = %room_id.as_str(),
+                                connection_id = %connection_id,
+                                event_type = %event_type,
+                                "Subscriber channel full, dropping targeted event"
+                            );
+                        }
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
                         warn!(
@@ -1418,6 +1557,85 @@ mod tests {
         let event = lifecycle_rx.try_recv().unwrap();
         assert!(
             matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid.as_str() == "test_room")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_reliably_waits_for_critical_event_queue_space() {
+        let hub = RoomMessageHub::new();
+        let room_id = RoomId::from_string("room-critical".to_string());
+        let deleted_by = UserId::from_string("admin".to_string());
+        let filler_user = UserId::from_string("user".to_string());
+
+        let mut rx = hub
+            .subscribe(room_id.clone(), filler_user, "conn-critical".to_string())
+            .await;
+
+        for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+            let sent = hub.broadcast(
+                &room_id,
+                ClusterEvent::ChatMessage {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: room_id.clone(),
+                    user_id: deleted_by.clone(),
+                    username: "filler".to_string(),
+                    message: "fill".to_string(),
+                    timestamp: Utc::now(),
+                    position: None,
+                    color: None,
+                },
+            );
+            assert_eq!(sent, 1, "filler message should enqueue");
+        }
+
+        let room_deleted = ClusterEvent::RoomDeleted {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            deleted_by,
+            timestamp: Utc::now(),
+        };
+
+        let hub_for_task = hub.clone();
+        let room_for_task = room_id.clone();
+        let broadcast_task = tokio::spawn(async move {
+            hub_for_task
+                .broadcast_reliably(&room_for_task, room_deleted)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !broadcast_task.is_finished(),
+            "critical broadcast should wait until the subscriber channel has capacity"
+        );
+
+        let drained = rx.recv().await.expect("filler message should be present");
+        assert!(matches!(drained, ClusterEvent::ChatMessage { .. }));
+
+        let sent = tokio::time::timeout(Duration::from_secs(1), broadcast_task)
+            .await
+            .expect("reliable broadcast should complete after capacity is freed")
+            .expect("broadcast task should not panic");
+        assert_eq!(
+            sent, 1,
+            "critical event should count as delivered once queued"
+        );
+
+        let mut saw_room_deleted = false;
+        for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+            let msg = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("queued message should arrive")
+                .expect("channel should stay open");
+            if matches!(msg, ClusterEvent::RoomDeleted { .. }) {
+                saw_room_deleted = true;
+                break;
+            }
+        }
+
+        assert!(
+            saw_room_deleted,
+            "critical room deletion event should be queued before cleanup proceeds"
         );
     }
 

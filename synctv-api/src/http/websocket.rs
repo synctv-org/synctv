@@ -237,18 +237,18 @@ fn validate_websocket_origin(
     ))
 }
 
+pub(crate) fn websocket_runtime_dependencies_available(state: &AppState) -> bool {
+    state.cluster_manager.is_some() && state.chat_service.is_some()
+}
+
 fn validate_websocket_runtime_dependencies(state: &AppState) -> Result<(), AppError> {
-    validate_websocket_runtime_dependency_flags(
-        state.cluster_manager.is_some(),
-        state.chat_service.is_some(),
-    )
+    validate_websocket_runtime_dependency_flags(websocket_runtime_dependencies_available(state))
 }
 
 fn validate_websocket_runtime_dependency_flags(
-    has_cluster_manager: bool,
-    has_chat_service: bool,
+    dependencies_available: bool,
 ) -> Result<(), AppError> {
-    if !has_cluster_manager || !has_chat_service {
+    if !dependencies_available {
         return Err(AppError::service_unavailable());
     }
 
@@ -1089,15 +1089,11 @@ mod tests {
 
     #[test]
     fn test_validate_websocket_runtime_dependency_flags_require_cluster_and_chat_services() {
-        let err = validate_websocket_runtime_dependency_flags(false, true)
+        let err = validate_websocket_runtime_dependency_flags(false)
             .expect_err("missing cluster manager must fail before websocket upgrade");
         assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
 
-        let err = validate_websocket_runtime_dependency_flags(true, false)
-            .expect_err("missing chat service must fail before websocket upgrade");
-        assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
-
-        validate_websocket_runtime_dependency_flags(true, true)
+        validate_websocket_runtime_dependency_flags(true)
             .expect("present dependencies should allow websocket upgrade to proceed");
     }
 

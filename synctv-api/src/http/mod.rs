@@ -177,8 +177,11 @@ pub fn create_router_from_config(config: RouterConfig) -> axum::Router {
 /// Create the HTTP router and the shared application state from configuration.
 pub fn create_router_with_state_from_config(config: RouterConfig) -> (axum::Router, AppState) {
     let state = build_app_state(config);
-    let router = register_all_routes(state.clone());
-    (apply_global_layers(router, &state), state)
+    let (timeout_router, upgrade_router) = register_all_routes(state.clone());
+    (
+        apply_global_layers(timeout_router, upgrade_router, &state),
+        state,
+    )
 }
 
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
@@ -595,14 +598,36 @@ fn register_read_routes(state: &AppState) -> Router<AppState> {
 }
 
 /// Assemble all route groups into a single router.
-fn register_all_routes(state: AppState) -> Router<AppState> {
+fn register_websocket_routes(state: &AppState) -> Router<AppState> {
+    if !websocket::websocket_runtime_dependencies_available(state) {
+        return Router::new();
+    }
+
+    Router::new()
+        .route(
+            "/ws/rooms/{room_id}",
+            axum::routing::get(websocket::websocket_handler),
+        )
+        .route_layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            middleware::websocket_rate_limit,
+        ))
+}
+
+#[cfg(test)]
+fn register_all_routes_for_test(state: AppState) -> Router<AppState> {
+    let (timeout_router, upgrade_router) = register_all_routes(state);
+    timeout_router.merge(upgrade_router)
+}
+
+fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>) {
     let health_router = if state.config.server.metrics_enabled {
         health::create_health_router_with_metrics()
     } else {
         health::create_health_router()
     };
 
-    let mut router = Router::new()
+    let mut timeout_router = Router::new()
         .merge(health_router)
         .merge(public::create_public_router())
         .merge(publish_key::create_publish_key_router().route_layer(
@@ -612,18 +637,6 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         .merge(register_media_routes(&state))
         .merge(register_write_routes(&state))
         .merge(register_read_routes(&state))
-        // WebSocket endpoint
-        .merge(
-            Router::new()
-                .route(
-                    "/ws/rooms/{room_id}",
-                    axum::routing::get(websocket::websocket_handler),
-                )
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::websocket_rate_limit,
-                )),
-        )
         // WebRTC configuration endpoints
         .merge(
             Router::new()
@@ -657,7 +670,7 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         );
 
     if state.notification_api.is_some() {
-        router = router
+        timeout_router = timeout_router
             .merge(
                 notifications::create_notification_read_router().route_layer(
                     axum_middleware::from_fn_with_state(state.clone(), middleware::read_rate_limit),
@@ -677,11 +690,11 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         let email_routes = email_verification::create_email_router().route_layer(
             axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
         );
-        router = router.merge(email_routes);
+        timeout_router = timeout_router.merge(email_routes);
     }
 
     if state.oauth2_api.is_some() {
-        router = router.merge(
+        timeout_router = timeout_router.merge(
             Router::new()
                 .route(
                     "/api/oauth2/{provider}/authorize",
@@ -698,7 +711,9 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         );
     }
 
-    router
+    let upgrade_router = register_websocket_routes(&state);
+
+    (timeout_router, upgrade_router)
 }
 
 fn register_provider_routes(state: &AppState) -> Router<AppState> {
@@ -820,75 +835,90 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
 
 /// Apply global middleware layers (CORS, body limit, timeout, security headers, HSTS,
 /// request ID propagation, and tracing) and bind state.
-fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Router {
-    let cors = build_cors_layer(&state.config);
-    let trusted_proxies = state.config.server.trusted_proxies.clone();
-
-    // Global 10 MB safety net (prevents runaway uploads from reaching handlers).
-    // Sensitive endpoints (login, register, chat, room create/update) apply a
-    // much tighter per-route limit applied at the route group level.
-    let router = router
+fn apply_shared_http_layers(
+    router: Router<AppState>,
+    cors: CorsLayer,
+    trusted_proxies: Vec<String>,
+    hsts_value: String,
+) -> Router<AppState> {
+    router
         .layer(cors)
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
-        .layer(TimeoutLayer::with_status_code(
-            axum::http::StatusCode::REQUEST_TIMEOUT,
-            std::time::Duration::from_secs(30),
-        ))
-        // Request ID: generates/propagates X-Request-ID per request (Issue #22)
         .layer(axum_middleware::from_fn(middleware::request_id_middleware))
         .layer(axum_middleware::from_fn(
             middleware::security_headers_middleware,
-        ));
-
-    // Apply HSTS only when the request is known to have arrived over HTTPS.
-    let hsts_value = middleware::hsts_header(63_072_000, true, false);
-    let router = router.layer(axum_middleware::from_fn(
-        move |request: axum::extract::Request, next: axum::middleware::Next| {
-            let hsts = hsts_value.clone();
-            let trusted_proxies = trusted_proxies.clone();
-            async move {
-                let remote_addr = request
-                    .extensions()
-                    .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-                    .map(|ci| ci.0.ip());
-                let forwarded_proto_https = remote_addr.is_some_and(|ip| {
-                    let trusted = trusted_proxies.iter().any(|proxy| {
-                        proxy
-                            .parse::<ipnet::IpNet>()
-                            .map(|network| network.contains(&ip))
-                            .or_else(|_| {
-                                proxy
-                                    .parse::<std::net::IpAddr>()
-                                    .map(|proxy_ip| proxy_ip == ip)
-                            })
-                            .unwrap_or(false)
+        ))
+        .layer(axum_middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let hsts = hsts_value.clone();
+                let trusted_proxies = trusted_proxies.clone();
+                async move {
+                    let remote_addr = request
+                        .extensions()
+                        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                        .map(|ci| ci.0.ip());
+                    let forwarded_proto_https = remote_addr.is_some_and(|ip| {
+                        let trusted = trusted_proxies.iter().any(|proxy| {
+                            proxy
+                                .parse::<ipnet::IpNet>()
+                                .map(|network| network.contains(&ip))
+                                .or_else(|_| {
+                                    proxy
+                                        .parse::<std::net::IpAddr>()
+                                        .map(|proxy_ip| proxy_ip == ip)
+                                })
+                                .unwrap_or(false)
+                        });
+                        trusted
+                            && request
+                                .headers()
+                                .get("x-forwarded-proto")
+                                .and_then(|v| v.to_str().ok())
+                                .is_some_and(|value| value.eq_ignore_ascii_case("https"))
                     });
-                    trusted
-                        && request
-                            .headers()
-                            .get("x-forwarded-proto")
-                            .and_then(|v| v.to_str().ok())
-                            .is_some_and(|value| value.eq_ignore_ascii_case("https"))
-                });
 
-                let mut response = next.run(request).await;
-                if forwarded_proto_https {
-                    if let Ok(value) = axum::http::HeaderValue::from_str(&hsts) {
+                    let mut response = next.run(request).await;
+                    if forwarded_proto_https {
+                        if let Ok(value) = axum::http::HeaderValue::from_str(&hsts) {
+                            response
+                                .headers_mut()
+                                .insert(axum::http::header::STRICT_TRANSPORT_SECURITY, value);
+                        }
+                    } else {
                         response
                             .headers_mut()
-                            .insert(axum::http::header::STRICT_TRANSPORT_SECURITY, value);
+                            .remove(axum::http::header::STRICT_TRANSPORT_SECURITY);
                     }
-                } else {
                     response
-                        .headers_mut()
-                        .remove(axum::http::header::STRICT_TRANSPORT_SECURITY);
                 }
-                response
-            }
-        },
+            },
+        ))
+}
+
+fn apply_global_layers(
+    timeout_router: Router<AppState>,
+    upgrade_router: Router<AppState>,
+    state: &AppState,
+) -> axum::Router {
+    let cors = build_cors_layer(&state.config);
+    let trusted_proxies = state.config.server.trusted_proxies.clone();
+    let hsts_value = middleware::hsts_header(63_072_000, true, false);
+    let timeout_router = apply_shared_http_layers(
+        timeout_router,
+        cors.clone(),
+        trusted_proxies.clone(),
+        hsts_value.clone(),
+    )
+    .layer(TimeoutLayer::with_status_code(
+        axum::http::StatusCode::REQUEST_TIMEOUT,
+        std::time::Duration::from_secs(30),
     ));
 
-    router
+    let upgrade_router =
+        apply_shared_http_layers(upgrade_router, cors, trusted_proxies, hsts_value);
+
+    timeout_router
+        .merge(upgrade_router)
         .layer(axum_middleware::from_fn(
             crate::observability::metrics_middleware::metrics_layer,
         ))
@@ -898,7 +928,9 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
 
 #[cfg(test)]
 mod tests {
-    use super::{build_app_state, register_all_routes, start_proxy_cache_lifecycle, RouterConfig};
+    use super::{
+        build_app_state, register_all_routes_for_test, start_proxy_cache_lifecycle, RouterConfig,
+    };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use bytes::Bytes;
@@ -1186,7 +1218,7 @@ mod tests {
     #[tokio::test]
     async fn test_playback_patch_route_is_reachable_via_project_router() {
         let state = test_app_state();
-        let app = register_all_routes(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let response = app
             .oneshot(
@@ -1229,7 +1261,7 @@ mod tests {
             },
             synctv_core::GrpcRateLimitConfig::default(),
         );
-        let app = register_all_routes(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let first = app
             .clone()
@@ -1285,7 +1317,7 @@ mod tests {
             },
             synctv_core::GrpcRateLimitConfig::default(),
         );
-        let app = register_all_routes(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let first = app
             .clone()
@@ -1343,7 +1375,7 @@ mod tests {
             },
             synctv_core::GrpcRateLimitConfig::default(),
         );
-        let app = register_all_routes(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let first = app
             .clone()
@@ -1387,7 +1419,7 @@ mod tests {
             },
             synctv_core::GrpcRateLimitConfig::default(),
         );
-        let app = register_all_routes(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let first = app
             .clone()
@@ -1437,7 +1469,7 @@ mod tests {
             },
             synctv_core::GrpcRateLimitConfig::default(),
         );
-        let app = register_all_routes(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let first = app
             .clone()
@@ -1474,7 +1506,7 @@ mod tests {
     #[tokio::test]
     async fn test_publish_key_route_is_namespaced_under_api() {
         let state = test_app_state();
-        let app = register_all_routes(state).with_state(test_app_state());
+        let app = register_all_routes_for_test(state).with_state(test_app_state());
 
         let api_response = app
             .clone()
@@ -1505,7 +1537,7 @@ mod tests {
     #[tokio::test]
     async fn test_oauth2_routes_are_not_registered_when_service_missing() {
         let state = test_app_state();
-        let app = register_all_routes(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let response = app
             .oneshot(
@@ -1524,7 +1556,7 @@ mod tests {
     #[tokio::test]
     async fn test_email_routes_are_not_registered_when_services_missing() {
         let state = test_app_state();
-        let app = register_all_routes(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let response = app
             .oneshot(
@@ -1544,7 +1576,7 @@ mod tests {
     #[tokio::test]
     async fn test_notification_routes_are_not_registered_when_service_missing() {
         let state = test_app_state();
-        let app = register_all_routes(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let read_response = app
             .clone()
@@ -1575,13 +1607,32 @@ mod tests {
     #[tokio::test]
     async fn test_live_provider_routes_are_not_registered_when_infrastructure_missing() {
         let state = test_app_state();
-        let app = register_all_routes(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("GET")
                     .uri("/api/providers/rtmp/streams?room_id=room1234_abx")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_websocket_routes_are_not_registered_when_dependencies_missing() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ws/rooms/room1234_abx")
                     .body(Body::empty())
                     .expect("request"),
             )

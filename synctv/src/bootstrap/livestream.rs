@@ -98,24 +98,6 @@ pub async fn init_livestream(
     });
     background_handles.push(lifecycle_handle);
 
-    // RTMP auth callback (needs synctv-core services)
-    let mut rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(
-        synctv_services.room_service.clone(),
-        synctv_services.user_service.clone(),
-        synctv_services.publish_key_service.clone(),
-        user_stream_tracker.clone(),
-        publisher_registry.clone(),
-        node_id.to_string(),
-        config.advertise_grpc_address(),
-        Some(stream_lifecycle_tx),
-        config.redis.key_prefix.clone(),
-    );
-    // Attach Redis connection for cross-replica user->stream mapping when available
-    if let Some(conn) = redis_conn_for_auth {
-        rtmp_auth_impl = rtmp_auth_impl.with_redis(conn);
-    }
-    let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> = Arc::new(rtmp_auth_impl);
-
     // Pre-bind RTMP listener to catch port-in-use errors before deep initialization.
     // This follows the same pattern as gRPC/HTTP server pre-binding.
     let rtmp_listen_addr = format!("{}:{}", config.server.host, config.livestream.rtmp_port);
@@ -127,8 +109,12 @@ pub async fn init_livestream(
         .map_err(|e| anyhow::anyhow!("Failed to bind RTMP address {rtmp_socket_addr}: {e}"))?;
     info!("RTMP server pre-bound on {}", rtmp_socket_addr);
 
-    // One-shot facade: start all xiu components
-    let handle = synctv_livestream::LivestreamServer::new(
+    let publisher_registry_for_auth = publisher_registry.clone();
+    let user_stream_tracker_for_auth = user_stream_tracker.clone();
+
+    // Build the LivestreamServer first so RTMP auth can share the restart flag
+    // used by the StreamHub restart loop.
+    let livestream_server = synctv_livestream::LivestreamServer::new(
         synctv_livestream::LivestreamConfig {
             rtmp_address: rtmp_listen_addr,
             gop_cache_size: config.livestream.gop_cache_size as usize,
@@ -151,12 +137,33 @@ pub async fn init_livestream(
         },
         publisher_registry,
         user_stream_tracker,
+    );
+
+    let mut rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(
+        synctv_services.room_service.clone(),
+        synctv_services.user_service.clone(),
+        synctv_services.publish_key_service.clone(),
+        user_stream_tracker_for_auth,
+        publisher_registry_for_auth,
+        node_id.to_string(),
+        config.advertise_grpc_address(),
+        Some(stream_lifecycle_tx),
+        config.redis.key_prefix.clone(),
     )
-    .with_auth(rtmp_auth)
-    .with_rtmp_listener(rtmp_listener)
-    .start()
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to start livestream: {e}"))?;
+    .with_restarting_flag(livestream_server.restarting_flag());
+
+    if let Some(conn) = redis_conn_for_auth {
+        rtmp_auth_impl = rtmp_auth_impl.with_redis(conn);
+    }
+    let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> = Arc::new(rtmp_auth_impl);
+
+    // One-shot facade: start all xiu components
+    let handle = livestream_server
+        .with_auth(rtmp_auth)
+        .with_rtmp_listener(rtmp_listener)
+        .start()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to start livestream: {e}"))?;
 
     let live_infra = handle.infrastructure.clone();
     let state = Some(server::LivestreamState { handle });

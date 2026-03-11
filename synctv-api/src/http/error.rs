@@ -156,13 +156,15 @@ impl IntoResponse for AppError {
             self.message
         };
 
-        // Note: request_id will be added by a response middleware if available
-        // For now, we set it to None here. The middleware layer will handle it.
+        let request_id = crate::http::middleware::CURRENT_REQUEST_ID
+            .try_with(Clone::clone)
+            .ok();
+
         let body = Json(ErrorResponse {
             error: error_message,
             status: status.as_u16(),
             code: self.error_code,
-            request_id: None,
+            request_id,
         });
 
         (status, body).into_response()

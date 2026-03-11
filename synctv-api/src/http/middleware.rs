@@ -14,7 +14,9 @@ use synctv_core::{
 
 use super::{AppError, AppState};
 
-const MAX_ERROR_RESPONSE_INJECTION_BYTES: usize = 64 * 1024;
+tokio::task_local! {
+    pub static CURRENT_REQUEST_ID: String;
+}
 
 /// Request ID extracted from request extensions
 ///
@@ -42,7 +44,8 @@ static X_REQUEST_ID: LazyLock<axum::http::HeaderName> =
 /// 1. Recorded in the current tracing span as `request_id` for log correlation.
 /// 2. Echoed back in the `X-Request-ID` response header so callers can correlate
 ///    logs with their own request tracking.
-/// 3. Injected into error response JSON bodies when present.
+/// 3. Exposed via a task-local so `AppError` responses can include it without
+///    buffering and rewriting response bodies.
 pub async fn request_id_middleware(mut request: Request, next: Next) -> Response {
     // Honour an incoming X-Request-ID header when safe to do so.
     let request_id = request
@@ -68,153 +71,17 @@ pub async fn request_id_middleware(mut request: Request, next: Next) -> Response
         .extensions_mut()
         .insert(RequestId(request_id.clone()));
 
-    let mut response = next.run(request).await;
+    let mut response = CURRENT_REQUEST_ID
+        .scope(request_id.clone(), async move { next.run(request).await })
+        .await;
 
     // Echo back in response header so callers can correlate.
     if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
         response.headers_mut().insert(X_REQUEST_ID.clone(), value);
     }
 
-    // Inject request_id into error response JSON body
-    response = inject_request_id_into_error_response(response, &request_id).await;
-
     response
 }
-
-/// Inject `request_id` into error response JSON bodies
-///
-/// This function inspects the response and, if it's an error response with JSON body
-/// from `AppError`, rewrites it to include the `request_id` field.
-async fn inject_request_id_into_error_response(response: Response, request_id: &str) -> Response {
-    // Only process error responses (4xx and 5xx)
-    if !response.status().is_client_error() && !response.status().is_server_error() {
-        return response;
-    }
-
-    // Check if this is a JSON response
-    let content_type = response
-        .headers()
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok());
-
-    if !content_type.is_some_and(|ct| ct.starts_with("application/json")) {
-        return response;
-    }
-
-    if response
-        .headers()
-        .get(axum::http::header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<usize>().ok())
-        .is_some_and(|len| len > MAX_ERROR_RESPONSE_INJECTION_BYTES)
-    {
-        tracing::debug!(
-            request_id = %request_id,
-            max_bytes = MAX_ERROR_RESPONSE_INJECTION_BYTES,
-            "Skipping request_id injection for oversized error response body"
-        );
-        return response;
-    }
-
-    // Try to extract and modify the JSON body
-    // Note: This requires buffering the body, which has performance implications.
-    // For high-traffic endpoints, consider alternative approaches.
-    //
-    // Preserve the original status code and headers before consuming the body,
-    // so we can reconstruct a proper response if injection fails.
-    let status = response.status();
-    let headers = response.headers().clone();
-    match try_inject_request_id_async(response, request_id).await {
-        Ok(new_response) => new_response,
-        Err(e) => {
-            // Failed to inject, log and return response with original status/headers
-            tracing::warn!(
-                request_id = %request_id,
-                error = %e,
-                "Failed to inject request_id into error response"
-            );
-            // Reconstruct a response preserving the original status code and headers.
-            // Preserve the original body bytes as best-effort fallback instead of
-            // silently replacing the payload with an empty body.
-            let body_bytes = e
-                .downcast_ref::<ResponseBodyPreservationError>()
-                .map_or_else(Vec::new, |err| err.original_body.clone());
-            let mut fallback = Response::new(axum::body::Body::from(body_bytes.clone()));
-            *fallback.status_mut() = status;
-            *fallback.headers_mut() = headers;
-            set_content_length_header(fallback.headers_mut(), body_bytes.len());
-            fallback
-        }
-    }
-}
-
-/// Try to inject `request_id` into a JSON response body (async version)
-///
-/// Returns a new Response with the injected `request_id`, or an error if
-/// deserialization/serialization failed.
-async fn try_inject_request_id_async(
-    response: Response,
-    request_id: &str,
-) -> anyhow::Result<Response> {
-    use axum::body::{to_bytes, Body};
-
-    // Split response into parts and body
-    let (parts, body) = response.into_parts();
-    let bytes = to_bytes(body, MAX_ERROR_RESPONSE_INJECTION_BYTES).await?;
-
-    // Try to parse as JSON and check if it's an error response
-    let mut json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|source| {
-        anyhow::Error::new(ResponseBodyPreservationError {
-            source,
-            original_body: bytes.to_vec(),
-        })
-    })?;
-
-    // Check if this looks like an AppError response (has "error" and "status" fields)
-    if json.get("error").is_some() && json.get("status").is_some() {
-        // Inject request_id if not already present
-        if json.get("request_id").is_none() {
-            json["request_id"] = serde_json::json!(request_id);
-        }
-
-        // Serialize back to JSON
-        let new_bytes = serde_json::to_vec(&json)?;
-
-        // Build new response with same status and headers
-        let mut new_response = Response::from_parts(parts, Body::from(new_bytes.clone()));
-        set_content_length_header(new_response.headers_mut(), new_bytes.len());
-        return Ok(new_response);
-    }
-
-    // Not an error response, return original
-    let original_response = Response::from_parts(parts, Body::from(bytes.to_vec()));
-    Ok(original_response)
-}
-
-fn set_content_length_header(headers: &mut axum::http::HeaderMap, len: usize) {
-    headers.remove(axum::http::header::CONTENT_LENGTH);
-    if let Ok(value) = axum::http::HeaderValue::from_str(&len.to_string()) {
-        headers.insert(axum::http::header::CONTENT_LENGTH, value);
-    }
-}
-
-#[derive(Debug)]
-struct ResponseBodyPreservationError {
-    source: serde_json::Error,
-    original_body: Vec<u8>,
-}
-
-impl std::fmt::Display for ResponseBodyPreservationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "failed to deserialize JSON body for request_id injection: {}",
-            self.source
-        )
-    }
-}
-
-impl std::error::Error for ResponseBodyPreservationError {}
 
 /// Pre-validated security header names (validated once at startup via Lazy)
 static X_FRAME_OPTIONS: LazyLock<axum::http::HeaderName> =
@@ -1067,187 +934,6 @@ mod tests {
         // HSTS preload list requires max-age >= 31536000 (1 year)
         let header = hsts_header(31536000, true, true);
         assert_eq!(header, "max-age=31536000; includeSubDomains; preload");
-    }
-
-    // === H3: inject_request_id_into_error_response preserves status on failure ===
-
-    #[tokio::test]
-    async fn test_inject_request_id_preserves_status_on_injection_failure() {
-        // Build a 404 error response with non-JSON body (injection will fail)
-        let response = Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(axum::body::Body::from("not valid json {{{"))
-            .unwrap();
-
-        let result = inject_request_id_into_error_response(response, "test-req-1").await;
-
-        // The status should be preserved even when injection fails
-        assert_eq!(
-            result.status(),
-            StatusCode::NOT_FOUND,
-            "Status must be preserved when injection fails, not reset to 200"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_inject_request_id_preserves_headers_on_injection_failure() {
-        // Build a 500 error response with invalid JSON body
-        let response = Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .header("X-Custom-Header", "custom-value")
-            .body(axum::body::Body::from("invalid json"))
-            .unwrap();
-
-        let result = inject_request_id_into_error_response(response, "test-req-2").await;
-
-        assert_eq!(result.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(
-            result.headers().get("X-Custom-Header").unwrap(),
-            "custom-value",
-            "Custom headers must be preserved when injection fails"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_inject_request_id_preserves_body_on_injection_failure() {
-        let original_body = "not valid json {{{";
-        let response = Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(axum::body::Body::from(original_body))
-            .unwrap();
-
-        let result = inject_request_id_into_error_response(response, "test-req-body").await;
-        let body_bytes = axum::body::to_bytes(result.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert_eq!(
-            std::str::from_utf8(&body_bytes).unwrap(),
-            original_body,
-            "fallback must preserve original body when injection fails"
-        );
-    }
-
-    // === M6: Content-Type matching with charset ===
-
-    #[tokio::test]
-    async fn test_inject_request_id_handles_content_type_with_charset() {
-        // Build a 400 error response with application/json; charset=utf-8
-        let json_body = serde_json::json!({
-            "error": "bad request",
-            "status": 400
-        });
-        let response = Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(
-                axum::http::header::CONTENT_TYPE,
-                "application/json; charset=utf-8",
-            )
-            .body(axum::body::Body::from(
-                serde_json::to_vec(&json_body).unwrap(),
-            ))
-            .unwrap();
-
-        let result = inject_request_id_into_error_response(response, "test-charset").await;
-
-        // Should have injected request_id (not skipped due to charset suffix)
-        let body_bytes = axum::body::to_bytes(result.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert_eq!(
-            json["request_id"], "test-charset",
-            "request_id should be injected even when content-type includes charset"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_inject_request_id_updates_content_length_after_body_rewrite() {
-        let original_json = serde_json::json!({
-            "error": "bad request",
-            "status": 400
-        });
-        let original_bytes = serde_json::to_vec(&original_json).unwrap();
-
-        let response = Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .header(
-                axum::http::header::CONTENT_LENGTH,
-                original_bytes.len().to_string(),
-            )
-            .body(axum::body::Body::from(original_bytes))
-            .unwrap();
-
-        let result = inject_request_id_into_error_response(response, "req-len-123").await;
-        let content_length = result
-            .headers()
-            .get(axum::http::header::CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<usize>().ok())
-            .expect("response should contain a valid content-length");
-
-        let body_bytes = axum::body::to_bytes(result.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-
-        assert_eq!(json["request_id"], "req-len-123");
-        assert_eq!(
-            content_length,
-            body_bytes.len(),
-            "content-length must match rewritten body length"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_inject_request_id_skips_non_json_content_type() {
-        // Build a 400 error response with text/plain content type
-        let response = Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(axum::http::header::CONTENT_TYPE, "text/plain")
-            .body(axum::body::Body::from("bad request"))
-            .unwrap();
-
-        let result = inject_request_id_into_error_response(response, "test-skip").await;
-
-        // Should pass through unchanged for non-JSON responses
-        assert_eq!(result.status(), StatusCode::BAD_REQUEST);
-        let body_bytes = axum::body::to_bytes(result.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert_eq!(body_bytes, "bad request");
-    }
-
-    #[tokio::test]
-    async fn test_inject_request_id_skips_large_error_body() {
-        let original_json = serde_json::json!({
-            "error": "payload too large",
-            "status": 400,
-            "detail": "x".repeat(70 * 1024),
-        });
-        let original_bytes = serde_json::to_vec(&original_json).unwrap();
-
-        let response = Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .header(
-                axum::http::header::CONTENT_LENGTH,
-                original_bytes.len().to_string(),
-            )
-            .body(axum::body::Body::from(original_bytes.clone()))
-            .unwrap();
-
-        let result = inject_request_id_into_error_response(response, "oversized-req").await;
-        let body_bytes = axum::body::to_bytes(result.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-
-        assert_eq!(body_bytes, original_bytes);
-        assert!(json.get("request_id").is_none());
     }
 
     // === Provider Routes Security Headers Tests ===

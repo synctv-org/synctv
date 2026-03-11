@@ -129,13 +129,15 @@ where
     F: FnOnce(String, u64) -> Fut,
     Fut: Future<Output = synctv_core::Result<()>>,
 {
-    let claims = jwt_service.verify_access_token(raw_token).map_err(|error| {
-        tracing::debug!(
-            error = %error,
-            "Rejecting logout because the presented token is not a valid access token"
-        );
-        ApiError::Authentication(error.to_string())
-    })?;
+    let claims = jwt_service
+        .verify_access_token(raw_token)
+        .map_err(|error| {
+            tracing::debug!(
+                error = %error,
+                "Rejecting logout because the presented token is not a valid access token"
+            );
+            ApiError::Authentication(error.to_string())
+        })?;
 
     if claims.jti.is_empty() {
         return Err(ApiError::Authentication(
@@ -243,10 +245,9 @@ mod tests {
             .sign_token(&UserId::new(), TokenType::Refresh, 0)
             .unwrap();
 
-        let result = revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl| async {
-            Ok(())
-        })
-        .await;
+        let result =
+            revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl| async { Ok(()) })
+                .await;
 
         match result {
             Err(ApiError::Authentication(message)) => {
@@ -273,10 +274,9 @@ mod tests {
             .sign_token(&UserId::new(), TokenType::Access, 0)
             .unwrap();
 
-        let result = revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl| async {
-            Ok(())
-        })
-        .await;
+        let result =
+            revoke_access_token_for_logout(&jwt_service, &token, |_jti, _ttl| async { Ok(()) })
+                .await;
 
         match result {
             Err(ApiError::Authentication(message)) => {

@@ -1,15 +1,15 @@
 //! `PostgreSQL` test container helpers
 
 use std::fs::{File, OpenOptions};
-use std::sync::LazyLock;
-use std::process::Command;
 use std::path::PathBuf;
+use std::process::Command;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
-use testcontainers::core::{ImageExt, WaitFor};
 use testcontainers::core::wait::LogWaitStrategy;
+use testcontainers::core::{ImageExt, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
@@ -20,8 +20,7 @@ pub const POSTGRES_VERSION: &str = "16-alpine";
 const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;
 const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
-static POSTGRES_START_SERIALIZER: LazyLock<Semaphore> =
-    LazyLock::new(|| Semaphore::new(1));
+static POSTGRES_START_SERIALIZER: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(1));
 
 struct ProcessLock(File);
 

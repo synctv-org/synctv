@@ -32,7 +32,8 @@ use crate::bootstrap::webrtc::init_webrtc;
 use crate::cluster_bridge::ClusterPlaybackBroadcaster;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
-    AuditFlushHook, CacheInvalidationStopHook, SettingsListenHook, ShutdownCoordinator,
+    AuditFlushHook, CacheInvalidationStopHook, ProviderInvalidationHook, SettingsListenHook,
+    ShutdownCoordinator,
 };
 
 /// Infrastructure: Redis (optional), Database, `NodeID`.
@@ -472,6 +473,10 @@ impl Application {
         shutdown.register_hook(SettingsListenHook {
             task: synctv_services.settings_listen_task.clone(),
         });
+        shutdown.register_hook(ProviderInvalidationHook {
+            cancel: synctv_services.provider_invalidation_cancel.clone(),
+            task: synctv_services.provider_invalidation_task.clone(),
+        });
 
         if should_run_startup_partition_initialization(&infra.config) {
             // Initialize chat message partitions (needs settings_registry from services)
@@ -655,7 +660,9 @@ impl Application {
                 let pool = pool.clone();
                 let settings_registry = settings_registry.clone();
                 Box::pin(async move {
-                    info!("Leadership gained after startup; running deferred singleton maintenance");
+                    info!(
+                        "Leadership gained after startup; running deferred singleton maintenance"
+                    );
 
                     let cleanup_service = synctv_core::service::CleanupService::new(
                         pool.clone(),

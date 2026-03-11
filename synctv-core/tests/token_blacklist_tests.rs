@@ -308,42 +308,62 @@ async fn test_pg_family_revocation_survives_cleanup_until_marker_expires() {
 
 #[tokio::test]
 #[ignore = "requires Docker (PostgreSQL testcontainer)"]
+async fn test_pg_family_revocation_timestamp_is_stable_across_reads() {
+    let (_container, pool) = create_test_pool().await;
+    let store = PgTokenBlacklistStore::new(pool);
+    let key = format!("family:pg_stable_ts:{}", nanoid::nanoid!(8));
+    let timestamp = chrono::Utc::now().timestamp();
+
+    store
+        .set_family_revoked(&key, timestamp, 120)
+        .await
+        .unwrap();
+
+    let first = store.get_family_revoked_at(&key).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
+    let second = store.get_family_revoked_at(&key).await;
+
+    assert_eq!(first, Some(timestamp));
+    assert_eq!(
+        second,
+        Some(timestamp),
+        "family revocation timestamp must remain stable instead of drifting with wall-clock time"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker (PostgreSQL testcontainer)"]
 async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
     let (_container, pool) = create_test_pool().await;
     let store = PgTokenBlacklistStore::new(pool.clone());
     let key = format!("family:pg_atomicity_guard:{}", nanoid::nanoid!(8));
     let timestamp = chrono::Utc::now().timestamp();
-    let ts_key = format!("_ts:{key}");
 
-    sqlx::query(
-        r#"
-        CREATE OR REPLACE FUNCTION fail_token_blacklist_timestamp_insert()
+    let trigger_fn_sql = r#"
+        CREATE OR REPLACE FUNCTION fail_token_blacklist_family_insert()
         RETURNS trigger AS $$
         BEGIN
-            IF NEW.jti LIKE '\_ts:%' ESCAPE '\' THEN
+            IF NEW.jti = 'REPLACE_ME' THEN
                 RAISE EXCEPTION 'forced family timestamp failure';
             END IF;
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+        "#
+    .replace("REPLACE_ME", &key);
 
-    sqlx::query(
-        "DROP TRIGGER IF EXISTS trg_fail_token_blacklist_timestamp_insert ON token_blacklist",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query(&trigger_fn_sql).execute(&pool).await.unwrap();
+
+    sqlx::query("DROP TRIGGER IF EXISTS trg_fail_token_blacklist_family_insert ON token_blacklist")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query(
         r#"
-        CREATE TRIGGER trg_fail_token_blacklist_timestamp_insert
+        CREATE TRIGGER trg_fail_token_blacklist_family_insert
         BEFORE INSERT OR UPDATE ON token_blacklist
         FOR EACH ROW
-        EXECUTE FUNCTION fail_token_blacklist_timestamp_insert()
+        EXECUTE FUNCTION fail_token_blacklist_family_insert()
         "#,
     )
     .execute(&pool)
@@ -353,7 +373,7 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
     let result = store.set_family_revoked(&key, timestamp, 120).await;
     assert!(
         result.is_err(),
-        "forced second write failure must bubble up as an error"
+        "forced family revoke write failure must bubble up as an error"
     );
 
     let marker_exists: bool =
@@ -362,25 +382,17 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    let timestamp_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1)")
-            .bind(&ts_key)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
 
     assert!(
-        !marker_exists && !timestamp_exists,
+        !marker_exists,
         "family revoke must be atomic: no partial rows should remain after failure"
     );
 
-    sqlx::query(
-        "DROP TRIGGER IF EXISTS trg_fail_token_blacklist_timestamp_insert ON token_blacklist",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query("DROP FUNCTION IF EXISTS fail_token_blacklist_timestamp_insert()")
+    sqlx::query("DROP TRIGGER IF EXISTS trg_fail_token_blacklist_family_insert ON token_blacklist")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP FUNCTION IF EXISTS fail_token_blacklist_family_insert()")
         .execute(&pool)
         .await
         .unwrap();

@@ -12,6 +12,8 @@ use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::EmbyProvider;
 use synctv_core::repository::UserProviderCredentialRepository;
 
+use super::resolve_bound_instance_name;
+
 /// Emby API implementation
 ///
 /// Contains all business logic for Emby operations.
@@ -39,7 +41,7 @@ impl EmbyApiImpl {
         &self,
         caller_user_id: &str,
         server_id: &str,
-    ) -> Result<(String, String, String), synctv_core::provider::ProviderError> {
+    ) -> Result<(String, String, String, Option<String>), synctv_core::provider::ProviderError> {
         let cred = self
             .credential_repo
             .get_by_provider_and_server(
@@ -68,7 +70,7 @@ impl EmbyApiImpl {
                 host,
                 api_key,
                 emby_user_id,
-            }) => Ok((host, api_key, emby_user_id)),
+            }) => Ok((host, api_key, emby_user_id, cred.provider_instance_name)),
             Ok(_) => Err(synctv_core::provider::ProviderError::InvalidCredentialType),
             Err(e) => Err(synctv_core::provider::ProviderError::Internal(format!(
                 "Failed to parse emby credential: {e}"
@@ -98,7 +100,8 @@ impl EmbyApiImpl {
             .is_some_and(|p| p.is_administrator);
 
         // Generate server_id and persist credential
-        let server_id = UserProviderCredential::generate_server_id_for_instance(&host, instance_name);
+        let server_id =
+            UserProviderCredential::generate_server_id_for_instance(&host, instance_name);
         let credential_data = ProviderCredential::emby(host, api_key, user_info.id.clone());
 
         // Upsert: delete existing then create
@@ -154,11 +157,15 @@ impl EmbyApiImpl {
         &self,
         caller_user_id: &str,
         req: ListRequest,
-        instance_name: Option<&str>,
+        requested_instance_name: Option<&str>,
     ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
-        let (host, token, user_id) = self
+        let (host, token, user_id, credential_instance_name) = self
             .resolve_credentials(caller_user_id, &req.server_id)
             .await?;
+        let effective_instance_name = resolve_bound_instance_name(
+            requested_instance_name,
+            credential_instance_name.as_deref(),
+        )?;
 
         let list_req = synctv_media_providers::grpc::emby::FsListReq {
             host,
@@ -170,7 +177,10 @@ impl EmbyApiImpl {
             user_id,
         };
 
-        let resp = self.provider.fs_list(list_req, instance_name).await?;
+        let resp = self
+            .provider
+            .fs_list(list_req, effective_instance_name.as_deref())
+            .await?;
 
         let items: Vec<MediaItem> = resp
             .items
@@ -197,11 +207,15 @@ impl EmbyApiImpl {
         &self,
         caller_user_id: &str,
         req: GetMeRequest,
-        instance_name: Option<&str>,
+        requested_instance_name: Option<&str>,
     ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
-        let (host, token, _) = self
+        let (host, token, _, credential_instance_name) = self
             .resolve_credentials(caller_user_id, &req.server_id)
             .await?;
+        let effective_instance_name = resolve_bound_instance_name(
+            requested_instance_name,
+            credential_instance_name.as_deref(),
+        )?;
 
         let me_req = synctv_media_providers::grpc::emby::MeReq {
             host,
@@ -209,7 +223,10 @@ impl EmbyApiImpl {
             user_id: String::new(),
         };
 
-        let resp = self.provider.me(me_req, instance_name).await?;
+        let resp = self
+            .provider
+            .me(me_req, effective_instance_name.as_deref())
+            .await?;
 
         Ok(GetMeResponse {
             id: resp.id,

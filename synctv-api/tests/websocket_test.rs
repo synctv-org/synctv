@@ -931,6 +931,9 @@ mod websocket_e2e {
             redis_conn: None,
             builtin_stun_url: None,
             credential_encryption: None,
+            proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+            )),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
                 std::time::Duration::from_millis(400),
@@ -2560,8 +2563,27 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws, &empty_msg).await;
 
-        // Connection should remain alive (error is logged server-side, not fatal)
-        // Verify by sending a heartbeat and getting an ack
+        let rejection = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message_skip_membership(&mut ws),
+        )
+        .await
+        .expect("timeout waiting for empty chat rejection")
+        .expect("stream ended");
+
+        match rejection.message {
+            Some(server_message::Message::Error(err)) => {
+                assert!(
+                    err.message.contains("empty"),
+                    "expected empty-chat validation error, got: {}",
+                    err.message
+                );
+            }
+            other => panic!("Expected Error message for empty chat rejection, got: {other:?}"),
+        }
+
+        // Connection should remain alive after the validation error.
+        // Verify by sending a heartbeat and getting an ack.
         let heartbeat = ClientMessage {
             message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
                 timestamp: chrono::Utc::now().timestamp_millis(),
@@ -2995,11 +3017,11 @@ mod websocket_e2e {
     }
 
     // ========================================================================
-    // Test: WebRTC offer from same-user second connection uses its own conn_id
+    // Test: WebRTC offer requires explicit target conn_id and returns an error
     // ========================================================================
 
     #[tokio::test]
-    async fn test_ws_webrtc_offer_uses_current_connection_id_for_same_user_multi_conn() {
+    async fn test_ws_webrtc_offer_rejects_recipient_without_conn_id() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
@@ -3086,8 +3108,6 @@ mod websocket_e2e {
             1,
             "after targeted disconnect exactly one sender connection should remain"
         );
-        let sender_conn_id = active_sender_connections[0].connection_id.clone();
-
         let offer = ClientMessage {
             message: Some(client_message::Message::WebrtcOffer(
                 synctv_proto::client::WebRtcOffer {
@@ -3103,32 +3123,170 @@ mod websocket_e2e {
             send_client_message(&mut ws1, &offer).await;
         }
 
-        let received_offer = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let sender_ws = if sender_is_ws2 { &mut ws2 } else { &mut ws1 };
+        let error_message = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let msg = recv_server_message(&mut ws_peer)
+                let msg = recv_server_message_skip_membership(sender_ws)
                     .await
                     .expect("stream ended");
-                if matches!(&msg.message, Some(server_message::Message::WebrtcOffer(_))) {
+                if matches!(&msg.message, Some(server_message::Message::Error(_))) {
                     return msg;
                 }
             }
         })
         .await
-        .expect("timeout waiting for WebRTC offer");
+        .expect("timeout waiting for WebRTC error");
 
-        let from = match received_offer.message {
-            Some(server_message::Message::WebrtcOffer(offer)) => offer.from,
-            other => panic!("Expected WebrtcOffer, got: {other:?}"),
-        };
+        match error_message.message {
+            Some(server_message::Message::Error(error)) => {
+                assert!(
+                    error.message.contains("user_id:conn_id"),
+                    "expected recipient format error, got: {}",
+                    error.message
+                );
+            }
+            other => panic!("Expected Error, got: {other:?}"),
+        }
 
-        assert_eq!(
-            from,
-            format!("{}|{}", user_id.as_str(), sender_conn_id),
-            "WebRTC signaling must use the sender connection's own conn_id"
+        let peer_received_offer =
+            tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                loop {
+                    let msg = recv_server_message(&mut ws_peer).await;
+                    match msg {
+                        Some(server_message)
+                            if matches!(
+                                &server_message.message,
+                                Some(server_message::Message::WebrtcOffer(_))
+                            ) =>
+                        {
+                            return true;
+                        }
+                        Some(_) => continue,
+                        None => return false,
+                    }
+                }
+            })
+            .await
+            .unwrap_or(false);
+
+        assert!(
+            !peer_received_offer,
+            "peer must not receive signaling when recipient conn_id is omitted"
         );
 
         let _ = ws1.close(None).await;
         let _ = ws2.close(None).await;
+        let _ = ws_peer.close(None).await;
+    }
+
+    #[tokio::test]
+    async fn test_ws_webrtc_offer_requires_target_connection_to_join_webrtc() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (user_id, token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "webrtc_sender_requires_join",
+        )
+        .await;
+        let (peer_user_id, peer_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "webrtc_peer_requires_join",
+        )
+        .await;
+        let room_id = create_test_room(
+            &server.room_service,
+            &user_id,
+            "WebRTC Offer Requires Join Room",
+        )
+        .await;
+        let room = synctv_core::models::RoomId::from_string(room_id.clone());
+        server
+            .room_service
+            .join_room(room.clone(), peer_user_id.clone(), None)
+            .await
+            .expect("peer joins room");
+
+        let mut ws_sender = ws_connect(&server.addr, &room_id, &token).await;
+        let mut ws_peer = ws_connect(&server.addr, &room_id, &peer_token).await;
+
+        tokio::join!(
+            drain_until_quiet(&mut ws_sender, 1500),
+            drain_until_quiet(&mut ws_peer, 1500),
+        );
+
+        let peer_conn_id = server
+            .connection_manager
+            .get_user_connections(&peer_user_id)
+            .into_iter()
+            .find(|conn| conn.room_id.as_ref() == Some(&room))
+            .expect("peer connection must be present")
+            .connection_id;
+
+        let offer = ClientMessage {
+            message: Some(client_message::Message::WebrtcOffer(
+                synctv_proto::client::WebRtcOffer {
+                    to: format!("{}:{}", peer_user_id.as_str(), peer_conn_id),
+                    from: String::new(),
+                    data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
+                },
+            )),
+        };
+        send_client_message(&mut ws_sender, &offer).await;
+
+        let error_message = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let msg = recv_server_message_skip_membership(&mut ws_sender)
+                    .await
+                    .expect("stream ended");
+                if matches!(&msg.message, Some(server_message::Message::Error(_))) {
+                    return msg;
+                }
+            }
+        })
+        .await
+        .expect("timeout waiting for WebRTC join-state error");
+
+        match error_message.message {
+            Some(server_message::Message::Error(error)) => {
+                assert!(
+                    error.message.contains("has not joined WebRTC"),
+                    "expected target join-state error, got: {}",
+                    error.message
+                );
+            }
+            other => panic!("Expected Error, got: {other:?}"),
+        }
+
+        let peer_received_offer =
+            tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                loop {
+                    let msg = recv_server_message(&mut ws_peer).await;
+                    match msg {
+                        Some(server_message)
+                            if matches!(
+                                &server_message.message,
+                                Some(server_message::Message::WebrtcOffer(_))
+                            ) =>
+                        {
+                            return true;
+                        }
+                        Some(_) => continue,
+                        None => return false,
+                    }
+                }
+            })
+            .await
+            .unwrap_or(false);
+
+        assert!(
+            !peer_received_offer,
+            "peer must not receive signaling before explicitly joining WebRTC"
+        );
+
+        let _ = ws_sender.close(None).await;
         let _ = ws_peer.close(None).await;
     }
 
@@ -3183,9 +3341,12 @@ mod websocket_e2e {
     async fn test_ws_invalid_room_id_rejected_before_upgrade() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
-        let (_user_id, token) =
-            register_test_user(&server.user_service, &server.jwt_service, "invalid_room_user")
-                .await;
+        let (_user_id, token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "invalid_room_user",
+        )
+        .await;
 
         let url = format!("ws://{}/ws/rooms/room@bad1234", server.addr);
         let request = tungstenite::http::Request::builder()
@@ -3692,6 +3853,9 @@ mod websocket_connection_limit_timing {
             redis_conn: None,
             builtin_stun_url: None,
             credential_encryption: None,
+            proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+            )),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
                 std::time::Duration::from_millis(400),

@@ -237,9 +237,7 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
         use synctv_core::provider::ProviderError;
 
         match err {
-            ProviderError::NetworkError(msg) | ProviderError::ApiError(msg) => {
-                Self::Internal(msg)
-            }
+            ProviderError::NetworkError(msg) | ProviderError::ApiError(msg) => Self::Internal(msg),
             ProviderError::UpstreamHttp { status, url } => {
                 Self::Internal(format!("Upstream HTTP {status} error for {url}"))
             }
@@ -253,7 +251,9 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             ProviderError::MissingInstance => {
                 Self::NotFound("Provider instance not configured".to_string())
             }
-            ProviderError::AuthRequired => Self::Authentication("Authentication required".to_string()),
+            ProviderError::AuthRequired => {
+                Self::Authentication("Authentication required".to_string())
+            }
             ProviderError::CredentialRequired => {
                 Self::Authentication("Credential required".to_string())
             }
@@ -262,8 +262,9 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             }
             ProviderError::CredentialNotFound(msg) => Self::NotFound(msg),
             ProviderError::CredentialExpired(msg) => Self::Authentication(msg),
-            ProviderError::RouteRegistrationFailed(msg)
-            | ProviderError::Internal(msg) => Self::Internal(msg),
+            ProviderError::RouteRegistrationFailed(msg) | ProviderError::Internal(msg) => {
+                Self::Internal(msg)
+            }
             ProviderError::IoError(e) => Self::Internal(e.to_string()),
             ProviderError::JsonError(e) => Self::InvalidInput(format!("Invalid data format: {e}")),
             ProviderError::EncryptionRequired(provider) => Self::Internal(format!(
@@ -423,6 +424,12 @@ pub fn classify_error(err: &str) -> ErrorKind {
         || lower.contains("too many")
         || lower.contains("required")
         || lower.contains("must be")
+        || lower.contains("must be formatted")
+        || lower.contains("is no longer active")
+        || lower.contains("does not match")
+        || lower.contains("not currently joined")
+        || lower.contains("not in this room")
+        || lower.contains("has not joined webrtc")
     {
         ErrorKind::InvalidArgument
     } else {

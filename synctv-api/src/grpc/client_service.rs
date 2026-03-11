@@ -5,7 +5,7 @@ use tonic::{Request, Response, Status};
 
 use crate::impls::messaging::{MessageSender, StreamMessage, StreamMessageHandler};
 use synctv_cluster::sync::{ClusterManager, ConnectionManager};
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::{Room, RoomId, UserId};
 use synctv_core::service::{
     ContentFilter, RateLimitConfig, RateLimiter, RoomService as CoreRoomService,
     UserService as CoreUserService,
@@ -99,6 +99,21 @@ fn map_message_stream_join_error(error: String) -> Status {
 
     tracing::error!("Unexpected MessageStream pre_join failure: {error}");
     Status::internal("Failed to establish message stream")
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_realtime_room_access(room: &Room) -> Result<(), Status> {
+    if room.is_banned {
+        return Err(Status::permission_denied("This room has been banned"));
+    }
+
+    if room.status.is_closed() {
+        return Err(Status::permission_denied(
+            "This room is closed and not accepting new connections",
+        ));
+    }
+
+    Ok(())
 }
 
 /// Configuration for `ClientService`
@@ -260,7 +275,7 @@ impl AuthService for ClientServiceImpl {
         request: Request<RegisterRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
         // Extract client IP for brute-force protection (Issue #24)
-        let client_ip = request.remote_addr().map(|addr| addr.ip());
+        let client_ip = super::extract_client_ip(&request, &self.config);
         let req = request.into_inner();
         let response = self
             .client_api
@@ -274,8 +289,7 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<LoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        // Extract client IP from gRPC remote_addr
-        let client_ip = request.remote_addr().map(|addr| addr.ip());
+        let client_ip = super::extract_client_ip(&request, &self.config);
         let req = request.into_inner();
         let response = self
             .client_api
@@ -624,9 +638,8 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<CheckRoomPasswordResponse>, Status> {
         let _user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let client_ip = request
-            .remote_addr()
-            .map_or_else(|| "unknown".to_string(), |addr| addr.ip().to_string());
+        let client_ip = super::extract_client_ip(&request, &self.config)
+            .map_or_else(|| "unknown".to_string(), |ip| ip.to_string());
         let req = request.into_inner();
         let response = self
             .client_api
@@ -673,6 +686,13 @@ impl RoomService for ClientServiceImpl {
             .check_membership(&room_id, &user_id)
             .await
             .map_err(|e| Status::permission_denied(format!("Not a member of the room: {e}")))?;
+
+        let room = self
+            .room_service
+            .get_room(&room_id)
+            .await
+            .map_err(|e| internal_err("Failed to fetch room", e))?;
+        validate_realtime_room_access(&room)?;
 
         tracing::info!(
             user_id = %user_id.as_str(),
@@ -1477,7 +1497,10 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel::<ServerMessage>(1);
         let sender = GrpcMessageSender::new(tx);
 
-        assert!(sender.is_alive(), "open response channel must be reported alive");
+        assert!(
+            sender.is_alive(),
+            "open response channel must be reported alive"
+        );
         drop(rx);
         assert!(
             !sender.is_alive(),
@@ -1496,10 +1519,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(
-            outcome,
-            GrpcReceiveOutcome::ResponseStreamClosed
-        ));
+        assert!(matches!(outcome, GrpcReceiveOutcome::ResponseStreamClosed));
     }
 
     #[tokio::test]
@@ -1557,6 +1577,32 @@ mod tests {
         );
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert!(status.message().contains("capacity"));
+    }
+
+    #[test]
+    fn test_validate_realtime_room_access_rejects_banned_room() {
+        let mut room = Room::new("test-room".to_string(), UserId::new());
+        room.ban();
+
+        let status = validate_realtime_room_access(&room).expect_err("banned room must fail");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert!(status.message().contains("banned"));
+    }
+
+    #[test]
+    fn test_validate_realtime_room_access_rejects_closed_room() {
+        let mut room = Room::new("test-room".to_string(), UserId::new());
+        room.status = synctv_core::models::RoomStatus::Closed;
+
+        let status = validate_realtime_room_access(&room).expect_err("closed room must fail");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert!(status.message().contains("not accepting new connections"));
+    }
+
+    #[test]
+    fn test_validate_realtime_room_access_allows_active_room() {
+        let room = Room::new("test-room".to_string(), UserId::new());
+        assert!(validate_realtime_room_access(&room).is_ok());
     }
 
     #[test]

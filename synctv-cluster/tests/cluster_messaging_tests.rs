@@ -26,11 +26,7 @@ fn mid(s: &str) -> MediaId {
 }
 
 /// Helper to create a Redis container and connection manager.
-async fn setup_redis() -> (
-    RedisContainer,
-    redis::Client,
-    redis::aio::ConnectionManager,
-) {
+async fn setup_redis() -> (RedisContainer, redis::Client, redis::aio::ConnectionManager) {
     let (redis_container, redis_client) = start_redis_with_client().await;
     let conn = redis::aio::ConnectionManager::new(redis_client.clone())
         .await

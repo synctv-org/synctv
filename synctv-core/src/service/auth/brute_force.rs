@@ -509,9 +509,7 @@ impl AttemptTracker for RedisAttemptTracker {
             // Timeout
             if self.fail_closed {
                 self.log_fail_closed_rejection("get_attempts", "Redis timeout", key);
-                return Err(Self::fail_closed_backend_error(
-                    "please try again later",
-                ));
+                return Err(Self::fail_closed_backend_error("please try again later"));
             }
             self.mark_degraded();
             tracing::warn!(key = %key, "Redis timeout in brute-force check, using fallback");
@@ -535,9 +533,7 @@ impl AttemptTracker for RedisAttemptTracker {
                 // Redis error
                 if self.fail_closed {
                     self.log_fail_closed_rejection("get_attempts", &e.to_string(), key);
-                    return Err(Self::fail_closed_backend_error(
-                        "please try again later",
-                    ));
+                    return Err(Self::fail_closed_backend_error("please try again later"));
                 }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis error in brute-force check, using fallback");
@@ -595,9 +591,7 @@ impl AttemptTracker for RedisAttemptTracker {
                 if self.fail_closed {
                     self.log_fail_closed_rejection("record_failure", &e.to_string(), key);
                     // Still return error - caller should know tracking failed
-                    return Err(Self::fail_closed_backend_error(
-                        "please try again later",
-                    ));
+                    return Err(Self::fail_closed_backend_error("please try again later"));
                 }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis error in record_failure, using fallback");
@@ -623,9 +617,7 @@ impl AttemptTracker for RedisAttemptTracker {
             Ok(Err(e)) => {
                 if self.fail_closed {
                     self.log_fail_closed_rejection("reset", &e.to_string(), key);
-                    return Err(Self::fail_closed_backend_error(
-                        "reset failed",
-                    ));
+                    return Err(Self::fail_closed_backend_error("reset failed"));
                 }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis error in reset");
@@ -634,9 +626,7 @@ impl AttemptTracker for RedisAttemptTracker {
             Err(e) => {
                 if self.fail_closed {
                     self.log_fail_closed_rejection("reset", &e.to_string(), key);
-                    return Err(Self::fail_closed_backend_error(
-                        "reset timed out",
-                    ));
+                    return Err(Self::fail_closed_backend_error("reset timed out"));
                 }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis timeout in reset");

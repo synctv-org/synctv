@@ -98,12 +98,13 @@ impl AuditPartitionManager {
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
             .await
             .internal_with_err("Failed to acquire DDL connection for ensuring indexes")?;
-        let result_json =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT ensure_existing_partitions_indexes($1)")
-                .bind(partition_count)
-                .fetch_one(&mut *conn)
-                .await
-                .internal_with_err("Failed to ensure indexes")?;
+        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
+            "SELECT ensure_existing_partitions_indexes($1)",
+        )
+        .bind(partition_count)
+        .fetch_one(&mut *conn)
+        .await
+        .internal_with_err("Failed to ensure indexes")?;
 
         let result: IndexEnsureResult = serde_json::from_value(result_json)
             .internal_with_err("Failed to parse index result")?;

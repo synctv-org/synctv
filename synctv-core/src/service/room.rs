@@ -217,6 +217,25 @@ impl RoomService {
 
     #[must_use]
     pub fn new(pool: PgPool, user_service: UserService) -> Self {
+        let provider_instance_repo = Arc::new(crate::repository::ProviderInstanceRepository::new(
+            pool.clone(),
+        ));
+        let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(
+            provider_instance_repo,
+            None,
+            None,
+            "",
+        ));
+        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+        Self::new_with_providers(pool, user_service, providers_manager)
+    }
+
+    #[must_use]
+    pub fn new_with_providers(
+        pool: PgPool,
+        user_service: UserService,
+        providers_manager: Arc<ProvidersManager>,
+    ) -> Self {
         // Initialize repositories
         let room_repo = RoomRepository::new(pool.clone());
         let room_settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -224,9 +243,6 @@ impl RoomService {
         let media_repo = MediaRepository::new(pool.clone());
         let playlist_repo = PlaylistRepository::new(pool.clone());
         let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
-        let provider_instance_repo = Arc::new(crate::repository::ProviderInstanceRepository::new(
-            pool.clone(),
-        ));
         let chat_repo = ChatRepository::new(pool.clone());
 
         // Initialize permission service with caching
@@ -238,15 +254,6 @@ impl RoomService {
             PermissionService::DEFAULT_CACHE_TTL_SECS,
         );
         permission_service.set_room_settings_repo(room_settings_repo.clone());
-
-        // Initialize provider instance manager and providers manager
-        let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(
-            provider_instance_repo,
-            None,
-            None,
-            "",
-        ));
-        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
 
         // Initialize domain services
         let mut member_service = MemberService::new(
@@ -309,6 +316,16 @@ impl RoomService {
         self.brute_force_service = Some(service);
     }
 
+    /// Inject credential encryption into the inner media service so provider
+    /// source_config preparation and validation use the same encryption stack
+    /// as the repositories.
+    pub fn set_media_credential_encryption(
+        &mut self,
+        encryption: crate::service::CredentialEncryption,
+    ) {
+        self.media_service.set_credential_encryption(encryption);
+    }
+
     #[cfg(test)]
     pub(crate) fn has_brute_force_service(&self) -> bool {
         self.brute_force_service.is_some()
@@ -317,6 +334,11 @@ impl RoomService {
     #[cfg(test)]
     pub(crate) fn has_distributed_lock(&self) -> bool {
         self.distributed_lock.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_settings_registry(&self) -> bool {
+        self.settings_registry.is_some()
     }
 
     /// Inject the settings registry for reading `create_room_need_review` and other global settings.
@@ -2637,6 +2659,14 @@ impl RoomService {
         admin_user_id: &UserId,
     ) -> Result<()> {
         tracing::info!(room_id = %room_id, admin_user_id = %admin_user_id, "Admin deleting orphaned room");
+
+        // Verify caller has admin/root role (defense-in-depth)
+        let admin_user = self.user_service.get_user(admin_user_id).await?;
+        if !admin_user.role.is_admin_or_above() {
+            return Err(Error::Authorization(
+                "Admin role required for this operation".to_string(),
+            ));
+        }
 
         // First, verify the room exists and check if it's orphaned
         let room = self

@@ -217,10 +217,8 @@ fn remaining_budget(deadline: tokio::time::Instant) -> Duration {
     deadline.saturating_duration_since(tokio::time::Instant::now())
 }
 
-async fn shutdown_livestream_state<T>(
-    livestream_state: &mut Option<T>,
-    timeout_secs: u64,
-) where
+async fn shutdown_livestream_state<T>(livestream_state: &mut Option<T>, timeout_secs: u64)
+where
     T: LivestreamShutdown + Send,
 {
     if let Some(state) = livestream_state.as_mut() {
@@ -288,6 +286,71 @@ async fn cleanup_partial_startup(
     if let Some(handle) = grpc_handle {
         await_runtime_server_shutdown("gRPC server", handle, STARTUP_CLEANUP_TIMEOUT).await;
     }
+}
+
+async fn spawn_admin_event_listener(
+    cluster_mgr: Arc<synctv_cluster::sync::ClusterManager>,
+    infra: Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+    cancel: tokio_util::sync::CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut admin_rx = cluster_mgr.subscribe_admin_events();
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    info!("Admin event listener cancelled");
+                    break;
+                }
+                recv = admin_rx.recv() => {
+                    match recv {
+                        Ok(event) => match &event {
+                            ClusterEvent::KickPublisher {
+                                room_id,
+                                media_id,
+                                reason,
+                                ..
+                            } => {
+                                info!(
+                                    room_id = %room_id.as_str(),
+                                    media_id = %media_id.as_str(),
+                                    reason = %reason,
+                                    "Received cluster-wide stream kick"
+                                );
+                                if let Err(e) =
+                                    infra.kick_publisher(room_id.as_str(), media_id.as_str())
+                                {
+                                    warn!(
+                                        room_id = %room_id.as_str(),
+                                        media_id = %media_id.as_str(),
+                                        error = %e,
+                                        "Failed to kick publisher from StreamHub"
+                                    );
+                                }
+                            }
+                            ClusterEvent::KickUser {
+                                user_id, reason, ..
+                            } => {
+                                info!(
+                                    user_id = %user_id.as_str(),
+                                    reason = %reason,
+                                    "Received cluster-wide user kick"
+                                );
+                                infra.kick_user_publishers(user_id.as_str()).await;
+                            }
+                            _ => {}
+                        },
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("Admin event listener lagged by {} events", n);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            info!("Admin event channel closed, stopping listener");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    })
 }
 
 impl SyncTvServer {
@@ -363,61 +426,17 @@ impl SyncTvServer {
         self.http_handle = Some(http_handle);
 
         // Spawn streaming event listener for cluster-wide kicks
+        let admin_event_cancel = tokio_util::sync::CancellationToken::new();
         let admin_event_handle: Option<JoinHandle<()>> = if let (Some(cluster_mgr), Some(infra)) = (
             &self.services.cluster_manager,
             &self.services.live_streaming_infrastructure,
         ) {
-            let mut admin_rx = cluster_mgr.subscribe_admin_events();
-            let infra = infra.clone();
-            let handle = tokio::spawn(async move {
-                loop {
-                    match admin_rx.recv().await {
-                        Ok(event) => match &event {
-                            ClusterEvent::KickPublisher {
-                                room_id,
-                                media_id,
-                                reason,
-                                ..
-                            } => {
-                                info!(
-                                    room_id = %room_id.as_str(),
-                                    media_id = %media_id.as_str(),
-                                    reason = %reason,
-                                    "Received cluster-wide stream kick"
-                                );
-                                if let Err(e) =
-                                    infra.kick_publisher(room_id.as_str(), media_id.as_str())
-                                {
-                                    warn!(
-                                        room_id = %room_id.as_str(),
-                                        media_id = %media_id.as_str(),
-                                        error = %e,
-                                        "Failed to kick publisher from StreamHub"
-                                    );
-                                }
-                            }
-                            ClusterEvent::KickUser {
-                                user_id, reason, ..
-                            } => {
-                                info!(
-                                    user_id = %user_id.as_str(),
-                                    reason = %reason,
-                                    "Received cluster-wide user kick"
-                                );
-                                infra.kick_user_publishers(user_id.as_str()).await;
-                            }
-                            _ => {}
-                        },
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            warn!("Admin event listener lagged by {} events", n);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            info!("Admin event channel closed, stopping listener");
-                            break;
-                        }
-                    }
-                }
-            });
+            let handle = spawn_admin_event_listener(
+                Arc::clone(cluster_mgr),
+                Arc::clone(infra),
+                admin_event_cancel.clone(),
+            )
+            .await;
             info!("Admin event listener spawned for cluster-wide stream kicks");
             Some(handle)
         } else {
@@ -544,12 +563,19 @@ impl SyncTvServer {
 
         // Wait for admin event listener
         if let Some(handle) = admin_event_handle {
+            admin_event_cancel.cancel();
             info!("Waiting for admin event listener to stop...");
-            await_task_shutdown("admin event listener", handle, Duration::from_secs(5)).await;
+            await_task_shutdown(
+                "admin event listener",
+                handle,
+                total_drain_budget.saturating_sub(shutdown_start.elapsed()),
+            )
+            .await;
         }
 
         // Shut down remaining infrastructure components
-        self.shutdown_components().await;
+        self.shutdown_components(total_drain_budget.saturating_sub(shutdown_start.elapsed()))
+            .await;
 
         // Centralized shutdown: cancel tokens -> drain tasks -> run hooks
         coordinator.shutdown().await;
@@ -570,7 +596,9 @@ impl SyncTvServer {
     ///
     /// This is separate from the `ShutdownCoordinator` because these components
     /// have custom shutdown protocols (not just cancellation tokens or join handles).
-    async fn shutdown_components(&mut self) {
+    async fn shutdown_components(&mut self, remaining_budget: Duration) {
+        let _deadline = tokio::time::Instant::now() + remaining_budget;
+
         // Shut down connection manager (stops TTL refresh background task)
         info!("Shutting down connection manager...");
         self.services.connection_manager.shutdown();
@@ -700,6 +728,9 @@ impl SyncTvServer {
             &self.config.redis.key_prefix,
             is_cluster_mode,
         )?;
+        let proxy_slice_cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+            synctv_proxy::slice_cache::SliceCacheConfig::default(),
+        ));
 
         let (http_router, http_state) = synctv_api::http::create_router_with_state_from_config(
             synctv_api::http::RouterConfig {
@@ -733,6 +764,7 @@ impl SyncTvServer {
                 }),
                 turn_health_checker: self.services.turn_health_checker.clone(),
                 credential_encryption: self.services.credential_encryption.clone(),
+                proxy_slice_cache: proxy_slice_cache.clone(),
                 messaging_rate_limit_config: synctv_core::service::RateLimitConfig {
                     chat_per_second: self.config.messaging_rate_limits.chat_per_second,
                     danmaku_per_second: self.config.messaging_rate_limits.danmaku_per_second,
@@ -742,8 +774,6 @@ impl SyncTvServer {
                 providers_manager: Some(self.services.providers_manager.clone()),
             },
         );
-        let proxy_slice_cache = http_state.proxy_slice_cache.clone();
-
         // Parse and bind HTTP address before spawning the task to propagate errors properly
         let http_addr: std::net::SocketAddr = http_address
             .parse()
@@ -758,7 +788,7 @@ impl SyncTvServer {
         let handle = tokio::spawn(async move {
             let mut rx = shutdown_rx;
             let proxy_cache_lifecycle =
-                synctv_api::http::start_proxy_cache_lifecycle(proxy_slice_cache);
+                synctv_api::http::start_proxy_cache_lifecycle(http_state.proxy_slice_cache.clone());
             let graceful = async move {
                 let _ = rx.changed().await;
             };
@@ -870,7 +900,8 @@ mod tests {
     use super::{
         await_runtime_server_shutdown, await_task_shutdown, build_ws_ticket_service,
         cleanup_partial_startup, map_background_task_exit, map_runtime_server_exit,
-        shutdown_livestream_state, shutdown_runtime_phase, LivestreamShutdown,
+        shutdown_livestream_state, shutdown_runtime_phase, spawn_admin_event_listener,
+        LivestreamShutdown,
     };
     use async_trait::async_trait;
     use std::sync::{
@@ -1167,6 +1198,65 @@ mod tests {
             17,
             "server shutdown must pass through the configured drain timeout"
         );
+    }
+
+    #[tokio::test]
+    async fn test_admin_event_listener_stops_on_cancel() {
+        use synctv_cluster::sync::{ClusterConfig, ClusterManager};
+        use synctv_livestream::api::StreamTracker;
+        use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+        use synctv_livestream::relay::InMemoryStreamRegistry;
+        use tokio::sync::mpsc;
+
+        let cluster_manager = ClusterManager::new(
+            ClusterConfig {
+                redis_client: None,
+                redis_conn: None,
+                cluster_enabled: false,
+                node_id: "test-node".to_string(),
+                dedup_window: Duration::from_secs(60),
+                cleanup_interval: Duration::from_secs(30),
+                critical_channel_capacity: 8,
+                publish_channel_capacity: 8,
+                key_prefix: "test:".to_string(),
+                catchup_window_secs: 60,
+                stream_max_length: 100,
+                shared_redis_conn: None,
+                parent_cancel_token: None,
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("cluster manager should be created");
+
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let (event_sender, _event_receiver) = mpsc::channel(8);
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                "test-node".to_string(),
+                event_sender.clone(),
+            )
+            .expect("failed to create ExternalPublishManager"),
+        );
+        let infra = Arc::new(synctv_livestream::api::LiveStreamingInfrastructure::new(
+            registry,
+            event_sender,
+            pull_manager,
+            external_publish_manager,
+            Arc::new(StreamTracker::new()),
+        ));
+        let cancel = CancellationToken::new();
+        let handle =
+            spawn_admin_event_listener(Arc::new(cluster_manager), infra, cancel.clone()).await;
+
+        cancel.cancel();
+        await_task_shutdown("admin event listener", handle, Duration::from_secs(1)).await;
     }
 
     #[tokio::test]

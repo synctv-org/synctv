@@ -244,6 +244,7 @@ pub trait TStreamHandler: Send + Sync {
 }
 
 //A publisher can publish one or two kinds of av stream at a time.
+#[derive(Debug)]
 pub struct DataReceiver {
     pub frame_receiver: Option<FrameDataReceiver>,
     pub packet_receiver: Option<PacketDataReceiver>,
@@ -292,6 +293,36 @@ pub enum StreamHubEvent {
     UnPublish {
         identifier: StreamIdentifier,
     },
+}
+
+impl fmt::Debug for StreamHubEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Subscribe {
+                identifier, info, ..
+            } => f
+                .debug_struct("StreamHubEvent::Subscribe")
+                .field("identifier", identifier)
+                .field("info", info)
+                .finish(),
+            Self::UnSubscribe { identifier, info } => f
+                .debug_struct("StreamHubEvent::UnSubscribe")
+                .field("identifier", identifier)
+                .field("info", info)
+                .finish(),
+            Self::Publish {
+                identifier, info, ..
+            } => f
+                .debug_struct("StreamHubEvent::Publish")
+                .field("identifier", identifier)
+                .field("info", info)
+                .finish(),
+            Self::UnPublish { identifier } => f
+                .debug_struct("StreamHubEvent::UnPublish")
+                .field("identifier", identifier)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug)]

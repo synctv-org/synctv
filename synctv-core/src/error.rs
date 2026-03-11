@@ -44,6 +44,9 @@ pub enum Error {
     #[error("Optimistic lock conflict")]
     OptimisticLockConflict,
 
+    #[error("Distributed lock conflict: {0}")]
+    LockConflict(String),
+
     #[error("Operation timeout: {0}")]
     Timeout(String),
 }
@@ -181,6 +184,7 @@ impl From<Error> for tonic::Status {
             Error::RateLimited(msg) => Self::resource_exhausted(msg),
             Error::ServiceUnavailable(msg) => Self::unavailable(msg),
             Error::OptimisticLockConflict => Self::aborted("Resource modified concurrently"),
+            Error::LockConflict(msg) => Self::aborted(msg),
             other => {
                 tracing::error!("Internal error: {other}");
                 Self::internal("Internal error")

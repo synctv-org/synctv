@@ -300,34 +300,125 @@ mod turn_credentials {
 
 mod permissions {
     use super::*;
+    use std::sync::Arc;
 
-    #[test]
-    fn test_use_webrtc_permission_bit_exists() {
-        // Verify USE_WEBRTC permission bit is defined
-        let webrtc_bit = PermissionBits::USE_WEBRTC;
-        assert_ne!(
-            webrtc_bit, 0,
-            "USE_WEBRTC permission bit should be non-zero"
+    use synctv_api::impls::{ApiError, ClientApiImpl};
+    use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+    use synctv_core::cache::{l2_backend::RedisCacheL2, KeyBuilder, UsernameCache};
+    use synctv_core::config::PasswordComplexityConfig;
+    use synctv_core::service::auth::jwt::JwtService;
+    use synctv_core::service::{
+        BruteForceProtection, InMemoryTokenBlacklistStore, RoomService, UserService,
+    };
+    use synctv_core_testing::{create_test_pool_with_db_and_label, start_redis_url_with_label};
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_ice_servers_denies_member_without_use_webrtc_permission() {
+        let (_postgres, pool) =
+            create_test_pool_with_db_and_label("synctv_test", "api-webrtc-permissions").await;
+        let (_redis, redis_url) = start_redis_url_with_label("api-webrtc-permissions").await;
+
+        let redis_client = redis::Client::open(redis_url.as_str()).expect("Redis client");
+        let redis_conn = Arc::new(tokio::sync::RwLock::new(
+            redis::aio::ConnectionManager::new(redis_client.clone())
+                .await
+                .expect("Redis connection manager"),
+        ));
+        let username_cache = UsernameCache::new(
+            Arc::new(RedisCacheL2::new_shared(redis_conn.clone())),
+            "test_un:".to_string(),
+            100,
+            300,
         );
-    }
+        let brute_force = BruteForceProtection::with_redis(redis_conn.clone(), "test:".to_string());
+        let jwt_service =
+            JwtService::new("this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars")
+                .expect("JwtService");
+        let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
+            Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
 
-    #[test]
-    fn test_permission_bit_values_are_powers_of_two() {
-        // Verify WebRTC permission follows the bitmask pattern
-        let webrtc = PermissionBits::USE_WEBRTC;
-
-        // A power of 2 has exactly one bit set: (x & (x-1)) == 0 for x > 0
-        assert!(
-            webrtc > 0 && webrtc.is_power_of_two(),
-            "USE_WEBRTC should be a power of 2"
+        let user_service = Arc::new(UserService::new(
+            pool.clone(),
+            jwt_service.clone(),
+            username_cache,
+            PasswordComplexityConfig::default(),
+            token_blacklist,
+            KeyBuilder::new("test:".to_string()),
+            brute_force,
+        ));
+        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let client_api = ClientApiImpl::new(
+            user_service.clone(),
+            room_service.clone(),
+            Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+            Arc::new(test_webrtc_config()),
+            None,
+            jwt_service,
+            None,
+            None,
+            None,
         );
-    }
 
-    #[test]
-    fn test_permission_bits_creation() {
-        // Test creating PermissionBits from raw values
-        let perms = PermissionBits(PermissionBits::USE_WEBRTC | PermissionBits::SEND_CHAT);
-        assert_ne!(perms.0, 0, "Combined permissions should be non-zero");
+        let (creator, _, _) = user_service
+            .register(
+                "webrtc_creator".to_string(),
+                Some("webrtc_creator@test.com".to_string()),
+                "TestPassword123!".to_string(),
+                None,
+            )
+            .await
+            .expect("register creator");
+        let (member, _, _) = user_service
+            .register(
+                "webrtc_member".to_string(),
+                Some("webrtc_member@test.com".to_string()),
+                "TestPassword123!".to_string(),
+                None,
+            )
+            .await
+            .expect("register member");
+
+        let (room, _) = room_service
+            .create_room(
+                "WebRTC Permission Room".to_string(),
+                String::new(),
+                creator.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("create room");
+        room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("join room");
+
+        room_service
+            .member_service()
+            .revoke_permission(
+                room.id.clone(),
+                creator.id.clone(),
+                member.id.clone(),
+                PermissionBits::USE_WEBRTC,
+            )
+            .await
+            .expect("revoke USE_WEBRTC");
+
+        let err = client_api
+            .get_ice_servers(&room.id, &member.id)
+            .await
+            .expect_err("members without USE_WEBRTC must be denied");
+
+        match err {
+            ApiError::Authorization(message) => {
+                assert!(
+                    message.contains("Forbidden"),
+                    "expected permission failure to map to authorization error: {message}"
+                );
+            }
+            other => panic!("expected authorization error, got {other:?}"),
+        }
     }
 }
 

@@ -284,6 +284,30 @@ impl ShutdownHook for SettingsListenHook {
     }
 }
 
+/// Stops the provider invalidation Pub/Sub listener before process exit.
+pub struct ProviderInvalidationHook {
+    pub cancel: CancellationToken,
+    pub task: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl ShutdownHook for ProviderInvalidationHook {
+    fn name(&self) -> &'static str {
+        "provider_invalidation_listener"
+    }
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(15)
+    }
+    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            self.cancel.cancel();
+            let mut guard = self.task.lock().await;
+            if let Some(task) = guard.take() {
+                let _ = task.await;
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

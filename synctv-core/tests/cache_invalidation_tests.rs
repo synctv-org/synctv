@@ -431,6 +431,107 @@ async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcast
     }
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cache_invalidation_restart_preserves_pending_messages_for_same_node() {
+    let (_container, redis_url) = start_redis().await;
+    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_stream_key();
+    let node_id = "restart-node";
+    let consumer_group = format!("cache-invalidation-{node_id}");
+
+    let mut setup_conn = redis::aio::ConnectionManager::new(redis_client.clone())
+        .await
+        .expect("Failed to create Redis connection manager");
+
+    let _: String = redis::cmd("XADD")
+        .arg(&stream_key)
+        .arg("*")
+        .arg("origin")
+        .arg("other-node")
+        .arg("payload")
+        .arg(
+            serde_json::to_string(&InvalidationMessage::All)
+                .expect("Failed to serialize invalidation"),
+        )
+        .query_async(&mut setup_conn)
+        .await
+        .expect("Failed to seed stream");
+
+    let _: () = redis::cmd("XGROUP")
+        .arg("CREATE")
+        .arg(&stream_key)
+        .arg(&consumer_group)
+        .arg("0")
+        .query_async(&mut setup_conn)
+        .await
+        .expect("Failed to create consumer group");
+
+    let pending_reply: redis::streams::StreamReadReply = redis::cmd("XREADGROUP")
+        .arg("GROUP")
+        .arg(&consumer_group)
+        .arg(node_id)
+        .arg("COUNT")
+        .arg(10)
+        .arg("STREAMS")
+        .arg(&stream_key)
+        .arg(">")
+        .query_async(&mut setup_conn)
+        .await
+        .expect("Failed to create pending delivery");
+    assert_eq!(pending_reply.keys.len(), 1, "expected seeded stream entry");
+    assert_eq!(
+        pending_reply.keys[0].ids.len(),
+        1,
+        "expected one pending entry"
+    );
+
+    let service = CacheInvalidationService::new(
+        Some(redis_client.clone()),
+        node_id.to_string(),
+        stream_key.clone(),
+    );
+    service
+        .start()
+        .await
+        .expect("Failed to start restarted service");
+
+    let mut receiver = service.subscribe();
+    let received = tokio::time::timeout(tokio::time::Duration::from_secs(5), receiver.recv())
+        .await
+        .expect("Timed out waiting for pending invalidation")
+        .expect("Failed to receive pending invalidation");
+    assert_eq!(received, InvalidationMessage::All);
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    let pending: Vec<redis::Value> = redis::cmd("XPENDING")
+        .arg(&stream_key)
+        .arg(&consumer_group)
+        .query_async(&mut setup_conn)
+        .await
+        .expect("Failed to inspect pending state");
+    let summary = format!("{pending:?}");
+    assert!(
+        summary.contains("int(0)"),
+        "pending entry should be acknowledged after restart, got: {summary}"
+    );
+
+    let groups: Vec<Vec<redis::Value>> = redis::cmd("XINFO")
+        .arg("GROUPS")
+        .arg(&stream_key)
+        .query_async(&mut setup_conn)
+        .await
+        .expect("Failed to inspect consumer groups");
+    let groups_summary = format!("{groups:?}");
+    assert!(
+        groups_summary.contains(&consumer_group),
+        "restart must not destroy the existing consumer group: {groups_summary}"
+    );
+
+    service.stop().await;
+}
+
 // ============================================================================
 // Cache Invalidation Timing Tests
 // ============================================================================

@@ -56,8 +56,7 @@ fn test_rate_limited_maps_to_tonic_resource_exhausted() {
 
 #[test]
 fn test_service_unavailable_maps_to_tonic_unavailable() {
-    let status: tonic::Status =
-        Error::ServiceUnavailable("redis unavailable".to_string()).into();
+    let status: tonic::Status = Error::ServiceUnavailable("redis unavailable".to_string()).into();
     assert_eq!(status.code(), tonic::Code::Unavailable);
     assert!(status.message().contains("redis unavailable"));
 }

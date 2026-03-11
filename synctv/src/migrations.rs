@@ -46,9 +46,14 @@ async fn run_migrations_with_mode(
     key_prefix: &str,
     cluster_mode: bool,
 ) -> Result<()> {
-    run_migrations_with_runner(pool, lock, key_prefix, cluster_mode, &|pool| {
-        Box::pin(run_migrate(pool))
-    })
+    run_migrations_with_runner(
+        pool,
+        lock,
+        key_prefix,
+        cluster_mode,
+        !cluster_mode,
+        &|pool| Box::pin(run_migrate(pool)),
+    )
     .await
 }
 
@@ -60,11 +65,20 @@ async fn run_migrations_with_runner(
     lock: std::sync::Arc<dyn MigrationLock>,
     key_prefix: &str,
     cluster_mode: bool,
+    allow_pg_fallback: bool,
     migrate: &(dyn for<'a> Fn(&'a PgPool) -> MigrateFuture<'a> + Send + Sync),
 ) -> Result<()> {
     info!("Running database migrations...");
 
-    run_migrations_with_lock(pool, lock, key_prefix, cluster_mode, migrate).await?;
+    run_migrations_with_lock(
+        pool,
+        lock,
+        key_prefix,
+        cluster_mode,
+        allow_pg_fallback,
+        migrate,
+    )
+    .await?;
 
     info!("Migrations completed");
     Ok(())
@@ -110,7 +124,9 @@ async fn migrations_already_applied(pool: &PgPool) -> bool {
             .migrations
             .iter()
             .map(|migration| (migration.version, migration.checksum.as_ref())),
-        applied.into_iter().map(|(version, checksum)| (version, checksum)),
+        applied
+            .into_iter()
+            .map(|(version, checksum)| (version, checksum)),
     )
 }
 
@@ -119,13 +135,21 @@ where
     M: IntoIterator<Item = (i64, &'a [u8])>,
     A: IntoIterator<Item = (i64, Vec<u8>)>,
 {
+    let expected_versions: std::collections::HashMap<i64, &'a [u8]> =
+        migrations.into_iter().collect();
     let applied_versions: std::collections::HashMap<i64, Vec<u8>> = applied.into_iter().collect();
 
-    migrations.into_iter().all(|(version, expected_checksum)| {
-        applied_versions
-            .get(&version)
-            .is_some_and(|actual_checksum| actual_checksum.as_slice() == expected_checksum)
-    })
+    if expected_versions.len() != applied_versions.len() {
+        return false;
+    }
+
+    expected_versions
+        .into_iter()
+        .all(|(version, expected_checksum)| {
+            applied_versions
+                .get(&version)
+                .is_some_and(|actual_checksum| actual_checksum.as_slice() == expected_checksum)
+        })
 }
 
 /// Run migrations under a distributed lock so that only one replica in a
@@ -135,6 +159,7 @@ async fn run_migrations_with_lock(
     lock: std::sync::Arc<dyn MigrationLock>,
     key_prefix: &str,
     cluster_mode: bool,
+    allow_pg_fallback: bool,
     migrate: &(dyn for<'a> Fn(&'a PgPool) -> MigrateFuture<'a> + Send + Sync),
 ) -> Result<()> {
     let migration_lock_key = format!("{key_prefix}migration");
@@ -159,6 +184,11 @@ async fn run_migrations_with_lock(
             if cluster_mode {
                 return Err(anyhow::anyhow!(
                     "cluster.enabled=true requires Redis migration locking; refusing PostgreSQL advisory lock fallback after Redis lock failure: {e}"
+                ));
+            }
+            if !allow_pg_fallback {
+                return Err(anyhow::anyhow!(
+                    "Migration lock acquisition failed without Redis fallback enabled: {e}"
                 ));
             }
             warn!(
@@ -583,6 +613,39 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn standalone_pg_lock_path_does_not_attempt_nested_pg_fallback() {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
+            .expect("connect_lazy should succeed");
+        let lock = FailingMigrationLock {
+            acquire_called: Arc::new(AtomicBool::new(false)),
+        };
+
+        let err = run_migrations_with_runner(
+            &pool,
+            Arc::new(lock.clone()),
+            "test:",
+            false,
+            false,
+            &|_pool: &PgPool| Box::pin(async { Ok(()) }),
+        )
+        .await
+        .expect_err("standalone PG advisory path must fail directly without nested fallback");
+
+        assert!(lock.acquire_called.load(Ordering::SeqCst));
+        assert!(
+            err.to_string().contains("without Redis fallback enabled"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !err.to_string()
+                .contains("Falling back to PostgreSQL advisory lock"),
+            "PG advisory lock path should not recursively fall back to itself: {err}"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn acquired_migration_lock_is_extended_while_migrations_run() {
         let pool = PgPoolOptions::new()
@@ -598,12 +661,19 @@ mod tests {
         tokio::pin!(extend_notified);
 
         let task = tokio::spawn(async move {
-            run_migrations_with_runner(&pool, lock_for_runner, "test:", false, &|_pool: &PgPool| {
-                Box::pin(async {
-                    tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 1)).await;
-                    Ok(())
-                })
-            })
+            run_migrations_with_runner(
+                &pool,
+                lock_for_runner,
+                "test:",
+                false,
+                true,
+                &|_pool: &PgPool| {
+                    Box::pin(async {
+                        tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 1)).await;
+                        Ok(())
+                    })
+                },
+            )
             .await
         });
 
@@ -640,12 +710,19 @@ mod tests {
         tokio::pin!(extend_notified);
 
         let task = tokio::spawn(async move {
-            run_migrations_with_runner(&pool, lock_for_runner, "test:", false, &|_pool: &PgPool| {
-                Box::pin(async {
-                    tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 1)).await;
-                    Ok(())
-                })
-            })
+            run_migrations_with_runner(
+                &pool,
+                lock_for_runner,
+                "test:",
+                false,
+                true,
+                &|_pool: &PgPool| {
+                    Box::pin(async {
+                        tokio::time::sleep(Duration::from_secs(MIGRATION_LOCK_TTL / 3 + 1)).await;
+                        Ok(())
+                    })
+                },
+            )
             .await
         });
 
@@ -706,14 +783,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn migration_match_rejects_extra_applied_versions() {
+        let expected = vec![(1_i64, b"checksum-a".as_slice())];
+        let applied = vec![
+            (1_i64, b"checksum-a".to_vec()),
+            (2_i64, b"checksum-b".to_vec()),
+        ];
+
+        assert!(
+            !migrations_match_applied_set(expected, applied),
+            "extra applied versions must not be treated as the exact embedded migration state"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn migrations_disable_statement_timeout_on_migration_connection() {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
-        let mut conn = pool
-            .acquire()
-            .await
-            .expect("should acquire connection");
+        let mut conn = pool.acquire().await.expect("should acquire connection");
 
         sqlx::query("SET statement_timeout = 1")
             .execute(&mut *conn)

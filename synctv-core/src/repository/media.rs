@@ -1115,7 +1115,10 @@ mod tests {
 
         match err {
             crate::Error::InvalidInput(message) => {
-                assert!(message.contains("1000 row limit"), "unexpected message: {message}");
+                assert!(
+                    message.contains("1000 row limit"),
+                    "unexpected message: {message}"
+                );
                 assert!(
                     message.contains("10010 bind parameters"),
                     "unexpected message: {message}"

@@ -3781,6 +3781,9 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
         .create(&make_user("admin_orphan_1"))
         .await
         .unwrap();
+    let mut admin = admin;
+    admin.role = UserRole::Admin;
+    let admin = user_repo.update(&admin, 0).await.unwrap();
 
     // Soft-delete the creator (simulating user deletion)
     user_service.delete_user(&creator.id).await.unwrap();
@@ -3803,6 +3806,53 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
     assert!(
         fetched.is_none(),
         "Orphaned room should be soft-deleted by admin"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_delete_orphaned_room_requires_admin_role() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let user_service = make_user_service(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("orphan_creator_non_admin"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Orphaned Room Non Admin".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let regular_user = user_repo
+        .create(&make_user("regular_orphan_delete"))
+        .await
+        .unwrap();
+
+    user_service.delete_user(&creator.id).await.unwrap();
+
+    let result = room_service
+        .admin_delete_orphaned_room(&room.id, &regular_user.id)
+        .await;
+
+    assert!(
+        matches!(result, Err(Error::Authorization(_))),
+        "Non-admin user must not be able to delete orphaned rooms"
+    );
+
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(
+        fetched.is_some(),
+        "Room should still exist after failed deletion"
     );
 }
 
@@ -3834,6 +3884,9 @@ async fn test_admin_delete_orphaned_room_creator_banned() {
 
     // Create an admin user
     let admin = user_repo.create(&make_user("admin_banned")).await.unwrap();
+    let mut admin = admin;
+    admin.role = UserRole::Admin;
+    let admin = user_repo.update(&admin, 0).await.unwrap();
 
     // Ban the creator by setting status to Banned (3)
     sqlx::query("UPDATE users SET status = 3 WHERE id = $1")
@@ -3900,6 +3953,53 @@ async fn test_admin_delete_orphaned_room_rejects_active_creator() {
     assert!(
         fetched.is_some(),
         "Room should still exist when creator is active"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_delete_orphaned_room_rejects_non_admin() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let user_service = make_user_service(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("orphan_creator_non_admin"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Orphaned Room Non Admin".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let regular_user = user_repo
+        .create(&make_user("regular_non_admin"))
+        .await
+        .unwrap();
+
+    user_service.delete_user(&creator.id).await.unwrap();
+
+    let result = room_service
+        .admin_delete_orphaned_room(&room.id, &regular_user.id)
+        .await;
+
+    assert!(
+        matches!(result, Err(Error::Authorization(_))),
+        "non-admin users must not be allowed to delete orphaned rooms"
+    );
+
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(
+        fetched.is_some(),
+        "room must remain untouched when orphaned delete is attempted by a non-admin"
     );
 }
 

@@ -3,9 +3,9 @@
 //! Provides `TestInfra` which automatically starts Postgres and Redis containers,
 //! runs migrations, and provides ready-to-use connections.
 
-use std::process::Command;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use sqlx::postgres::PgPoolOptions;

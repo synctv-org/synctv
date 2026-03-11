@@ -88,10 +88,7 @@ async fn test_fail_closed_denies_requests_without_redis() {
         .check_rate_limit_distributed("auth:user:123", 10, 1)
         .await;
     assert!(
-        matches!(
-            result,
-            Err(RateLimitError::BackendUnavailable(_))
-        ),
+        matches!(result, Err(RateLimitError::BackendUnavailable(_))),
         "check_rate_limit_distributed should fail closed without Redis"
     );
 }

@@ -115,6 +115,14 @@ pub trait TokenBlacklistStore: Send + Sync {
     /// Returns `Some(revoked_at_timestamp)` if the family was revoked.
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64>;
 
+    /// Get the family revocation timestamp for a key, propagating storage errors.
+    ///
+    /// Authentication-sensitive code must use this variant so storage failures
+    /// fail closed instead of silently treating the family as valid.
+    async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
+        Ok(self.get_family_revoked_at(key).await)
+    }
+
     /// Set the family revocation timestamp for a key with TTL.
     ///
     /// This is a security-critical write. Callers must be able to fail closed
@@ -177,6 +185,18 @@ impl InMemoryTokenBlacklistStore {
             blacklist_locks: Arc::new(dashmap::DashMap::new()),
         }
     }
+
+    fn cleanup_blacklist_lock(&self, key: &str, mutex: &Arc<tokio::sync::Mutex<()>>) {
+        if Arc::strong_count(mutex) != 2 {
+            return;
+        }
+        let Ok(_cleanup_guard) = mutex.try_lock() else {
+            return;
+        };
+        let _ = self
+            .blacklist_locks
+            .remove_if(key, |_, stored_mutex| Arc::ptr_eq(stored_mutex, mutex));
+    }
 }
 
 #[async_trait]
@@ -214,24 +234,25 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
             .value()
             .clone();
 
-        // Hold the lock while checking and inserting
-        let _guard = mutex.lock().await;
+        let already_blacklisted = {
+            let _guard = mutex.lock().await;
 
-        // Double-check pattern: check if already blacklisted
-        if self.is_blacklisted(key).await {
-            // Clean up the mutex entry to prevent unbounded growth
-            self.blacklist_locks.remove(key);
-            return Ok(true); // Already existed = replay detected
-        }
+            // Double-check pattern: check if already blacklisted
+            if self.is_blacklisted(key).await {
+                true
+            } else {
+                // Not blacklisted, so insert atomically
+                let expiry = Instant::now() + Duration::from_secs(ttl_secs);
+                self.jti_blacklist.insert(key.to_string(), expiry).await;
+                false
+            }
+        };
 
-        // Not blacklisted, so insert atomically
-        let expiry = Instant::now() + Duration::from_secs(ttl_secs);
-        self.jti_blacklist.insert(key.to_string(), expiry).await;
+        // Clean up only after releasing the mutex, and only when no other task
+        // still holds or waits on the same per-key mutex.
+        self.cleanup_blacklist_lock(key, &mutex);
 
-        // Clean up the mutex entry
-        self.blacklist_locks.remove(key);
-
-        Ok(false) // Newly inserted = first use
+        Ok(already_blacklisted)
     }
 
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
@@ -281,17 +302,6 @@ impl PgTokenBlacklistStore {
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
         &self.pool
-    }
-
-    fn family_timestamp_key(key: &str) -> String {
-        format!("_ts:{key}")
-    }
-
-    fn family_timestamp_expiry(timestamp: i64, ttl_secs: u64) -> chrono::DateTime<chrono::Utc> {
-        let base_timestamp = timestamp.max(0);
-        let ttl = ttl_secs.min(i64::MAX as u64) as i64;
-        chrono::DateTime::from_timestamp(base_timestamp.saturating_add(ttl), 0)
-            .unwrap_or_else(chrono::Utc::now)
     }
 
     /// Clean up expired token blacklist entries.
@@ -404,40 +414,45 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
-        let row: Option<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(
-            "SELECT expires_at FROM token_blacklist WHERE jti = $1 AND expires_at > NOW()",
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT revoked_at
+             FROM token_blacklist
+             WHERE jti = $1
+               AND expires_at > NOW()
+               AND revoked_at IS NOT NULL",
         )
         .bind(key)
         .fetch_optional(&self.pool)
         .await
         .ok()?;
+        row.map(|(revoked_at,)| revoked_at)
+    }
 
-        let ts_key = Self::family_timestamp_key(key);
-        let ts_row: Option<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(
-            "SELECT expires_at FROM token_blacklist WHERE jti = $1 AND expires_at > NOW()",
+    async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT revoked_at
+             FROM token_blacklist
+             WHERE jti = $1
+               AND expires_at > NOW()
+               AND revoked_at IS NOT NULL",
         )
-        .bind(&ts_key)
+        .bind(key)
         .fetch_optional(&self.pool)
         .await
-        .ok()?;
+        .map_err(|e| {
+            tracing::error!(
+                key = %key,
+                error = %e,
+                "Failed to read refresh token family revocation timestamp in PostgreSQL (fail-closed)"
+            );
+            crate::Error::Internal("Failed to validate refresh token family".to_string())
+        })?;
 
-        if let (Some((marker_expires_at,)), Some((timestamp_expires_at,))) = (row, ts_row) {
-            let ttl_remaining =
-                (marker_expires_at.timestamp() - chrono::Utc::now().timestamp()).max(0);
-            Some(
-                timestamp_expires_at
-                    .timestamp()
-                    .saturating_sub(ttl_remaining),
-            )
-        } else {
-            None
-        }
+        Ok(row.map(|(revoked_at,)| revoked_at))
     }
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
-        let ts_key = Self::family_timestamp_key(key);
-        let revoked_at = Self::family_timestamp_expiry(timestamp, ttl_secs);
         let mut tx = self.pool.begin().await.map_err(|e| {
             tracing::error!(
                 key = %key,
@@ -449,11 +464,14 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
 
         // Store the family revocation marker
         sqlx::query(
-            "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
-             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
+            "INSERT INTO token_blacklist (jti, expires_at, revoked_at) VALUES ($1, $2, $3) \
+             ON CONFLICT (jti) DO UPDATE
+             SET expires_at = EXCLUDED.expires_at,
+                 revoked_at = EXCLUDED.revoked_at",
         )
         .bind(key)
         .bind(expires_at)
+        .bind(timestamp)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -461,26 +479,6 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
                 key = %key,
                 error = %e,
                 "Failed to persist refresh token family revocation marker in PostgreSQL"
-            );
-            crate::Error::Internal("Failed to revoke refresh token family".to_string())
-        })?;
-
-        // Store a companion entry that expires on the same horizon as the family
-        // marker, so cleanup_expired_token_blacklist() will delete both together.
-        sqlx::query(
-            "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
-             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
-        )
-        .bind(&ts_key)
-        .bind(revoked_at)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                key = %key,
-                timestamp_key = %ts_key,
-                error = %e,
-                "Failed to persist refresh token family revocation timestamp in PostgreSQL"
             );
             crate::Error::Internal("Failed to revoke refresh token family".to_string())
         })?;
@@ -606,6 +604,18 @@ impl TieredTokenBlacklistStore {
     /// Compute L2 TTL for a positive entry: `token_ttl - margin`, minimum 1s.
     fn l2_positive_ttl(ttl_secs: u64) -> u64 {
         ttl_secs.saturating_sub(L2_TTL_MARGIN_SECS).max(1)
+    }
+
+    fn cleanup_blacklist_lock(&self, key: &str, mutex: &Arc<tokio::sync::Mutex<()>>) {
+        if Arc::strong_count(mutex) != 2 {
+            return;
+        }
+        let Ok(_cleanup_guard) = mutex.try_lock() else {
+            return;
+        };
+        let _ = self
+            .blacklist_locks
+            .remove_if(key, |_, stored_mutex| Arc::ptr_eq(stored_mutex, mutex));
     }
 }
 
@@ -791,21 +801,24 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             .value()
             .clone();
 
-        // Hold the lock while checking and inserting
-        let _guard = mutex.lock().await;
+        let already_existed = {
+            let _guard = mutex.lock().await;
 
-        // Double-check L1 cache (may have been populated by another concurrent request)
-        if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await {
-            if Instant::now() < expiry && is_bl {
-                // Already blacklisted - replay detected
-                self.blacklist_locks.remove(key);
-                return Ok(true);
+            // Double-check L1 cache (may have been populated by another concurrent request)
+            if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await {
+                if Instant::now() < expiry && is_bl {
+                    true
+                } else {
+                    // Delegate to PG's atomic operation first. Returning `Ok` before this
+                    // succeeds would violate the durable-primary architecture.
+                    self.pg.blacklist_if_not_exists(key, ttl_secs).await?
+                }
+            } else {
+                // Delegate to PG's atomic operation first. Returning `Ok` before this
+                // succeeds would violate the durable-primary architecture.
+                self.pg.blacklist_if_not_exists(key, ttl_secs).await?
             }
-        }
-
-        // Delegate to PG's atomic operation first. Returning `Ok` before this
-        // succeeds would violate the durable-primary architecture.
-        let already_existed = self.pg.blacklist_if_not_exists(key, ttl_secs).await?;
+        };
 
         // Best-effort L2 population after the durable PG write succeeds.
         if let Some(ref redis_conn) = self.redis_conn {
@@ -829,8 +842,9 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             .insert(key.to_string(), (true, Instant::now() + L1_POSITIVE_TTL))
             .await;
 
-        // Clean up the mutex entry
-        self.blacklist_locks.remove(key);
+        // Remove the entry only after releasing the mutex, and only if no
+        // other waiter still shares the same lock instance.
+        self.cleanup_blacklist_lock(key, &mutex);
 
         Ok(already_existed)
     }
@@ -912,6 +926,76 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                     conn.set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS).await;
             }
             None
+        }
+    }
+
+    async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
+        if let Some((cached_val, expiry)) = self.l1_family.get(key).await {
+            if Instant::now() < expiry {
+                return Ok(cached_val);
+            }
+        }
+
+        if let Some(ref redis_conn) = self.redis_conn {
+            let redis_key = self.fam_key(key);
+            let result: redis::RedisResult<Option<String>> = {
+                let mut conn = redis_conn.read().await.clone();
+                conn.get(&redis_key).await
+            };
+            match result {
+                Ok(Some(val)) => {
+                    if val == "_" {
+                        self.l1_family
+                            .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
+                            .await;
+                        return Ok(None);
+                    }
+                    if let Ok(ts) = val.parse::<i64>() {
+                        self.l1_family
+                            .insert(
+                                key.to_string(),
+                                (Some(ts), Instant::now() + L1_POSITIVE_TTL),
+                            )
+                            .await;
+                        return Ok(Some(ts));
+                    }
+                    tracing::warn!(key = %key, val = %val, "Malformed family revocation value in Redis L2");
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, key = %key, "Redis L2 family lookup failed, falling back to PG");
+                }
+            }
+        }
+
+        let result = self.pg.get_family_revoked_at_checked(key).await?;
+
+        if let Some(ts) = result {
+            self.l1_family
+                .insert(
+                    key.to_string(),
+                    (Some(ts), Instant::now() + L1_POSITIVE_TTL),
+                )
+                .await;
+            if let Some(ref redis_conn) = self.redis_conn {
+                let redis_key = self.fam_key(key);
+                let mut conn = redis_conn.read().await.clone();
+                let _: redis::RedisResult<()> = conn
+                    .set_ex(&redis_key, ts.to_string(), L1_POSITIVE_TTL.as_secs())
+                    .await;
+            }
+            Ok(Some(ts))
+        } else {
+            self.l1_family
+                .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
+                .await;
+            if let Some(ref redis_conn) = self.redis_conn {
+                let redis_key = self.fam_key(key);
+                let mut conn = redis_conn.read().await.clone();
+                let _: redis::RedisResult<()> =
+                    conn.set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS).await;
+            }
+            Ok(None)
         }
     }
 
@@ -1082,6 +1166,13 @@ impl TokenBlacklistStore for FallbackTokenBlacklistStore {
         }
         // Then check primary
         self.primary.get_family_revoked_at(key).await
+    }
+
+    async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
+        if let Some(ts) = self.fallback.get_family_revoked_at(key).await {
+            return Ok(Some(ts));
+        }
+        self.primary.get_family_revoked_at_checked(key).await
     }
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
@@ -1437,6 +1528,13 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
         self.primary.get_family_revoked_at(key).await
     }
 
+    async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
+        if let Some(ts) = self.fallback.get_family_revoked_at(key).await {
+            return Ok(Some(ts));
+        }
+        self.primary.get_family_revoked_at_checked(key).await
+    }
+
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
         // Always write to fallback first
         self.fallback
@@ -1627,16 +1725,6 @@ mod tests {
 
         // L1 should remain empty because the durable write failed.
         assert_eq!(store.get_family_revoked_at("family:write_test").await, None);
-    }
-
-    #[test]
-    fn test_family_timestamp_expiry_uses_marker_horizon() {
-        let ts = 1_700_000_000_i64;
-        let ttl_secs = 3_600_u64;
-
-        let expiry = PgTokenBlacklistStore::family_timestamp_expiry(ts, ttl_secs);
-
-        assert_eq!(expiry.timestamp(), ts + ttl_secs as i64);
     }
 
     #[tokio::test]
@@ -2012,6 +2100,58 @@ mod tests {
 
         // Verify the token is now blacklisted
         assert!(store.is_blacklisted(key).await);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_blacklist_lock_cleanup_does_not_replace_live_mutex() {
+        let store = make_in_memory_store();
+        let key = "jti:lock_cleanup_in_memory";
+
+        let original_mutex = store
+            .blacklist_locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .value()
+            .clone();
+
+        let _guard = original_mutex.lock().await;
+
+        store.cleanup_blacklist_lock(key, &original_mutex);
+
+        let stored_mutex = store
+            .blacklist_locks
+            .get(key)
+            .expect("live mutex entry must not be removed while in use");
+        assert!(
+            Arc::ptr_eq(stored_mutex.value(), &original_mutex),
+            "cleanup must not swap out an in-flight mutex"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tiered_blacklist_lock_cleanup_does_not_replace_live_mutex() {
+        let store = make_tiered_l1_only();
+        let key = "jti:lock_cleanup_tiered";
+
+        let original_mutex = store
+            .blacklist_locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .value()
+            .clone();
+
+        let _guard = original_mutex.lock().await;
+
+        store.cleanup_blacklist_lock(key, &original_mutex);
+
+        let stored_mutex = store
+            .blacklist_locks
+            .get(key)
+            .expect("live mutex entry must not be removed while in use");
+        assert!(
+            Arc::ptr_eq(stored_mutex.value(), &original_mutex),
+            "cleanup must not swap out an in-flight mutex"
+        );
     }
 
     /// Test that concurrent calls to `blacklist_if_not_exists` on the same token

@@ -102,6 +102,50 @@ impl TokenBlacklistStore for FamilyRevocationFailingStore {
     }
 }
 
+struct FamilyRevocationReadFailingStore {
+    inner: InMemoryTokenBlacklistStore,
+}
+
+#[async_trait::async_trait]
+impl TokenBlacklistStore for FamilyRevocationReadFailingStore {
+    async fn is_blacklisted(&self, key: &str) -> bool {
+        self.inner.is_blacklisted(key).await
+    }
+
+    async fn is_blacklisted_checked(&self, key: &str) -> synctv_core::Result<bool> {
+        self.inner.is_blacklisted_checked(key).await
+    }
+
+    async fn blacklist(&self, key: &str, ttl_secs: u64) -> synctv_core::Result<()> {
+        self.inner.blacklist(key, ttl_secs).await
+    }
+
+    async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> synctv_core::Result<bool> {
+        self.inner.blacklist_if_not_exists(key, ttl_secs).await
+    }
+
+    async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
+        self.inner.get_family_revoked_at(key).await
+    }
+
+    async fn get_family_revoked_at_checked(&self, _key: &str) -> synctv_core::Result<Option<i64>> {
+        Err(Error::Internal(
+            "simulated family revocation read failure".to_string(),
+        ))
+    }
+
+    async fn set_family_revoked(
+        &self,
+        key: &str,
+        timestamp: i64,
+        ttl_secs: u64,
+    ) -> synctv_core::Result<()> {
+        self.inner
+            .set_family_revoked(key, timestamp, ttl_secs)
+            .await
+    }
+}
+
 struct FailingCacheL2;
 
 #[async_trait::async_trait]
@@ -274,6 +318,36 @@ async fn test_refresh_token_old_jti_blacklisted_before_new_issued() {
     assert!(
         token_blacklist.is_blacklisted(&blacklist_key).await,
         "Old JTI should be blacklisted after refresh"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_refresh_token_fails_closed_when_family_revocation_read_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let token_blacklist: Arc<dyn TokenBlacklistStore> =
+        Arc::new(FamilyRevocationReadFailingStore {
+            inner: InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
+        });
+    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist);
+
+    let (_user, _access, Some(refresh_token)) = service
+        .register(
+            format!("family_read_fail_{}", nanoid::nanoid!(6)),
+            Some(format!("family_read_fail_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed")
+    else {
+        panic!("Expected tokens");
+    };
+
+    let result = service.refresh_token(refresh_token).await;
+    assert!(
+        result.is_err(),
+        "Refresh must fail closed when family revocation lookup fails"
     );
 }
 
@@ -477,6 +551,40 @@ async fn test_refresh_token_family_revocation_timestamp_blocks_older_tokens() {
         result.is_err(),
         "Token issued before family revocation should be blocked"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_refresh_token_fails_closed_when_family_revocation_lookup_errors() {
+    let (_container, pool) = create_test_pool().await;
+    let token_blacklist: Arc<dyn TokenBlacklistStore> =
+        Arc::new(FamilyRevocationReadFailingStore {
+            inner: InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
+        });
+    let service = create_user_service_with_blacklist(pool, token_blacklist);
+
+    let (_user, _access, Some(refresh_token)) = service
+        .register(
+            format!("family_lookup_fail_{}", nanoid::nanoid!(6)),
+            Some(format!(
+                "family_lookup_fail_{}@test.com",
+                nanoid::nanoid!(6)
+            )),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed")
+    else {
+        panic!("Expected refresh token");
+    };
+
+    let result = service.refresh_token(refresh_token).await;
+    assert!(
+        result.is_err(),
+        "Refresh should fail closed when family revocation lookup cannot be verified"
+    );
+    assert!(matches!(result.unwrap_err(), Error::Internal(_)));
 }
 
 // ============================================================================
@@ -1199,7 +1307,10 @@ async fn test_register_succeeds_when_username_cache_write_fails() {
     let (user, access_token, refresh_token) = service
         .register(
             username.clone(),
-            Some(format!("cache_fail_register_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "cache_fail_register_{}@test.com",
+                nanoid::nanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1226,7 +1337,10 @@ async fn test_finalize_registration_succeeds_when_username_cache_write_fails() {
     let user = service
         .register_with_executor(
             format!("cache_fail_finalize_{}", nanoid::nanoid!(6)),
-            Some(format!("cache_fail_finalize_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "cache_fail_finalize_{}@test.com",
+                nanoid::nanoid!(6)
+            )),
             "StrongPass1".to_string(),
             synctv_core::models::SignupMethod::Email,
             &pool,

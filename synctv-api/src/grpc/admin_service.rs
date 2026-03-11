@@ -3,6 +3,7 @@ use tonic::{Request, Response, Status};
 
 use crate::impls::admin::RequestContext;
 use synctv_core::service::UserService;
+use synctv_core::Config;
 
 // Use synctv_proto for all gRPC types to avoid duplication
 use crate::proto::admin::{
@@ -38,8 +39,11 @@ use crate::impls::AdminApiImpl;
 use super::map_api_error;
 
 /// Extract IP address and User-Agent from a gRPC request for audit logging.
-fn grpc_request_context<T: std::fmt::Debug>(request: &Request<T>) -> RequestContext {
-    let ip_address = request.remote_addr().map(|addr| addr.ip().to_string());
+fn grpc_request_context<T: std::fmt::Debug>(
+    request: &Request<T>,
+    config: &Config,
+) -> RequestContext {
+    let ip_address = super::extract_client_ip(request, config).map(|ip| ip.to_string());
     let user_agent = request
         .metadata()
         .get("user-agent")
@@ -59,14 +63,20 @@ fn grpc_request_context<T: std::fmt::Debug>(request: &Request<T>) -> RequestCont
 pub struct AdminServiceImpl {
     user_service: Arc<UserService>,
     admin_api: Arc<AdminApiImpl>,
+    config: Arc<Config>,
 }
 
 impl AdminServiceImpl {
     #[must_use]
-    pub const fn new(user_service: Arc<UserService>, admin_api: Arc<AdminApiImpl>) -> Self {
+    pub fn new(
+        user_service: Arc<UserService>,
+        admin_api: Arc<AdminApiImpl>,
+        config: Arc<Config>,
+    ) -> Self {
         Self {
             user_service,
             admin_api,
+            config,
         }
     }
 
@@ -165,7 +175,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<GetSettingsRequest>,
     ) -> Result<Response<GetSettingsResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -180,7 +190,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<GetSettingsGroupRequest>,
     ) -> Result<Response<GetSettingsGroupResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -195,7 +205,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateSettingsRequest>,
     ) -> Result<Response<UpdateSettingsResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -243,7 +253,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<AddProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -259,7 +269,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UpdateProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -275,7 +285,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<DeleteProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -291,7 +301,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ReconnectProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -345,7 +355,7 @@ impl AdminService for AdminServiceImpl {
             self.check_admin_get_role(&request).await?
         };
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -361,7 +371,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<DeleteUserResponse>, Status> {
         self.check_root(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -400,7 +410,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateUserPasswordRequest>,
     ) -> Result<Response<UpdateUserPasswordResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -416,7 +426,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UpdateUserUsernameResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -438,7 +448,7 @@ impl AdminService for AdminServiceImpl {
             self.check_admin_get_role(&request).await?
         };
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -454,7 +464,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<BanUserResponse>, Status> {
         let caller_role = self.check_admin_get_role(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -470,7 +480,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UnbanUserResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -500,7 +510,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ApproveUserResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -528,7 +538,7 @@ impl AdminService for AdminServiceImpl {
         }
         let caller_role = self.check_admin_get_role(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -552,7 +562,7 @@ impl AdminService for AdminServiceImpl {
         }
         self.check_root(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         // check_root guarantees caller is Root
         let resp = self
@@ -582,7 +592,7 @@ impl AdminService for AdminServiceImpl {
         }
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -606,7 +616,7 @@ impl AdminService for AdminServiceImpl {
         }
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -650,7 +660,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UpdateRoomPasswordResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -666,7 +676,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<DeleteRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
         let admin_user_id = validated.user_id;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -682,7 +692,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<BanRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
         let admin_user_id = validated.user_id;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -698,7 +708,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UnbanRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
         let admin_user_id = validated.user_id;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -714,7 +724,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ApproveRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
         let admin_user_id = validated.user_id;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -748,7 +758,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<AddAdminResponse>, Status> {
         self.check_root(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -764,7 +774,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<RemoveAdminResponse>, Status> {
         self.check_root(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
         let resp = self
             .admin_api
@@ -882,7 +892,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<KickStreamRequest>,
     ) -> Result<Response<KickStreamResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request);
+        let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
 
         if req.room_id.is_empty() || req.media_id.is_empty() {

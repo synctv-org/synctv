@@ -10,21 +10,20 @@
 // operation is needed, the manager looks up the instance config from the DB and
 // creates a channel if not already cached.
 //
-// Provider changes (add/update/delete/enable/disable) publish a Redis Pub/Sub
-// notification so other replicas can invalidate their local cache.
+// Provider changes (add/update/delete/enable/disable) are broadcast via the
+// shared durable cache invalidation stream so other replicas can invalidate
+// their local channel cache even across restarts and transient disconnects.
 
+use crate::cache::{CacheInvalidationService, InvalidationMessage};
 use crate::models::ProviderInstance;
 use crate::provider::ProviderError;
 use crate::repository::ProviderInstanceRepository;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Uri};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
-
-/// Redis Pub/Sub channel suffix for provider instance change notifications.
-const PROVIDER_CHANGE_CHANNEL_SUFFIX: &str = "provider_instances:changes";
 
 /// Default channel cache TTL (5 minutes)
 const CHANNEL_CACHE_TTL_SECS: u64 = 300;
@@ -32,7 +31,7 @@ const CHANNEL_CACHE_TTL_SECS: u64 = 300;
 /// Maximum number of cached channels
 const MAX_CACHED_CHANNELS: u64 = 1_000;
 
-/// Maximum time to wait for the first Pub/Sub subscription to become active.
+/// Maximum time to wait for the first durable invalidation subscription to become active.
 const INVALIDATION_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Remote Provider Manager
@@ -44,7 +43,7 @@ const INVALIDATION_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// - Channels are created lazily from DB config and cached with TTL via moka
 /// - `get(name)` looks up the cached channel or creates one from DB on cache miss
-/// - Provider mutations publish a Redis Pub/Sub notification for cross-replica invalidation
+/// - Provider mutations publish durable invalidation events through `CacheInvalidationService`
 /// - A background subscriber listens for invalidation messages and evicts stale entries
 pub struct RemoteProviderManager {
     /// Lazily-populated channel cache with TTL (indexed by instance name)
@@ -53,21 +52,20 @@ pub struct RemoteProviderManager {
     /// Repository for database operations
     repository: Arc<ProviderInstanceRepository>,
 
-    /// Shared Redis connection handle that follows Sentinel failover.
-    redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    /// Shared durable invalidation bus for cross-replica cache invalidation.
+    cache_invalidation: Option<CacheInvalidationService>,
 
-    /// Optional Redis client for creating Pub/Sub subscriptions
-    /// (`ConnectionManager` cannot be used for subscriptions)
-    redis_client: Option<redis::Client>,
+    /// Cancellation token for the provider invalidation listener.
+    invalidation_cancel: tokio_util::sync::CancellationToken,
 
-    /// Redis Pub/Sub channel name including the configured deployment prefix.
-    provider_change_channel: Arc<str>,
+    /// Provider invalidation listener task handle.
+    invalidation_listener_task: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl std::fmt::Debug for RemoteProviderManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteProviderManager")
-            .field("redis_enabled", &self.redis_client.is_some())
+            .field("invalidation_enabled", &self.cache_invalidation.is_some())
             .finish()
     }
 }
@@ -75,23 +73,28 @@ impl std::fmt::Debug for RemoteProviderManager {
 impl RemoteProviderManager {
     /// Create a new `RemoteProviderManager`
     ///
-    /// When `redis_conn` is provided, provider changes are published via Redis Pub/Sub
-    /// so other replicas can invalidate their local cache. Without Redis, cache
-    /// invalidation is local only (entries expire naturally via TTL).
-    ///
-    /// `redis_client` is needed to create a dedicated Pub/Sub subscription connection.
+    /// Compatibility constructor for tests and standalone code paths that do not
+    /// wire the shared durable invalidation service.
     #[must_use]
     pub fn new(
         repository: Arc<ProviderInstanceRepository>,
-        redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-        redis_client: Option<redis::Client>,
-        redis_key_prefix: impl Into<String>,
+        _redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+        _redis_client: Option<redis::Client>,
+        _redis_key_prefix: impl Into<String>,
     ) -> Self {
-        let redis_key_prefix = redis_key_prefix.into();
-        if redis_conn.is_none() {
+        Self::new_with_invalidation(repository, None)
+    }
+
+    /// Create a new `RemoteProviderManager` with the shared durable invalidation service.
+    #[must_use]
+    pub fn new_with_invalidation(
+        repository: Arc<ProviderInstanceRepository>,
+        cache_invalidation: Option<CacheInvalidationService>,
+    ) -> Self {
+        if cache_invalidation.is_none() {
             tracing::warn!(
                 "RemoteProviderManager using local-only cache invalidation. \
-                 For multi-replica setups, configure Redis for cross-replica sync."
+                 For multi-replica setups, configure durable cache invalidation for cross-replica sync."
             );
         }
         let channel_cache = moka::future::Cache::builder()
@@ -102,10 +105,9 @@ impl RemoteProviderManager {
         Self {
             channel_cache: Arc::new(channel_cache),
             repository,
-            redis_conn,
-            redis_client,
-            provider_change_channel: format!("{redis_key_prefix}{PROVIDER_CHANGE_CHANNEL_SUFFIX}")
-                .into(),
+            cache_invalidation,
+            invalidation_cancel: tokio_util::sync::CancellationToken::new(),
+            invalidation_listener_task: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -150,127 +152,104 @@ impl RemoteProviderManager {
         Ok(())
     }
 
-    /// Start the Redis Pub/Sub subscriber for cross-replica cache invalidation.
+    /// Start the durable provider invalidation subscriber for cross-replica cache invalidation.
     ///
-    /// Spawns a background task that subscribes to the provider change channel
-    /// using a dedicated Pub/Sub connection. All replicas receive every
-    /// invalidation message (broadcast semantics).
-    /// Returns immediately if Redis is not configured.
+    /// Subscribes to the shared `CacheInvalidationService`, which is backed by
+    /// Redis Streams in cluster mode and therefore replays pending invalidations
+    /// after reconnect/restart.
+    /// Returns immediately if cross-replica invalidation is not configured.
     pub async fn start_invalidation_listener(&self) -> crate::Result<()> {
-        let Some(ref client) = self.redis_client else {
-            tracing::debug!("No Redis configured, skipping invalidation listener");
+        let Some(ref invalidation_service) = self.cache_invalidation else {
+            tracing::debug!("No durable invalidation service configured, skipping listener");
             return Ok(());
         };
 
-        let client = client.clone();
+        let mut guard = self.invalidation_listener_task.lock().await;
+        if guard.is_some() {
+            tracing::debug!("Provider invalidation listener already running");
+            return Ok(());
+        }
+
         let cache = Arc::clone(&self.channel_cache);
-        let provider_change_channel = Arc::clone(&self.provider_change_channel);
-        let (ready_tx, ready_rx) = oneshot::channel();
+        let cancel = self.invalidation_cancel.child_token();
+        let mut receiver = invalidation_service.subscribe();
 
-        crate::spawn::spawn_monitored("provider_invalidation_listener", async move {
-            let mut ready_tx = Some(ready_tx);
-
+        let handle = crate::spawn::spawn_monitored("provider_invalidation_listener", async move {
             loop {
-                match Self::run_pubsub_listener(
-                    &client,
-                    &cache,
-                    provider_change_channel.as_ref(),
-                    &mut ready_tx,
-                )
-                .await
-                {
-                    Ok(()) => break, // clean shutdown (shouldn't happen)
-                    Err(e) => {
-                        tracing::warn!(
-                            "Provider invalidation subscriber error: {e}. Reconnecting in 5s."
-                        );
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::select! {
+                    () = cancel.cancelled() => {
+                        tracing::info!("Provider invalidation listener shutting down");
+                        break;
+                    }
+                    result = receiver.recv() => {
+                        match result {
+                            Ok(InvalidationMessage::ProviderInstance { instance_name }) => {
+                                tracing::info!(
+                                    "Received provider change notification for '{}', invalidating cache",
+                                    instance_name
+                                );
+                                cache.invalidate(&instance_name).await;
+                            }
+                            Ok(_) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                tracing::warn!(
+                                    "cache invalidation service closed provider invalidation subscription"
+                                );
+                                break;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                tracing::warn!(
+                                    skipped,
+                                    "Provider invalidation listener lagged; invalidating all cached provider channels"
+                                );
+                                cache.invalidate_all();
+                            }
+                        }
                     }
                 }
             }
         });
+        *guard = Some(handle);
+        drop(guard);
 
-        tokio::time::timeout(INVALIDATION_LISTENER_READY_TIMEOUT, ready_rx)
-            .await
-            .map_err(|_| {
-                crate::Error::Internal(format!(
-                    "Provider invalidation listener did not become ready within {:?}",
-                    INVALIDATION_LISTENER_READY_TIMEOUT
-                ))
-            })?
-            .map_err(|_| {
-                crate::Error::Internal(
-                    "Provider invalidation listener exited before subscription became ready"
-                        .to_string(),
-                )
-            })?;
+        tokio::time::sleep(INVALIDATION_LISTENER_READY_TIMEOUT.min(Duration::from_millis(10)))
+            .await;
 
-        tracing::info!("Provider instance cache invalidation listener started (Pub/Sub)");
+        tracing::info!("Provider instance cache invalidation listener started (durable stream)");
         Ok(())
     }
 
-    /// Internal Pub/Sub listener loop. Returns Err on connection failure so
-    /// the caller can reconnect.
-    async fn run_pubsub_listener(
-        client: &redis::Client,
-        cache: &moka::future::Cache<String, Channel>,
-        provider_change_channel: &str,
-        ready_tx: &mut Option<oneshot::Sender<()>>,
-    ) -> crate::Result<()> {
-        use futures::StreamExt;
+    /// Cancel and join the provider invalidation listener.
+    pub async fn shutdown(&self) {
+        self.invalidation_cancel.cancel();
 
-        let mut pubsub = client.get_async_pubsub().await.map_err(|e| {
-            crate::Error::Internal(format!("Failed to get Pub/Sub connection: {e}"))
-        })?;
-
-        pubsub
-            .subscribe(provider_change_channel)
-            .await
-            .map_err(|e| crate::Error::Internal(format!("Failed to subscribe: {e}")))?;
-
-        if let Some(ready_tx) = ready_tx.take() {
-            let _ = ready_tx.send(());
+        let mut guard = self.invalidation_listener_task.lock().await;
+        if let Some(handle) = guard.take() {
+            let _ = handle.await;
         }
-
-        let mut stream = pubsub.on_message();
-
-        while let Some(msg) = stream.next().await {
-            let instance_name: String = match msg.get_payload() {
-                Ok(name) => name,
-                Err(e) => {
-                    tracing::warn!("Invalid payload in provider change message: {e}");
-                    continue;
-                }
-            };
-
-            tracing::info!(
-                "Received provider change notification for '{}', invalidating cache",
-                instance_name
-            );
-            cache.invalidate(&instance_name).await;
-        }
-
-        // Stream ended unexpectedly
-        Err(crate::Error::Internal("Pub/Sub stream ended".to_string()))
     }
 
-    /// Publish a cache invalidation notification to Redis so other replicas
+    #[must_use]
+    pub fn invalidation_listener_task(&self) -> Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> {
+        Arc::clone(&self.invalidation_listener_task)
+    }
+
+    #[must_use]
+    pub fn invalidation_cancel_token(&self) -> tokio_util::sync::CancellationToken {
+        self.invalidation_cancel.clone()
+    }
+
+    /// Publish a durable cache invalidation notification so other replicas
     /// evict the stale entry for `instance_name`.
     async fn notify_change(&self, instance_name: &str) {
-        let Some(ref conn_handle) = self.redis_conn else {
+        let Some(ref invalidation_service) = self.cache_invalidation else {
             return;
         };
 
-        let mut conn = conn_handle.read().await.clone();
-
-        // PUBLISH to the channel -- all subscribed replicas receive the message
-        let result: Result<(), redis::RedisError> = redis::cmd("PUBLISH")
-            .arg(self.provider_change_channel.as_ref())
-            .arg(instance_name)
-            .query_async(&mut conn)
-            .await;
-
-        if let Err(e) = result {
+        if let Err(e) = invalidation_service
+            .invalidate_provider_instance(instance_name)
+            .await
+        {
             tracing::warn!(
                 "Failed to publish provider change notification for '{}': {e}",
                 instance_name

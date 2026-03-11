@@ -105,6 +105,7 @@ impl CacheManager {
                             // PlaybackState/PlaybackStateUpdate messages are handled by PlaybackService;
                             // RoomSettings messages are handled by RoomSettingsService
                             InvalidationMessage::UserPermission { .. }
+                            | InvalidationMessage::ProviderInstance { .. }
                             | InvalidationMessage::RoomPermission { .. }
                             | InvalidationMessage::PlaybackState { .. }
                             | InvalidationMessage::PlaybackStateUpdate { .. }

@@ -10,9 +10,9 @@ use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::sync::{broadcast, OnceCell};
 use tokio::task::JoinHandle;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::models::RoomId;
@@ -43,6 +43,8 @@ const SUBSCRIBER_POLL_INTERVAL_MS: u64 = 250;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InvalidationMessage {
+    /// Invalidate remote provider instance channel cache for a named instance
+    ProviderInstance { instance_name: String },
     /// Invalidate permission cache for a specific user in a room
     UserPermission { room_id: String, user_id: String },
     /// Invalidate permission cache for all users in a room
@@ -195,9 +197,12 @@ impl CacheInvalidationService {
                 let config = redis::aio::ConnectionManagerConfig::new()
                     .set_connection_timeout(Some(REDIS_OPERATION_TIMEOUT))
                     .set_number_of_retries(0);
-                client.get_connection_manager_with_config(config).await.map_err(|e| {
-                    Error::Internal(format!("Failed to create Redis ConnectionManager: {e}"))
-                })
+                client
+                    .get_connection_manager_with_config(config)
+                    .await
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to create Redis ConnectionManager: {e}"))
+                    })
             })
             .await?;
         Ok(conn.clone())
@@ -210,11 +215,6 @@ impl CacheInvalidationService {
     /// On reconnection, pending (unacknowledged) messages are processed first to
     /// catch up on messages missed during the disconnection.
     ///
-    /// On startup, any stale consumer group left by a previous instance of this
-    /// node (e.g., after SIGKILL or OOM kill) is cleaned up before creating a
-    /// fresh one. This prevents orphaned consumer groups from accumulating in
-    /// Redis.
-    ///
     /// Additionally spawns a periodic state sync task that broadcasts an "All"
     /// invalidation message every 60 seconds to ensure replicas that missed
     /// invalidations during Redis outages eventually converge.
@@ -226,10 +226,6 @@ impl CacheInvalidationService {
 
         self.shutdown
             .store(false, std::sync::atomic::Ordering::Relaxed);
-
-        // Clean up any stale consumer group left by a previous process with
-        // the same node_id (e.g., after SIGKILL/OOM kill where stop() never ran).
-        self.cleanup_stale_consumer_group().await;
 
         // Clean up orphaned consumer groups left by previous processes with
         // different node_ids (e.g., non-K8s restarts where node_id has a random suffix).
@@ -246,44 +242,45 @@ impl CacheInvalidationService {
 
         let subscriber_service = self.clone();
 
-        let subscriber_handle = crate::spawn::spawn_monitored("cache_invalidation_subscriber", async move {
-            let mut backoff_secs: u64 = 1;
-            const MAX_BACKOFF_SECS: u64 = 30;
+        let subscriber_handle =
+            crate::spawn::spawn_monitored("cache_invalidation_subscriber", async move {
+                let mut backoff_secs: u64 = 1;
+                const MAX_BACKOFF_SECS: u64 = 30;
 
-            loop {
-                if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                    debug!("Cache invalidation listener shutting down");
-                    break;
-                }
-
-                match subscriber_service.run_subscriber(&local_sender).await {
-                    Ok(()) => {
-                        // Normal shutdown
+                loop {
+                    if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                        debug!("Cache invalidation listener shutting down");
                         break;
                     }
-                    Err(e) => {
-                        error!(
-                            error = %e,
-                            backoff_seconds = backoff_secs,
-                            "Cache invalidation subscriber error, reconnecting..."
-                        );
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
-                            () = async {
-                                loop {
-                                    if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                                        return;
-                                    }
-                                    tokio::time::sleep(Duration::from_millis(100)).await;
-                                }
-                            } => return,
+
+                    match subscriber_service.run_subscriber(&local_sender).await {
+                        Ok(()) => {
+                            // Normal shutdown
+                            break;
                         }
-                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                        Err(e) => {
+                            error!(
+                                error = %e,
+                                backoff_seconds = backoff_secs,
+                                "Cache invalidation subscriber error, reconnecting..."
+                            );
+                            tokio::select! {
+                                _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
+                                () = async {
+                                    loop {
+                                        if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                                            return;
+                                        }
+                                        tokio::time::sleep(Duration::from_millis(100)).await;
+                                    }
+                                } => return,
+                            }
+                            backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                        }
                     }
                 }
-            }
-            info!("Cache invalidation listener stopped");
-        });
+                info!("Cache invalidation listener stopped");
+            });
         self.replace_task_handle(&self.subscriber_task, subscriber_handle)
             .await;
 
@@ -303,8 +300,7 @@ impl CacheInvalidationService {
         let service = self.clone();
 
         let task = crate::spawn::spawn_monitored("cache_invalidation_state_sync", async move {
-            let mut interval =
-                tokio::time::interval(Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
+            let mut interval = tokio::time::interval(Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
             interval.tick().await;
 
             loop {
@@ -418,72 +414,6 @@ impl CacheInvalidationService {
                         "Failed to create consumer group: {e}"
                     )))
                 }
-            }
-        }
-    }
-
-    /// Clean up a stale consumer group left by a previous process with the same `node_id`.
-    ///
-    /// Uses `XINFO GROUPS` to check if a consumer group matching this node's
-    /// `consumer_group` name already exists. If found, it is destroyed so that a
-    /// fresh group can be created. This handles the case where a previous process
-    /// was killed (SIGKILL, OOM) before `stop()` could run.
-    async fn cleanup_stale_consumer_group(&self) {
-        let Ok(mut conn) = self.get_conn().await else {
-            warn!("Cannot clean up stale consumer group: failed to get Redis connection");
-            return;
-        };
-
-        // XINFO GROUPS <stream> returns info about all consumer groups on the stream.
-        // We use a raw command since the redis crate's typed API for XINFO is limited.
-        let result: redis::RedisResult<Vec<Vec<redis::Value>>> = redis::cmd("XINFO")
-            .arg("GROUPS")
-            .arg(&self.stream_key)
-            .query_async(&mut conn)
-            .await;
-
-        match result {
-            Ok(groups) => {
-                for group_info in &groups {
-                    // Each group is returned as a flat array of key-value pairs:
-                    // ["name", "<group_name>", "consumers", N, "pending", N, ...]
-                    let group_name = Self::extract_group_name(group_info);
-                    if group_name.as_deref() == Some(self.consumer_group.as_str()) {
-                        info!(
-                            stream = %self.stream_key,
-                            group = %self.consumer_group,
-                            "Found stale consumer group from previous process, destroying it"
-                        );
-                        let destroy_result: redis::RedisResult<()> = redis::cmd("XGROUP")
-                            .arg("DESTROY")
-                            .arg(&self.stream_key)
-                            .arg(&self.consumer_group)
-                            .query_async(&mut conn)
-                            .await;
-                        if let Err(e) = destroy_result {
-                            warn!(
-                                error = %e,
-                                stream = %self.stream_key,
-                                group = %self.consumer_group,
-                                "Failed to destroy stale consumer group"
-                            );
-                        }
-                        return;
-                    }
-                }
-                debug!(
-                    stream = %self.stream_key,
-                    group = %self.consumer_group,
-                    "No stale consumer group found"
-                );
-            }
-            Err(e) => {
-                // Stream may not exist yet (first deploy), which is fine.
-                debug!(
-                    error = %e,
-                    stream = %self.stream_key,
-                    "Could not query consumer groups (stream may not exist yet)"
-                );
             }
         }
     }
@@ -620,7 +550,10 @@ impl CacheInvalidationService {
     ///
     /// Additionally performs periodic stream trimming (XTRIM MINID) to enforce
     /// the 1-hour retention policy.
-    async fn run_subscriber(&self, local_sender: &broadcast::Sender<InvalidationMessage>) -> Result<()> {
+    async fn run_subscriber(
+        &self,
+        local_sender: &broadcast::Sender<InvalidationMessage>,
+    ) -> Result<()> {
         // Track delivery attempts for malformed messages so they can be
         // discarded after MAX_DELIVERY_ATTEMPTS to prevent PEL accumulation.
         let mut failed_delivery_counts: std::collections::HashMap<String, u32> =
@@ -791,8 +724,7 @@ impl CacheInvalidationService {
         consumer_group: &str,
         reply: &redis::streams::StreamReadReply,
         failed_delivery_counts: &mut std::collections::HashMap<String, u32>,
-    )
-    where
+    ) where
         C: redis::aio::ConnectionLike + Send + Unpin,
     {
         for sk in &reply.keys {
@@ -824,8 +756,7 @@ impl CacheInvalidationService {
         consumer_group: &str,
         entry: &redis::streams::StreamId,
         failed_delivery_counts: &mut std::collections::HashMap<String, u32>,
-    )
-    where
+    ) where
         C: redis::aio::ConnectionLike + Send + Unpin,
     {
         // Check origin node to skip self-originated messages
@@ -1039,11 +970,7 @@ impl CacheInvalidationService {
         }
     }
 
-    async fn join_task(
-        &self,
-        task_name: &'static str,
-        slot: &Arc<Mutex<Option<JoinHandle<()>>>>,
-    ) {
+    async fn join_task(&self, task_name: &'static str, slot: &Arc<Mutex<Option<JoinHandle<()>>>>) {
         let handle = {
             let mut guard = slot.lock().await;
             guard.take()
@@ -1207,6 +1134,14 @@ impl CacheInvalidationService {
     pub async fn invalidate_room(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::Room {
             room_id: room_id.as_str().to_string(),
+        })
+        .await
+    }
+
+    /// Invalidate remote provider instance channel cache
+    pub async fn invalidate_provider_instance(&self, instance_name: &str) -> Result<()> {
+        self.broadcast_remote(InvalidationMessage::ProviderInstance {
+            instance_name: instance_name.to_string(),
         })
         .await
     }
@@ -1744,13 +1679,14 @@ mod tests {
             "synctv:cache:invalidate:stream".to_string(),
         );
 
-        let err = service
-            .start()
-            .await
-            .expect_err("startup must fail when Redis-backed listener cannot create consumer group");
+        let err = service.start().await.expect_err(
+            "startup must fail when Redis-backed listener cannot create consumer group",
+        );
         assert!(
             err.to_string().contains("Failed to create consumer group")
-                || err.to_string().contains("Failed to create Redis ConnectionManager")
+                || err
+                    .to_string()
+                    .contains("Failed to create Redis ConnectionManager")
                 || err.to_string().contains("Connection refused"),
             "unexpected startup error: {err}"
         );

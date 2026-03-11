@@ -1964,9 +1964,7 @@ impl BilibiliClient {
             client_async_tls_with_config(ws_url.as_str(), socket, None, None)
                 .await
                 .map_err(|e| {
-                    BilibiliError::Network(format!(
-                        "Failed to connect to danmaku WebSocket: {e}"
-                    ))
+                    BilibiliError::Network(format!("Failed to connect to danmaku WebSocket: {e}"))
                 })
         })
         .await
@@ -2931,7 +2929,9 @@ async fn resolve_validated_danmaku_addr(
     port: u32,
 ) -> Result<std::net::SocketAddr, BilibiliError> {
     let port = u16::try_from(port).map_err(|_| {
-        BilibiliError::Parse(format!("WebSocket port out of range for host {hostname}: {port}"))
+        BilibiliError::Parse(format!(
+            "WebSocket port out of range for host {hostname}: {port}"
+        ))
     })?;
 
     let guard = crate::ssrf::ssrf_acl();
@@ -4084,9 +4084,7 @@ mod tests {
             .expect("public IP literal should pass SSRF validation");
         assert_eq!(
             addr,
-            "93.184.216.34:443"
-                .parse::<std::net::SocketAddr>()
-                .unwrap()
+            "93.184.216.34:443".parse::<std::net::SocketAddr>().unwrap()
         );
     }
 

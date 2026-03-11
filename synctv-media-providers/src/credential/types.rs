@@ -187,7 +187,10 @@ impl CredentialData {
         match self {
             Self::Bilibili { .. } => match Self::normalized_instance_name(provider_instance_name) {
                 Some(instance_name) => {
-                    format!("{:x}", Sha256::digest(format!("bilibili\n{instance_name}").as_bytes()))
+                    format!(
+                        "{:x}",
+                        Sha256::digest(format!("bilibili\n{instance_name}").as_bytes())
+                    )
                 }
                 None => self.server_id(),
             },
@@ -280,8 +283,11 @@ mod tests {
 
     #[test]
     fn test_credential_data_server_id_for_instance_scopes_identifier() {
-        let alist =
-            CredentialData::alist("https://alist.example.com".into(), "user".into(), "pass".into());
+        let alist = CredentialData::alist(
+            "https://alist.example.com".into(),
+            "user".into(),
+            "pass".into(),
+        );
         assert_eq!(alist.server_id_for_instance(None), alist.server_id());
         assert_eq!(alist.server_id_for_instance(Some("   ")), alist.server_id());
         assert_ne!(

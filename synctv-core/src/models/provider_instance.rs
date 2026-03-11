@@ -139,7 +139,10 @@ impl UserProviderCredential {
 
         match Self::normalized_instance_name(provider_instance_name) {
             Some(instance_name) => {
-                format!("{:x}", Sha256::digest(format!("{host}\n{instance_name}").as_bytes()))
+                format!(
+                    "{:x}",
+                    Sha256::digest(format!("{host}\n{instance_name}").as_bytes())
+                )
             }
             None => Self::generate_server_id(host),
         }
@@ -298,8 +301,10 @@ mod tests {
 
     #[test]
     fn test_user_credential_generate_server_id_for_instance_changes_with_instance_name() {
-        let legacy =
-            UserProviderCredential::generate_server_id_for_instance("https://alist.example.com", None);
+        let legacy = UserProviderCredential::generate_server_id_for_instance(
+            "https://alist.example.com",
+            None,
+        );
         let scoped = UserProviderCredential::generate_server_id_for_instance(
             "https://alist.example.com",
             Some("alist-main"),

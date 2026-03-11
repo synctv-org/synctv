@@ -124,10 +124,7 @@ async fn test_in_memory_distributed_uses_governor() {
 // Redis rate limiter tests (require Docker)
 // ============================================================================
 
-async fn create_redis_connection_manager() -> (
-    redis::aio::ConnectionManager,
-    RedisContainer,
-) {
+async fn create_redis_connection_manager() -> (redis::aio::ConnectionManager, RedisContainer) {
     let (container, client) = start_redis_with_client().await;
     let conn = redis::aio::ConnectionManager::new(client)
         .await
@@ -253,10 +250,7 @@ async fn test_redis_rate_limiter_distributed_fails_closed_without_redis() {
     // Should deny ALL requests when Redis is not configured (fail-closed)
     let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
     assert!(
-        matches!(
-            result,
-            Err(RateLimitError::BackendUnavailable(_))
-        ),
+        matches!(result, Err(RateLimitError::BackendUnavailable(_))),
         "check_rate_limit_distributed should fail closed when Redis is not configured"
     );
 }

@@ -43,6 +43,7 @@ use tracing::{debug, error, info};
 
 use std::sync::Arc;
 use synctv_core::models::UserId;
+use synctv_core::Config;
 
 use super::map_api_error;
 
@@ -54,6 +55,7 @@ use super::map_api_error;
 /// `UnlinkProvider`, `GetLinkedProviders`) perform inline JWT validation.
 pub struct OAuth2GrpcService {
     oauth2_api: Arc<crate::impls::OAuth2ApiImpl>,
+    config: Arc<Config>,
     /// Auth interceptor for endpoints that require authentication.
     /// Used inline instead of as a global service interceptor so that
     /// public endpoints remain unauthenticated.
@@ -62,12 +64,14 @@ pub struct OAuth2GrpcService {
 
 impl OAuth2GrpcService {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         oauth2_api: Arc<crate::impls::OAuth2ApiImpl>,
+        config: Arc<Config>,
         auth_interceptor: super::interceptors::AuthInterceptor,
     ) -> Self {
         Self {
             oauth2_api,
+            config,
             auth_interceptor,
         }
     }
@@ -176,7 +180,7 @@ impl OAuth2Service for OAuth2GrpcService {
             .map(|authenticated| authenticated.user_id.clone());
 
         // Extract client IP for brute-force protection (Issue #24)
-        let client_ip = request.remote_addr().map(|addr| addr.ip());
+        let client_ip = super::extract_client_ip(&request, &self.config);
         let req = request.into_inner();
         let result = self
             .oauth2_api

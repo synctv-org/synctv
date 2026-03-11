@@ -13,7 +13,8 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
-    models::ProviderInstance, repository::ProviderInstanceRepository,
+    cache::CacheInvalidationService, models::ProviderInstance,
+    repository::ProviderInstanceRepository,
     service::remote_provider_manager::RemoteProviderManager,
 };
 use synctv_core_testing::{create_test_pool_with_options_and_label, start_redis_with_client};
@@ -240,23 +241,33 @@ async fn scenario_channel_cache_ttl_expiration() {
 async fn scenario_redis_invalidation_on_delete() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let stream_key = format!("test:provider:invalidate:{}", nanoid::nanoid!(8));
+    let invalidation1 = CacheInvalidationService::new(
+        Some(infra.redis_client.clone()),
+        "node1".to_string(),
+        stream_key.clone(),
+    )
+    .with_shared_conn(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
-
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
-
-    let manager1 = RemoteProviderManager::new(
-        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
-        Some(Arc::new(RwLock::new(
-            infra.redis_connection_manager().await,
-        ))),
+    let invalidation2 = CacheInvalidationService::new(
         Some(infra.redis_client.clone()),
-        "",
-    );
+        "node2".to_string(),
+        stream_key,
+    )
+    .with_shared_conn(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    invalidation1.start().await.unwrap();
+    invalidation2.start().await.unwrap();
 
-    let manager2 = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager1 = RemoteProviderManager::new_with_invalidation(
+        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Some(invalidation1.clone()),
+    );
+    let manager2 =
+        RemoteProviderManager::new_with_invalidation(Arc::new(repo), Some(invalidation2.clone()));
 
     // Start invalidation listener
     manager2.start_invalidation_listener().await.unwrap();
@@ -292,6 +303,11 @@ async fn scenario_redis_invalidation_on_delete() {
     // Verify get returns None
     let channel = manager2.get("test-instance-5").await;
     assert!(channel.is_none(), "Deleted instance should return None");
+
+    manager1.shutdown().await;
+    manager2.shutdown().await;
+    invalidation1.stop().await;
+    invalidation2.stop().await;
 }
 
 // ─── Test 5: Health check integration ───────────────────────────────────────
@@ -1143,22 +1159,33 @@ async fn scenario_cache_respects_max_capacity() {
 async fn scenario_redis_invalidation_respects_key_prefix() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
+    let stream_key = format!("tenant-a:test:provider:invalidate:{}", nanoid::nanoid!(8));
+    let invalidation1 = CacheInvalidationService::new(
+        Some(infra.redis_client.clone()),
+        "tenant-a-node1".to_string(),
+        stream_key.clone(),
+    )
+    .with_shared_conn(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let invalidation2 = CacheInvalidationService::new(
+        Some(infra.redis_client.clone()),
+        "tenant-a-node2".to_string(),
+        stream_key,
+    )
+    .with_shared_conn(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    invalidation1.start().await.unwrap();
+    invalidation2.start().await.unwrap();
 
-    let manager1 = RemoteProviderManager::new(
+    let manager1 = RemoteProviderManager::new_with_invalidation(
         Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
-        Some(Arc::new(RwLock::new(
-            infra.redis_connection_manager().await,
-        ))),
-        Some(infra.redis_client.clone()),
-        "tenant-a:",
+        Some(invalidation1.clone()),
     );
-    let manager2 = RemoteProviderManager::new(
+    let manager2 = RemoteProviderManager::new_with_invalidation(
         Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
-        Some(Arc::new(RwLock::new(
-            infra.redis_connection_manager().await,
-        ))),
-        Some(infra.redis_client.clone()),
-        "tenant-a:",
+        Some(invalidation2.clone()),
     );
 
     manager2.start_invalidation_listener().await.unwrap();
@@ -1179,6 +1206,109 @@ async fn scenario_redis_invalidation_respects_key_prefix() {
         },
     )
     .await;
+
+    manager1.shutdown().await;
+    manager2.shutdown().await;
+    invalidation1.stop().await;
+    invalidation2.stop().await;
+}
+
+async fn scenario_invalidation_listener_shutdown_is_idempotent() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let stream_key = format!(
+        "tenant-shutdown:test:provider:invalidate:{}",
+        nanoid::nanoid!(8)
+    );
+    let invalidation = CacheInvalidationService::new(
+        Some(infra.redis_client.clone()),
+        "tenant-shutdown-node".to_string(),
+        stream_key,
+    )
+    .with_shared_conn(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    invalidation.start().await.unwrap();
+
+    let manager = RemoteProviderManager::new_with_invalidation(
+        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Some(invalidation.clone()),
+    );
+
+    manager.start_invalidation_listener().await.unwrap();
+    manager
+        .start_invalidation_listener()
+        .await
+        .expect("second start should be idempotent");
+
+    manager.shutdown().await;
+    manager.shutdown().await;
+    invalidation.stop().await;
+}
+
+async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+
+    let stream_key = format!("test:provider:durable:{}", nanoid::nanoid!(8));
+    let invalidation1 = CacheInvalidationService::new(
+        Some(infra.redis_client.clone()),
+        "provider-node1".to_string(),
+        stream_key.clone(),
+    )
+    .with_shared_conn(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let invalidation2 = CacheInvalidationService::new(
+        Some(infra.redis_client.clone()),
+        "provider-node2".to_string(),
+        stream_key,
+    )
+    .with_shared_conn(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    invalidation1.start().await.unwrap();
+    invalidation2.start().await.unwrap();
+
+    let manager1 = RemoteProviderManager::new_with_invalidation(
+        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Some(invalidation1.clone()),
+    );
+    let manager2 = RemoteProviderManager::new_with_invalidation(
+        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Some(invalidation2.clone()),
+    );
+
+    let instance = make_test_instance("durable-provider-instance");
+    manager1.add(instance).await.unwrap();
+
+    let channel = manager2.get("durable-provider-instance").await;
+    assert!(
+        channel.is_some(),
+        "manager2 should cache the instance before delete"
+    );
+
+    manager1.delete("durable-provider-instance").await.unwrap();
+
+    manager2
+        .start_invalidation_listener()
+        .await
+        .expect("late-started listener should catch up through durable invalidation stream");
+
+    wait_until(
+        REDIS_INVALIDATION_WAIT_TIMEOUT,
+        REDIS_INVALIDATION_WAIT_INTERVAL,
+        || {
+            let manager2 = &manager2;
+            async move { manager2.get("durable-provider-instance").await.is_none() }
+        },
+    )
+    .await;
+
+    manager1.shutdown().await;
+    manager2.shutdown().await;
+    invalidation1.stop().await;
+    invalidation2.stop().await;
 }
 
 // ─── Test 25: Provider instance supports_provider ───────────────────────────
@@ -1274,6 +1404,13 @@ async fn test_channel_cache_ttl_expiration() {
 async fn test_redis_invalidation_on_delete() {
     install_rustls_provider_once();
     scenario_redis_invalidation_on_delete().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_durable_invalidation_catches_up_after_listener_starts_late() {
+    install_rustls_provider_once();
+    scenario_durable_invalidation_catches_up_after_listener_starts_late().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1449,6 +1586,13 @@ async fn test_cache_respects_max_capacity() {
 async fn test_redis_invalidation_respects_key_prefix() {
     install_rustls_provider_once();
     scenario_redis_invalidation_respects_key_prefix().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_invalidation_listener_shutdown_is_idempotent() {
+    install_rustls_provider_once();
+    scenario_invalidation_listener_shutdown_is_idempotent().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

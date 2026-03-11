@@ -263,6 +263,108 @@ pub fn maybe_sign_versioned_playback(
     result
 }
 
+fn signed_proxy_playback_requested(ctx: &ProviderContext<'_>) -> bool {
+    ctx.signing_key.is_some() && ctx.room_id.is_some() && ctx.user_id.is_some()
+}
+
+fn remaining_versioned_ttl(expires_at: i64) -> std::time::Duration {
+    let remaining_secs = (expires_at - chrono::Utc::now().timestamp()).max(1) as u64;
+    std::time::Duration::from_secs(remaining_secs)
+}
+
+async fn persist_versioned_mapping(
+    store: &dyn ProviderStore,
+    versioned: &VersionedPlayback,
+    ttl: std::time::Duration,
+    provider_name: &str,
+) -> Result<()> {
+    store
+        .set(&format!("v:{}", versioned.version), versioned, ttl)
+        .await
+        .map_err(|e| {
+            ProviderError::Internal(format!(
+                "Provider '{provider_name}' failed to persist signed proxy version mapping: {e}"
+            ))
+        })
+}
+
+pub async fn maybe_sign_cached_versioned_playback(
+    versioned: VersionedPlayback,
+    provider_name: &str,
+    ctx: &ProviderContext<'_>,
+) -> Result<PlaybackResult> {
+    if signed_proxy_playback_requested(ctx) {
+        let store = ctx.store.as_ref().ok_or_else(|| {
+            ProviderError::Internal(format!(
+                "Provider '{provider_name}' cannot generate signed proxy playback without a provider store"
+            ))
+        })?;
+        persist_versioned_mapping(
+            store.as_ref(),
+            &versioned,
+            remaining_versioned_ttl(versioned.expires_at),
+            provider_name,
+        )
+        .await?;
+    }
+
+    Ok(maybe_sign_versioned_playback(
+        versioned.result,
+        provider_name,
+        &versioned.version,
+        versioned.expires_at,
+        ctx,
+    ))
+}
+
+pub async fn finalize_versioned_playback(
+    result: PlaybackResult,
+    provider_name: &str,
+    cache_key: &str,
+    cache_ttl: std::time::Duration,
+    ctx: &ProviderContext<'_>,
+) -> Result<PlaybackResult> {
+    let versioned = VersionedPlayback {
+        version: nanoid::nanoid!(16),
+        result: result.clone(),
+        expires_at: chrono::Utc::now().timestamp() + cache_ttl.as_secs() as i64,
+    };
+
+    if let Some(store) = ctx.store.as_ref() {
+        store.set(cache_key, &versioned, cache_ttl).await.map_err(|e| {
+            ProviderError::Internal(format!(
+                "Provider '{provider_name}' failed to persist playback cache entry '{cache_key}': {e}"
+            ))
+        })?;
+
+        if signed_proxy_playback_requested(ctx) {
+            persist_versioned_mapping(store.as_ref(), &versioned, cache_ttl, provider_name).await?;
+        } else if let Err(e) = store
+            .set(&format!("v:{}", versioned.version), &versioned, cache_ttl)
+            .await
+        {
+            tracing::warn!(
+                provider = provider_name,
+                version = %versioned.version,
+                error = %e,
+                "Failed to persist unsigned versioned playback mapping"
+            );
+        }
+    } else if signed_proxy_playback_requested(ctx) {
+        return Err(ProviderError::Internal(format!(
+            "Provider '{provider_name}' cannot generate signed proxy playback without a provider store"
+        )));
+    }
+
+    Ok(maybe_sign_versioned_playback(
+        result,
+        provider_name,
+        &versioned.version,
+        versioned.expires_at,
+        ctx,
+    ))
+}
+
 /// Strip credential fields from a `source_config` value before sending to clients.
 ///
 /// Returns a sanitized copy with sensitive fields replaced by `"[REDACTED]"`.
@@ -289,5 +391,158 @@ pub fn strip_source_config_credentials(source_config: &serde_json::Value) -> ser
             serde_json::Value::Array(arr.iter().map(strip_source_config_credentials).collect())
         }
         other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::store::{InMemoryProviderStore, StoreError, StoreLockGuard};
+    use crate::service::ProxySigningKey;
+    use std::sync::Arc;
+
+    struct FailVersionMappingStore {
+        inner: InMemoryProviderStore,
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderStore for FailVersionMappingStore {
+        async fn get_raw(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, StoreError> {
+            self.inner.get_raw(key).await
+        }
+
+        async fn set_raw(
+            &self,
+            key: &str,
+            value: &[u8],
+            ttl: std::time::Duration,
+        ) -> std::result::Result<(), StoreError> {
+            if key.starts_with("v:") {
+                return Err(StoreError::Backend(
+                    "forced version mapping failure".to_string(),
+                ));
+            }
+            self.inner.set_raw(key, value, ttl).await
+        }
+
+        async fn delete(&self, key: &str) -> std::result::Result<(), StoreError> {
+            self.inner.delete(key).await
+        }
+
+        async fn lock(
+            &self,
+            _key: &str,
+            _ttl: std::time::Duration,
+        ) -> std::result::Result<StoreLockGuard, StoreError> {
+            Ok(StoreLockGuard::noop())
+        }
+    }
+
+    fn playback_result() -> PlaybackResult {
+        let mut playback_infos = std::collections::HashMap::new();
+        playback_infos.insert(
+            "direct".to_string(),
+            PlaybackInfo {
+                urls: vec!["http://example.com/video.mp4".to_string()],
+                format: "mp4".to_string(),
+                headers: std::collections::HashMap::new(),
+                subtitles: Vec::new(),
+                expires_at: None,
+                cors_proxy_required: false,
+            },
+        );
+        PlaybackResult {
+            playback_infos,
+            default_mode: "direct".to_string(),
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_finalize_versioned_playback_requires_store_for_signed_proxy() {
+        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let ctx = ProviderContext::new("test")
+            .with_user_id("user-1")
+            .with_room_id("room-1")
+            .with_signing_key(&signing_key);
+
+        let err = finalize_versioned_playback(
+            playback_result(),
+            "direct_url",
+            "playback:test",
+            std::time::Duration::from_secs(60),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, ProviderError::Internal(_)));
+        assert!(
+            err.to_string().contains("provider store"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_finalize_versioned_playback_fails_closed_when_mapping_persist_fails() {
+        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let ctx = ProviderContext::new("test")
+            .with_user_id("user-1")
+            .with_room_id("room-1")
+            .with_signing_key(&signing_key);
+        let ctx = ctx.with_store(Arc::new(FailVersionMappingStore {
+            inner: InMemoryProviderStore::new(16),
+        }));
+
+        let err = finalize_versioned_playback(
+            playback_result(),
+            "direct_url",
+            "playback:test",
+            std::time::Duration::from_secs(60),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, ProviderError::Internal(_)));
+        assert!(
+            err.to_string().contains("version mapping"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cached_signed_playback_repairs_missing_version_mapping() {
+        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
+        let ctx = ProviderContext::new("test")
+            .with_user_id("user-1")
+            .with_room_id("room-1")
+            .with_signing_key(&signing_key)
+            .with_store(store.clone());
+        let versioned = VersionedPlayback {
+            version: "cached-version".to_string(),
+            result: playback_result(),
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+
+        let signed =
+            maybe_sign_cached_versioned_playback(versioned.clone(), "direct_url", &ctx).await;
+
+        assert!(signed.is_ok(), "cached signing should succeed: {signed:?}");
+        let stored: Option<VersionedPlayback> = store.get("v:cached-version").await.unwrap();
+        assert!(
+            stored.is_some(),
+            "signed cache hit must restore version mapping"
+        );
+        let url = &signed.unwrap().playback_infos["direct"].urls[0];
+        assert!(url.contains("/direct_url/cached-version/stream"));
+
+        let query = url.split('?').nth(1).expect("signed proxy URL query");
+        let claims = signing_key
+            .parse_and_verify_query(query, "direct_url", "cached-version")
+            .expect("valid signed query");
+        assert_eq!(claims.user_id, "user-1");
+        assert_eq!(claims.room_id, "room-1");
     }
 }

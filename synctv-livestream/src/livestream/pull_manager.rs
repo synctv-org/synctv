@@ -61,10 +61,9 @@ impl PullStreamManager {
         self.connection_pool = pool;
         self.pool_cleanup_cancel = tokio_util::sync::CancellationToken::new();
         let cleanup_interval = self.connection_pool.max_idle();
-        self.pool_cleanup_handle = self.connection_pool.spawn_cleanup_task(
-            cleanup_interval,
-            self.pool_cleanup_cancel.clone(),
-        );
+        self.pool_cleanup_handle = self
+            .connection_pool
+            .spawn_cleanup_task(cleanup_interval, self.pool_cleanup_cancel.clone());
         self
     }
 
@@ -454,13 +453,8 @@ mod tests {
             Duration::from_secs(1),
         );
 
-        let manager = PullStreamManager::with_timeouts(
-            registry,
-            stream_hub_event_sender,
-            1,
-            300,
-        )
-        .with_connection_pool(shared_pool.clone());
+        let manager = PullStreamManager::with_timeouts(registry, stream_hub_event_sender, 1, 300)
+            .with_connection_pool(shared_pool.clone());
 
         tokio::time::sleep(Duration::from_millis(20)).await;
 

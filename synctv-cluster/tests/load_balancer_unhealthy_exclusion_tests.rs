@@ -1,7 +1,7 @@
 //! CL8: `LoadBalancer` unhealthy exclusion
 //!
 //! - 3 nodes: 2 Unhealthy + 1 Healthy -> only healthy selected (10 calls)
-//! - All unhealthy -> fallback behavior (selects random from full set)
+//! - All unhealthy -> fail closed (returns error)
 //! - Degraded nodes are still selectable
 
 #![allow(clippy::unwrap_used)]
@@ -60,11 +60,9 @@ async fn test_only_healthy_node_selected() {
     }
 }
 
-/// All unhealthy -> `LoadBalancer` falls back to random selection from full set.
-/// (The `LoadBalancer`'s fallback behavior when all are unhealthy is to pick
-/// a random one from the full set rather than return an error.)
+/// All unhealthy -> `LoadBalancer` fails closed instead of routing to known-bad nodes.
 #[tokio::test]
-async fn test_all_unhealthy_falls_back_to_random() {
+async fn test_all_unhealthy_returns_error() {
     let registry = setup_registry(&["node-a", "node-b", "node-c"]).await;
     let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
 
@@ -79,11 +77,10 @@ async fn test_all_unhealthy_falls_back_to_random() {
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
         .with_health_monitor(monitor);
 
-    // Should still return a node (fallback to random from full set)
     let selected = lb.select_node().await;
     assert!(
-        selected.is_ok(),
-        "Should fall back to random selection when all unhealthy"
+        selected.is_err(),
+        "Should fail closed when all nodes are unhealthy"
     );
 }
 

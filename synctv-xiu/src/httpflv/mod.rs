@@ -80,10 +80,23 @@ impl HttpFlvSession {
         // Subscribe to StreamHub
         self.subscribe_from_stream_hub().await?;
 
-        // Send media stream
-        self.send_media_stream().await?;
+        let result = self.send_media_stream().await;
+        let unsubscribe_result = self.unsubscribe_from_stream_hub().await;
 
-        Ok(())
+        match (result, unsubscribe_result) {
+            (Err(stream_err), Ok(())) => Err(stream_err),
+            (Ok(()), Err(unsubscribe_err)) => Err(unsubscribe_err),
+            (Err(stream_err), Err(unsubscribe_err)) => {
+                warn!(
+                    stream = %self.stream_name,
+                    stream_error = %stream_err,
+                    unsubscribe_error = %unsubscribe_err,
+                    "HTTP-FLV session failed and unsubscribe cleanup also failed"
+                );
+                Err(stream_err)
+            }
+            (Ok(()), Ok(())) => Ok(()),
+        }
     }
 
     async fn send_media_stream(&mut self) -> anyhow::Result<()> {
@@ -151,8 +164,6 @@ impl HttpFlvSession {
                 }
             }
         }
-
-        self.unsubscribe_from_stream_hub().await?;
         Ok(())
     }
 
@@ -576,5 +587,81 @@ mod tests {
             err.to_string().contains("Slow subscriber disconnected"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_run_unsubscribes_after_slow_subscriber_disconnect() {
+        let (event_sender, mut event_rx) = tokio::sync::mpsc::channel(8);
+        let (response_tx, _response_rx) = mpsc::channel(1);
+
+        let mut session = HttpFlvSession::new(
+            "live".to_string(),
+            "room/stream".to_string(),
+            event_sender,
+            response_tx,
+        );
+
+        let session_task = tokio::spawn(async move { session.run().await });
+
+        let subscribe = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("subscribe event should be emitted")
+            .expect("event channel should stay open");
+
+        let result_sender = match subscribe {
+            StreamHubEvent::Subscribe { result_sender, .. } => result_sender,
+            _ => panic!("expected subscribe event"),
+        };
+
+        let (frame_tx, frame_rx) = mpsc::channel(256);
+        result_sender
+            .send(Ok((
+                crate::streamhub::define::DataReceiver {
+                    frame_receiver: Some(frame_rx),
+                    packet_receiver: None,
+                },
+                None,
+            )))
+            .expect("subscribe response should be delivered");
+
+        for _ in 0..=MAX_CONSECUTIVE_DROPPED_FRAMES {
+            frame_tx
+                .send(FrameData::Video {
+                    timestamp: 0,
+                    data: bytes::Bytes::from_static(b"frame"),
+                })
+                .await
+                .expect("frame send should succeed while receiver is alive");
+        }
+        drop(frame_tx);
+
+        let err = tokio::time::timeout(std::time::Duration::from_secs(1), session_task)
+            .await
+            .expect("session task should finish")
+            .expect("session task should join")
+            .expect_err("slow subscriber should terminate the session");
+        assert!(
+            err.to_string().contains("Slow subscriber disconnected"),
+            "unexpected error: {err}"
+        );
+
+        let unsubscribe = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("unsubscribe event should be emitted")
+            .expect("event channel should stay open");
+
+        match unsubscribe {
+            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
+                StreamIdentifier::Rtmp {
+                    app_name,
+                    stream_name,
+                } => {
+                    assert_eq!(app_name, "live");
+                    assert_eq!(stream_name, "room/stream");
+                }
+                other => panic!("unexpected stream identifier: {other:?}"),
+            },
+            _ => panic!("expected unsubscribe event"),
+        }
     }
 }

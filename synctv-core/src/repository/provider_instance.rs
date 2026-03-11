@@ -26,6 +26,17 @@ impl std::fmt::Debug for ProviderInstanceRepository {
 }
 
 impl ProviderInstanceRepository {
+    fn sensitive_fields_present(instance: &ProviderInstance) -> bool {
+        instance
+            .jwt_secret
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+            || instance
+                .custom_ca
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+    }
+
     /// Create a new repository without encryption
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -55,6 +66,16 @@ impl ProviderInstanceRepository {
             }
             _ => Ok(plaintext.clone()),
         }
+    }
+
+    fn ensure_encryption_for_sensitive_fields(&self, instance: &ProviderInstance) -> Result<()> {
+        if self.encryption.is_none() && Self::sensitive_fields_present(instance) {
+            return Err(crate::Error::Internal(
+                "Credential encryption must be configured before storing provider instance secrets"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Decrypt a string field after reading. Only encrypted values (enc: prefix) are supported.
@@ -137,6 +158,7 @@ impl ProviderInstanceRepository {
 
     /// Create a new provider instance (encrypts sensitive fields before storage)
     pub async fn create(&self, instance: &ProviderInstance) -> Result<()> {
+        self.ensure_encryption_for_sensitive_fields(instance)?;
         let encrypted_jwt_secret = self.encrypt_field(&instance.jwt_secret)?;
         let encrypted_custom_ca = self.encrypt_field(&instance.custom_ca)?;
         let result = sqlx::query(
@@ -161,9 +183,7 @@ impl ProviderInstanceRepository {
 
         match result {
             Ok(_) => Ok(()),
-            Err(sqlx::Error::Database(db_err))
-                if db_err.code().as_deref() == Some("23505") =>
-            {
+            Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("23505") => {
                 Err(crate::Error::AlreadyExists(format!(
                     "Provider instance '{}' already exists",
                     instance.name
@@ -175,6 +195,7 @@ impl ProviderInstanceRepository {
 
     /// Update an existing provider instance (encrypts sensitive fields before storage)
     pub async fn update(&self, instance: &ProviderInstance) -> Result<()> {
+        self.ensure_encryption_for_sensitive_fields(instance)?;
         let encrypted_jwt_secret = self.encrypt_field(&instance.jwt_secret)?;
         let encrypted_custom_ca = self.encrypt_field(&instance.custom_ca)?;
 
@@ -299,7 +320,10 @@ impl UserProviderCredentialRepository {
     fn encrypt_credential(&self, data: &serde_json::Value) -> Result<serde_json::Value> {
         match &self.encryption {
             Some(enc) => enc.encrypt_to_value(data),
-            None => Ok(data.clone()),
+            None => Err(crate::Error::Internal(
+                "Credential encryption must be configured before storing provider credentials"
+                    .to_string(),
+            )),
         }
     }
 
@@ -544,6 +568,49 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("Plaintext credentials are no longer supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_provider_instance_repo_requires_encryption_when_sensitive_fields_present() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = ProviderInstanceRepository::new(pool);
+
+        let err = repo
+            .ensure_encryption_for_sensitive_fields(&ProviderInstance {
+                name: "remote".to_string(),
+                endpoint: "grpc://remote.example.com:50051".to_string(),
+                comment: None,
+                jwt_secret: Some("secret".to_string()),
+                custom_ca: None,
+                timeout: "10s".to_string(),
+                tls: false,
+                insecure_tls: false,
+                providers: vec!["alist".to_string()],
+                enabled: true,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Credential encryption must be configured"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_user_provider_credential_repo_requires_encryption_for_storage() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = UserProviderCredentialRepository::new(pool);
+
+        let err = repo
+            .encrypt_credential(&json!({"token": "plaintext"}))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Credential encryption must be configured"),
             "unexpected error: {err}"
         );
     }

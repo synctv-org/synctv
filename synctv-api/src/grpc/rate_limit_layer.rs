@@ -207,7 +207,7 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
         Some("AdminService") => Some(GrpcRateLimitTier::Admin),
         Some("PublicService") => Some(GrpcRateLimitTier::Read),
         Some("NotificationService") => Some(notification_service_tier(method_name)),
-        Some("OAuth2Service") => Some(GrpcRateLimitTier::Auth),
+        Some("OAuth2Service") => Some(oauth2_service_tier(method_name)),
         // Provider services
         Some("AlistProviderService") => Some(GrpcRateLimitTier::Read),
         Some("BilibiliProviderService") => Some(GrpcRateLimitTier::Read),
@@ -251,6 +251,23 @@ fn notification_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
         Some("ListNotifications" | "GetNotification") => GrpcRateLimitTier::Read,
         _ => GrpcRateLimitTier::Write,
+    }
+}
+
+/// Classify `OAuth2Service` methods into Read, Auth, or Write tiers.
+///
+/// Public discovery/login bootstrap endpoints should align with the HTTP router:
+/// - `GetAuthorizationUrl`, `ListAvailableProviders`: Read tier
+/// - `ExchangeAuthorizationCode`: Auth tier
+/// - Authenticated account-management methods: Write tier
+fn oauth2_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
+    match method {
+        Some("GetAuthorizationUrl" | "ListAvailableProviders") => GrpcRateLimitTier::Read,
+        Some("ExchangeAuthorizationCode") => GrpcRateLimitTier::Auth,
+        Some("GetAuthorizationUrlForBind" | "UnlinkProvider" | "GetLinkedProviders") => {
+            GrpcRateLimitTier::Write
+        }
+        _ => GrpcRateLimitTier::Auth,
     }
 }
 
@@ -325,10 +342,16 @@ fn extract_client_id<B>(
             .and_then(|h| h.to_str().ok())
             .and_then(|v| v.split(',').next())
             .map(str::trim)
+            .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
         {
             return format!("anon:{ip}");
         }
-        if let Some(ip) = headers.get("X-Real-IP").and_then(|h| h.to_str().ok()) {
+        if let Some(ip) = headers
+            .get("X-Real-IP")
+            .and_then(|h| h.to_str().ok())
+            .map(str::trim)
+            .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+        {
             return format!("anon:{ip}");
         }
     }
@@ -439,7 +462,11 @@ where
                     error = %err,
                     "gRPC distributed rate limit rejected request"
                 );
-                return Ok(rate_limit_error_response(err, &service_label, &method_label));
+                return Ok(rate_limit_error_response(
+                    err,
+                    &service_label,
+                    &method_label,
+                ));
             }
 
             match inner.call(req).await {
@@ -470,11 +497,11 @@ mod tests {
     use std::convert::Infallible;
     use std::net::SocketAddr;
     use std::sync::Arc;
-    use tower::service_fn;
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{jwt::TokenType, JwtService};
     use synctv_core::service::RateLimitBackend;
     use synctv_core::Result as CoreResult;
+    use tower::service_fn;
 
     fn request_with_headers(headers: http::HeaderMap) -> http::Request<TonicBody> {
         let request = http::Request::builder()
@@ -630,8 +657,24 @@ mod tests {
     #[test]
     fn test_tier_from_path_oauth2() {
         assert_eq!(
-            tier_from_path("/synctv.client.OAuth2Service/GetAuthUrl"),
+            tier_from_path("/synctv.client.OAuth2Service/GetAuthorizationUrl"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.OAuth2Service/ListAvailableProviders"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.OAuth2Service/ExchangeAuthorizationCode"),
             Some(GrpcRateLimitTier::Auth)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.OAuth2Service/GetAuthorizationUrlForBind"),
+            Some(GrpcRateLimitTier::Write)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.OAuth2Service/GetLinkedProviders"),
+            Some(GrpcRateLimitTier::Write)
         );
     }
 
@@ -893,7 +936,7 @@ mod tests {
 
     #[test]
     fn test_extract_client_id_x_forwarded_for_trusted_proxy() {
-        // With trusted proxies and x-real-ip-internal header, X-Forwarded-For is trusted
+        // With a trusted proxy peer address, X-Forwarded-For is trusted.
         let config = trusted_proxy_config();
         let jwt_service = create_test_jwt_service();
         let jwt_validator = create_test_jwt_validator(&jwt_service);
@@ -903,7 +946,6 @@ mod tests {
             "X-Forwarded-For",
             "203.0.113.50, 70.41.3.18".parse().unwrap(),
         );
-        headers.insert("x-real-ip-internal", "127.0.0.1".parse().unwrap());
 
         let id = extract_client_id(
             &request_with_peer(headers, "127.0.0.1:50051".parse().unwrap()),
@@ -921,7 +963,6 @@ mod tests {
 
         let mut headers = http::HeaderMap::new();
         headers.insert("X-Real-IP", "198.51.100.42".parse().unwrap());
-        headers.insert("x-real-ip-internal", "127.0.0.1".parse().unwrap());
 
         let id = extract_client_id(
             &request_with_peer(headers, "127.0.0.1:50051".parse().unwrap()),
@@ -929,6 +970,42 @@ mod tests {
             &jwt_validator,
         );
         assert_eq!(id, "anon:198.51.100.42");
+    }
+
+    #[test]
+    fn test_extract_client_id_invalid_forwarded_for_falls_back_to_x_real_ip() {
+        let config = trusted_proxy_config();
+        let jwt_service = create_test_jwt_service();
+        let jwt_validator = create_test_jwt_validator(&jwt_service);
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-Forwarded-For", "not-an-ip".parse().unwrap());
+        headers.insert("X-Real-IP", "198.51.100.42".parse().unwrap());
+
+        let id = extract_client_id(
+            &request_with_peer(headers, "127.0.0.1:50051".parse().unwrap()),
+            &config,
+            &jwt_validator,
+        );
+        assert_eq!(id, "anon:198.51.100.42");
+    }
+
+    #[test]
+    fn test_extract_client_id_invalid_proxy_headers_fall_back_to_peer_ip() {
+        let config = trusted_proxy_config();
+        let jwt_service = create_test_jwt_service();
+        let jwt_validator = create_test_jwt_validator(&jwt_service);
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-Forwarded-For", "garbage".parse().unwrap());
+        headers.insert("X-Real-IP", "still-not-an-ip".parse().unwrap());
+
+        let id = extract_client_id(
+            &request_with_peer(headers, "127.0.0.1:50051".parse().unwrap()),
+            &config,
+            &jwt_validator,
+        );
+        assert_eq!(id, "anon:127.0.0.1");
     }
 
     #[test]
@@ -1101,14 +1178,17 @@ mod tests {
         config
     }
 
-    async fn call_layer_with_strict_result(strict_result: StubStrictResult) -> http::Response<TonicBody> {
+    async fn call_layer_with_strict_result(
+        strict_result: StubStrictResult,
+    ) -> http::Response<TonicBody> {
         let jwt_service = create_test_jwt_service();
         let jwt_validator = create_test_jwt_validator(&jwt_service);
         let rate_limiter = RateLimiter::from_backend(
             Arc::new(StubRateLimitBackend { strict_result }),
             "grpc-test:".to_string(),
         );
-        let layer = GrpcRateLimitLayer::new(rate_limiter, Arc::new(cluster_mode_config()), jwt_validator);
+        let layer =
+            GrpcRateLimitLayer::new(rate_limiter, Arc::new(cluster_mode_config()), jwt_validator);
         let mut svc = layer.layer(service_fn(|_req: http::Request<TonicBody>| async move {
             Ok::<_, Infallible>(tonic::Status::ok("ok").into_http())
         }));
@@ -1164,10 +1244,12 @@ mod tests {
         let mut svc = layer.layer(service_fn(|_req: http::Request<TonicBody>| async move {
             let stream = stream::pending::<Result<Frame<bytes::Bytes>, Infallible>>();
             let body = TonicBody::new(StreamBody::new(stream));
-            Ok::<_, Infallible>(http::Response::builder()
-                .status(http::StatusCode::OK)
-                .body(body)
-                .unwrap())
+            Ok::<_, Infallible>(
+                http::Response::builder()
+                    .status(http::StatusCode::OK)
+                    .body(body)
+                    .unwrap(),
+            )
         }));
 
         let request = http::Request::builder()
@@ -1175,8 +1257,8 @@ mod tests {
             .body(TonicBody::empty())
             .unwrap();
 
-        let result = tokio::time::timeout(std::time::Duration::from_millis(100), svc.call(request))
-            .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), svc.call(request)).await;
 
         assert!(
             result.is_ok(),

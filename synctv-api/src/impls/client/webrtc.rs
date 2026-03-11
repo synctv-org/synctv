@@ -1,6 +1,6 @@
 //! WebRTC operations: ICE servers, network quality
 
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::{PermissionBits, RoomId, UserId};
 
 use super::ClientApiImpl;
 use crate::impls::ApiError;
@@ -22,6 +22,10 @@ impl ClientApiImpl {
         // Check membership
         self.room_service
             .check_membership(room_id, user_id)
+            .await
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+        self.room_service
+            .check_permission(room_id, user_id, PermissionBits::USE_WEBRTC)
             .await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 

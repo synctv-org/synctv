@@ -84,6 +84,8 @@ pub struct RouterConfig {
     pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     /// Credential encryption for protecting sensitive data in `source_config`
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    /// Shared proxy slice cache instance managed by the runtime.
+    pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
     /// Rate limit configuration for WebSocket messaging (chat/danmaku).
     /// This is separate from the HTTP rate limit config used by middleware.
     pub messaging_rate_limit_config: synctv_core::service::RateLimitConfig,
@@ -317,11 +319,8 @@ fn build_app_state(config: RouterConfig) -> AppState {
         signing_key: proxy_signing_key.clone(),
     });
 
-    let proxy_slice_cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-        synctv_proxy::slice_cache::SliceCacheConfig::default(),
-    ));
-
     let heartbeat_schedule = config.heartbeat_schedule;
+    let proxy_slice_cache = config.proxy_slice_cache.clone();
 
     let shared_content_filter = Arc::new(config.content_filter.clone());
 
@@ -670,6 +669,10 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         .merge(
             Router::new()
                 .nest("/api/provider", provider_common::register_common_routes())
+                .route_layer(axum_middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::read_rate_limit,
+                ))
                 .merge(register_provider_routes(&state)),
         )
 }
@@ -682,7 +685,10 @@ fn register_provider_routes(state: &AppState) -> Router<AppState> {
                     "/api/providers/bilibili",
                     providers::bilibili::bilibili_auth_routes(),
                 )
-                .nest("/api/providers/alist", providers::alist::alist_auth_routes())
+                .nest(
+                    "/api/providers/alist",
+                    providers::alist::alist_auth_routes(),
+                )
                 .nest("/api/providers/emby", providers::emby::emby_auth_routes())
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
@@ -695,7 +701,10 @@ fn register_provider_routes(state: &AppState) -> Router<AppState> {
                     "/api/providers/bilibili",
                     providers::bilibili::bilibili_read_routes(),
                 )
-                .nest("/api/providers/alist", providers::alist::alist_read_routes())
+                .nest(
+                    "/api/providers/alist",
+                    providers::alist::alist_read_routes(),
+                )
                 .nest("/api/providers/emby", providers::emby::emby_read_routes())
                 .nest("/api/providers/rtmp", providers::live::rtmp_routes())
                 .nest(
@@ -821,9 +830,7 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_app_state, register_all_routes, start_proxy_cache_lifecycle, RouterConfig,
-    };
+    use super::{build_app_state, register_all_routes, start_proxy_cache_lifecycle, RouterConfig};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use bytes::Bytes;
@@ -852,13 +859,11 @@ mod tests {
         http_rate_limits: synctv_core::HttpRateLimitConfig,
         grpc_rate_limits: synctv_core::GrpcRateLimitConfig,
     ) -> super::AppState {
-        let pool = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv").expect("lazy pool");
-        let username_cache = UsernameCache::new(
-            Arc::new(NoopCacheL2),
-            "test:username:".to_string(),
-            128,
-            60,
-        );
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
         let user_service = Arc::new(UserService::new(
             pool.clone(),
             synctv_core::service::JwtService::new(
@@ -872,8 +877,14 @@ mod tests {
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
-        let provider_instance_manager =
-            Arc::new(RemoteProviderManager::new(Arc::new(synctv_core::repository::ProviderInstanceRepository::new(pool.clone())), None, None, "test:"));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(
+            Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
+                pool.clone(),
+            )),
+            None,
+            None,
+            "test:",
+        ));
         let providers = ProviderSet {
             alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
             bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
@@ -922,6 +933,7 @@ mod tests {
             builtin_stun_url: None,
             turn_health_checker: None,
             credential_encryption: None,
+            proxy_slice_cache: Arc::new(SliceCache::new(SliceCacheConfig::default())),
             messaging_rate_limit_config: RateLimitConfig::default(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: None,
@@ -983,6 +995,104 @@ mod tests {
         assert!(
             start_proxy_cache_lifecycle(cache).is_none(),
             "disabled proxy cache must not start lifecycle task"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_app_state_reuses_injected_proxy_cache() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+        let user_service = Arc::new(UserService::new(
+            pool.clone(),
+            synctv_core::service::JwtService::new(
+                "test-secret-key-for-http-router-tests-minimum-32-chars",
+            )
+            .expect("jwt"),
+            username_cache,
+            synctv_core::config::PasswordComplexityConfig::default(),
+            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            KeyBuilder::new("test"),
+            synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
+        ));
+        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(
+            Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
+                pool.clone(),
+            )),
+            None,
+            None,
+            "test:",
+        ));
+        let providers = ProviderSet {
+            alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
+            bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
+            emby: Arc::new(EmbyProvider::new(provider_instance_manager.clone())),
+            direct_url: Arc::new(DirectUrlProvider::new()),
+            rtmp: Arc::new(RtmpProvider::new()),
+            live_proxy: Arc::new(LiveProxyProvider::new()),
+        };
+        let jwt_service = synctv_core::service::JwtService::new(
+            "test-secret-key-for-http-router-tests-minimum-32-chars",
+        )
+        .expect("jwt");
+        let (audit_service, _audit_handle) = AuditService::new(pool);
+        let injected_cache = Arc::new(SliceCache::new(SliceCacheConfig {
+            enabled: false,
+            ..SliceCacheConfig::default()
+        }));
+
+        let state = build_app_state(RouterConfig {
+            config: Arc::new(synctv_core::Config::default()),
+            user_service,
+            room_service,
+            content_filter: ContentFilter::new(),
+            provider_instance_manager,
+            user_provider_credential_repository: Arc::new(
+                synctv_core::repository::UserProviderCredentialRepository::new(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                        .expect("lazy pool"),
+                ),
+            ),
+            providers,
+            cluster_manager: None,
+            connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
+                synctv_cluster::sync::ConnectionLimits::default(),
+            )),
+            jwt_service,
+            redis_publish_tx: None,
+            oauth2_service: None,
+            settings_service: None,
+            settings_registry: None,
+            email_service: None,
+            email_token_service: None,
+            publish_key_service: None,
+            notification_service: None,
+            chat_service: None,
+            audit_service: Arc::new(audit_service),
+            live_streaming_infrastructure: None,
+            rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
+            ws_ticket_service: None,
+            redis_conn: None,
+            builtin_stun_url: None,
+            turn_health_checker: None,
+            credential_encryption: None,
+            proxy_slice_cache: injected_cache.clone(),
+            messaging_rate_limit_config: RateLimitConfig::default(),
+            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
+            providers_manager: None,
+        });
+
+        assert!(
+            Arc::ptr_eq(&state.proxy_slice_cache, &injected_cache),
+            "AppState must reuse the injected proxy slice cache instead of creating a hidden default instance"
+        );
+        assert!(
+            !state.proxy_slice_cache.config().enabled,
+            "The injected cache configuration must be preserved"
         );
     }
 
@@ -1096,7 +1206,10 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/tickets")
-                    .header(axum::http::header::AUTHORIZATION, format!("Bearer {access_token}"))
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        format!("Bearer {access_token}"),
+                    )
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"room_id":"room123"}"#))
                     .expect("request"),
@@ -1114,7 +1227,10 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/tickets")
-                    .header(axum::http::header::AUTHORIZATION, format!("Bearer {access_token}"))
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        format!("Bearer {access_token}"),
+                    )
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"room_id":"room123"}"#))
                     .expect("request"),
@@ -1169,6 +1285,56 @@ mod tests {
             second.status(),
             StatusCode::TOO_MANY_REQUESTS,
             "provider proxy endpoints must use the streaming rate-limit bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_provider_common_routes_use_read_rate_limit_tier() {
+        let state = test_app_state_with_rate_limits(
+            synctv_core::HttpRateLimitConfig {
+                read_max_requests: 1,
+                read_window_seconds: 60,
+                auth_max_requests: 100,
+                auth_window_seconds: 60,
+                ..synctv_core::HttpRateLimitConfig::default()
+            },
+            synctv_core::GrpcRateLimitConfig::default(),
+        );
+        let app = register_all_routes(state.clone()).with_state(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/provider/instances")
+                    .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            first.status(),
+            StatusCode::UNAUTHORIZED,
+            "first provider common request should reach auth before exhausting the read bucket"
+        );
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/provider/instances")
+                    .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            second.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "provider common routes must share the read rate-limit bucket"
         );
     }
 

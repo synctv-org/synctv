@@ -97,9 +97,7 @@ pub async fn init_database_with_cancel(
 /// Normal OLTP queries should continue using the main pool with bounded
 /// `statement_timeout`. This helper is only for startup/schema management work
 /// that can legitimately exceed the request-path timeout budget.
-pub async fn acquire_unbounded_ddl_connection(
-    pool: &PgPool,
-) -> Result<PoolConnection<Postgres>> {
+pub async fn acquire_unbounded_ddl_connection(pool: &PgPool) -> Result<PoolConnection<Postgres>> {
     let mut conn = pool
         .acquire()
         .await

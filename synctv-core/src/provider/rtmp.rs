@@ -5,11 +5,10 @@
 
 use super::{
     proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
-    store::{ProviderStoreExt, VersionedPlayback},
+    store::VersionedPlayback,
     MediaProvider, PlaybackResult, ProviderContext, ProviderError,
 };
 use async_trait::async_trait;
-use chrono::Utc;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -116,29 +115,9 @@ impl MediaProvider for RtmpProvider {
 
         let result = super::build_live_playback(media_id, room_id);
 
-        let store = _ctx.store.as_ref();
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5); // 5 minutes for live
-        let version = nanoid::nanoid!(16);
-        let versioned = VersionedPlayback {
-            version: version.clone(),
-            result: result.clone(),
-            expires_at: Utc::now().timestamp() + cache_ttl.as_secs() as i64,
-        };
-        if let Some(store) = store {
-            let _ = store.set(&cache_key, &versioned, cache_ttl).await;
-            let _ = store
-                .set(&format!("v:{version}"), &versioned, cache_ttl)
-                .await;
-        }
-
-        Ok(super::maybe_sign_versioned_playback(
-            result,
-            Self::NAME,
-            &version,
-            versioned.expires_at,
-            _ctx,
-        ))
+        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, _ctx).await
     }
 
     async fn validate_source_config(

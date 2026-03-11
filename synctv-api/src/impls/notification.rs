@@ -113,7 +113,9 @@ fn normalize_notification_pagination(
     page: Option<i32>,
     page_size: Option<i32>,
 ) -> Result<PageParams, ApiError> {
-    let page = page.unwrap_or(DEFAULT_NOTIFICATION_PAGE).max(DEFAULT_NOTIFICATION_PAGE) as u32;
+    let page = page
+        .unwrap_or(DEFAULT_NOTIFICATION_PAGE)
+        .max(DEFAULT_NOTIFICATION_PAGE) as u32;
     let page_size = page_size
         .unwrap_or(DEFAULT_NOTIFICATION_PAGE_SIZE)
         .clamp(1, MAX_PAGE_SIZE as i32) as u32;

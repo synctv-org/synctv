@@ -245,6 +245,10 @@ impl From<synctv_core::Error> for AppError {
                 tracing::warn!("Service unavailable: {}", msg);
                 Self::service_unavailable()
             }
+            Error::LockConflict(msg) => Self::new(
+                StatusCode::CONFLICT,
+                format!("Resource is being modified concurrently, please retry: {msg}"),
+            ),
             Error::Database(e) => {
                 tracing::error!("Database error: {}", e);
                 Self::internal_server_error("Database error")
@@ -665,6 +669,15 @@ mod tests {
         let core_err = synctv_core::Error::OptimisticLockConflict;
         let app_err = AppError::from(core_err);
         assert_eq!(app_err.status, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn test_from_core_lock_conflict() {
+        let core_err =
+            synctv_core::Error::LockConflict("Lock already held: create_room:user1".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::CONFLICT);
+        assert!(app_err.message.contains("please retry"));
     }
 
     #[test]

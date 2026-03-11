@@ -15,6 +15,8 @@ use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::BilibiliProvider;
 use synctv_core::repository::UserProviderCredentialRepository;
 
+use super::resolve_bound_instance_name;
+
 /// Bilibili API implementation
 ///
 /// Contains all business logic for Bilibili operations.
@@ -42,11 +44,15 @@ impl BilibiliApiImpl {
         &self,
         caller_user_id: &str,
         server_id: &str,
-    ) -> Result<HashMap<String, String>, synctv_core::provider::ProviderError> {
-        let server_id = if server_id.is_empty() {
-            UserProviderCredential::BILIBILI_SERVER_ID
+        requested_instance_name: Option<&str>,
+    ) -> Result<(HashMap<String, String>, Option<String>), synctv_core::provider::ProviderError> {
+        let server_id = if server_id.is_empty()
+            || (server_id == UserProviderCredential::BILIBILI_SERVER_ID
+                && requested_instance_name.is_some())
+        {
+            UserProviderCredential::bilibili_server_id(requested_instance_name)
         } else {
-            server_id
+            server_id.to_string()
         };
 
         let cred = self
@@ -54,7 +60,7 @@ impl BilibiliApiImpl {
             .get_by_provider_and_server(
                 caller_user_id,
                 synctv_core::provider::BilibiliProvider::NAME,
-                server_id,
+                &server_id,
             )
             .await
             .map_err(|e| {
@@ -72,8 +78,13 @@ impl BilibiliApiImpl {
             ));
         }
 
+        let effective_instance_name = resolve_bound_instance_name(
+            requested_instance_name,
+            cred.provider_instance_name.as_deref(),
+        )?;
+
         match cred.get_credential() {
-            Ok(ProviderCredential::Bilibili { cookies }) => Ok(cookies),
+            Ok(ProviderCredential::Bilibili { cookies }) => Ok((cookies, effective_instance_name)),
             Ok(_) => Err(synctv_core::provider::ProviderError::InvalidCredentialType),
             Err(e) => Err(synctv_core::provider::ProviderError::Internal(format!(
                 "Failed to parse bilibili credential: {e}"
@@ -139,14 +150,16 @@ impl BilibiliApiImpl {
         &self,
         caller_user_id: &str,
         req: ParseRequest,
-        instance_name: Option<&str>,
+        requested_instance_name: Option<&str>,
     ) -> Result<ParseResponse, synctv_core::provider::ProviderError> {
-        let cookies = self.resolve_cookies(caller_user_id, &req.server_id).await?;
+        let (cookies, effective_instance_name) = self
+            .resolve_cookies(caller_user_id, &req.server_id, requested_instance_name)
+            .await?;
 
         // Step 1: Match URL
         let match_resp = self
             .provider
-            .r#match(req.url.clone(), instance_name)
+            .r#match(req.url.clone(), effective_instance_name.as_deref())
             .await?;
 
         // Step 2: Parse based on type
@@ -168,7 +181,7 @@ impl BilibiliApiImpl {
                 };
 
                 self.provider
-                    .parse_video_page(parse_req, instance_name)
+                    .parse_video_page(parse_req, effective_instance_name.as_deref())
                     .await?
             }
             "pgc" | "ep" | "ss" => {
@@ -187,7 +200,7 @@ impl BilibiliApiImpl {
                 };
 
                 self.provider
-                    .parse_pgc_page(parse_req, instance_name)
+                    .parse_pgc_page(parse_req, effective_instance_name.as_deref())
                     .await?
             }
             "live" => {
@@ -197,7 +210,7 @@ impl BilibiliApiImpl {
                 };
 
                 self.provider
-                    .parse_live_page(parse_req, instance_name)
+                    .parse_live_page(parse_req, effective_instance_name.as_deref())
                     .await?
             }
             _ => {
@@ -346,13 +359,18 @@ impl BilibiliApiImpl {
         &self,
         caller_user_id: &str,
         req: UserInfoRequest,
-        instance_name: Option<&str>,
+        requested_instance_name: Option<&str>,
     ) -> Result<UserInfoResponse, synctv_core::provider::ProviderError> {
-        let cookies = self.resolve_cookies(caller_user_id, &req.server_id).await?;
+        let (cookies, effective_instance_name) = self
+            .resolve_cookies(caller_user_id, &req.server_id, requested_instance_name)
+            .await?;
 
         let info_req = synctv_media_providers::grpc::bilibili::UserInfoReq { cookies };
 
-        let resp = self.provider.user_info(info_req, instance_name).await?;
+        let resp = self
+            .provider
+            .user_info(info_req, effective_instance_name.as_deref())
+            .await?;
 
         Ok(UserInfoResponse {
             is_login: resp.is_login,

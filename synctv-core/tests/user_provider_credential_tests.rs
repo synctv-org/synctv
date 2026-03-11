@@ -11,8 +11,13 @@ use serde_json::json;
 use synctv_core::{
     models::{ProviderInstance, SignupMethod, User, UserProviderCredential},
     repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
+    service::CredentialEncryption,
 };
 use synctv_core_testing::create_test_pool;
+
+fn test_encryption() -> CredentialEncryption {
+    CredentialEncryption::new(&[0x42; 32]).unwrap()
+}
 fn make_user(username: &str) -> User {
     User::new(
         username.to_string(),
@@ -61,7 +66,10 @@ fn make_provider_instance(name: &str, providers: &[&str]) -> ProviderInstance {
         timeout: "10s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: providers.iter().map(|provider| (*provider).to_string()).collect(),
+        providers: providers
+            .iter()
+            .map(|provider| (*provider).to_string())
+            .collect(),
         enabled: true,
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -75,7 +83,7 @@ fn make_provider_instance(name: &str, providers: &[&str]) -> ProviderInstance {
 async fn test_create_credential() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     // Create a user first
     let user = user_repo.create(&make_user("cred_user1")).await.unwrap();
@@ -102,7 +110,7 @@ async fn test_create_credential() {
 async fn test_create_multiple_providers() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo
         .create(&make_user("multi_cred_user"))
@@ -130,7 +138,7 @@ async fn test_create_multiple_providers() {
 async fn test_get_by_id() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("getbyid_user")).await.unwrap();
     let cred = make_credential(user.id.as_str(), "bilibili", "bilibili");
@@ -150,7 +158,7 @@ async fn test_get_by_id() {
 async fn test_get_by_provider() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo
         .create(&make_user("getbyprov_user"))
@@ -188,7 +196,7 @@ async fn test_get_by_provider() {
 async fn test_update_credential() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("update_user")).await.unwrap();
     let mut cred = make_credential(user.id.as_str(), "bilibili", "bilibili");
@@ -219,7 +227,7 @@ async fn test_update_credential() {
 async fn test_update_credential_with_expiration() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("expire_user")).await.unwrap();
     let mut cred = make_credential(user.id.as_str(), "bilibili", "bilibili");
@@ -247,7 +255,7 @@ async fn test_update_credential_with_expiration() {
 async fn test_delete_credential() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("delete_user")).await.unwrap();
     let cred = make_credential(user.id.as_str(), "bilibili", "bilibili");
@@ -266,7 +274,7 @@ async fn test_delete_credential() {
 async fn test_delete_by_user_and_provider() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("delprov_user")).await.unwrap();
 
@@ -306,7 +314,7 @@ async fn test_delete_by_user_and_provider() {
 async fn test_unique_constraint_user_provider_server() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("unique_user")).await.unwrap();
 
@@ -326,8 +334,9 @@ async fn test_unique_constraint_user_provider_server() {
 async fn test_same_provider_host_can_be_stored_for_different_instances() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let provider_repo = ProviderInstanceRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let provider_repo =
+        ProviderInstanceRepository::new_with_encryption(pool.clone(), test_encryption());
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo
         .create(&make_user("instance_scoped_user"))
@@ -352,12 +361,8 @@ async fn test_same_provider_host_can_be_stored_for_different_instances() {
         Some("alist-backup"),
     );
 
-    let main = make_credential_with_instance(
-        user.id.as_str(),
-        "alist",
-        &server_main,
-        Some("alist-main"),
-    );
+    let main =
+        make_credential_with_instance(user.id.as_str(), "alist", &server_main, Some("alist-main"));
     let backup = make_credential_with_instance(
         user.id.as_str(),
         "alist",
@@ -368,7 +373,10 @@ async fn test_same_provider_host_can_be_stored_for_different_instances() {
     cred_repo.create(&main).await.unwrap();
     cred_repo.create(&backup).await.unwrap();
 
-    let all = cred_repo.get_by_provider(user.id.as_str(), "alist").await.unwrap();
+    let all = cred_repo
+        .get_by_provider(user.id.as_str(), "alist")
+        .await
+        .unwrap();
     assert_eq!(all.len(), 2);
 
     let main_found = cred_repo
@@ -382,7 +390,10 @@ async fn test_same_provider_host_can_be_stored_for_different_instances() {
         .unwrap()
         .expect("backup credential should exist");
 
-    assert_eq!(main_found.provider_instance_name.as_deref(), Some("alist-main"));
+    assert_eq!(
+        main_found.provider_instance_name.as_deref(),
+        Some("alist-main")
+    );
     assert_eq!(
         backup_found.provider_instance_name.as_deref(),
         Some("alist-backup")
@@ -396,7 +407,7 @@ async fn test_same_provider_host_can_be_stored_for_different_instances() {
 async fn test_credentials_deleted_when_user_deleted() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("cascade_user")).await.unwrap();
 
@@ -422,7 +433,7 @@ async fn test_credentials_deleted_when_user_deleted() {
 async fn test_delete_expired_credentials() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let cred_repo = UserProviderCredentialRepository::new(pool);
+    let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo
         .create(&make_user("expire_del_user"))

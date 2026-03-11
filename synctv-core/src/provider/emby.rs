@@ -519,13 +519,8 @@ impl MediaProvider for EmbyProvider {
         if let Some(store) = store {
             if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
                 if !cached.is_expired() {
-                    return Ok(super::maybe_sign_versioned_playback(
-                        cached.result,
-                        Self::NAME,
-                        &cached.version,
-                        cached.expires_at,
-                        _ctx,
-                    ));
+                    return super::maybe_sign_cached_versioned_playback(cached, Self::NAME, _ctx)
+                        .await;
                 }
             }
         }
@@ -544,13 +539,8 @@ impl MediaProvider for EmbyProvider {
         if let Some(store) = store {
             if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
                 if !cached.is_expired() {
-                    return Ok(super::maybe_sign_versioned_playback(
-                        cached.result,
-                        Self::NAME,
-                        &cached.version,
-                        cached.expires_at,
-                        _ctx,
-                    ));
+                    return super::maybe_sign_cached_versioned_playback(cached, Self::NAME, _ctx)
+                        .await;
                 }
             }
         }
@@ -559,28 +549,7 @@ impl MediaProvider for EmbyProvider {
         let result = self.resolve_from_api(&resolved).await?;
 
         // Generate version and store result
-        let version = nanoid::nanoid!(16);
-        let expires_at = Utc::now().timestamp() + cache_ttl.as_secs() as i64;
-        let versioned = VersionedPlayback {
-            version: version.clone(),
-            result: result.clone(),
-            expires_at,
-        };
-        if let Some(store) = store {
-            let _ = store.set(&cache_key, &versioned, cache_ttl).await;
-            let _ = store
-                .set(&format!("v:{version}"), &versioned, cache_ttl)
-                .await;
-        }
-
-        // Sign playback URLs when signing_key and identity are available
-        Ok(super::maybe_sign_versioned_playback(
-            result,
-            Self::NAME,
-            &version,
-            expires_at,
-            _ctx,
-        ))
+        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, _ctx).await
     }
 
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {

@@ -20,26 +20,6 @@ use synctv_core::service::auth::{JwtService, TokenType};
 const TEST_SECRET: &str = "test-secret-key-long-enough-for-entropy-check-1234567890";
 
 // ============================================================================
-// Interceptor Order Documentation Tests
-// ============================================================================
-
-#[test]
-fn test_grpc_interceptor_order_documentation() {
-    // Document the required interceptor order:
-    //
-    // Layer Stack (outer to inner):
-    // 1. BlacklistCheckLayer (tower middleware) - async security checks
-    //    - JWT verification (signature, expiration, type)
-    //    - SecurityPipeline.check(): password version, banned/deleted status
-    //
-    // 2. RateLimitLayer (tower middleware) - rate limiting per tier
-    //
-    // 3. AuthInterceptor (tonic interceptor) - sync JWT extraction
-    //    - Extract and validate JWT
-    //    - Inject UserContext into request extensions
-}
-
-// ============================================================================
 // JWT Verification Tests (BlacklistCheckLayer responsibility)
 // ============================================================================
 
@@ -166,39 +146,6 @@ fn test_auth_interceptor_injects_user_context() {
 }
 
 // ============================================================================
-// Layer Ordering Tests
-// ============================================================================
-
-#[test]
-fn test_tower_layer_ordering_concept() {
-    // Tower layers are applied in order: last added = first executed
-    //
-    // For a stack like:
-    //   Service::new()
-    //     .layer(BlacklistCheckLayer)
-    //     .layer(RateLimitLayer)
-    //
-    // Request flow: RateLimitLayer -> BlacklistCheckLayer -> Service
-    //
-    // Wait, that's backwards! The OUTERMOST layer is applied LAST in tower.
-    //
-    // Actually, tower::ServiceBuilder applies layers in order:
-    //   ServiceBuilder::new()
-    //     .layer(A)  // Outer layer
-    //     .layer(B)  // Inner layer
-    //     .service(S)
-    //
-    // Request flow: A -> B -> S
-    //
-    // So BlacklistCheckLayer should be added FIRST to execute FIRST.
-
-    assert!(
-        true,
-        "Tower layer ordering: first layer added = first to execute"
-    );
-}
-
-// ============================================================================
 // Rate Limit Layer Tests
 // ============================================================================
 
@@ -226,24 +173,6 @@ fn test_rate_limit_tier_mapping() {
 }
 
 // ============================================================================
-// Concurrent Request Tests
-// ============================================================================
-
-#[test]
-fn test_interceptor_handles_concurrent_requests() {
-    // Interceptors must handle concurrent requests correctly.
-    // Each request gets its own AuthInterceptor call.
-
-    // AuthInterceptor is Clone and thread-safe.
-    // BlacklistCheckLayer uses Arc for shared state.
-
-    assert!(
-        true,
-        "Interceptors are designed for concurrent request handling"
-    );
-}
-
-// ============================================================================
 // Error Handling Tests
 // ============================================================================
 
@@ -261,19 +190,6 @@ fn test_blacklist_layer_returns_unauthenticated_on_failure() {
     assert!(result.is_err(), "Invalid JWT should fail");
 
     // BlacklistCheckLayer would convert this to UNAUTHENTICATED status
-}
-
-#[test]
-fn test_security_pipeline_returns_unauthenticated_on_banned() {
-    // When SecurityPipeline detects a banned user, it returns an error
-    // that BlacklistCheckLayer converts to UNAUTHENTICATED.
-    //
-    // The error message should be generic to avoid information leakage.
-
-    assert!(
-        true,
-        "Security pipeline returns appropriate error for banned users"
-    );
 }
 
 // ============================================================================

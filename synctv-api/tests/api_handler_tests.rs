@@ -537,10 +537,7 @@ mod create_ticket_validation {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let json = body_json(resp).await;
         assert!(
-            json["error"]
-                .as_str()
-                .unwrap()
-                .contains("Invalid room_id"),
+            json["error"].as_str().unwrap().contains("Invalid room_id"),
             "unexpected error response: {json:?}"
         );
     }

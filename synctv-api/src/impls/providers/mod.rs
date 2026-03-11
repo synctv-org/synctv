@@ -12,6 +12,7 @@ pub use bilibili::BilibiliApiImpl;
 pub use emby::EmbyApiImpl;
 
 use std::sync::Arc;
+use synctv_core::provider::ProviderError;
 use synctv_core::repository::UserProviderCredentialRepository;
 
 /// Provider bind information returned by `get_binds`.
@@ -86,5 +87,84 @@ pub fn extract_instance_name(name: &str) -> Option<String> {
         None
     } else {
         Some(name.to_string())
+    }
+}
+
+fn normalized_instance_name(name: Option<&str>) -> Option<&str> {
+    name.and_then(|name| {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+/// Resolve the effective provider instance for a request against a stored credential.
+///
+/// Stored credentials are authoritative: once a credential is bound to an instance,
+/// the client must not override that binding via query/request parameters.
+pub(crate) fn resolve_bound_instance_name(
+    requested_instance_name: Option<&str>,
+    credential_instance_name: Option<&str>,
+) -> Result<Option<String>, ProviderError> {
+    let requested = normalized_instance_name(requested_instance_name);
+    let credential = normalized_instance_name(credential_instance_name);
+
+    match (requested, credential) {
+        (Some(requested), Some(credential)) if requested != credential => Err(
+            ProviderError::InvalidConfig(format!(
+                "Stored credential is bound to provider instance '{credential}', but request specified '{requested}'"
+            )),
+        ),
+        (_, Some(credential)) => Ok(Some(credential.to_string())),
+        (Some(requested), None) => Err(ProviderError::InvalidConfig(format!(
+            "Stored credential is not bound to a provider instance; omit instance_name '{requested}' and log in again if you need an instance-scoped credential"
+        ))),
+        (None, None) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_bound_instance_name;
+    use synctv_core::provider::ProviderError;
+
+    #[test]
+    fn resolve_bound_instance_name_uses_credential_binding_when_request_omits_instance() {
+        let resolved = resolve_bound_instance_name(None, Some("emby-main")).unwrap();
+        assert_eq!(resolved.as_deref(), Some("emby-main"));
+    }
+
+    #[test]
+    fn resolve_bound_instance_name_rejects_mismatched_request_instance() {
+        let err =
+            resolve_bound_instance_name(Some("emby-backup"), Some("emby-main")).unwrap_err();
+        match err {
+            ProviderError::InvalidConfig(msg) => {
+                assert!(msg.contains("emby-main"));
+                assert!(msg.contains("emby-backup"));
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_bound_instance_name_rejects_named_request_for_unbound_credential() {
+        let err = resolve_bound_instance_name(Some("bili-main"), None).unwrap_err();
+        match err {
+            ProviderError::InvalidConfig(msg) => {
+                assert!(msg.contains("not bound"));
+                assert!(msg.contains("bili-main"));
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_bound_instance_name_treats_blank_names_as_absent() {
+        let resolved = resolve_bound_instance_name(Some("   "), Some("")).unwrap();
+        assert!(resolved.is_none());
     }
 }

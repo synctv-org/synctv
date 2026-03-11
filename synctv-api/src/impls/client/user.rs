@@ -60,7 +60,12 @@ impl ClientApiImpl {
         req: crate::proto::client::SetUsernameRequest,
     ) -> Result<crate::proto::client::SetUsernameResponse, ApiError> {
         let response = self
-            .update_profile(user_id, Some(req.new_username.trim().to_string()), None, None)
+            .update_profile(
+                user_id,
+                Some(req.new_username.trim().to_string()),
+                None,
+                None,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -80,8 +85,8 @@ impl ClientApiImpl {
             Some(req.old_password),
             Some(req.new_password),
         )
-            .await
-            .map_err(ApiError::from)?;
+        .await
+        .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::SetPasswordResponse { success: true })
     }

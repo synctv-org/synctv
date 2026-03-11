@@ -290,26 +290,6 @@ fn test_check_permission_pattern() {
     );
 }
 
-#[test]
-fn test_check_membership_pattern() {
-    // This tests the pattern used in ClientApiImpl::get_playlist and list_playlists
-    // The actual check is: room_service.check_membership(&rid, &uid)
-
-    // Membership check is binary: either the user is a member or not
-    // This is independent of permissions - even a guest must be a room member
-
-    // The test verifies the concept:
-    // - Member with BANNED status should fail membership check
-    // - Member with ACTIVE status should pass
-
-    // This is tested in the core crate's member tests
-    // Here we just verify the PermissionBits logic is sound
-    assert!(
-        true,
-        "Membership check pattern is validated in synctv-core tests"
-    );
-}
-
 // ============================================================================
 // Playlist Operation Permission Requirements Documentation
 // ============================================================================

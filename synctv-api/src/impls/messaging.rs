@@ -384,6 +384,61 @@ impl Clone for StreamMessageHandler {
 }
 
 impl StreamMessageHandler {
+    fn error_server_message(error: impl Into<crate::impls::ApiError>) -> ServerMessage {
+        let api_error: crate::impls::ApiError = error.into();
+        ServerMessage {
+            message: Some(crate::proto::client::server_message::Message::Error(
+                api_error.to_proto_error(),
+            )),
+        }
+    }
+
+    fn validate_webrtc_recipient(&self, recipient: &str) -> Result<(), String> {
+        let Some((target_user_id, target_conn_id)) = recipient.split_once(':') else {
+            return Err("WebRTC recipient must be formatted as user_id:conn_id".to_string());
+        };
+
+        let target = self
+            .connection_manager
+            .get_connection(target_conn_id)
+            .ok_or_else(|| "Target connection is no longer active".to_string())?;
+
+        if target.user_id.as_str() != target_user_id {
+            return Err("WebRTC recipient does not match the target connection owner".to_string());
+        }
+
+        let target_room_id = target
+            .room_id
+            .as_ref()
+            .ok_or_else(|| "Target connection is not currently joined to a room".to_string())?;
+        if target_room_id != &self.room_id {
+            return Err("Target connection is not in this room".to_string());
+        }
+
+        if !target.rtc_joined {
+            return Err("Target connection has not joined WebRTC".to_string());
+        }
+
+        Ok(())
+    }
+
+    fn current_connection_matches_webrtc_recipient(&self, recipient: &str) -> bool {
+        let Some((target_user_id, target_conn_id)) = recipient.split_once(':') else {
+            return false;
+        };
+        if target_conn_id != self.connection_id {
+            return false;
+        }
+
+        let Some(current) = self.connection_manager.get_connection(&self.connection_id) else {
+            return false;
+        };
+
+        current.user_id.as_str() == target_user_id
+            && current.room_id.as_ref() == Some(&self.room_id)
+            && current.rtc_joined
+    }
+
     /// Create a new stream message handler
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -626,8 +681,12 @@ impl StreamMessageHandler {
         // If the transport is already gone here, we still need to run cleanup()
         // because pre_join() already registered the connection and subscribed state
         // will be established below.
-        if let Err(error) = stream.send(self.create_user_joined_message(&room_id_str, member_data.as_ref())) {
-            tracing::error!("Failed to send initial UserJoined message in run_after_join(): {error}");
+        if let Err(error) =
+            stream.send(self.create_user_joined_message(&room_id_str, member_data.as_ref()))
+        {
+            tracing::error!(
+                "Failed to send initial UserJoined message in run_after_join(): {error}"
+            );
             self.skip_cleanup_user_left
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             self.cleanup(&room_id_str).await;
@@ -688,15 +747,11 @@ impl StreamMessageHandler {
                                     "System overloaded: message processing semaphore exhausted, returning ResourceExhausted"
                                 );
                                 // Send ResourceExhausted error to client
-                            let error_msg = ServerMessage {
-                                message: Some(crate::proto::client::server_message::Message::Error(
-                                    crate::proto::client::ErrorMessage {
-                                        message: "System overloaded, please retry later".to_string(),
-                                        code: crate::impls::error_codes::RESOURCE_EXHAUSTED,
-                                            detail: String::new(),
-                                    },
-                                )),
-                            };
+                            let error_msg = Self::error_server_message(
+                                crate::impls::ApiError::RateLimited(
+                                    "System overloaded, please retry later".to_string(),
+                                ),
+                            );
                             if let Err(e) = stream.send(error_msg) {
                                 tracing::error!(
                                     "Failed to send ResourceExhausted error to client: {}",
@@ -711,7 +766,15 @@ impl StreamMessageHandler {
                             let _permit = permit; // Hold permit for duration of processing
                             if let Err(e) = self.handle_client_message(&msg).await {
                                 tracing::error!("Failed to handle client message: {}", e);
-                                // Don't break on individual message errors, continue processing
+                                if let Err(send_err) =
+                                    stream.send(Self::error_server_message(e.clone()))
+                                {
+                                    tracing::error!(
+                                        "Failed to send message error to client: {}",
+                                        send_err
+                                    );
+                                    break;
+                                }
                             }
                         }
                         Some(Err(e)) => {
@@ -732,13 +795,7 @@ impl StreamMessageHandler {
                         // SDP data contains IP addresses, so broadcasting to all room
                         // members is both a privacy leak and causes incorrect WebRTC behavior.
                         if let ClusterEvent::WebRTCSignaling { ref to, .. } = event {
-                            let is_target = if let Some((_user, conn)) = to.rsplit_once(':') {
-                                conn == self.connection_id
-                            } else {
-                                // Fallback: `to` is just a user_id
-                                *to == self.user_id.as_str()
-                            };
-                            if !is_target {
+                            if !self.current_connection_matches_webrtc_recipient(to) {
                                 continue;
                             }
                         }
@@ -2191,35 +2248,7 @@ impl StreamMessageHandler {
         if self.connection_manager.get_connection(&conn_id).is_none() {
             return Err("Connection not found".to_string());
         }
-
-        // Issue #64: validate the target conn_id is still active so stale offers
-        // are rejected early rather than silently dropped.
-        // The 'to' field is formatted as "user_id:conn_id"; we parse the conn_id part.
-        if let Some((_target_user, target_conn)) = offer.to.rsplit_once(':') {
-            if self
-                .connection_manager
-                .get_connection(target_conn)
-                .is_none()
-            {
-                tracing::warn!(
-                    room_id = %self.room_id.as_str(),
-                    target_conn = %target_conn,
-                    "WebRTC offer target conn_id is stale (peer reconnected?), dropping offer"
-                );
-                return Err(
-                    "Target connection is no longer active (peer may have reconnected)".to_string(),
-                );
-            }
-        } else {
-            // 'to' contains only a user_id without a conn_id qualifier.
-            // In multi-device scenarios this is unreliable: the signaling message
-            // will be delivered to whichever connection happens to match first.
-            tracing::warn!(
-                room_id = %self.room_id.as_str(),
-                to = %offer.to,
-                "WebRTC offer 'to' field has no conn_id qualifier; routing may be imprecise in multi-device scenarios"
-            );
-        }
+        self.validate_webrtc_recipient(&offer.to)?;
 
         // P2P relay path: forward offer to target peer via cluster
         let event = ClusterEvent::WebRTCSignaling {
@@ -2267,6 +2296,7 @@ impl StreamMessageHandler {
         if self.connection_manager.get_connection(&conn_id).is_none() {
             return Err("Connection not found".to_string());
         }
+        self.validate_webrtc_recipient(&answer.to)?;
 
         // Create event with server-set 'from' field
         let event = ClusterEvent::WebRTCSignaling {
@@ -2314,6 +2344,7 @@ impl StreamMessageHandler {
         if self.connection_manager.get_connection(&conn_id).is_none() {
             return Err("Connection not found".to_string());
         }
+        self.validate_webrtc_recipient(&candidate.to)?;
 
         // P2P relay path: forward ICE candidate to target peer via cluster
         let event = ClusterEvent::WebRTCSignaling {
@@ -3177,25 +3208,29 @@ impl ProtoCodec {
 mod tests {
     use super::*;
     use crate::proto::client::server_message::Message;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::collections::VecDeque;
     use std::time::Duration;
-    use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
+    use synctv_cluster::sync::{
+        ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
+    };
+    use synctv_cluster::sync::{ClusterEvent, NotificationLevel};
     use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::models::notification::{Notification, NotificationType};
-    use synctv_core::repository::{ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository};
+    use synctv_core::models::{MediaId, PermissionBits, RoomId, RoomPlaybackState, UserId};
+    use synctv_core::repository::NotificationRepository;
+    use synctv_core::repository::{
+        ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
+    };
     use synctv_core::service::auth::{BruteForceProtection, JwtService};
+    use synctv_core::service::user_notification::NotificationCreatedEvent;
     use synctv_core::service::{
         ChatService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
         PermissionService, RateLimitConfig, RateLimiter, RoomService, RoomSettingsService,
         UserService,
     };
-    use synctv_cluster::sync::{ClusterEvent, NotificationLevel};
-    use synctv_core::models::{MediaId, PermissionBits, RoomId, RoomPlaybackState, UserId};
-    use synctv_core::repository::NotificationRepository;
-    use synctv_core::service::user_notification::NotificationCreatedEvent;
 
     fn room_id() -> RoomId {
         RoomId("room_test".to_string())
@@ -3333,7 +3368,10 @@ mod tests {
             let attempt = self.state.send_calls.fetch_add(1, Ordering::Relaxed);
             if attempt >= self.fail_after {
                 self.state.alive.store(false, Ordering::Relaxed);
-                return Err(format!("forced stream send failure on attempt {}", attempt + 1));
+                return Err(format!(
+                    "forced stream send failure on attempt {}",
+                    attempt + 1
+                ));
             }
             Ok(())
         }
@@ -3388,12 +3426,8 @@ mod tests {
         let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
         let rate_limiter = RateLimiter::in_memory_only("test:chat:".to_string());
         let content_filter = ContentFilter::new();
-        let username_cache = UsernameCache::new(
-            Arc::new(NoopCacheL2),
-            "test:username:".to_string(),
-            100,
-            60,
-        );
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 100, 60);
         let member_repo = RoomMemberRepository::new(pool.clone());
         let room_repo = RoomRepository::new(pool.clone());
         let room_settings_repo = RoomSettingsRepository::new(pool);
@@ -3429,26 +3463,26 @@ mod tests {
     async fn test_cluster_manager(node_id: &str) -> Arc<ClusterManager> {
         Arc::new(
             ClusterManager::new(
-            ClusterConfig {
-                redis_client: None,
-                redis_conn: None,
-                shared_redis_conn: None,
-                cluster_enabled: false,
-                node_id: node_id.to_string(),
-                dedup_window: Duration::from_secs(60),
-                cleanup_interval: Duration::from_secs(10),
-                critical_channel_capacity: 100,
-                publish_channel_capacity: 1000,
-                key_prefix: "synctv:".to_string(),
-                catchup_window_secs: 300,
-                stream_max_length: 1000,
-                parent_cancel_token: None,
-            },
-            None,
-            None,
-        )
-        .await
-        .expect("cluster manager"),
+                ClusterConfig {
+                    redis_client: None,
+                    redis_conn: None,
+                    shared_redis_conn: None,
+                    cluster_enabled: false,
+                    node_id: node_id.to_string(),
+                    dedup_window: Duration::from_secs(60),
+                    cleanup_interval: Duration::from_secs(10),
+                    critical_channel_capacity: 100,
+                    publish_channel_capacity: 1000,
+                    key_prefix: "synctv:".to_string(),
+                    catchup_window_secs: 300,
+                    stream_max_length: 1000,
+                    parent_cancel_token: None,
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("cluster manager"),
         )
     }
 
@@ -3525,13 +3559,14 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    fn cluster_manager_subscriber_count(cluster_manager: &ClusterManager, room_id: &RoomId) -> usize {
+    fn cluster_manager_subscriber_count(
+        cluster_manager: &ClusterManager,
+        room_id: &RoomId,
+    ) -> usize {
         cluster_manager.get_room_subscribers(room_id).len()
     }
 
-    async fn wait_for_run_after_join_ready(
-        stream_state: &FailingStreamState,
-    ) {
+    async fn wait_for_run_after_join_ready(stream_state: &FailingStreamState) {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if stream_state.send_calls() >= 1 {
@@ -3553,14 +3588,18 @@ mod tests {
             .await
             .expect("run_after_join should exit")
             .expect("run_after_join task should not panic");
-        assert!(result.is_ok(), "run_after_join should exit cleanly: {result:?}");
+        assert!(
+            result.is_ok(),
+            "run_after_join should exit cleanly: {result:?}"
+        );
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if connection_manager.connection_count() == 0
                     && connection_manager.room_connection_count(&handler.room_id) == 0
                     && connection_manager.user_connection_count(&handler.user_id) == 0
-                    && cluster_manager_subscriber_count(&handler.cluster_manager, &handler.room_id) == 0
+                    && cluster_manager_subscriber_count(&handler.cluster_manager, &handler.room_id)
+                        == 0
                 {
                     break;
                 }
@@ -3576,8 +3615,11 @@ mod tests {
         let cluster_manager = test_cluster_manager("test_start_initial_send_failure").await;
         let connection_manager = test_connection_manager();
         let sender = FailingMessageSender::immediate();
-        let handler =
-            test_message_handler(sender, Arc::clone(&cluster_manager), connection_manager.clone());
+        let handler = test_message_handler(
+            sender,
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+        );
 
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
@@ -3587,11 +3629,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_does_not_broadcast_presence_events_when_initial_send_fails() {
-        let cluster_manager = test_cluster_manager("test_start_no_broadcast_on_initial_failure").await;
+        let cluster_manager =
+            test_cluster_manager("test_start_no_broadcast_on_initial_failure").await;
         let connection_manager = test_connection_manager();
         let sender = FailingMessageSender::immediate();
-        let handler =
-            test_message_handler(sender, Arc::clone(&cluster_manager), connection_manager.clone());
+        let handler = test_message_handler(
+            sender,
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+        );
 
         let room = handler.room_id.clone();
         let user = handler.user_id.clone();
@@ -3617,7 +3663,11 @@ mod tests {
         let connection_manager = test_connection_manager();
         let sender = FailingMessageSender::fail_after(1);
         let sender_for_assert = Arc::clone(&sender);
-        let handler = test_message_handler(sender, Arc::clone(&cluster_manager), connection_manager.clone());
+        let handler = test_message_handler(
+            sender,
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+        );
 
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
@@ -3657,7 +3707,11 @@ mod tests {
         let connection_manager = test_connection_manager();
         let sender = FailingMessageSender::fail_after(1);
         let sender_for_assert = Arc::clone(&sender);
-        let handler = test_message_handler(sender, Arc::clone(&cluster_manager), connection_manager.clone());
+        let handler = test_message_handler(
+            sender,
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+        );
 
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
@@ -3733,7 +3787,9 @@ mod tests {
         );
         handler.pre_join().await.expect("pre_join should succeed");
 
-        let (mut rx, conn_id) = cluster_manager.subscribe(handler.room_id.clone(), handler.user_id.clone()).await;
+        let (mut rx, conn_id) = cluster_manager
+            .subscribe(handler.room_id.clone(), handler.user_id.clone())
+            .await;
         let (mut stream, _stream_state) = FailingStream::fail_after(0);
         let task_handler = handler.clone();
         let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
@@ -3783,7 +3839,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_after_join_cleans_up_when_backpressure_error_send_fails() {
-        let cluster_manager = test_cluster_manager("test_run_after_join_backpressure_failure").await;
+        let cluster_manager =
+            test_cluster_manager("test_run_after_join_backpressure_failure").await;
         let connection_manager = test_connection_manager();
         let handler = test_message_handler(
             FailingMessageSender::fail_after(usize::MAX),

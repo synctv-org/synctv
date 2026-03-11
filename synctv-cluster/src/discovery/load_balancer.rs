@@ -73,25 +73,13 @@ impl LoadBalancer {
     }
 
     /// Select a node for the next request.
-    ///
-    /// If all nodes are unhealthy, falls back to selecting a random node from
-    /// the full set (regardless of health status) rather than returning an error.
     pub async fn select_node(&self) -> Result<String> {
-        let mut nodes = self.get_healthy_nodes().await?;
+        let nodes = self.get_healthy_nodes().await?;
 
         if nodes.is_empty() {
-            // Fallback: when all nodes are unhealthy, pick a random one from the full set
-            let all_nodes = self.node_registry.get_all_nodes_local().await;
-            if all_nodes.is_empty() {
-                return Err(Error::NotFound(
-                    "No nodes registered in the cluster".to_string(),
-                ));
-            }
-            tracing::warn!(
-                node_count = all_nodes.len(),
-                "All cluster nodes are unhealthy, falling back to random selection from full set"
-            );
-            nodes = all_nodes;
+            return Err(Error::NotFound(
+                "No healthy nodes available in the cluster".to_string(),
+            ));
         }
 
         let selected_node = match self.strategy {
@@ -492,7 +480,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_select_node_fallback_when_all_unhealthy() {
+    async fn test_select_node_returns_error_when_all_unhealthy() {
         let registry = make_registry();
         register_nodes(&registry, 2).await;
 
@@ -508,11 +496,10 @@ mod tests {
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
             .with_health_monitor(monitor);
 
-        // Should still return a node (fallback behavior)
         let node = lb.select_node().await;
         assert!(
-            node.is_ok(),
-            "Should fall back to random selection when all unhealthy"
+            node.is_err(),
+            "Must fail closed when all nodes are unhealthy"
         );
     }
 

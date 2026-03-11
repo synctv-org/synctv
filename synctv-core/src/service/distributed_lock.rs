@@ -301,11 +301,6 @@ impl DistributedLock {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn uses_shared_backend(&self) -> bool {
-        matches!(self.backend, DistributedLockBackend::Shared(_))
-    }
-
     /// Generate a fencing token for a lock key using Redis INCR
     ///
     /// Uses Redis INCR on a per-key counter to ensure monotonic tokens
@@ -545,7 +540,7 @@ impl DistributedLock {
             let lock_value = self
                 .acquire(key, ttl_seconds)
                 .await?
-                .ok_or_else(|| Error::Internal(format!("Failed to acquire lock: {key}")))?;
+                .ok_or_else(|| Error::LockConflict(format!("Lock already held: {key}")))?;
 
             // Execute operation
             let result = operation().await;
@@ -649,7 +644,7 @@ impl DistributedLock {
             let (lock_value, fencing_token) = self
                 .acquire_with_token(key, ttl_seconds)
                 .await?
-                .ok_or_else(|| Error::Internal(format!("Failed to acquire lock: {key}")))?;
+                .ok_or_else(|| Error::LockConflict(format!("Lock already held: {key}")))?;
 
             // Execute operation with fencing token
             let result = operation(fencing_token).await;
@@ -821,7 +816,7 @@ impl LockGuard {
         let value = lock
             .acquire(&key, ttl_seconds)
             .await?
-            .ok_or_else(|| Error::Internal(format!("Failed to acquire lock: {key}")))?;
+            .ok_or_else(|| Error::LockConflict(format!("Lock already held: {key}")))?;
 
         let drop_tx = Some(Self::spawn_drop_task(lock.clone()));
 
@@ -845,7 +840,7 @@ impl LockGuard {
         let (value, fencing_token) = lock
             .acquire_with_token(&key, ttl_seconds)
             .await?
-            .ok_or_else(|| Error::Internal(format!("Failed to acquire lock: {key}")))?;
+            .ok_or_else(|| Error::LockConflict(format!("Lock already held: {key}")))?;
 
         let drop_tx = Some(Self::spawn_drop_task(lock.clone()));
 

@@ -484,9 +484,7 @@ impl GrpcConnectionPool {
         channel: Channel,
         age: Duration,
     ) {
-        let created_at = Instant::now()
-            .checked_sub(age)
-            .unwrap_or_else(Instant::now);
+        let created_at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
         self.connections.insert(
             address.to_string(),
             PooledChannel {

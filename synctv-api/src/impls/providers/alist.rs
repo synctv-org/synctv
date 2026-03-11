@@ -12,6 +12,8 @@ use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::AlistProvider;
 use synctv_core::repository::UserProviderCredentialRepository;
 
+use super::resolve_bound_instance_name;
+
 /// Alist API implementation
 ///
 /// Contains all business logic for Alist operations.
@@ -120,7 +122,8 @@ impl AlistApiImpl {
         let token = self.provider.login(login_req, instance_name).await?;
 
         // Generate server_id and persist credential
-        let server_id = UserProviderCredential::generate_server_id_for_instance(&host, instance_name);
+        let server_id =
+            UserProviderCredential::generate_server_id_for_instance(&host, instance_name);
 
         // Store with hashed password for re-authentication
         let stored_password = if hashed {
@@ -183,11 +186,15 @@ impl AlistApiImpl {
         &self,
         caller_user_id: &str,
         req: ListRequest,
-        instance_name: Option<&str>,
+        requested_instance_name: Option<&str>,
     ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
-        let (host, token, _) = self
+        let (host, token, credential_instance_name) = self
             .resolve_credentials(caller_user_id, &req.server_id)
             .await?;
+        let effective_instance_name = resolve_bound_instance_name(
+            requested_instance_name,
+            credential_instance_name.as_deref(),
+        )?;
 
         let list_req = synctv_media_providers::grpc::alist::FsListReq {
             host,
@@ -199,7 +206,10 @@ impl AlistApiImpl {
             refresh: req.refresh,
         };
 
-        let resp = self.provider.fs_list(list_req, instance_name).await?;
+        let resp = self
+            .provider
+            .fs_list(list_req, effective_instance_name.as_deref())
+            .await?;
 
         let content: Vec<FileItem> = resp
             .content
@@ -226,15 +236,22 @@ impl AlistApiImpl {
         &self,
         caller_user_id: &str,
         req: GetMeRequest,
-        instance_name: Option<&str>,
+        requested_instance_name: Option<&str>,
     ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
-        let (host, token, _) = self
+        let (host, token, credential_instance_name) = self
             .resolve_credentials(caller_user_id, &req.server_id)
             .await?;
+        let effective_instance_name = resolve_bound_instance_name(
+            requested_instance_name,
+            credential_instance_name.as_deref(),
+        )?;
 
         let me_req = synctv_media_providers::grpc::alist::MeReq { host, token };
 
-        let resp = self.provider.me(me_req, instance_name).await?;
+        let resp = self
+            .provider
+            .me(me_req, effective_instance_name.as_deref())
+            .await?;
 
         Ok(GetMeResponse {
             username: resp.username,

@@ -193,7 +193,8 @@ impl ConnectionIdClaim<'_> {
 impl Drop for ConnectionIdClaim<'_> {
     fn drop(&mut self) {
         if !self.committed {
-            self.manager.release_connection_id_claim(&self.connection_id);
+            self.manager
+                .release_connection_id_claim(&self.connection_id);
         }
     }
 }
@@ -441,11 +442,7 @@ impl ConnectionManager {
             self.pending_retries_tx = tx;
             rx
         };
-        Self::spawn_pending_retries_task(
-            RedisConnHandle::Direct(conn),
-            rx,
-            cancel,
-        );
+        Self::spawn_pending_retries_task(RedisConnHandle::Direct(conn), rx, cancel);
 
         self
     }
@@ -577,7 +574,10 @@ impl ConnectionManager {
         }
     }
 
-    fn try_claim_connection_id(&self, connection_id: &str) -> Result<ConnectionIdClaim<'_>, String> {
+    fn try_claim_connection_id(
+        &self,
+        connection_id: &str,
+    ) -> Result<ConnectionIdClaim<'_>, String> {
         let mut claimed = self
             .claimed_connection_ids
             .lock()
@@ -932,9 +932,8 @@ impl ConnectionManager {
         }
 
         if should_remove_entry {
-            self.pending_room_reservations.remove_if(room_id, |_, counter| {
-                counter.load(Ordering::Acquire) == 0
-            });
+            self.pending_room_reservations
+                .remove_if(room_id, |_, counter| counter.load(Ordering::Acquire) == 0);
         }
     }
 
@@ -995,9 +994,8 @@ impl ConnectionManager {
         }
 
         if should_remove_entry {
-            self.pending_user_reservations.remove_if(user_id, |_, counter| {
-                counter.load(Ordering::Acquire) == 0
-            });
+            self.pending_user_reservations
+                .remove_if(user_id, |_, counter| counter.load(Ordering::Acquire) == 0);
         }
     }
 
@@ -2537,8 +2535,8 @@ impl ConnectionManager {
                                 }
                             }
 
-                            let key_is_empty: Result<bool, _> = conn.scard::<_, usize>(&key).await
-                                .map(|count| count == 0);
+                            let key_is_empty: Result<bool, _> =
+                                conn.scard::<_, usize>(&key).await.map(|count| count == 0);
                             match key_is_empty {
                                 Ok(true) => {
                                     let _: Result<(), _> = conn.del(&key).await;
@@ -3057,15 +3055,15 @@ mod tests {
             .await
             .expect("first register should succeed");
 
-        let duplicate = manager.register("dup-conn".to_string(), user_id.clone()).await;
+        let duplicate = manager
+            .register("dup-conn".to_string(), user_id.clone())
+            .await;
         assert!(
             duplicate.is_err(),
             "duplicate connection_id must be rejected deterministically"
         );
         assert!(
-            duplicate
-                .unwrap_err()
-                .contains("already registered"),
+            duplicate.unwrap_err().contains("already registered"),
             "duplicate register should report an already-registered error"
         );
 
@@ -3137,9 +3135,8 @@ mod tests {
         use redis::AsyncCommands;
 
         let (_container, client, conn, prefix) = docker_redis_connection("dup-race:").await;
-        let manager = Arc::new(
-            ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix),
-        );
+        let manager =
+            Arc::new(ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix));
         let barrier = Arc::new(tokio::sync::Barrier::new(3));
         let user1 = UserId::from_string("dup-race-user-1".to_string());
         let user2 = UserId::from_string("dup-race-user-2".to_string());
@@ -3837,8 +3834,14 @@ mod tests {
             .sadd(&stale_room_index, "stale_conn")
             .await
             .unwrap();
-        let _: () = redis_conn.expire(&stale_user_index, CONNECTION_METADATA_TTL_SECONDS).await.unwrap();
-        let _: () = redis_conn.expire(&stale_room_index, CONNECTION_METADATA_TTL_SECONDS).await.unwrap();
+        let _: () = redis_conn
+            .expire(&stale_user_index, CONNECTION_METADATA_TTL_SECONDS)
+            .await
+            .unwrap();
+        let _: () = redis_conn
+            .expire(&stale_room_index, CONNECTION_METADATA_TTL_SECONDS)
+            .await
+            .unwrap();
 
         // Also create a metadata key that belongs to another replica. Reconciliation
         // on this node must not delete it just because it is absent from local memory.
@@ -3853,7 +3856,10 @@ mod tests {
             rtc_joined_at_unix: None,
         };
         let _: () = redis_conn
-            .set(&unrelated_conn_key, serde_json::to_string(&foreign_meta).unwrap())
+            .set(
+                &unrelated_conn_key,
+                serde_json::to_string(&foreign_meta).unwrap(),
+            )
             .await
             .unwrap();
 
@@ -3958,11 +3964,20 @@ mod tests {
         let total_key = format!("{prefix}connections:total");
 
         let _: () = redis_conn.set(&user_key, 3).await.unwrap();
-        let _: () = redis_conn.expire(&user_key, DISTRIBUTED_COUNTER_TTL_SECONDS).await.unwrap();
+        let _: () = redis_conn
+            .expire(&user_key, DISTRIBUTED_COUNTER_TTL_SECONDS)
+            .await
+            .unwrap();
         let _: () = redis_conn.set(&room_key, 4).await.unwrap();
-        let _: () = redis_conn.expire(&room_key, DISTRIBUTED_COUNTER_TTL_SECONDS).await.unwrap();
+        let _: () = redis_conn
+            .expire(&room_key, DISTRIBUTED_COUNTER_TTL_SECONDS)
+            .await
+            .unwrap();
         let _: () = redis_conn.set(&total_key, 7).await.unwrap();
-        let _: () = redis_conn.expire(&total_key, DISTRIBUTED_COUNTER_TTL_SECONDS).await.unwrap();
+        let _: () = redis_conn
+            .expire(&total_key, DISTRIBUTED_COUNTER_TTL_SECONDS)
+            .await
+            .unwrap();
 
         // This node has no local connections. Reconciliation must not zero out
         // counters that may belong to other replicas.
@@ -4065,10 +4080,17 @@ mod tests {
         let mut verify_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
-        let initial_metadata: Option<String> = verify_conn.get(&initial_metadata_key).await.unwrap();
+        let initial_metadata: Option<String> =
+            verify_conn.get(&initial_metadata_key).await.unwrap();
         let initial_room_count: i64 = verify_conn.get(&initial_room_key).await.unwrap_or(0);
-        assert!(initial_metadata.is_some(), "initial shared handle should write metadata");
-        assert_eq!(initial_room_count, 1, "initial shared handle should write room counter");
+        assert!(
+            initial_metadata.is_some(),
+            "initial shared handle should write metadata"
+        );
+        assert_eq!(
+            initial_room_count, 1,
+            "initial shared handle should write room counter"
+        );
 
         let replacement_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
@@ -4076,16 +4098,26 @@ mod tests {
         *shared_conn.write().await = replacement_conn;
 
         let moved_room = RoomId::from_string("room-shared-2".to_string());
-        manager.join_room("conn-shared", moved_room.clone()).await.unwrap();
+        manager
+            .join_room("conn-shared", moved_room.clone())
+            .await
+            .unwrap();
 
         let moved_room_key = format!("{prefix}connections:room:{}", moved_room.as_str());
         let old_room_count: i64 = verify_conn.get(&initial_room_key).await.unwrap_or(0);
         let new_room_count: i64 = verify_conn.get(&moved_room_key).await.unwrap_or(0);
         let updated_metadata: String = verify_conn.get(&initial_metadata_key).await.unwrap();
-        let updated_info: ConnectionInfoPersistent = serde_json::from_str(&updated_metadata).unwrap();
+        let updated_info: ConnectionInfoPersistent =
+            serde_json::from_str(&updated_metadata).unwrap();
 
-        assert_eq!(old_room_count, 0, "old room counter should be decremented after move");
-        assert_eq!(new_room_count, 1, "new room counter should be incremented after move");
+        assert_eq!(
+            old_room_count, 0,
+            "old room counter should be decremented after move"
+        );
+        assert_eq!(
+            new_room_count, 1,
+            "new room counter should be incremented after move"
+        );
         assert_eq!(
             updated_info.room_id.as_deref(),
             Some(moved_room.as_str()),

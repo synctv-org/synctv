@@ -89,6 +89,10 @@ pub struct Services {
     pub settings_listen_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Audit flush handle for graceful shutdown of audit logging
     pub audit_flush_handle: Arc<tokio::sync::Mutex<Option<AuditFlushHandle>>>,
+    /// Cancellation token for the provider invalidation listener.
+    pub provider_invalidation_cancel: tokio_util::sync::CancellationToken,
+    /// Provider invalidation listener task handle (joined on shutdown).
+    pub provider_invalidation_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Credential encryption for protecting sensitive data (optional)
     pub credential_encryption: Option<crate::service::CredentialEncryption>,
 }
@@ -119,6 +123,38 @@ fn handle_provider_invalidation_listener_result(
     }
 
     Ok(())
+}
+
+async fn build_providers_manager(
+    config: &Config,
+    provider_instance_manager: Arc<RemoteProviderManager>,
+) -> Result<Arc<ProvidersManager>, anyhow::Error> {
+    let provider_http_client = synctv_common::http::SsrfSafeClientBuilder::provider()
+        .connect_timeout(std::time::Duration::from_secs(
+            config.media_providers.connect_timeout_seconds,
+        ))
+        .request_timeout(std::time::Duration::from_secs(
+            config.media_providers.request_timeout_seconds,
+        ))
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to build provider HTTP client: {e}"))?;
+
+    let mut providers_manager = ProvidersManager::new_with_provider_http_client(
+        provider_instance_manager,
+        provider_http_client,
+        std::time::Duration::from_secs(config.media_providers.connect_timeout_seconds),
+    );
+    let loaded_provider_count = providers_manager
+        .load_from_config(config)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to load media providers from configuration: {e}"))?;
+
+    info!(
+        "ProvidersManager loaded {} provider instance(s) from configuration",
+        loaded_provider_count
+    );
+
+    Ok(Arc::new(providers_manager))
 }
 
 /// Initialize all core services
@@ -157,8 +193,6 @@ pub async fn init_services(
     // H8 fix: All services now receive the shared Arc<RwLock<ConnectionManager>>
     // directly via redis_handles.conn, eliminating init-time snapshots that
     // would become stale after Sentinel failover.
-    let redis_client: Option<redis::Client> = redis_handles.as_ref().map(|h| h.client.clone());
-
     // Create L2 cache backend (Redis or Noop)
     //
     // In Sentinel mode, use the shared Arc<RwLock<ConnectionManager>> so that
@@ -285,26 +319,6 @@ pub async fn init_services(
     }
     info!("UserService initialized");
 
-    // Initialize RoomService
-    let mut room_service = build_room_service(
-        pool.clone(),
-        user_service.clone(),
-        cache_invalidation.clone(),
-        brute_force.clone(),
-        redis_handles.as_ref(),
-        matches!(
-            config.redis.deployment_mode,
-            crate::config::RedisDeploymentMode::Sentinel
-        ),
-    );
-    info!("RoomService initialized");
-
-    // Initialize CacheManager and start cross-replica invalidation listener
-    let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
-        .with_username_cache(Arc::new(username_cache.clone()));
-    cache_manager.start_invalidation_listener(&cache_invalidation);
-    info!("CacheManager initialized with invalidation listener");
-
     // Initialize credential encryption (shared by both repositories and media providers)
     let credential_encryption = init_credential_encryption();
     // Keep a clone for use by media providers (source_config cookie encryption)
@@ -333,7 +347,8 @@ pub async fn init_services(
     } else {
         warn!(
             "Credential encryption key not configured (set SYNCTV_CREDENTIAL_ENCRYPTION_KEY). \
-             Provider credentials will not be encrypted."
+             Existing encrypted credentials remain readable only when the key is configured, \
+             and creating/updating provider credentials will be rejected."
         );
         Arc::new(UserProviderCredentialRepository::new(pool.clone()))
     };
@@ -362,11 +377,9 @@ pub async fn init_services(
 
     // Initialize RemoteProviderManager (with Redis for cross-replica cache invalidation when available)
     info!("Initializing RemoteProviderManager...");
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new(
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
         provider_instance_repo.clone(),
-        redis_handles.as_ref().map(|h| h.conn.clone()),
-        redis_client.clone(),
-        config.redis.key_prefix.clone(),
+        Some((*cache_invalidation).clone()),
     ));
 
     // Pre-warm cache with all enabled provider instances from database
@@ -387,21 +400,35 @@ pub async fn init_services(
 
     // Initialize ProvidersManager
     info!("Initializing ProvidersManager...");
-    let provider_http_client = synctv_common::http::SsrfSafeClientBuilder::provider()
-        .connect_timeout(std::time::Duration::from_secs(
-            config.media_providers.connect_timeout_seconds,
-        ))
-        .request_timeout(std::time::Duration::from_secs(
-            config.media_providers.request_timeout_seconds,
-        ))
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to build provider HTTP client: {e}"))?;
-    let providers_manager = Arc::new(ProvidersManager::new_with_provider_http_client(
-        provider_instance_manager.clone(),
-        provider_http_client,
-        std::time::Duration::from_secs(config.media_providers.connect_timeout_seconds),
-    ));
+    let providers_manager =
+        build_providers_manager(config, provider_instance_manager.clone()).await?;
     info!("ProvidersManager initialized");
+
+    // Initialize RoomService after ProvidersManager so media/playback paths use
+    // the same provider graph and HTTP client configuration as bootstrap.
+    let mut room_service = build_room_service(
+        pool.clone(),
+        user_service.clone(),
+        providers_manager.clone(),
+        cache_invalidation.clone(),
+        brute_force.clone(),
+        redis_handles.as_ref(),
+        cluster_mode,
+        matches!(
+            config.redis.deployment_mode,
+            crate::config::RedisDeploymentMode::Sentinel
+        ),
+    );
+    if let Some(ref encryption) = credential_encryption_for_services {
+        room_service.set_media_credential_encryption(encryption.clone());
+    }
+    info!("RoomService initialized");
+
+    // Initialize CacheManager and start cross-replica invalidation listener
+    let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
+        .with_username_cache(Arc::new(username_cache.clone()));
+    cache_manager.start_invalidation_listener(&cache_invalidation);
+    info!("CacheManager initialized with invalidation listener");
 
     // Initialize OAuth2 service (optional - requires OAuth2 provider config).
     // In cluster mode, Redis is required (validated at service creation).
@@ -452,8 +479,7 @@ pub async fn init_services(
     info!("Settings registry initialized");
 
     // Initialize Email service (optional - requires SMTP configuration)
-    let email_service =
-        init_email_service(config, redis_handles.as_ref().map(|h| h.conn.clone()))?;
+    let email_service = init_email_service(config, redis_handles.as_ref().map(|h| h.conn.clone()))?;
     if email_service.is_some() {
         info!("Email service initialized");
     } else {
@@ -505,6 +531,7 @@ pub async fn init_services(
     // Wire settings registry into UserService for signup_need_review and email_whitelist enforcement
     let settings_registry = Arc::new(settings_registry);
     user_service.set_settings_registry(Arc::clone(&settings_registry));
+    room_service.set_settings_registry(Arc::clone(&settings_registry));
 
     // Store the settings listen task handle so it can be joined on shutdown.
     // The task will be cancelled via settings_cancel.
@@ -533,6 +560,9 @@ pub async fn init_services(
     );
     info!("ChatService initialized");
 
+    let provider_invalidation_cancel = provider_instance_manager.invalidation_cancel_token();
+    let provider_invalidation_task = provider_instance_manager.invalidation_listener_task();
+
     Ok(Services {
         user_service: Arc::new(user_service),
         room_service: Arc::new(room_service),
@@ -560,6 +590,8 @@ pub async fn init_services(
         settings_cancel,
         settings_listen_task: Arc::new(tokio::sync::Mutex::new(Some(settings_listen_task))),
         audit_flush_handle: Arc::new(tokio::sync::Mutex::new(Some(audit_flush_handle))),
+        provider_invalidation_cancel,
+        provider_invalidation_task,
         credential_encryption: credential_encryption_for_services,
     })
 }
@@ -726,13 +758,18 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
 fn build_room_service(
     pool: PgPool,
     user_service: UserService,
+    providers_manager: Arc<ProvidersManager>,
     cache_invalidation: Arc<CacheInvalidationService>,
     brute_force: crate::service::auth::BruteForceProtection,
     redis_handles: Option<&RedisHandles>,
+    cluster_mode: bool,
     is_sentinel: bool,
 ) -> RoomService {
-    let mut room_service = RoomService::new(pool, user_service);
-    if let Some(redis_handles) = redis_handles {
+    let mut room_service = RoomService::new_with_providers(pool, user_service, providers_manager);
+    if cluster_mode {
+        let redis_handles = redis_handles.expect(
+            "cluster.enabled=true requires Redis and is validated before service initialization",
+        );
         let lock = crate::service::DistributedLock::new_shared_with_mode(
             redis_handles.conn.clone(),
             is_sentinel,
@@ -743,6 +780,16 @@ fn build_room_service(
     room_service.set_cache_invalidation(cache_invalidation.clone());
     room_service.set_playback_cache_invalidation(cache_invalidation);
     room_service
+}
+
+#[cfg(test)]
+fn test_providers_manager(pool: &PgPool) -> Arc<ProvidersManager> {
+    let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
+        provider_repo,
+        None,
+    ));
+    Arc::new(ProvidersManager::new(provider_instance_manager))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -994,11 +1041,13 @@ mod tests {
         ));
 
         let room_service = build_room_service(
-            pool,
+            pool.clone(),
             user_service,
+            test_providers_manager(&pool),
             cache_invalidation,
             crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
             None,
+            false,
             false,
         );
 
@@ -1011,11 +1060,241 @@ mod tests {
         let _: fn(
             PgPool,
             UserService,
+            Arc<ProvidersManager>,
             Arc<CacheInvalidationService>,
             crate::service::auth::BruteForceProtection,
             Option<&RedisHandles>,
             bool,
+            bool,
         ) -> RoomService = build_room_service;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_build_room_service_only_enables_distributed_lock_in_cluster_mode() {
+        let (_redis_container, redis_client) = synctv_core_testing::start_redis_with_client().await;
+        let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone())
+            .await
+            .expect("redis connection manager");
+        let redis_handles = RedisHandles {
+            client: redis_client,
+            conn: Arc::new(tokio::sync::RwLock::new(redis_conn)),
+        };
+
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let jwt_service = JwtService::with_durations(
+            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+            24,
+            30,
+            24,
+            60,
+        )
+        .expect("jwt service");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:user:".to_string(), 100, 60);
+        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
+            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
+        );
+        let user_service = UserService::new(
+            pool.clone(),
+            jwt_service,
+            username_cache,
+            Config::default().password_complexity,
+            token_blacklist,
+            crate::cache::KeyBuilder::new("test"),
+            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
+        );
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            None,
+            "node-test".to_string(),
+            "test:cache:stream".to_string(),
+        ));
+
+        let standalone_room_service = build_room_service(
+            pool.clone(),
+            user_service.clone(),
+            test_providers_manager(&pool),
+            cache_invalidation.clone(),
+            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
+            Some(&redis_handles),
+            false,
+            false,
+        );
+        assert!(
+            !standalone_room_service.has_distributed_lock(),
+            "standalone mode should not enable distributed lock just because Redis is configured"
+        );
+
+        let cluster_room_service = build_room_service(
+            pool.clone(),
+            user_service,
+            test_providers_manager(&pool),
+            cache_invalidation,
+            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
+            Some(&redis_handles),
+            true,
+            false,
+        );
+        assert!(
+            cluster_room_service.has_distributed_lock(),
+            "cluster mode should enable distributed lock when Redis is configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_services_wiring_applies_settings_registry_to_room_service() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let jwt_service = JwtService::with_durations(
+            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+            24,
+            30,
+            24,
+            60,
+        )
+        .expect("jwt service");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:user:".to_string(), 100, 60);
+        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
+            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
+        );
+        let mut user_service = UserService::new(
+            pool.clone(),
+            jwt_service,
+            username_cache,
+            Config::default().password_complexity,
+            token_blacklist,
+            crate::cache::KeyBuilder::new("test"),
+            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
+        );
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            None,
+            "node-test".to_string(),
+            "test:cache:stream".to_string(),
+        ));
+        let mut room_service = build_room_service(
+            pool.clone(),
+            user_service.clone(),
+            test_providers_manager(&pool),
+            cache_invalidation,
+            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
+            None,
+            false,
+            false,
+        );
+        let settings_service = Arc::new(SettingsService::new(
+            SettingsRepository::new(pool),
+            PgPool::connect_lazy("postgresql://test").expect("lazy pool should build"),
+        ));
+        let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
+
+        user_service.set_settings_registry(Arc::clone(&settings_registry));
+        room_service.set_settings_registry(settings_registry);
+
+        assert!(room_service.has_settings_registry());
+    }
+
+    #[tokio::test]
+    async fn test_build_room_service_reuses_injected_providers_manager() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let jwt_service = JwtService::with_durations(
+            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+            24,
+            30,
+            24,
+            60,
+        )
+        .expect("jwt service");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:user:".to_string(), 100, 60);
+        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
+            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
+        );
+        let user_service = UserService::new(
+            pool.clone(),
+            jwt_service,
+            username_cache,
+            Config::default().password_complexity,
+            token_blacklist,
+            crate::cache::KeyBuilder::new("test"),
+            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
+        );
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            None,
+            "node-test".to_string(),
+            "test:cache:stream".to_string(),
+        ));
+        let providers_manager = test_providers_manager(&pool);
+
+        let room_service = build_room_service(
+            pool,
+            user_service,
+            Arc::clone(&providers_manager),
+            cache_invalidation,
+            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
+            None,
+            false,
+            false,
+        );
+
+        assert!(
+            Arc::ptr_eq(room_service.media_service().providers_manager(), &providers_manager),
+            "room service must reuse the injected providers manager instead of constructing a hidden one"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_room_service_accepts_media_credential_encryption_injection() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let jwt_service = JwtService::with_durations(
+            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+            24,
+            30,
+            24,
+            60,
+        )
+        .expect("jwt service");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:user:".to_string(), 100, 60);
+        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
+            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
+        );
+        let user_service = UserService::new(
+            pool.clone(),
+            jwt_service,
+            username_cache,
+            Config::default().password_complexity,
+            token_blacklist,
+            crate::cache::KeyBuilder::new("test"),
+            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
+        );
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            None,
+            "node-test".to_string(),
+            "test:cache:stream".to_string(),
+        ));
+        let providers_manager = test_providers_manager(&pool);
+        let mut room_service = build_room_service(
+            pool,
+            user_service,
+            Arc::clone(&providers_manager),
+            cache_invalidation,
+            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
+            None,
+            false,
+            false,
+        );
+
+        let encryption = crate::service::CredentialEncryption::new(&[7u8; 32])
+            .expect("credential encryption should construct");
+        room_service.set_media_credential_encryption(encryption);
+
+        assert!(
+            Arc::ptr_eq(
+                room_service.media_service().providers_manager(),
+                &providers_manager
+            ),
+            "injecting media credential encryption must not replace the shared providers manager"
+        );
     }
 
     #[test]
@@ -1094,5 +1373,26 @@ mod tests {
         assert_eq!(rate_limit_config.chat_per_second, 21);
         assert_eq!(rate_limit_config.danmaku_per_second, 8);
         assert_eq!(rate_limit_config.window_seconds, 5);
+    }
+
+    #[tokio::test]
+    async fn test_build_providers_manager_loads_defaults_from_config() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let mut config = Config::default();
+        config.media_providers.providers = serde_json::json!({});
+        let provider_repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
+            provider_repo,
+            None,
+        ));
+
+        let providers_manager = build_providers_manager(&config, provider_instance_manager)
+            .await
+            .expect("provider manager builder should load default providers");
+
+        assert!(
+            providers_manager.get("direct_url_default").await.is_some(),
+            "default provider instances must be loaded during provider manager initialization"
+        );
     }
 }

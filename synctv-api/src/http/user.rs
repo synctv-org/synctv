@@ -9,8 +9,7 @@ use axum::{
 
 use super::{middleware::AuthUser, AppResult, AppState};
 use crate::proto::client::{
-    DeleteRoomResponse, GetProfileResponse, ListCreatedRoomsResponse,
-    ListParticipatedRoomsResponse,
+    DeleteRoomResponse, GetProfileResponse, ListCreatedRoomsResponse, ListParticipatedRoomsResponse,
 };
 
 /// Typed request for PATCH /api/user

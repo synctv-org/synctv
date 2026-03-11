@@ -149,6 +149,47 @@ pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> t
     }
 }
 
+/// Extract the effective client IP for gRPC requests.
+///
+/// Matches HTTP semantics: only trust forwarded headers when the direct peer is
+/// a configured trusted proxy. Otherwise fall back to the socket peer address.
+#[must_use]
+pub(crate) fn extract_client_ip<T>(
+    request: &tonic::Request<T>,
+    config: &synctv_core::Config,
+) -> Option<std::net::IpAddr> {
+    let remote_addr = request
+        .extensions()
+        .get::<tonic::transport::server::TcpConnectInfo>()
+        .and_then(|info| info.remote_addr())
+        .map(|addr| addr.ip());
+
+    let should_trust_headers = remote_addr.is_some_and(|ip| config.server.is_trusted_proxy(&ip));
+    if should_trust_headers {
+        if let Some(ip) = request
+            .metadata()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(str::trim)
+            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        {
+            return Some(ip);
+        }
+        if let Some(ip) = request
+            .metadata()
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        {
+            return Some(ip);
+        }
+    }
+
+    remote_addr
+}
+
 fn should_register_cluster_grpc_service(
     config: &synctv_core::Config,
     node_registry_available: bool,
@@ -444,7 +485,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         audit_service.clone(),
     ));
 
-    let admin_service = AdminServiceImpl::new(user_service_for_admin, admin_api);
+    let admin_service =
+        AdminServiceImpl::new(user_service_for_admin, admin_api, Arc::new(config.clone()));
 
     // Create auth interceptor for authenticated services (clone jwt_service for blacklist layer)
     let auth_interceptor = AuthInterceptor::new(jwt_service.clone());
@@ -644,8 +686,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             oauth2_svc,
             user_service.clone(),
         ));
-        let oauth2_impl =
-            oauth2_service::OAuth2GrpcService::new(oauth2_api, oauth2_auth_interceptor);
+        let oauth2_impl = oauth2_service::OAuth2GrpcService::new(
+            oauth2_api,
+            Arc::new(config.clone()),
+            oauth2_auth_interceptor,
+        );
         // No global interceptor: public endpoints are unauthenticated,
         // private endpoints call require_auth() inline.
         router = router.add_service(
@@ -706,10 +751,14 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             builtin_stun_url: None,
             turn_health_checker: None,
             credential_encryption: credential_encryption.clone(),
+            proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+            )),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: Some(Arc::clone(&_providers_mgr)),
         });
+        let provider_proxy_slice_cache = provider_router_config.proxy_slice_cache.clone();
 
         // Reuse the already-constructed client_api and use actual rate limit config
         let app_state = Arc::new(crate::http::AppState {
@@ -761,9 +810,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 signing_key: proxy_signing_key.clone(),
             }),
             proxy_signing_key: proxy_signing_key.clone(),
-            proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                synctv_proxy::slice_cache::SliceCacheConfig::default(),
-            )),
+            proxy_slice_cache: provider_proxy_slice_cache,
         });
 
         // Register provider gRPC services with auth interceptor
@@ -989,11 +1036,34 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_mark_cluster_service_serving, should_mark_livestream_relay_serving,
-        should_mark_notification_service_serving, should_mark_oauth2_service_serving,
-        should_mark_provider_services_serving, should_register_cluster_grpc_service,
-        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
+        extract_client_ip, should_mark_cluster_service_serving,
+        should_mark_livestream_relay_serving, should_mark_notification_service_serving,
+        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
+        should_register_cluster_grpc_service, should_register_livestream_relay_service,
+        validate_cluster_grpc_runtime_requirements,
     };
+    use std::net::SocketAddr;
+    use tonic::metadata::{MetadataKey, MetadataValue};
+
+    fn request_with_peer_and_headers(
+        peer: SocketAddr,
+        headers: &[(&str, &str)],
+    ) -> tonic::Request<()> {
+        let mut request = tonic::Request::new(());
+        request
+            .extensions_mut()
+            .insert(tonic::transport::server::TcpConnectInfo {
+                local_addr: None,
+                remote_addr: Some(peer),
+            });
+        for (key, value) in headers {
+            request.metadata_mut().insert(
+                MetadataKey::from_bytes(key.as_bytes()).expect("valid metadata key"),
+                MetadataValue::try_from(*value).expect("valid metadata value"),
+            );
+        }
+        request
+    }
 
     #[test]
     fn test_cluster_grpc_service_requires_cluster_mode() {
@@ -1059,6 +1129,60 @@ mod tests {
 
         validate_cluster_grpc_runtime_requirements(&config, false)
             .expect("standalone gRPC runtime should allow missing NodeRegistry");
+    }
+
+    #[test]
+    fn test_extract_client_ip_uses_x_forwarded_for_from_trusted_proxy() {
+        let mut config = synctv_core::Config::default();
+        config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
+
+        let request = request_with_peer_and_headers(
+            "127.0.0.1:50051".parse().unwrap(),
+            &[("x-forwarded-for", "203.0.113.50, 70.41.3.18")],
+        );
+
+        assert_eq!(
+            extract_client_ip(&request, &config),
+            Some("203.0.113.50".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_extract_client_ip_ignores_headers_from_untrusted_peer() {
+        let mut config = synctv_core::Config::default();
+        config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
+
+        let request = request_with_peer_and_headers(
+            "192.168.1.100:50051".parse().unwrap(),
+            &[
+                ("x-forwarded-for", "203.0.113.50"),
+                ("x-real-ip", "198.51.100.42"),
+            ],
+        );
+
+        assert_eq!(
+            extract_client_ip(&request, &config),
+            Some("192.168.1.100".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_extract_client_ip_falls_back_to_x_real_ip_for_trusted_proxy() {
+        let mut config = synctv_core::Config::default();
+        config.server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
+
+        let request = request_with_peer_and_headers(
+            "10.1.2.3:50051".parse().unwrap(),
+            &[
+                ("x-forwarded-for", "not-an-ip"),
+                ("x-real-ip", "198.51.100.42"),
+            ],
+        );
+
+        assert_eq!(
+            extract_client_ip(&request, &config),
+            Some("198.51.100.42".parse().unwrap())
+        );
     }
 
     #[test]

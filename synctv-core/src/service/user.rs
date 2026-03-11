@@ -72,7 +72,12 @@ impl std::fmt::Debug for UserService {
 }
 
 impl UserService {
-    fn log_username_cache_write_failure(&self, user_id: &UserId, operation: &'static str, error: &Error) {
+    fn log_username_cache_write_failure(
+        &self,
+        user_id: &UserId,
+        operation: &'static str,
+        error: &Error,
+    ) {
         tracing::warn!(
             error = %error,
             user_id = %user_id.as_str(),
@@ -81,13 +86,22 @@ impl UserService {
         );
     }
 
-    async fn cache_username_best_effort(&self, user_id: &UserId, username: &str, operation: &'static str) {
+    async fn cache_username_best_effort(
+        &self,
+        user_id: &UserId,
+        username: &str,
+        operation: &'static str,
+    ) {
         if let Err(error) = self.username_cache.set(user_id, username).await {
             self.log_username_cache_write_failure(user_id, operation, &error);
         }
     }
 
-    async fn invalidate_username_cache_best_effort(&self, user_id: &UserId, operation: &'static str) {
+    async fn invalidate_username_cache_best_effort(
+        &self,
+        user_id: &UserId,
+        operation: &'static str,
+    ) {
         if let Err(error) = self.invalidate_username_cache(user_id).await {
             self.log_username_cache_write_failure(user_id, operation, &error);
         }
@@ -718,9 +732,9 @@ impl UserService {
                 .refresh_token_family_revoked(user_id.as_str());
             let family_revoked_at = self
                 .token_blacklist
-                .get_family_revoked_at(&family_key)
+                .get_family_revoked_at_checked(&family_key)
                 .await;
-            if let Some(revoked_at) = family_revoked_at {
+            if let Some(revoked_at) = family_revoked_at? {
                 // Reject any refresh token issued at or before the family revocation timestamp.
                 // Using <= ensures tokens issued in the same second as revocation are blocked,
                 // since sub-second precision is lost in Unix timestamps.
@@ -910,7 +924,8 @@ impl UserService {
 
         if let Some(new_password) = new_password {
             let provided_old_password = old_password.expect("old_password validated above");
-            let is_valid = verify_password(&provided_old_password, &current_user.password_hash).await?;
+            let is_valid =
+                verify_password(&provided_old_password, &current_user.password_hash).await?;
             if !is_valid {
                 return Err(Error::Authentication(
                     "Invalid current password".to_string(),

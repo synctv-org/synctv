@@ -187,7 +187,8 @@ impl UserRepository {
     /// Returns `Error::OptimisticLockConflict` when another concurrent update
     /// already changed the row, so the caller can retry with a fresh read.
     pub async fn update(&self, user: &User, old_version: i32) -> Result<User> {
-        self.update_with_executor(user, old_version, &self.pool).await
+        self.update_with_executor(user, old_version, &self.pool)
+            .await
     }
 
     /// Update user with optimistic locking using a provided executor.

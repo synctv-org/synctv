@@ -399,10 +399,9 @@ impl EmailService {
     ) -> Result<Self> {
         let template_manager = EmailTemplateManager::new()?;
         let smtp_transport = match config.as_ref() {
-            Some(cfg) => Some(
-                Self::build_smtp_transport(cfg)
-                    .map_err(|e| Error::Internal(format!("Failed to initialize SMTP transport: {e}")))?,
-            ),
+            Some(cfg) => Some(Self::build_smtp_transport(cfg).map_err(|e| {
+                Error::Internal(format!("Failed to initialize SMTP transport: {e}"))
+            })?),
             None => None,
         };
         Ok(Self {

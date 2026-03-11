@@ -400,7 +400,7 @@ mod tests {
     async fn test_providers_manager_creation() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Check that built-in providers are registered
@@ -417,7 +417,7 @@ mod tests {
     async fn test_list_provider_types() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         let types = manager.list_types();
@@ -432,7 +432,7 @@ mod tests {
         // Test that provider can be created without timeout config (backward compatible)
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Create provider with empty config (no timeout)
@@ -452,7 +452,7 @@ mod tests {
         // Test that provider accepts per-instance HTTP timeout overrides.
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Create provider with timeout config
@@ -474,7 +474,7 @@ mod tests {
         // Test that Bilibili provider accepts per-instance HTTP timeout overrides.
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Create provider with timeout config
@@ -496,7 +496,7 @@ mod tests {
         // Test that Emby provider accepts per-instance HTTP timeout overrides.
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Create provider with timeout config
@@ -518,7 +518,7 @@ mod tests {
         // Test that invalid timeout values are gracefully handled
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Create provider with invalid timeout type (string instead of number)
@@ -536,7 +536,7 @@ mod tests {
     async fn test_new_with_provider_http_client_accepts_explicit_default_client() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let client = synctv_common::http::SsrfSafeClientBuilder::provider()
             .connect_timeout(std::time::Duration::from_secs(4))
             .request_timeout(std::time::Duration::from_secs(12))
@@ -558,7 +558,7 @@ mod tests {
     async fn test_rtmp_provider_no_longer_requires_base_url() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         let config = serde_json::json!({});
@@ -570,7 +570,7 @@ mod tests {
     async fn test_live_proxy_provider_no_longer_requires_base_url() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         let config = serde_json::json!({});
@@ -587,7 +587,7 @@ mod tests {
         // Test getting providers by instance ID
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Create a provider
@@ -612,7 +612,7 @@ mod tests {
         // Test getting providers by type (returns default instance)
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Create default instance
@@ -637,7 +637,7 @@ mod tests {
         // Test singleton pattern - creating provider with same instance_id replaces previous
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Create first instance
@@ -670,7 +670,7 @@ mod tests {
         // Test listing all provider instances
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Initially empty
@@ -707,7 +707,7 @@ mod tests {
         // Test removing provider instances
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Create provider
@@ -736,7 +736,7 @@ mod tests {
         // Test creating provider with unknown type
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Try to create unknown provider type
@@ -759,7 +759,7 @@ mod tests {
         // Test loading providers from empty config (creates defaults)
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let mut manager = ProvidersManager::new(instance_manager);
 
         let config = crate::Config {
@@ -791,7 +791,7 @@ mod tests {
         // Test loading providers from config with provider definitions
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let mut manager = ProvidersManager::new(instance_manager);
 
         // Create config with provider definitions
@@ -825,7 +825,7 @@ mod tests {
         // Test that provider_type is derived from instance_id when not specified
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let mut manager = ProvidersManager::new(instance_manager);
 
         // Create config with provider definitions (no provider_type specified)
@@ -852,7 +852,7 @@ mod tests {
         // Test that unknown provider types are skipped with warning
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let mut manager = ProvidersManager::new(instance_manager);
 
         // Create config with unknown provider type
@@ -887,7 +887,7 @@ mod tests {
         // the provider's business methods, so this config still loads.
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let mut manager = ProvidersManager::new(instance_manager);
 
         // Create config with a syntactically incomplete Bilibili source payload.
@@ -921,7 +921,7 @@ mod tests {
         // Test concurrent provider creation doesn't cause races
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = Arc::new(ProvidersManager::new(instance_manager));
 
         // Spawn multiple tasks creating different providers concurrently
@@ -955,7 +955,7 @@ mod tests {
         // Test that ProvidersManager holds a reference to RemoteProviderManager
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None, ""));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager.clone());
 
         // Verify instance_manager is accessible

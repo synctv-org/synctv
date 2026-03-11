@@ -15,6 +15,10 @@ use serde_json::json;
 
 use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
 
+fn user_info_server_id(instance_name: Option<&str>) -> String {
+    synctv_core::models::UserProviderCredential::bilibili_server_id(instance_name)
+}
+
 /// Bilibili endpoints that authenticate, issue challenges, or mutate stored credentials.
 pub fn bilibili_auth_routes() -> Router<AppState> {
     Router::new()
@@ -176,7 +180,7 @@ async fn user_info(
 
     let api = &state.bilibili_api;
     let req = crate::proto::providers::bilibili::UserInfoRequest {
-        server_id: synctv_core::models::UserProviderCredential::BILIBILI_SERVER_ID.to_string(),
+        server_id: user_info_server_id(query.as_deref()),
         instance_name: query.instance_name.clone().unwrap_or_default(),
     };
 
@@ -189,6 +193,34 @@ async fn user_info(
             tracing::error!("Failed to get user info: {}", e);
             AppError::from(e).into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::user_info_server_id;
+    use synctv_core::models::UserProviderCredential;
+
+    #[test]
+    fn user_info_server_id_defaults_without_instance_name() {
+        assert_eq!(
+            user_info_server_id(None),
+            UserProviderCredential::BILIBILI_SERVER_ID
+        );
+        assert_eq!(
+            user_info_server_id(Some("   ")),
+            UserProviderCredential::BILIBILI_SERVER_ID
+        );
+    }
+
+    #[test]
+    fn user_info_server_id_scopes_to_requested_instance() {
+        let scoped = user_info_server_id(Some("bili-main"));
+        assert_eq!(
+            scoped,
+            UserProviderCredential::bilibili_server_id(Some("bili-main"))
+        );
+        assert_ne!(scoped, UserProviderCredential::BILIBILI_SERVER_ID);
     }
 }
 

@@ -157,7 +157,9 @@ impl EmbyClient {
 
         // Parse the host URL and check only the hostname component to avoid
         // false matches from "jellyfin" appearing in paths or query strings.
-        let is_jellyfin = parsed.host_str().is_some_and(|host| host.contains("jellyfin"));
+        let is_jellyfin = parsed
+            .host_str()
+            .is_some_and(|host| host.contains("jellyfin"));
         if is_jellyfin {
             Ok("/jellyfin".to_string())
         } else {
@@ -326,7 +328,9 @@ impl EmbyClient {
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
         let mut url = self.endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))?;
-        url.push_str("?SortBy=SortName&SortOrder=Ascending&Fields=MediaSources%2CParentId%2CContainer");
+        url.push_str(
+            "?SortBy=SortName&SortOrder=Ascending&Fields=MediaSources%2CParentId%2CContainer",
+        );
 
         if let Some(pid) = parent_id {
             let _ = write!(url, "&ParentId={}", url_encode(pid));

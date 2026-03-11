@@ -139,8 +139,7 @@ mod tests {
 
     #[test]
     fn resolve_bound_instance_name_rejects_mismatched_request_instance() {
-        let err =
-            resolve_bound_instance_name(Some("emby-backup"), Some("emby-main")).unwrap_err();
+        let err = resolve_bound_instance_name(Some("emby-backup"), Some("emby-main")).unwrap_err();
         match err {
             ProviderError::InvalidConfig(msg) => {
                 assert!(msg.contains("emby-main"));

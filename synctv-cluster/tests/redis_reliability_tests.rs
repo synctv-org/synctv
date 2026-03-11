@@ -175,8 +175,8 @@ async fn test_redis_stream_catchup() {
     wait_for_stream_len(&redis.redis_url, "synctv:room:catchup_room:events", 5).await;
 
     // Now start a subscriber node that connects to the same Redis.
-    // On first connect it snapshots stream tips, so pre-existing messages
-    // won't be delivered. But any new messages should arrive via pub/sub.
+    // On first connect it should replay recent stream history within the
+    // configured catch-up window so new replicas bootstrap with current state.
     let redis_client =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
     let subscriber_node = Arc::new(
@@ -199,11 +199,29 @@ async fn test_redis_stream_catchup() {
         .await
         .expect("Failed to start subscriber");
 
-    let no_catchup = tokio::time::timeout(Duration::from_millis(250), rx.recv()).await;
-    assert!(
-        no_catchup.is_err(),
-        "Initial connect should not replay historical stream entries"
+    let mut historical_messages = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while historical_messages.len() < 5 && tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+            Ok(Some(ClusterEvent::ChatMessage { message, .. })) => {
+                historical_messages.push(message);
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("room channel closed unexpectedly during catch-up"),
+            Err(_) => {}
+        }
+    }
+    assert_eq!(
+        historical_messages.len(),
+        5,
+        "first connect should replay recent stream entries from the catch-up window"
     );
+    for i in 0..5 {
+        assert!(
+            historical_messages.contains(&format!("Catchup message {i}")),
+            "missing catch-up message {i}: {historical_messages:?}"
+        );
+    }
 
     // Publish one more message (should be received live)
     let received = broadcast_until_room_event(

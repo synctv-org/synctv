@@ -138,13 +138,22 @@ async fn test_ice_candidate_routing_supports_conn_id_only_target() {
     };
 
     let sent = hub.broadcast_to_connection(&room, "conn2", event);
-    assert_eq!(sent, 1, "conn_id-only signaling should still target one connection");
+    assert_eq!(
+        sent, 1,
+        "conn_id-only signaling should still target one connection"
+    );
 
     let result = tokio::time::timeout(Duration::from_millis(100), rx2.recv()).await;
-    assert!(result.is_ok(), "target connection should receive conn_id-only signal");
+    assert!(
+        result.is_ok(),
+        "target connection should receive conn_id-only signal"
+    );
 
     let result = tokio::time::timeout(Duration::from_millis(100), rx1.recv()).await;
-    assert!(result.is_err(), "non-target connection should not receive the signal");
+    assert!(
+        result.is_err(),
+        "non-target connection should not receive the signal"
+    );
 }
 
 // ============================================================================

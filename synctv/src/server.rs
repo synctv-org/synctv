@@ -913,11 +913,10 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        await_runtime_server_shutdown, await_task_shutdown, build_ws_ticket_service,
-        build_proxy_slice_cache_config, cleanup_partial_startup, map_background_task_exit,
-        map_runtime_server_exit,
-        shutdown_livestream_state, shutdown_runtime_phase, spawn_admin_event_listener,
-        LivestreamShutdown,
+        await_runtime_server_shutdown, await_task_shutdown, build_proxy_slice_cache_config,
+        build_ws_ticket_service, cleanup_partial_startup, map_background_task_exit,
+        map_runtime_server_exit, shutdown_livestream_state, shutdown_runtime_phase,
+        spawn_admin_event_listener, LivestreamShutdown,
     };
     use async_trait::async_trait;
     use std::sync::{
@@ -936,7 +935,9 @@ mod tests {
             synctv_core::repository::SettingsRepository::new(pool.clone()),
             pool,
         ));
-        Arc::new(synctv_core::service::SettingsRegistry::new(settings_service))
+        Arc::new(synctv_core::service::SettingsRegistry::new(
+            settings_service,
+        ))
     }
 
     /// Test that invalid HTTP address format returns an error

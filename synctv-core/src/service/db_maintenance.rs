@@ -286,12 +286,13 @@ mod tests {
     async fn test_custom_cleanup_config_is_used_by_db_maintenance() {
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
         let leader = Arc::new(AlwaysLeader);
-        let svc = DatabaseMaintenanceService::new(pool, leader).with_cleanup_config(CleanupConfig {
-            expired_credential_buffer_hours: 6,
-            notification_retention_days: 14,
-            notification_max_retention_days: 45,
-            ..CleanupConfig::default()
-        });
+        let svc =
+            DatabaseMaintenanceService::new(pool, leader).with_cleanup_config(CleanupConfig {
+                expired_credential_buffer_hours: 6,
+                notification_retention_days: 14,
+                notification_max_retention_days: 45,
+                ..CleanupConfig::default()
+            });
 
         assert_eq!(svc.notification_retention_days(), 14);
         assert_eq!(svc.notification_max_retention_days(), 45);

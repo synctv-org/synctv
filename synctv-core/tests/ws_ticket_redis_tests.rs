@@ -225,7 +225,10 @@ async fn test_redis_ticket_checked_validation_is_still_one_time_use() {
     let first_result = service
         .validate_and_consume_checked(&ticket, &rid, &allow_validator)
         .await;
-    assert!(first_result.is_ok(), "first checked validation should succeed");
+    assert!(
+        first_result.is_ok(),
+        "first checked validation should succeed"
+    );
 
     let second_result = service
         .validate_and_consume_checked(&ticket, &rid, &allow_validator)

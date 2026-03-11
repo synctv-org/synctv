@@ -564,8 +564,8 @@ async fn test_proxy_with_cache_head_request_returns_content_length() {
         &url,
         &provider_headers,
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
 
     assert_eq!(total, total_size);
 }

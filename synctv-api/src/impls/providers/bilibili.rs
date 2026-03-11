@@ -45,7 +45,8 @@ impl BilibiliApiImpl {
         caller_user_id: &str,
         server_id: &str,
         requested_instance_name: Option<&str>,
-    ) -> Result<(HashMap<String, String>, Option<String>), synctv_core::provider::ProviderError> {
+    ) -> Result<(HashMap<String, String>, Option<String>), synctv_core::provider::ProviderError>
+    {
         let server_id = if server_id.is_empty()
             || (server_id == UserProviderCredential::BILIBILI_SERVER_ID
                 && requested_instance_name.is_some())

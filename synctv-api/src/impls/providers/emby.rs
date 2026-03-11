@@ -41,7 +41,8 @@ impl EmbyApiImpl {
         &self,
         caller_user_id: &str,
         server_id: &str,
-    ) -> Result<(String, String, String, Option<String>), synctv_core::provider::ProviderError> {
+    ) -> Result<(String, String, String, Option<String>), synctv_core::provider::ProviderError>
+    {
         let cred = self
             .credential_repo
             .get_by_provider_and_server(

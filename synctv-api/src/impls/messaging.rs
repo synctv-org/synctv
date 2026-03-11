@@ -432,7 +432,9 @@ impl StreamMessageHandler {
     fn current_connection_matches_webrtc_recipient(&self, recipient: &str) -> bool {
         let (target_user_id, target_conn_id) = recipient
             .split_once(':')
-            .map_or((None, recipient), |(user_id, conn_id)| (Some(user_id), conn_id));
+            .map_or((None, recipient), |(user_id, conn_id)| {
+                (Some(user_id), conn_id)
+            });
 
         if target_conn_id != self.connection_id {
             return false;
@@ -2280,7 +2282,9 @@ impl StreamMessageHandler {
             synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
                 .with_label_values(&["webrtc_signal_no_redis"])
                 .inc();
-            return Err("WebRTC offer delivery failed: cluster Redis publish unavailable".to_string());
+            return Err(
+                "WebRTC offer delivery failed: cluster Redis publish unavailable".to_string(),
+            );
         }
 
         Ok(())
@@ -2333,7 +2337,9 @@ impl StreamMessageHandler {
             synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
                 .with_label_values(&["webrtc_signal_no_redis"])
                 .inc();
-            return Err("WebRTC answer delivery failed: cluster Redis publish unavailable".to_string());
+            return Err(
+                "WebRTC answer delivery failed: cluster Redis publish unavailable".to_string(),
+            );
         }
 
         Ok(())

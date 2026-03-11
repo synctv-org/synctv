@@ -22,10 +22,10 @@ use std::sync::{
 
 use async_trait::async_trait;
 use percent_encoding::percent_decode_str;
-use tokio::sync::RwLock;
 use synctv_livestream::api::UserStreamTracker;
 use synctv_livestream::relay::StreamRegistryTrait;
 use synctv_livestream::AuthCallback;
+use tokio::sync::RwLock;
 // TTL for the per-user rtmp:user_stream:{user_id} Redis key, matching the publisher TTL.
 use synctv_livestream::relay::registry::PUBLISHER_TTL_SECS;
 
@@ -433,24 +433,31 @@ impl SyncTvRtmpAuth {
             let expected_media_id =
                 synctv_core::models::MediaId::from_string(stream_name.to_string());
             self.publish_key_service
-                .validate_publish_key_for_stream_claims(token, &expected_room_id, &expected_media_id)
+                .validate_publish_key_for_stream_claims(
+                    token,
+                    &expected_room_id,
+                    &expected_media_id,
+                )
                 .await
         } else {
             // Legacy RTMP publish URLs use /{room_id}/{JWT_TOKEN}, so stream_name is
             // the token itself rather than the media ID. Preserve that format by
             // validating the token and room here, then enforcing media ownership
             // against the claims below before registration.
-            self.publish_key_service.validate_publish_key(token).await.and_then(|claims| {
-                if claims.room_id != expected_room_id.as_str() {
-                    Err(synctv_core::Error::Authorization(format!(
-                        "Token room mismatch: expected {}, got {}",
-                        expected_room_id.as_str(),
-                        claims.room_id
-                    )))
-                } else {
-                    Ok(claims)
-                }
-            })
+            self.publish_key_service
+                .validate_publish_key(token)
+                .await
+                .and_then(|claims| {
+                    if claims.room_id != expected_room_id.as_str() {
+                        Err(synctv_core::Error::Authorization(format!(
+                            "Token room mismatch: expected {}, got {}",
+                            expected_room_id.as_str(),
+                            claims.room_id
+                        )))
+                    } else {
+                        Ok(claims)
+                    }
+                })
         }
         .map_err(|e| format!("Invalid stream key: {e}"))?;
 

@@ -980,6 +980,7 @@ async fn send_with_redirect_validation(
     let built = request
         .build()
         .map_err(|e| ProxyError::InvalidRequest(format!("failed to build proxy request: {e}")))?;
+    validate_target_url_against_ssrf(built.url())?;
 
     // Capture the original request's origin for cross-origin detection.
     let original_origin = built.url().origin().ascii_serialization();
@@ -1526,6 +1527,7 @@ mod tests {
     #[tokio::test]
     async fn test_send_with_redirect_validation_resolves_relative_location() {
         let server = wiremock::MockServer::start().await;
+        let public_origin = format!("http://cdn.example.com:{}", server.address().port());
 
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path("/start"))
@@ -1541,9 +1543,10 @@ mod tests {
 
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .resolve("cdn.example.com", *server.address())
             .build()
             .expect("client should build");
-        let request = client.get(format!("{}/start", server.uri()));
+        let request = client.get(format!("{public_origin}/start"));
 
         let result = send_with_redirect_validation(&client, request).await;
         assert!(
@@ -1584,6 +1587,28 @@ mod tests {
         let result = send_with_redirect_validation(&client, request).await;
         let err = match result {
             Ok(_) => panic!("redirect to blocked loopback must fail"),
+            Err(err) => err,
+        };
+        let proxy_err = err
+            .downcast_ref::<ProxyError>()
+            .expect("error should downcast to ProxyError");
+        assert!(matches!(proxy_err, ProxyError::Ssrf(_)));
+        assert!(
+            proxy_err.to_string().contains("blocked by SSRF policy"),
+            "unexpected error: {proxy_err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_with_redirect_validation_rejects_initial_blocked_ip() {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client should build");
+        let request = client.get("http://127.0.0.1:12345/private");
+
+        let err = match send_with_redirect_validation(&client, request).await {
+            Ok(_) => panic!("initial loopback target must fail before network IO"),
             Err(err) => err,
         };
         let proxy_err = err

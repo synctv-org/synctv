@@ -329,6 +329,11 @@ impl PlaybackService {
         self.l2_cache = Some(cache);
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_l2_cache(&self) -> bool {
+        self.l2_cache.is_some()
+    }
+
     /// Broadcast a playback state change to local clients and cluster replicas.
     ///
     /// Uses the cluster broadcaster as the single broadcast path. The cluster

@@ -157,6 +157,16 @@ impl ExternalStreamPuller {
         let parsed = Url::parse(&source_url)?;
         let host = parsed.host_str().unwrap_or("");
         let mut resolved_addr = None;
+        let port = parsed.port().unwrap_or(match source_type {
+            ExternalSourceType::Rtmp => 1935,
+            ExternalSourceType::HttpFlv => {
+                if parsed.scheme() == "https" {
+                    443
+                } else {
+                    80
+                }
+            }
+        });
 
         if !host.is_empty() {
             if let Ok(ip) = host.parse::<std::net::IpAddr>() {
@@ -166,18 +176,9 @@ impl ExternalStreamPuller {
                         "SSRF protection blocked IP: {ip} is private/reserved"
                     ));
                 }
+                resolved_addr = Some(std::net::SocketAddr::new(ip, port));
             } else {
                 // Hostname - resolve and check all IPs
-                let port = parsed.port().unwrap_or(match source_type {
-                    ExternalSourceType::Rtmp => 1935,
-                    ExternalSourceType::HttpFlv => {
-                        if parsed.scheme() == "https" {
-                            443
-                        } else {
-                            80
-                        }
-                    }
-                });
                 let addrs = resolver(host.to_string(), port).await?;
 
                 // Filter out blocked IPs
@@ -621,20 +622,7 @@ impl ExternalStreamPuller {
             )
         })?;
 
-        // Use the shared HTTP client if configured (connection pooling, TLS reuse).
-        // Otherwise create a new client with pinned DNS resolution.
-        let client = if let Some(ref client) = self.http_client {
-            client.clone()
-        } else {
-            let builder =
-                reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(10));
-            let parsed = reqwest::Url::parse(&self.source_url)?;
-            let host = parsed.host_str().unwrap_or("");
-            builder
-                .resolve(host, addr)
-                .build()
-                .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?
-        };
+        let client = build_http_flv_client(&self.source_url, addr, self.http_client.as_ref())?;
 
         let mut response = client
             .get(&self.source_url)
@@ -903,6 +891,38 @@ impl ExternalStreamPuller {
 
         Ok(())
     }
+}
+
+fn build_http_flv_client(
+    source_url: &str,
+    resolved_addr: std::net::SocketAddr,
+    shared_client: Option<&reqwest::Client>,
+) -> Result<reqwest::Client> {
+    let parsed = reqwest::Url::parse(source_url)?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("HTTP-FLV source URL is missing a host"))?;
+
+    // Public IP literals do not need DNS pinning; reusing the injected shared
+    // client preserves pooling without reintroducing rebinding risk.
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        if let Some(client) = shared_client {
+            return Ok(client.clone());
+        }
+    }
+
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(synctv_common::ssrf::ssrf_dns_resolver());
+
+    if host.parse::<std::net::IpAddr>().is_err() {
+        builder = builder.resolve(host, resolved_addr);
+    }
+
+    builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))
 }
 
 /// Drop guard that sends UnPublish to StreamHub when dropped.
@@ -1222,8 +1242,10 @@ mod tests {
         assert_eq!(puller.room_id, "room123");
         assert_eq!(puller.media_id, "media456");
         assert!(matches!(puller.source_type, ExternalSourceType::Rtmp));
-        // IP literal path does not set resolved_addr (no DNS to resolve)
-        assert!(puller.resolved_addr.is_none());
+        assert_eq!(
+            puller.resolved_addr,
+            Some(std::net::SocketAddr::from(([93, 184, 216, 34], 1935)))
+        );
     }
 
     #[tokio::test]
@@ -1240,10 +1262,12 @@ mod tests {
         .await;
 
         assert!(puller.is_ok(), "new_async failed: {:?}", puller.err());
-        assert!(matches!(
-            puller.unwrap().source_type,
-            ExternalSourceType::HttpFlv
-        ));
+        let puller = puller.unwrap();
+        assert!(matches!(puller.source_type, ExternalSourceType::HttpFlv));
+        assert_eq!(
+            puller.resolved_addr,
+            Some(std::net::SocketAddr::from(([93, 184, 216, 34], 80)))
+        );
     }
 
     #[tokio::test]
@@ -1315,6 +1339,56 @@ mod tests {
             "resolved_addr should be set by new_async"
         );
         assert_eq!(puller.resolved_addr, Some(resolved));
+    }
+
+    #[tokio::test]
+    async fn test_build_http_flv_client_pins_hostname_even_with_shared_client() {
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+        let (addr, server_handle) = spawn_http_response_server(response)
+            .await
+            .expect("test server should start");
+
+        let shared_client = reqwest::Client::new();
+        let client = build_http_flv_client(
+            &format!("http://example.com:{}/stream.flv", addr.port()),
+            addr,
+            Some(&shared_client),
+        )
+        .expect("pinned HTTP-FLV client should build");
+
+        let response = client
+            .get(format!("http://example.com:{}/stream.flv", addr.port()))
+            .send()
+            .await
+            .expect("pinned client should connect to resolved address");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_build_http_flv_client_keeps_redirects_disabled() {
+        let response = b"HTTP/1.1 302 Found\r\nLocation: /next.flv\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+        let (addr, server_handle) = spawn_http_response_server(response)
+            .await
+            .expect("test server should start");
+
+        let client = build_http_flv_client(
+            &format!("http://example.com:{}/stream.flv", addr.port()),
+            addr,
+            None,
+        )
+        .expect("redirect-safe HTTP-FLV client should build");
+
+        let response = client
+            .get(format!("http://example.com:{}/stream.flv", addr.port()))
+            .send()
+            .await
+            .expect("request should return first-hop redirect");
+
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        server_handle.abort();
     }
 
     /// Test that `new_async()` rejects SSRF-protected URLs (private IPs, localhost, etc.)

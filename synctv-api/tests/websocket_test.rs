@@ -722,8 +722,21 @@ mod websocket_e2e {
 
     /// Build a minimal `AppState` with real database and Redis for E2E testing.
     async fn setup_e2e_server(infra: &TestInfra) -> E2EServer {
-        setup_e2e_server_with_chat_rate_limit(
+        setup_e2e_server_with_origins_and_chat_rate_limit(
             infra,
+            Vec::new(),
+            synctv_core::service::RateLimitConfig::default(),
+        )
+        .await
+    }
+
+    async fn setup_e2e_server_with_origins(
+        infra: &TestInfra,
+        cors_allowed_origins: Vec<String>,
+    ) -> E2EServer {
+        setup_e2e_server_with_origins_and_chat_rate_limit(
+            infra,
+            cors_allowed_origins,
             synctv_core::service::RateLimitConfig::default(),
         )
         .await
@@ -733,8 +746,22 @@ mod websocket_e2e {
         infra: &TestInfra,
         chat_rate_limit_config: synctv_core::service::RateLimitConfig,
     ) -> E2EServer {
-        setup_e2e_server_with_node_and_chat_rate_limit(infra, "test_node_1", chat_rate_limit_config)
+        setup_e2e_server_with_origins_and_chat_rate_limit(infra, Vec::new(), chat_rate_limit_config)
             .await
+    }
+
+    async fn setup_e2e_server_with_origins_and_chat_rate_limit(
+        infra: &TestInfra,
+        cors_allowed_origins: Vec<String>,
+        chat_rate_limit_config: synctv_core::service::RateLimitConfig,
+    ) -> E2EServer {
+        setup_e2e_server_with_node_origins_and_chat_rate_limit(
+            infra,
+            "test_node_1",
+            cors_allowed_origins,
+            chat_rate_limit_config,
+        )
+        .await
     }
 
     /// Build a minimal `AppState` with a custom `node_id`.
@@ -742,17 +769,19 @@ mod websocket_e2e {
     /// Useful for cross-replica tests: call twice with different node IDs
     /// but the same `TestInfra` to simulate two server replicas.
     async fn setup_e2e_server_with_node(infra: &TestInfra, node_id: &str) -> E2EServer {
-        setup_e2e_server_with_node_and_chat_rate_limit(
+        setup_e2e_server_with_node_origins_and_chat_rate_limit(
             infra,
             node_id,
+            Vec::new(),
             synctv_core::service::RateLimitConfig::default(),
         )
         .await
     }
 
-    async fn setup_e2e_server_with_node_and_chat_rate_limit(
+    async fn setup_e2e_server_with_node_origins_and_chat_rate_limit(
         infra: &TestInfra,
         node_id: &str,
+        cors_allowed_origins: Vec<String>,
         chat_rate_limit_config: synctv_core::service::RateLimitConfig,
     ) -> E2EServer {
         let pool = infra.pool.clone();
@@ -864,7 +893,9 @@ mod websocket_e2e {
             live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
         };
 
-        let config = Arc::new(synctv_core::Config::default());
+        let mut config_inner = synctv_core::Config::default();
+        config_inner.server.cors_allowed_origins = cors_allowed_origins;
+        let config = Arc::new(config_inner);
 
         // ClientApiImpl
         let client_api = Arc::new(synctv_api::impls::ClientApiImpl::new(
@@ -1100,6 +1131,38 @@ mod websocket_e2e {
             "Expected 101 Switching Protocols"
         );
         ws_stream
+    }
+
+    async fn ws_connect_with_origin(
+        addr: &str,
+        room_id: &str,
+        token: &str,
+        origin: &str,
+    ) -> Result<
+        (
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            tungstenite::handshake::client::Response,
+        ),
+        tokio_tungstenite::tungstenite::Error,
+    > {
+        let url = format!("ws://{addr}/ws/rooms/{room_id}");
+        let request = tungstenite::http::Request::builder()
+            .uri(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Origin", origin)
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header(
+                "Sec-WebSocket-Key",
+                tungstenite::handshake::client::generate_key(),
+            )
+            .header("Host", addr)
+            .body(())
+            .expect("build WS request");
+        tokio_tungstenite::connect_async(request).await
     }
 
     /// Read the next binary message from the WebSocket and decode it as a `ServerMessage`.
@@ -1390,6 +1453,65 @@ mod websocket_e2e {
         let result = tokio_tungstenite::connect_async(request).await;
 
         assert!(result.is_err(), "Non-member should be rejected with 403");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_ws_cross_origin_rejected_when_not_in_allowlist() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (owner_id, owner_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "owner_origin_deny",
+        )
+        .await;
+        let room_id = create_test_room(&server.room_service, &owner_id, "Origin Deny Room").await;
+
+        let result = ws_connect_with_origin(
+            &server.addr,
+            &room_id,
+            &owner_token,
+            "https://evil.example.com",
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "cross-origin browser websocket must be rejected when the origin is not allowlisted"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_ws_cross_origin_allowed_when_in_allowlist() {
+        let infra = TestInfra::new().await;
+        let server =
+            setup_e2e_server_with_origins(&infra, vec!["https://app.example.com".to_string()])
+                .await;
+
+        let (owner_id, owner_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "owner_origin_allow",
+        )
+        .await;
+        let room_id = create_test_room(&server.room_service, &owner_id, "Origin Allow Room").await;
+
+        let (_ws, response) = ws_connect_with_origin(
+            &server.addr,
+            &room_id,
+            &owner_token,
+            "https://app.example.com",
+        )
+        .await
+        .expect("allowlisted cross-origin websocket should succeed");
+
+        assert_eq!(
+            response.status(),
+            tungstenite::http::StatusCode::SWITCHING_PROTOCOLS
+        );
     }
 
     // ========================================================================

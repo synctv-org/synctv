@@ -37,7 +37,7 @@ pub async fn init_livestream(
         let registry = Arc::new(
             synctv_livestream::relay::StreamRegistry::with_shared_conn_and_key_prefix(
                 redis_conn,
-            config.redis.key_prefix.clone(),
+                config.redis.key_prefix.clone(),
             ),
         ) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
         info!("Livestream publisher registry: Redis-backed");

@@ -221,7 +221,7 @@ impl ExternalPublishManager {
                  Rejecting new stream request to prevent memory exhaustion (pre-check).",
                 self.max_concurrent_streams, room_id, media_id
             );
-            return Err(crate::error::StreamError::InvalidState(format!(
+            return Err(crate::error::StreamError::ResourceExhausted(format!(
                 "Max concurrent pull streams ({}) reached. Try again later.",
                 self.max_concurrent_streams
             )));
@@ -250,7 +250,7 @@ impl ExternalPublishManager {
                  Rejecting new stream request to prevent memory exhaustion (lock-internal check).",
                 self.max_concurrent_streams, room_id, media_id
             );
-            return Err(crate::error::StreamError::InvalidState(format!(
+            return Err(crate::error::StreamError::ResourceExhausted(format!(
                 "Max concurrent pull streams ({}) reached. Try again later.",
                 self.max_concurrent_streams
             )));

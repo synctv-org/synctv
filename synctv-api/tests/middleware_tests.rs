@@ -279,8 +279,8 @@ async fn test_request_id_in_generated_error_response() {
 
 #[tokio::test]
 async fn test_hsts_not_added_without_https_forwarding() {
-    use synctv_api::http::{create_router_with_state_from_config, RouterConfig};
     use synctv_api::http::AppState;
+    use synctv_api::http::{create_router_with_state_from_config, RouterConfig};
     use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
     use synctv_core::provider::{
         AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
@@ -295,8 +295,12 @@ async fn test_hsts_not_added_without_https_forwarding() {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
         .expect("lazy pool");
-    let username_cache =
-        UsernameCache::new(std::sync::Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+    let username_cache = UsernameCache::new(
+        std::sync::Arc::new(NoopCacheL2),
+        "test:username:".to_string(),
+        128,
+        60,
+    );
     let user_service = std::sync::Arc::new(UserService::new(
         pool.clone(),
         synctv_core::service::JwtService::new(

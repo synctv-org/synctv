@@ -407,6 +407,13 @@ impl<'a> LeaderRuntimeBuilder<'a> {
                  Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
             )),
             "redis" => {
+                if self.redis_is_sentinel {
+                    return Err(anyhow::anyhow!(
+                        "cluster.leader_election_mode='redis' is not supported with Redis Sentinel. \
+                         Sentinel failover can create split-brain leader windows; use \
+                         cluster.leader_election_mode='k8s_lease' or a non-Sentinel Redis deployment."
+                    ));
+                }
                 let redis_conn = self.redis_conn.ok_or_else(|| {
                     anyhow::anyhow!(
                         "cluster.enabled=true requires Redis-backed leader election wiring"
@@ -1121,6 +1128,24 @@ mod tests {
             error
                 .to_string()
                 .contains("LeaderRuntimeBuilder is cluster-only"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_builder_rejects_redis_mode_with_sentinel() {
+        let error = match LeaderRuntimeBuilder::new(true, "redis", "node-1", None, "synctv:", true)
+            .build()
+            .await
+        {
+            Ok(_) => panic!("sentinel-backed redis leader election must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("not supported with Redis Sentinel"),
             "unexpected error: {error}"
         );
     }

@@ -130,16 +130,22 @@ fn should_use_proxy_cache(cache_enabled: bool, range_header: Option<&str>) -> bo
     cache_enabled && range_header.is_some()
 }
 
-/// Wildcard CORS preflight handler for provider proxy routes.
+/// CORS preflight handler for provider proxy routes.
 ///
-/// This is the non-deprecated replacement for `synctv_proxy::proxy_options_preflight`.
-/// It uses `proxy_options_preflight_with_cors` with a wildcard `CorsConfig`, which is
-/// appropriate for this native-app-only project.
-#[allow(clippy::unused_async)]
-pub(crate) async fn proxy_options_preflight() -> axum::response::Response {
-    static WILDCARD_CONFIG: std::sync::LazyLock<std::sync::Arc<synctv_proxy::CorsConfig>> =
-        std::sync::LazyLock::new(|| std::sync::Arc::new(synctv_proxy::CorsConfig::new_wildcard()));
-    synctv_proxy::proxy_options_preflight_with_cors(None, WILDCARD_CONFIG.clone()).await
+/// This must follow the same origin allowlist as the main HTTP router instead
+/// of returning a wildcard response, otherwise browser preflight succeeds for
+/// origins that the actual API would reject.
+pub(crate) async fn proxy_options_preflight(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    let cors_config = std::sync::Arc::new(synctv_proxy::CorsConfig::new(
+        state.config.server.cors_allowed_origins.clone(),
+    ));
+    synctv_proxy::proxy_options_preflight_with_cors(origin, cors_config).await
 }
 
 /// GET `/api/providers/proxy/{provider_name}/{*sub_path}` — Unified proxy handler.
@@ -178,10 +184,12 @@ pub(crate) async fn unified_proxy_handler(
         .check_membership(&rid, &uid)
         .await
         .map_err(|e| match e {
-            synctv_core::Error::Authorization(_) => AppError::forbidden("Not a member of this room"),
-            other => AppError::internal_server_error(format!(
-                "Failed to check room membership: {other}"
-            )),
+            synctv_core::Error::Authorization(_) => {
+                AppError::forbidden("Not a member of this room")
+            }
+            other => {
+                AppError::internal_server_error(format!("Failed to check room membership: {other}"))
+            }
         })?;
 
     // 4. Resolve proxy provider from registry (no hardcoded match)
@@ -217,6 +225,7 @@ pub(crate) async fn unified_proxy_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header;
     use bytes::Bytes;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -226,11 +235,11 @@ mod tests {
         AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
         ProviderSet, RtmpProvider,
     };
+    use synctv_core::repository::SettingsRepository;
     use synctv_core::service::{
         AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
         RemoteProviderManager, RoomService, UserService,
     };
-    use synctv_core::repository::SettingsRepository;
     use synctv_core::service::{SettingsRegistry, SettingsService};
     use synctv_core_testing::postgres::create_test_pool;
     use synctv_proxy::slice_cache::SliceCacheConfig;
@@ -410,7 +419,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_proxy_action_with_state_honors_runtime_cache_toggle_even_when_cache_was_built_disabled() {
+    async fn test_execute_proxy_action_with_state_honors_runtime_cache_toggle_even_when_cache_was_built_disabled(
+    ) {
         let mock_server = MockServer::start().await;
         let total_size: u64 = 10 * 1024 * 1024;
         let slice_body = Bytes::from(vec![0xEF; 2 * 1024 * 1024]);
@@ -464,10 +474,12 @@ mod tests {
 
         let state = test_app_state_with_proxy_cache(
             Some(settings_registry),
-            Arc::new(synctv_proxy::slice_cache::SliceCache::new(SliceCacheConfig {
-                enabled: false,
-                ..SliceCacheConfig::default()
-            })),
+            Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                SliceCacheConfig {
+                    enabled: false,
+                    ..SliceCacheConfig::default()
+                },
+            )),
         );
 
         let action = ProxyAction::FetchAndForward {
@@ -496,5 +508,57 @@ mod tests {
         assert!(!should_use_proxy_cache(true, None));
         assert!(!should_use_proxy_cache(false, Some("bytes=0-999")));
         assert!(!should_use_proxy_cache(false, None));
+    }
+
+    #[tokio::test]
+    async fn test_proxy_options_preflight_uses_configured_origin_allowlist() {
+        let mut state = test_app_state_with_proxy_cache(
+            None,
+            Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                SliceCacheConfig::default(),
+            )),
+        );
+        let router_config = Arc::make_mut(&mut state.router_config);
+        let config = Arc::make_mut(&mut router_config.config);
+        config.server.cors_allowed_origins = vec!["https://app.example.com".to_string()];
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+
+        let response = proxy_options_preflight(State(state), headers).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("https://app.example.com")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_options_preflight_rejects_unconfigured_origin() {
+        let mut state = test_app_state_with_proxy_cache(
+            None,
+            Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                SliceCacheConfig::default(),
+            )),
+        );
+        let router_config = Arc::make_mut(&mut state.router_config);
+        let config = Arc::make_mut(&mut router_config.config);
+        config.server.cors_allowed_origins = vec!["https://app.example.com".to_string()];
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, "https://evil.example.com".parse().unwrap());
+
+        let response = proxy_options_preflight(State(state), headers).await;
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none(),
+            "rejected preflight must not advertise a wildcard or echoed origin"
+        );
     }
 }

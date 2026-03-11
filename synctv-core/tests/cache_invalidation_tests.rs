@@ -536,26 +536,13 @@ async fn test_cache_invalidation_restart_preserves_pending_messages_for_same_nod
 // Cache Invalidation Timing Tests
 // ============================================================================
 
-/// Test that cache invalidation happens BEFORE transaction commit.
+/// Test that cache invalidation happens only AFTER transaction commit.
 ///
-/// This test verifies the critical invariant that cache invalidation occurs
-/// before the transaction commits, preventing the following race condition:
-///
-/// 1. Transaction commits (`deleted_at` is set)
-/// 2. Another request reads stale data from cache (room still appears active)
-/// 3. Cache is invalidated (too late - stale data was already served)
-///
-/// By invalidating before commit, we ensure that when the transaction commits,
-/// the cache is already empty. Any concurrent request will miss the cache
-/// and read fresh data from the database (which will correctly filter out
-/// the deleted room via `deleted_at IS NULL`).
-///
-/// If the transaction rolls back after cache invalidation, the cache
-/// will simply be empty and will be repopulated on the next read with the
-/// correct (still-active) room data. This is safe.
+/// Broadcasting invalidation before commit lets other replicas miss cache and
+/// repopulate stale state from rows that are still visible in the open transaction.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cache_invalidation_before_commit() {
+async fn test_cache_invalidation_after_commit() {
     use synctv_core::{
         cache::{KeyBuilder, NoopCacheL2, UsernameCache},
         config::PasswordComplexityConfig,
@@ -593,7 +580,15 @@ async fn test_cache_invalidation_before_commit() {
     );
 
     // Create room service WITH cache invalidation
-    let room_service = RoomService::new(pool.clone(), user_service);
+    let mut room_service = RoomService::new(pool.clone(), user_service);
+    let invalidation_service = Arc::new(CacheInvalidationService::new(
+        None,
+        "room-delete-node".to_string(),
+        unique_stream_key(),
+    ));
+    room_service.set_cache_invalidation(invalidation_service.clone());
+    room_service.set_playback_cache_invalidation(invalidation_service.clone());
+    let room_service = room_service;
 
     // Create a user and room
     let user_repo = UserRepository::new(pool.clone());
@@ -661,18 +656,34 @@ async fn test_cache_invalidation_before_commit() {
         .await
         .expect("Failed to create member");
 
-    // Verify room exists in cache initially (via permission service)
-    // This will cache the room permission
+    // Prime the read path before deletion.
     let _ = room_service.get_room(&room_id).await;
+    let mut invalidation_rx = invalidation_service.subscribe();
 
-    // Now delete the room - this should invalidate cache BEFORE commit
+    // Now delete the room - invalidation must not become observable until
+    // the soft delete is already committed.
     room_service
         .delete_room(room_id.clone(), user_id.clone())
         .await
         .expect("Failed to delete room");
 
-    // Verify room is marked as deleted by querying database directly
-    // (get_by_id filters out deleted rooms, so we need a raw query)
+    let observed_room_id = tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+        loop {
+            let msg = invalidation_rx
+                .recv()
+                .await
+                .expect("invalidation channel open");
+            if let InvalidationMessage::Room { room_id } = msg {
+                break room_id;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for room invalidation");
+    assert_eq!(observed_room_id, room_id.as_str());
+
+    // At the moment invalidation becomes observable, the DB mutation must
+    // already be committed.
     let deleted_at: Option<chrono::DateTime<chrono::Utc>> =
         sqlx::query_scalar("SELECT deleted_at FROM rooms WHERE id = $1")
             .bind(room_id.as_str())
@@ -683,11 +694,10 @@ async fn test_cache_invalidation_before_commit() {
 
     assert!(
         deleted_at.is_some(),
-        "Room should be marked as deleted in database"
+        "room must already be soft-deleted when invalidation is observed"
     );
 
     // Verify cache is invalidated (next read should not return the deleted room)
-    // Note: get_room filters out deleted rooms, so this should return NotFound
     let result = room_service.get_room(&room_id).await;
     assert!(result.is_err(), "Deleted room should not be accessible");
     assert!(
@@ -696,18 +706,10 @@ async fn test_cache_invalidation_before_commit() {
     );
 }
 
-/// Test that cache invalidation is safe even if transaction rolls back.
-///
-/// This test verifies that if a transaction is rolled back after cache invalidation,
-/// the system remains consistent. The cache will be empty and will be repopulated
-/// on the next read with the correct data.
-///
-/// Note: This test relies on the fact that cache invalidation happens before commit.
-/// When a transaction rolls back, the cache is already invalidated, but the next
-/// read will repopulate it with the correct (unchanged) data from the database.
+/// Test that a rolled back delete does not broadcast room invalidation.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cache_invalidation_rollback_safety() {
+async fn test_cache_invalidation_rollback_does_not_broadcast() {
     use sqlx::Transaction;
     use synctv_core::{
         cache::{KeyBuilder, NoopCacheL2, UsernameCache},
@@ -745,7 +747,15 @@ async fn test_cache_invalidation_rollback_safety() {
         brute_force,
     );
 
-    let room_service = RoomService::new(pool.clone(), user_service);
+    let mut room_service = RoomService::new(pool.clone(), user_service);
+    let invalidation_service = Arc::new(CacheInvalidationService::new(
+        None,
+        "room-rollback-node".to_string(),
+        unique_stream_key(),
+    ));
+    room_service.set_cache_invalidation(invalidation_service.clone());
+    room_service.set_playback_cache_invalidation(invalidation_service.clone());
+    let room_service = room_service;
 
     // Create a user and room
     let user_repo = UserRepository::new(pool.clone());
@@ -796,6 +806,7 @@ async fn test_cache_invalidation_rollback_safety() {
         .await
         .expect("Failed to get room");
     assert_eq!(room_before.id, room_id);
+    let mut invalidation_rx = invalidation_service.subscribe();
 
     // Simulate a transaction rollback scenario by manually running the operations
     // that delete_room does, but rolling back the transaction instead of committing.
@@ -815,17 +826,6 @@ async fn test_cache_invalidation_rollback_safety() {
     .await
     .expect("Failed to delete room");
 
-    // Invalidate caches (simulating what delete_room does BEFORE commit)
-    // We use the service methods directly to invalidate caches
-    room_service
-        .permission_service()
-        .invalidate_room_cache(&room_id)
-        .await;
-    room_service
-        .playback_service()
-        .invalidate_playback_cache(&room_id)
-        .await;
-
     // Rollback the transaction (simulating a failure)
     tx.rollback().await.expect("Failed to rollback transaction");
 
@@ -841,8 +841,17 @@ async fn test_cache_invalidation_rollback_safety() {
         "Room should NOT be marked as deleted"
     );
 
-    // Verify cache is repopulated on next read
-    // This will trigger a cache miss and fetch from database
+    assert!(
+        tokio::time::timeout(
+            tokio::time::Duration::from_millis(250),
+            invalidation_rx.recv()
+        )
+        .await
+        .is_err(),
+        "rolled back delete must not broadcast invalidation"
+    );
+
+    // Verify cache still serves the active room after rollback.
     let room_from_cache = room_service
         .get_room(&room_id)
         .await

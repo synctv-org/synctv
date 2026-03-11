@@ -124,7 +124,9 @@ pub fn docker_startup_timeout() -> Duration {
 #[must_use]
 pub fn docker_startup_parallelism() -> usize {
     docker_startup_parallelism_from(
-        std::env::var(DOCKER_STARTUP_PARALLELISM_ENV).ok().as_deref(),
+        std::env::var(DOCKER_STARTUP_PARALLELISM_ENV)
+            .ok()
+            .as_deref(),
     )
 }
 

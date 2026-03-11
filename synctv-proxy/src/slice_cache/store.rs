@@ -147,7 +147,11 @@ impl SliceCache {
 
     /// Internal helper: assemble a `SliceCache` from an already-created
     /// backend.
-    fn with_backend(config: SliceCacheConfig, client: reqwest::Client, backend: CacheBackend) -> Self {
+    fn with_backend(
+        config: SliceCacheConfig,
+        client: reqwest::Client,
+        backend: CacheBackend,
+    ) -> Self {
         // seen_keys uses a moka cache with a TTL slightly longer than
         // the main cache's time_to_idle so that "was ever seen" info
         // outlives the data entry but does not grow unbounded.

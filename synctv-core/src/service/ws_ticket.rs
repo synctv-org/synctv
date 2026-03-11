@@ -110,7 +110,11 @@ pub trait TicketStore: Send + Sync {
 
     /// Atomically get and delete a ticket scoped to the expected room.
     /// Returns `None` if the ticket does not exist or has expired.
-    async fn consume(&self, ticket: &str, expected_room_id: &RoomId) -> Result<Option<WsTicketData>>;
+    async fn consume(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+    ) -> Result<Option<WsTicketData>>;
 
     /// A label for logging/debug purposes (e.g. "redis", "memory").
     fn backend_name(&self) -> &'static str;
@@ -156,7 +160,12 @@ impl RedisTicketStore {
     }
 
     fn redis_key(&self, ticket: &str, room_id: &RoomId) -> String {
-        format!("{}ws_ticket:{}:{}", self.key_prefix, room_id.as_str(), ticket)
+        format!(
+            "{}ws_ticket:{}:{}",
+            self.key_prefix,
+            room_id.as_str(),
+            ticket
+        )
     }
 }
 
@@ -221,7 +230,11 @@ impl TicketStore for RedisTicketStore {
         Ok(deleted > 0)
     }
 
-    async fn consume(&self, ticket: &str, expected_room_id: &RoomId) -> Result<Option<WsTicketData>> {
+    async fn consume(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+    ) -> Result<Option<WsTicketData>> {
         let key = self.redis_key(ticket, expected_room_id);
         let mut conn = self.conn().await;
 
@@ -340,7 +353,11 @@ impl TicketStore for InMemoryTicketStore {
         Ok(removed.is_some())
     }
 
-    async fn consume(&self, ticket: &str, expected_room_id: &RoomId) -> Result<Option<WsTicketData>> {
+    async fn consume(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+    ) -> Result<Option<WsTicketData>> {
         // Use remove() for atomic get-and-delete to prevent TOCTOU race conditions.
         // Since moka uses lazy eviction, remove() may return entries that haven't
         // been evicted yet, so we manually check TTL expiry on the returned value.
@@ -808,7 +825,10 @@ mod tests {
         let first_result = service
             .validate_and_consume_checked(&ticket, &room_id, &allow_validator)
             .await;
-        assert!(first_result.is_ok(), "first checked validation should succeed");
+        assert!(
+            first_result.is_ok(),
+            "first checked validation should succeed"
+        );
 
         let second_result = service
             .validate_and_consume_checked(&ticket, &room_id, &allow_validator)

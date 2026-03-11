@@ -1172,7 +1172,7 @@ impl RedisPubSub {
                 format!("{start_ms}-0")
             };
             let mut total_caught_up = 0usize;
-            let mut total_skipped = 0usize;
+            let total_skipped = 0usize;
             for stream_key in &streams_to_catchup {
                 match self
                     .read_missed_events_from(stream_key, &catchup_start_id)
@@ -1180,13 +1180,8 @@ impl RedisPubSub {
                 {
                     Ok(events) => {
                         for (stream_id, channel, event) in events {
-                            let dedup_key = DedupKey::from_event(&event);
-                            if self.deduplicator.should_process(&dedup_key) {
-                                self.dispatch_event(&channel, event).await;
-                                total_caught_up += 1;
-                            } else {
-                                total_skipped += 1;
-                            }
+                            self.dispatch_event(&channel, event).await;
+                            total_caught_up += 1;
                             // Update cursor to the latest processed stream ID
                             stream_cursors.insert(stream_key.clone(), stream_id);
                         }
@@ -1221,13 +1216,8 @@ impl RedisPubSub {
                             {
                                 Ok(events) => {
                                     for (stream_id, channel, event) in events {
-                                        let dedup_key = DedupKey::from_event(&event);
-                                        if self.deduplicator.should_process(&dedup_key) {
-                                            self.dispatch_event(&channel, event).await;
-                                            total_caught_up += 1;
-                                        } else {
-                                            total_skipped += 1;
-                                        }
+                                        self.dispatch_event(&channel, event).await;
+                                        total_caught_up += 1;
                                         stream_cursors.insert(stream_key.clone(), stream_id);
                                     }
                                     if !stream_cursors.contains_key(stream_key) {
@@ -3050,6 +3040,62 @@ mod tests {
         assert!(
             non_target.is_err(),
             "non-target connection must not receive conn_id-only signaling"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_event_only_delivers_duplicate_once() {
+        let message_hub = Arc::new(RoomMessageHub::new());
+        let (admin_tx, _) = broadcast::channel(256);
+        let dedup = Arc::new(MessageDeduplicator::with_defaults());
+        let redis_client = RedisClient::open("redis://127.0.0.1:1").unwrap();
+
+        let pubsub = RedisPubSub::with_key_prefix(
+            redis_client,
+            message_hub.clone(),
+            "test-node".to_string(),
+            "synctv:",
+            admin_tx,
+            None,
+            None,
+            dedup,
+            300,
+            1000,
+        )
+        .unwrap();
+
+        let room_id = RoomId::from_string("dedup-room".to_string());
+        let user_id = synctv_core::models::id::UserId::from_string("dedup-user".to_string());
+        let mut rx = message_hub
+            .subscribe(room_id.clone(), user_id.clone(), "dedup-conn".to_string())
+            .await;
+
+        let event = ClusterEvent::ChatMessage {
+            event_id: "duplicate-event-id".to_string(),
+            room_id,
+            user_id,
+            username: "dedup".to_string(),
+            message: "hello".to_string(),
+            timestamp: chrono::Utc::now(),
+            position: None,
+            color: None,
+        };
+
+        pubsub
+            .dispatch_event("synctv:room:dedup-room", event.clone())
+            .await;
+        pubsub.dispatch_event("synctv:room:dedup-room", event).await;
+
+        let first = tokio::time::timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .expect("first event should be delivered")
+            .expect("channel should remain open");
+        assert!(matches!(first, ClusterEvent::ChatMessage { .. }));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "duplicate event must not be delivered twice"
         );
     }
 }

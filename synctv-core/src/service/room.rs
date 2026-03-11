@@ -20,25 +20,18 @@
 //! This service uses a standardized cache invalidation strategy to prevent
 //! race conditions and ensure data consistency across replicas.
 //!
-//! ## Transactional Operations (Before Commit)
+//! ## Transactional Operations (After Commit)
 //!
 //! For operations wrapped in transactions (e.g., `delete_room`, `admin_delete_room`),
-//! cache invalidation MUST happen BEFORE `tx.commit()`. This prevents the race condition:
+//! cache invalidation MUST happen AFTER `tx.commit()` succeeds. Broadcasting
+//! invalidation before commit creates a worse race:
 //!
-//! 1. Transaction commits (data changes)
-//! 2. Concurrent request reads stale data from cache
-//! 3. Cache is invalidated (too late - stale data was already served)
+//! 1. Cache is invalidated while the transaction is still open
+//! 2. Concurrent request misses cache and reads pre-commit database state
+//! 3. Old data is written back into cache
+//! 4. Transaction commits, leaving replicas with stale cache state
 //!
-//! By invalidating before commit, we ensure that when the transaction commits,
-//! the cache is already empty. Any concurrent request will miss the cache and
-//! read fresh data from the database.
-//!
-//! ### Rollback Safety
-//!
-//! If the transaction rolls back after cache invalidation, the cache will be
-//! empty and will be repopulated on the next read with the correct data.
-//! This is safe because:
-//! - Empty cache → cache miss → database read → returns current state → cache repopulated
+//! By invalidating only after commit, every cache miss observes committed state.
 //!
 //! ### Implementation
 //!
@@ -47,8 +40,8 @@
 //! ```text
 //! let mut tx = self.pool.begin().await?;
 //! // ... perform database operations ...
-//! self.invalidate_room_caches(&room_id).await;  // BEFORE commit
 //! tx.commit().await?;
+//! self.invalidate_room_caches(&room_id).await;  // AFTER commit
 //! // ... post-commit operations ...
 //! ```
 //!
@@ -215,6 +208,14 @@ impl RoomService {
             .set_invalidation_service(service, None);
     }
 
+    /// Wire the playback L2 cache into the inner playback service.
+    ///
+    /// This keeps bootstrap ownership at the `RoomService` boundary instead of
+    /// reaching through to private service internals.
+    pub fn set_playback_l2_cache(&mut self, cache: crate::cache::PlaybackStateCache) {
+        self.playback_service.set_l2_cache(cache);
+    }
+
     #[must_use]
     pub fn new(pool: PgPool, user_service: UserService) -> Self {
         let provider_instance_repo = Arc::new(crate::repository::ProviderInstanceRepository::new(
@@ -339,6 +340,11 @@ impl RoomService {
     #[cfg(test)]
     pub(crate) fn has_settings_registry(&self) -> bool {
         self.settings_registry.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_playback_l2_cache(&self) -> bool {
+        self.playback_service.has_l2_cache()
     }
 
     /// Inject the settings registry for reading `create_room_need_review` and other global settings.
@@ -1074,13 +1080,10 @@ impl RoomService {
             .execute(&mut *tx)
             .await?;
 
-        // Invalidate caches BEFORE committing the transaction.
-        // This prevents the race where another request reads stale cache
-        // between commit and invalidation. See module-level docs for details.
-        self.invalidate_room_caches(&room_id).await;
-
         // Commit transaction - all or nothing
         tx.commit().await?;
+
+        self.invalidate_room_caches(&room_id).await;
 
         // Notify after commit so notifications are only sent for successful deletions
         let _ = self
@@ -2590,12 +2593,9 @@ impl RoomService {
             .execute(&mut *tx)
             .await?;
 
-        // Invalidate caches BEFORE committing the transaction.
-        // This prevents the race where another request reads stale cache
-        // between commit and invalidation. See module-level docs for details.
-        self.invalidate_room_caches(room_id).await;
-
         tx.commit().await?;
+
+        self.invalidate_room_caches(room_id).await;
 
         // Notify after commit so notifications are only sent for successful deletions
         let _ = self.notification_service.notify_room_deleted(room_id).await;
@@ -2749,12 +2749,9 @@ impl RoomService {
             .execute(&mut *tx)
             .await?;
 
-        // Invalidate caches BEFORE committing the transaction.
-        // This prevents the race where another request reads stale cache
-        // between commit and invalidation. See module-level docs for details.
-        self.invalidate_room_caches(room_id).await;
-
         tx.commit().await?;
+
+        self.invalidate_room_caches(room_id).await;
 
         // Notify after commit
         let _ = self.notification_service.notify_room_deleted(room_id).await;
@@ -3002,36 +2999,17 @@ impl RoomService {
     ///
     /// ## Timing Requirements
     ///
-    /// **CRITICAL**: This MUST be called BEFORE transaction commit to prevent
-    /// race conditions:
-    ///
-    /// 1. Transaction commits (data is changed)
-    /// 2. Another request reads stale data from cache (shows old state)
-    /// 3. Cache is invalidated (too late - stale data was already served)
-    ///
-    /// By invalidating before commit, we ensure that when the transaction commits,
-    /// the cache is already empty. Any concurrent request will miss the cache
-    /// and read fresh data from the database.
-    ///
-    /// ## Rollback Safety
-    ///
-    /// If the transaction rolls back after cache invalidation, the cache will
-    /// simply be empty and will be repopulated on the next read with the correct
-    /// data. This is safe because:
-    ///
-    /// - Empty cache causes a cache miss
-    /// - Cache miss triggers a database read
-    /// - Database read returns the current (pre-rollback) state
-    /// - Cache is repopulated with correct data
+    /// **CRITICAL**: This must be called only after a successful transaction
+    /// commit. Invalidating before commit lets other replicas miss cache and
+    /// repopulate stale state from rows that are still visible.
     ///
     /// ## Usage Pattern
     ///
     /// ```text
     /// let mut tx = self.pool.begin().await?;
     /// // ... perform database operations ...
-    /// // Invalidate BEFORE commit
-    /// self.invalidate_room_caches(&room_id).await;
     /// tx.commit().await?;
+    /// self.invalidate_room_caches(&room_id).await;
     /// // ... post-commit operations ...
     /// ```
     ///

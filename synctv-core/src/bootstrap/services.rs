@@ -418,6 +418,8 @@ pub async fn init_services(
             config.redis.deployment_mode,
             crate::config::RedisDeploymentMode::Sentinel
         ),
+        &config.redis.key_prefix,
+        config.cache.l2_ttl_seconds,
     );
     if let Some(ref encryption) = credential_encryption_for_services {
         room_service.set_media_credential_encryption(encryption.clone());
@@ -764,6 +766,8 @@ fn build_room_service(
     redis_handles: Option<&RedisHandles>,
     cluster_mode: bool,
     is_sentinel: bool,
+    redis_key_prefix: &str,
+    cache_l2_ttl_seconds: u64,
 ) -> RoomService {
     let mut room_service = RoomService::new_with_providers(pool, user_service, providers_manager);
     if cluster_mode {
@@ -779,6 +783,19 @@ fn build_room_service(
     room_service.set_brute_force_service(brute_force);
     room_service.set_cache_invalidation(cache_invalidation.clone());
     room_service.set_playback_cache_invalidation(cache_invalidation);
+    if let Some(redis_handles) = redis_handles {
+        let playback_l2 = crate::cache::PlaybackStateCache::new(
+            Arc::new(crate::cache::RedisCacheL2::new_shared(
+                redis_handles.conn.clone(),
+            )),
+            crate::service::PlaybackService::DEFAULT_CACHE_SIZE,
+            crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
+            cache_l2_ttl_seconds,
+            format!("{redis_key_prefix}playback:"),
+        )
+        .expect("playback L2 cache configuration should be valid");
+        room_service.set_playback_l2_cache(playback_l2);
+    }
     room_service
 }
 
@@ -1049,10 +1066,16 @@ mod tests {
             None,
             false,
             false,
+            "test:",
+            Config::default().cache.l2_ttl_seconds,
         );
 
         assert!(room_service.has_brute_force_service());
         assert!(!room_service.has_distributed_lock());
+        assert!(
+            !room_service.has_playback_l2_cache(),
+            "room service should not wire playback L2 cache without Redis"
+        );
     }
 
     #[test]
@@ -1066,6 +1089,8 @@ mod tests {
             Option<&RedisHandles>,
             bool,
             bool,
+            &str,
+            u64,
         ) -> RoomService = build_room_service;
     }
 
@@ -1119,10 +1144,16 @@ mod tests {
             Some(&redis_handles),
             false,
             false,
+            "test:",
+            Config::default().cache.l2_ttl_seconds,
         );
         assert!(
             !standalone_room_service.has_distributed_lock(),
             "standalone mode should not enable distributed lock just because Redis is configured"
+        );
+        assert!(
+            standalone_room_service.has_playback_l2_cache(),
+            "room service should wire playback L2 cache whenever Redis is configured"
         );
 
         let cluster_room_service = build_room_service(
@@ -1134,10 +1165,16 @@ mod tests {
             Some(&redis_handles),
             true,
             false,
+            "test:",
+            Config::default().cache.l2_ttl_seconds,
         );
         assert!(
             cluster_room_service.has_distributed_lock(),
             "cluster mode should enable distributed lock when Redis is configured"
+        );
+        assert!(
+            cluster_room_service.has_playback_l2_cache(),
+            "cluster mode should also wire playback L2 cache"
         );
     }
 
@@ -1180,6 +1217,8 @@ mod tests {
             None,
             false,
             false,
+            "test:",
+            Config::default().cache.l2_ttl_seconds,
         );
         let settings_service = Arc::new(SettingsService::new(
             SettingsRepository::new(pool),
@@ -1234,6 +1273,8 @@ mod tests {
             None,
             false,
             false,
+            "test:",
+            Config::default().cache.l2_ttl_seconds,
         );
 
         assert!(
@@ -1282,6 +1323,8 @@ mod tests {
             None,
             false,
             false,
+            "test:",
+            Config::default().cache.l2_ttl_seconds,
         );
 
         let encryption = crate::service::CredentialEncryption::new(&[7u8; 32])

@@ -774,6 +774,18 @@ impl ClusterManager {
 
         // Get event_type for logging before moving event
         let event_type = event.event_type();
+        let is_critical = event.is_critical();
+
+        if self.shutdown_started.load(Ordering::Acquire) && !is_critical {
+            debug!(
+                event_type = %event_type,
+                "Skipping event because ClusterManager shutdown is in progress"
+            );
+            return BroadcastResult {
+                local_sent: 0,
+                redis_sent: false,
+            };
+        }
 
         // Get room_id for broadcasting
         if let Some(room_id) = event.room_id() {
@@ -785,18 +797,6 @@ impl ClusterManager {
         // delivered via the admin event channel to reach connected WebSocket handlers.
         if matches!(&event, ClusterEvent::UserNotification { .. }) {
             let _ = self.admin_event_tx.send(event.clone());
-        }
-
-        let is_critical = event.is_critical();
-        if self.shutdown_started.load(Ordering::Acquire) && !is_critical {
-            debug!(
-                event_type = %event_type,
-                "Skipping Redis publish because ClusterManager shutdown is in progress"
-            );
-            return BroadcastResult {
-                local_sent,
-                redis_sent: false,
-            };
         }
 
         // Publish to Redis for cross-node sync.
@@ -1510,14 +1510,17 @@ mod tests {
         };
 
         let mut manager = ClusterManager::new(config, None, None).await.unwrap();
+        let room_id = RoomId::from_string("shutdown-room".to_string());
+        let user_id = UserId::from_string("shutdown-user".to_string());
+        let (mut room_rx, _conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
         let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
         manager.redis_publish_tx = Some(publish_tx);
         manager.shutdown_started.store(true, Ordering::Release);
 
         let event = ClusterEvent::ChatMessage {
             event_id: nanoid::nanoid!(16),
-            room_id: RoomId::from_string("shutdown-room".to_string()),
-            user_id: UserId::from_string("shutdown-user".to_string()),
+            room_id,
+            user_id,
             username: "shutdown".to_string(),
             message: "non critical".to_string(),
             timestamp: Utc::now(),
@@ -1531,11 +1534,21 @@ mod tests {
             !result.redis_sent,
             "non-critical events should not enter Redis publish queues after shutdown starts"
         );
+        assert_eq!(
+            result.local_sent, 0,
+            "non-critical events should not be delivered locally once shutdown begins"
+        );
         assert!(
             tokio::time::timeout(Duration::from_millis(100), publish_rx.recv())
                 .await
                 .is_err(),
             "non-critical event must not be queued during shutdown"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), room_rx.recv())
+                .await
+                .is_err(),
+            "non-critical event must not reach local subscribers during shutdown"
         );
     }
 

@@ -138,14 +138,18 @@ struct ReqCtx(crate::impls::admin::RequestContext);
 impl<S> FromRequestParts<S> for ReqCtx
 where
     S: Send + Sync,
+    AppState: FromRef<S>,
 {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
         let ip_address = parts
             .extensions
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|ci| ci.0.ip().to_string());
+            .map(|ci| {
+                super::auth::extract_client_ip(&app_state.config, ci.0, &parts.headers).to_string()
+            });
         let user_agent = parts
             .headers
             .get(axum::http::header::USER_AGENT)
@@ -1216,6 +1220,11 @@ async fn remove_admin(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        extract::{ConnectInfo, FromRequestParts},
+        http::Request,
+    };
+    use std::net::SocketAddr;
 
     // ========== Request Struct Tests ==========
 
@@ -1353,6 +1362,57 @@ mod tests {
         };
         let debug = format!("{auth:?}");
         assert!(debug.contains("AuthRoot"));
+    }
+
+    #[tokio::test]
+    async fn test_req_ctx_uses_trusted_proxy_headers_for_audit_ip() {
+        let mut state = crate::http::tests::test_app_state();
+        {
+            let router_config = std::sync::Arc::make_mut(&mut state.router_config);
+            let config = std::sync::Arc::make_mut(&mut router_config.config);
+            config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
+        }
+
+        let mut request = Request::builder()
+            .uri("/admin/test")
+            .header("X-Forwarded-For", "203.0.113.10")
+            .header("User-Agent", "audit-test")
+            .body(())
+            .expect("request");
+        request.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:8080".parse::<SocketAddr>().expect("socket addr"),
+        ));
+
+        let (mut parts, _) = request.into_parts();
+        let ctx = ReqCtx::from_request_parts(&mut parts, &state)
+            .await
+            .expect("extractor should not fail");
+
+        assert_eq!(ctx.0.ip_address.as_deref(), Some("203.0.113.10"));
+        assert_eq!(ctx.0.user_agent.as_deref(), Some("audit-test"));
+    }
+
+    #[tokio::test]
+    async fn test_req_ctx_ignores_forwarded_headers_from_untrusted_proxy() {
+        let state = crate::http::tests::test_app_state();
+
+        let mut request = Request::builder()
+            .uri("/admin/test")
+            .header("X-Forwarded-For", "203.0.113.10")
+            .body(())
+            .expect("request");
+        request.extensions_mut().insert(ConnectInfo(
+            "198.51.100.7:8080"
+                .parse::<SocketAddr>()
+                .expect("socket addr"),
+        ));
+
+        let (mut parts, _) = request.into_parts();
+        let ctx = ReqCtx::from_request_parts(&mut parts, &state)
+            .await
+            .expect("extractor should not fail");
+
+        assert_eq!(ctx.0.ip_address.as_deref(), Some("198.51.100.7"));
     }
 
     // ========== Error Mapping Tests ==========

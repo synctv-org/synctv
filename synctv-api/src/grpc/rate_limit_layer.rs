@@ -282,9 +282,9 @@ fn alist_provider_tier(method: Option<&str>) -> GrpcRateLimitTier {
 
 fn bilibili_provider_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
-        Some(
-            "LoginQr" | "CheckQr" | "GetCaptcha" | "SendSms" | "LoginSms" | "Logout",
-        ) => GrpcRateLimitTier::Auth,
+        Some("LoginQr" | "CheckQr" | "GetCaptcha" | "SendSms" | "LoginSms" | "Logout") => {
+            GrpcRateLimitTier::Auth
+        }
         _ => GrpcRateLimitTier::Read,
     }
 }

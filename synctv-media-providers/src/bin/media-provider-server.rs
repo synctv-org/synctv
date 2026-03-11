@@ -65,7 +65,12 @@ fn should_record_circuit_breaker_success(headers: &HeaderMap) -> bool {
 fn should_record_circuit_breaker_failure(headers: &HeaderMap) -> bool {
     matches!(
         grpc_status_code(headers),
-        Code::Unknown | Code::DeadlineExceeded | Code::Aborted | Code::Internal | Code::Unavailable | Code::DataLoss
+        Code::Unknown
+            | Code::DeadlineExceeded
+            | Code::Aborted
+            | Code::Internal
+            | Code::Unavailable
+            | Code::DataLoss
     )
 }
 
@@ -354,15 +359,22 @@ mod tests {
     fn grpc_headers(code: Option<&str>) -> HeaderMap {
         let mut headers = HeaderMap::new();
         if let Some(code) = code {
-            headers.insert(Status::GRPC_STATUS, code.parse().expect("valid grpc-status"));
+            headers.insert(
+                Status::GRPC_STATUS,
+                code.parse().expect("valid grpc-status"),
+            );
         }
         headers
     }
 
     #[test]
     fn circuit_breaker_treats_ok_response_as_success() {
-        assert!(should_record_circuit_breaker_success(&grpc_headers(Some("0"))));
-        assert!(!should_record_circuit_breaker_failure(&grpc_headers(Some("0"))));
+        assert!(should_record_circuit_breaker_success(&grpc_headers(Some(
+            "0"
+        ))));
+        assert!(!should_record_circuit_breaker_failure(&grpc_headers(Some(
+            "0"
+        ))));
     }
 
     #[test]

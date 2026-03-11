@@ -1050,7 +1050,13 @@ mod tests {
         let registry = StreamRegistry::with_shared_conn_and_key_prefix(shared.clone(), "tenant-b:");
 
         let registered = registry
-            .try_register_publisher_with_user("room1", "media1", "node1", "user1", "localhost:50051")
+            .try_register_publisher_with_user(
+                "room1",
+                "media1",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
             .await
             .expect("initial registration should succeed");
         assert!(registered);

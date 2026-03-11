@@ -234,6 +234,12 @@ fn should_mark_cluster_service_serving(
     should_register_cluster_grpc_service(config, node_registry_available)
 }
 
+fn effective_grpc_request_timeout() -> std::time::Duration {
+    // Match the existing HTTP global timeout budget so one transport cannot
+    // hang indefinitely while the other fails fast.
+    std::time::Duration::from_secs(30)
+}
+
 fn validate_cluster_grpc_runtime_requirements(
     config: &synctv_core::Config,
     node_registry_available: bool,
@@ -520,9 +526,15 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         Arc::new(config.clone()),
         jwt_validator_for_rate_limit,
     );
+    let grpc_request_timeout = effective_grpc_request_timeout();
     let mut server_builder = Server::builder()
+        .timeout(grpc_request_timeout)
         .layer(distributed_rate_limit_layer)
         .layer(blacklist_layer);
+    tracing::info!(
+        grpc_request_timeout_secs = grpc_request_timeout.as_secs(),
+        "gRPC request timeout configured"
+    );
 
     // Get the configured max message size (prevents OOM from oversized messages)
     let max_message_size = config.server.grpc_max_message_size_bytes;
@@ -1041,7 +1053,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_client_ip, should_mark_cluster_service_serving,
+        effective_grpc_request_timeout, extract_client_ip, should_mark_cluster_service_serving,
         should_mark_livestream_relay_serving, should_mark_notification_service_serving,
         should_mark_oauth2_service_serving, should_mark_provider_services_serving,
         should_register_cluster_grpc_service, should_register_livestream_relay_service,
@@ -1233,6 +1245,14 @@ mod tests {
         assert!(!should_mark_oauth2_service_serving(false));
         assert!(should_mark_provider_services_serving(true));
         assert!(!should_mark_provider_services_serving(false));
+    }
+
+    #[test]
+    fn test_effective_grpc_request_timeout_matches_http_budget() {
+        assert_eq!(
+            effective_grpc_request_timeout(),
+            std::time::Duration::from_secs(30)
+        );
     }
 
     #[test]

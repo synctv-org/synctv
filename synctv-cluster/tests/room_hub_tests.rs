@@ -90,7 +90,10 @@ async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full
 
     for _ in 0..512 {
         let sent = hub.broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")));
-        assert_eq!(sent, 1, "prefill targeted messages should enqueue until channel fills");
+        assert_eq!(
+            sent, 1,
+            "prefill targeted messages should enqueue until channel fills"
+        );
     }
 
     let sent = hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room));

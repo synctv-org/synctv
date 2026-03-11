@@ -455,8 +455,7 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
 /// Write routes (room CRUD, membership, playback control, playlists, user updates).
 /// Moderate rate limiting: 30 req/min. Room create/update body limit: 64 KB (Issue #23).
 fn register_write_routes(state: &AppState) -> Router<AppState> {
-    Router::new()
-        .route("/api/tickets", post(ticket::create_ticket))
+    let mut router = Router::new()
         .route("/api/rooms", post(room::create_room))
         .route(
             "/api/rooms/{room_id}",
@@ -498,15 +497,6 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
             axum::routing::delete(user::delete_my_room),
         )
         .route(
-            "/api/oauth2/{provider}/bind",
-            get(oauth2::get_bind_authorize_url),
-        )
-        .route(
-            "/api/oauth2/{provider}/unlink",
-            axum::routing::delete(oauth2::unlink_provider),
-        )
-        .route("/api/oauth2/linked", get(oauth2::get_linked_providers))
-        .route(
             "/api/rooms/{room_id}/members/{user_id}",
             axum::routing::delete(room_extra::kick_member),
         )
@@ -534,7 +524,26 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route(
             "/api/rooms/{room_id}/settings/reset",
             post(room::reset_room_settings),
-        )
+        );
+
+    if state.ws_ticket_service.is_some() {
+        router = router.route("/api/tickets", post(ticket::create_ticket));
+    }
+
+    if state.oauth2_api.is_some() {
+        router = router
+            .route(
+                "/api/oauth2/{provider}/bind",
+                get(oauth2::get_bind_authorize_url),
+            )
+            .route(
+                "/api/oauth2/{provider}/unlink",
+                axum::routing::delete(oauth2::unlink_provider),
+            )
+            .route("/api/oauth2/linked", get(oauth2::get_linked_providers));
+    }
+
+    router
         // Room/user write bodies should be small (room metadata, settings, passwords)
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::ROOM))
         .route_layer(axum_middleware::from_fn_with_state(
@@ -593,46 +602,15 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         health::create_health_router()
     };
 
-    let email_routes = email_verification::create_email_router().route_layer(
-        axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
-    );
-
-    Router::new()
+    let mut router = Router::new()
         .merge(health_router)
         .merge(public::create_public_router())
-        .merge(email_routes)
         .merge(publish_key::create_publish_key_router().route_layer(
             axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
         ))
-        .merge(
-            notifications::create_notification_read_router().route_layer(
-                axum_middleware::from_fn_with_state(state.clone(), middleware::read_rate_limit),
-            ),
-        )
-        .merge(
-            notifications::create_notification_write_router().route_layer(
-                axum_middleware::from_fn_with_state(state.clone(), middleware::write_rate_limit),
-            ),
-        )
         .merge(register_auth_routes(&state))
         .merge(register_media_routes(&state))
         .merge(register_write_routes(&state))
-        // OAuth2 read-only routes
-        .merge(
-            Router::new()
-                .route(
-                    "/api/oauth2/{provider}/authorize",
-                    get(oauth2::get_authorize_url),
-                )
-                .route(
-                    "/api/oauth2/providers",
-                    get(oauth2::list_available_providers),
-                )
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::read_rate_limit,
-                )),
-        )
         .merge(register_read_routes(&state))
         // WebSocket endpoint
         .merge(
@@ -676,11 +654,55 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
                     middleware::read_rate_limit,
                 ))
                 .merge(register_provider_routes(&state)),
-        )
+        );
+
+    if state.notification_api.is_some() {
+        router = router
+            .merge(
+                notifications::create_notification_read_router().route_layer(
+                    axum_middleware::from_fn_with_state(state.clone(), middleware::read_rate_limit),
+                ),
+            )
+            .merge(
+                notifications::create_notification_write_router().route_layer(
+                    axum_middleware::from_fn_with_state(
+                        state.clone(),
+                        middleware::write_rate_limit,
+                    ),
+                ),
+            );
+    }
+
+    if state.email_service.is_some() && state.email_token_service.is_some() {
+        let email_routes = email_verification::create_email_router().route_layer(
+            axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
+        );
+        router = router.merge(email_routes);
+    }
+
+    if state.oauth2_api.is_some() {
+        router = router.merge(
+            Router::new()
+                .route(
+                    "/api/oauth2/{provider}/authorize",
+                    get(oauth2::get_authorize_url),
+                )
+                .route(
+                    "/api/oauth2/providers",
+                    get(oauth2::list_available_providers),
+                )
+                .route_layer(axum_middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::read_rate_limit,
+                )),
+        );
+    }
+
+    router
 }
 
 fn register_provider_routes(state: &AppState) -> Router<AppState> {
-    Router::new()
+    let mut router = Router::new()
         .merge(
             Router::new()
                 .nest(
@@ -708,11 +730,6 @@ fn register_provider_routes(state: &AppState) -> Router<AppState> {
                     providers::alist::alist_read_routes(),
                 )
                 .nest("/api/providers/emby", providers::emby::emby_read_routes())
-                .nest("/api/providers/rtmp", providers::live::rtmp_routes())
-                .nest(
-                    "/api/providers/live_proxy",
-                    providers::live::live_proxy_routes(),
-                )
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::read_rate_limit,
@@ -731,7 +748,24 @@ fn register_provider_routes(state: &AppState) -> Router<AppState> {
                     state.clone(),
                     middleware::streaming_rate_limit,
                 )),
-        )
+        );
+
+    if state.live_streaming_infrastructure.is_some() {
+        router = router.merge(
+            Router::new()
+                .nest("/api/providers/rtmp", providers::live::rtmp_routes())
+                .nest(
+                    "/api/providers/live_proxy",
+                    providers::live::live_proxy_routes(),
+                )
+                .route_layer(axum_middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::read_rate_limit,
+                )),
+        );
+    }
+
+    router
 }
 
 /// Build CORS layer based on configuration.
@@ -822,7 +856,11 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
                         proxy
                             .parse::<ipnet::IpNet>()
                             .map(|network| network.contains(&ip))
-                            .or_else(|_| proxy.parse::<std::net::IpAddr>().map(|proxy_ip| proxy_ip == ip))
+                            .or_else(|_| {
+                                proxy
+                                    .parse::<std::net::IpAddr>()
+                                    .map(|proxy_ip| proxy_ip == ip)
+                            })
                             .unwrap_or(false)
                     });
                     trusted
@@ -958,7 +996,9 @@ mod tests {
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
             rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-            ws_ticket_service: None,
+            ws_ticket_service: Some(Arc::new(
+                synctv_core::service::WsTicketService::with_memory(None),
+            )),
             redis_conn: None,
             builtin_stun_url: None,
             turn_health_checker: None,
@@ -1460,5 +1500,94 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(legacy_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_oauth2_routes_are_not_registered_when_service_missing() {
+        let state = test_app_state();
+        let app = register_all_routes(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/oauth2/providers")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_email_routes_are_not_registered_when_services_missing() {
+        let state = test_app_state();
+        let app = register_all_routes(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/email/verify/send")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"email":"test@example.com"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_notification_routes_are_not_registered_when_service_missing() {
+        let state = test_app_state();
+        let app = register_all_routes(state.clone()).with_state(state);
+
+        let read_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/notifications")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(read_response.status(), StatusCode::NOT_FOUND);
+
+        let write_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/notifications/read-all")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(write_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_live_provider_routes_are_not_registered_when_infrastructure_missing() {
+        let state = test_app_state();
+        let app = register_all_routes(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/providers/rtmp/streams?room_id=room1234_abx")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

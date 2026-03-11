@@ -19,7 +19,7 @@
 
 use axum::{
     extract::{Path, Query, State, WebSocketUpgrade},
-    http::HeaderMap,
+    http::{header, HeaderMap},
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
@@ -189,6 +189,110 @@ fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<Stri
         .map_err(|e| AppError::unauthorized(format!("Invalid Authorization header: {e}")))?;
 
     Ok(Some(token))
+}
+
+fn validate_websocket_origin(
+    headers: &HeaderMap,
+    allowed_origins: &[String],
+) -> Result<(), AppError> {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        // Non-browser clients typically omit Origin. Keep supporting them.
+        return Ok(());
+    };
+
+    let origin = origin
+        .to_str()
+        .map_err(|_| AppError::forbidden("Invalid Origin header: non-UTF-8 value"))?;
+
+    if origin.eq_ignore_ascii_case("null") {
+        return Err(AppError::forbidden(
+            "WebSocket Origin is not allowed for this endpoint",
+        ));
+    }
+
+    let parsed_origin =
+        url::Url::parse(origin).map_err(|_| AppError::forbidden("Invalid Origin header format"))?;
+
+    if !matches!(parsed_origin.scheme(), "http" | "https") {
+        return Err(AppError::forbidden(
+            "WebSocket Origin must use http or https",
+        ));
+    }
+
+    if let Some(host) = headers
+        .get(header::HOST)
+        .and_then(|host| host.to_str().ok())
+    {
+        if parsed_origin.host_str().is_some() && same_origin_as_host(&parsed_origin, host) {
+            return Ok(());
+        }
+    }
+
+    if allowed_origins.iter().any(|allowed| allowed == origin) {
+        return Ok(());
+    }
+
+    Err(AppError::forbidden(
+        "WebSocket Origin is not allowed for this endpoint",
+    ))
+}
+
+fn validate_websocket_runtime_dependencies(state: &AppState) -> Result<(), AppError> {
+    validate_websocket_runtime_dependency_flags(
+        state.cluster_manager.is_some(),
+        state.chat_service.is_some(),
+    )
+}
+
+fn validate_websocket_runtime_dependency_flags(
+    has_cluster_manager: bool,
+    has_chat_service: bool,
+) -> Result<(), AppError> {
+    if !has_cluster_manager || !has_chat_service {
+        return Err(AppError::service_unavailable());
+    }
+
+    Ok(())
+}
+
+fn same_origin_as_host(origin: &url::Url, host_header: &str) -> bool {
+    let Some(origin_host) = origin.host_str() else {
+        return false;
+    };
+
+    let (request_host, request_port) = split_host_and_port(host_header);
+    if !origin_host.eq_ignore_ascii_case(request_host) {
+        return false;
+    }
+
+    origin.port_or_known_default()
+        == request_port.or_else(|| default_port_for_scheme(origin.scheme()))
+}
+
+fn split_host_and_port(host_header: &str) -> (&str, Option<u16>) {
+    if let Some(stripped) = host_header.strip_prefix('[') {
+        if let Some(end) = stripped.find(']') {
+            let host = &stripped[..end];
+            let remainder = &stripped[end + 1..];
+            let port = remainder
+                .strip_prefix(':')
+                .and_then(|port| port.parse().ok());
+            return (host, port);
+        }
+    }
+
+    match host_header.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => (host, port.parse().ok()),
+        _ => (host_header, None),
+    }
+}
+
+fn default_port_for_scheme(scheme: &str) -> Option<u16> {
+    match scheme {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    }
 }
 
 /// WebSocket stream implementation of `StreamMessage` trait
@@ -454,6 +558,8 @@ pub async fn websocket_handler(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
+    validate_websocket_origin(&headers, &state.config.server.cors_allowed_origins)?;
+
     // Build the RoomId before authentication so we can pass it for ticket validation.
     let rid = crate::room_id_validation::parse_room_id(&room_id)
         .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
@@ -492,12 +598,9 @@ pub async fn websocket_handler(
         ));
     }
 
-    // R-5: Verify ClusterManager is available BEFORE upgrading. Without it the
-    // WebSocket handler cannot function, so reject early with HTTP 503 instead
-    // of silently dropping the connection inside handle_socket.
-    if state.cluster_manager.is_none() {
-        return Err(AppError::service_unavailable());
-    }
+    // Reject requests before upgrade when required runtime dependencies are
+    // missing, instead of accepting the handshake and then disconnecting.
+    validate_websocket_runtime_dependencies(&state)?;
 
     // CRITICAL: Atomically reserve per-room connection slot BEFORE WebSocket upgrade.
     // This prevents the TOCTOU race condition where concurrent requests all pass
@@ -926,6 +1029,76 @@ mod tests {
         let err = AppError::unauthorized("Token has been revoked");
         assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
         assert_eq!(err.message, "Token has been revoked");
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_allows_missing_origin_for_non_browser_clients() {
+        let headers = HeaderMap::new();
+        validate_websocket_origin(&headers, &[]).expect("missing origin should be allowed");
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_allows_same_origin_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "app.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+
+        validate_websocket_origin(&headers, &[])
+            .expect("same-origin browser websocket should be allowed");
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_allows_explicitly_configured_cross_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "api.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+
+        validate_websocket_origin(&headers, &["https://app.example.com".to_string()])
+            .expect("configured frontend origin should be allowed");
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_rejects_unconfigured_cross_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "api.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "https://evil.example.com".parse().unwrap());
+
+        let err = validate_websocket_origin(&headers, &[])
+            .expect_err("unconfigured cross-origin websocket must fail closed");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        assert!(err.message.contains("Origin"));
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_rejects_null_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "api.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "null".parse().unwrap());
+
+        let err = validate_websocket_origin(&headers, &[])
+            .expect_err("null origin should not be trusted");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_split_host_and_port_supports_ipv6_host_header() {
+        let (host, port) = split_host_and_port("[::1]:8080");
+        assert_eq!(host, "::1");
+        assert_eq!(port, Some(8080));
+    }
+
+    #[test]
+    fn test_validate_websocket_runtime_dependency_flags_require_cluster_and_chat_services() {
+        let err = validate_websocket_runtime_dependency_flags(false, true)
+            .expect_err("missing cluster manager must fail before websocket upgrade");
+        assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+
+        let err = validate_websocket_runtime_dependency_flags(true, false)
+            .expect_err("missing chat service must fail before websocket upgrade");
+        assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+
+        validate_websocket_runtime_dependency_flags(true, true)
+            .expect("present dependencies should allow websocket upgrade to proceed");
     }
 
     // ========== RateLimitConfig Tests ==========

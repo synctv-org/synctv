@@ -337,7 +337,10 @@ impl PgTokenBlacklistStore {
         escaped
     }
 
-    async fn load_family_revocation_meta_key(&self, key: &str) -> std::result::Result<Option<String>, sqlx::Error> {
+    async fn load_family_revocation_meta_key(
+        &self,
+        key: &str,
+    ) -> std::result::Result<Option<String>, sqlx::Error> {
         let meta_like = format!(
             "{}%",
             Self::escape_like_pattern(&Self::family_timestamp_key_prefix(key))
@@ -506,14 +509,16 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         })?;
 
         match meta_key {
-            Some(meta_key) => Self::parse_family_timestamp_key(&meta_key, key).map(Some).ok_or_else(|| {
-                tracing::error!(
-                    family_key = %key,
-                    meta_key = %meta_key,
-                    "Malformed PostgreSQL family revocation metadata key (fail-closed)"
-                );
-                crate::Error::Internal("Failed to validate refresh token family".to_string())
-            }),
+            Some(meta_key) => Self::parse_family_timestamp_key(&meta_key, key)
+                .map(Some)
+                .ok_or_else(|| {
+                    tracing::error!(
+                        family_key = %key,
+                        meta_key = %meta_key,
+                        "Malformed PostgreSQL family revocation metadata key (fail-closed)"
+                    );
+                    crate::Error::Internal("Failed to validate refresh token family".to_string())
+                }),
             None => Ok(None),
         }
     }

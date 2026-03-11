@@ -23,6 +23,7 @@ use crate::observability::metrics::LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL
 use synctv_core::models::id::RoomId;
 use synctv_core::provider::proxy::ProxyAction;
 use synctv_livestream::api::{FlvStreamingApi, HlsStreamingApi};
+use synctv_livestream::error::StreamError;
 
 #[derive(Debug, Deserialize)]
 pub struct RoomQuery {
@@ -43,30 +44,53 @@ fn create_live_provider_router() -> Router<AppState> {
         .route("/streams", get(handle_room_streams))
 }
 
-fn map_livestream_error(context: &str, error: impl std::fmt::Display) -> AppError {
-    let message = error.to_string();
-    let lower = message.to_ascii_lowercase();
+fn find_stream_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a StreamError> {
+    let mut current = Some(error);
+    while let Some(err) = current {
+        if let Some(stream_error) = err.downcast_ref::<StreamError>() {
+            return Some(stream_error);
+        }
+        current = err.source();
+    }
+    None
+}
 
-    if lower.contains("max concurrent streams reached")
-        || lower.contains("too many")
-        || lower.contains("rate limit")
-        || lower.contains("exhausted")
-    {
-        return AppError::too_many_requests(format!("{context}: {message}"));
+fn map_stream_error(context: &str, error: &StreamError) -> AppError {
+    match error {
+        StreamError::NoPublisher(_)
+        | StreamError::StreamNotFound(_)
+        | StreamError::InvalidStreamKey(_) => AppError::not_found(format!("{context}: {error}")),
+        StreamError::PermissionDenied(_) | StreamError::AuthenticationFailed(_) => {
+            AppError::forbidden(format!("{context}: {error}"))
+        }
+        StreamError::ResourceExhausted(_) => {
+            AppError::too_many_requests(format!("{context}: {error}"))
+        }
+        StreamError::InvalidAddress(_)
+        | StreamError::ProtocolError(_)
+        | StreamError::HandshakeFailed(_)
+        | StreamError::InvalidState(_) => AppError::bad_request(format!("{context}: {error}")),
+        StreamError::RedisError(_)
+        | StreamError::RegistryError(_)
+        | StreamError::GrpcError(_)
+        | StreamError::ConnectionFailed(_)
+        | StreamError::IoError(_)
+        | StreamError::Internal(_)
+        | StreamError::StaleEpoch(_)
+        | StreamError::AlreadyPublishing(_)
+        | StreamError::PublisherExists(_)
+        | StreamError::StreamHubError(_) => {
+            AppError::internal_server_error(format!("{context}: {error}"))
+        }
+    }
+}
+
+fn map_livestream_error(context: &str, error: &(dyn std::error::Error + 'static)) -> AppError {
+    if let Some(stream_error) = find_stream_error(error) {
+        return map_stream_error(context, stream_error);
     }
 
-    if lower.contains("no publisher")
-        || lower.contains("stream not found")
-        || lower.contains("segment not found")
-    {
-        return AppError::not_found(format!("{context}: {message}"));
-    }
-
-    if lower.contains("permission denied") || lower.contains("authentication failed") {
-        return AppError::forbidden(format!("{context}: {message}"));
-    }
-
-    AppError::internal_server_error(format!("{context}: {message}"))
+    AppError::internal_server_error(format!("{context}: {error}"))
 }
 
 async fn handle_stream_info(
@@ -180,7 +204,7 @@ async fn execute_flv_stream(
         source_url.as_deref(),
     )
     .await
-    .map_err(|e| map_livestream_error("Failed to create FLV session", e))?;
+    .map_err(|e| map_livestream_error("Failed to create FLV session", &*e))?;
 
     let mut disconnect_rx = state.connection_manager.subscribe_disconnect();
     let room_id = RoomId::from_string(room_id_str.to_string());
@@ -300,7 +324,7 @@ async fn execute_hls_playlist(
             )
         })
         .await
-        .map_err(|e| map_livestream_error("Failed to generate HLS playlist", e))?;
+        .map_err(|e| map_livestream_error("Failed to generate HLS playlist", &*e))?;
 
     match playlist {
         Some(content) => Ok(Response::builder()
@@ -366,7 +390,7 @@ async fn execute_hls_segment(
         .await
         .map_err(|e| {
             warn!(room_id = %room_id, media_id = %media_id, segment = %validated_name, error = %e, "HLS segment fetch failed");
-            map_livestream_error("Failed to get HLS segment", e)
+            map_livestream_error("Failed to get HLS segment", &*e)
         })?;
 
     if disguised_as_png {
@@ -417,8 +441,6 @@ async fn send_flv_chunk(
 mod tests {
     use super::*;
     use axum::http::StatusCode;
-    use synctv_livestream::error::StreamError;
-
     #[test]
     fn room_query_deserializes_room_id() {
         let query: RoomQuery = serde_urlencoded::from_str("room_id=room123").unwrap();
@@ -478,9 +500,11 @@ mod tests {
 
     #[test]
     fn livestream_invalid_state_limit_maps_to_429() {
-        let err = map_livestream_error(
+        let err = map_stream_error(
             "Failed to create FLV session",
-            StreamError::InvalidState("max concurrent streams reached (limit: 100)".to_string()),
+            &StreamError::ResourceExhausted(
+                "max concurrent streams reached (limit: 100)".to_string(),
+            ),
         );
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
         assert!(err.message.contains("max concurrent streams reached"));
@@ -488,19 +512,38 @@ mod tests {
 
     #[test]
     fn livestream_no_publisher_maps_to_404() {
-        let err = map_livestream_error(
+        let err = map_stream_error(
             "Failed to generate HLS playlist",
-            StreamError::NoPublisher("room1/media1".to_string()),
+            &StreamError::NoPublisher("room1/media1".to_string()),
         );
         assert_eq!(err.status, StatusCode::NOT_FOUND);
     }
 
     #[test]
     fn livestream_permission_denied_maps_to_403() {
-        let err = map_livestream_error(
+        let err = map_stream_error(
             "Failed to create FLV session",
-            StreamError::PermissionDenied("not allowed".to_string()),
+            &StreamError::PermissionDenied("not allowed".to_string()),
         );
         assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn livestream_nested_stream_error_maps_without_string_matching() {
+        let err = anyhow::Error::new(StreamError::ResourceExhausted(
+            "max concurrent streams reached (limit: 100)".to_string(),
+        ))
+        .context("wrapped by anyhow");
+
+        let mapped = map_livestream_error("Failed to create FLV session", err.as_ref());
+        assert_eq!(mapped.status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(mapped.message.contains("Resource exhausted"));
+    }
+
+    #[test]
+    fn livestream_unknown_error_defaults_to_500() {
+        let err = anyhow::anyhow!("plain anyhow without typed source");
+        let mapped = map_livestream_error("Failed to create FLV session", err.as_ref());
+        assert_eq!(mapped.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

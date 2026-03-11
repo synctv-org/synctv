@@ -50,6 +50,9 @@ pub enum StreamError {
     #[error("Invalid state: {0}")]
     InvalidState(String),
 
+    #[error("Resource exhausted: {0}")]
+    ResourceExhausted(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 

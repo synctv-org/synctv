@@ -15,10 +15,14 @@
 //! 2. Removes the user→stream mapping from the local `StreamTracker`
 //! 3. Removes the per-user Redis key `rtmp:user_stream:{user_id}`
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use async_trait::async_trait;
 use percent_encoding::percent_decode_str;
+use tokio::sync::RwLock;
 use synctv_livestream::api::UserStreamTracker;
 use synctv_livestream::relay::StreamRegistryTrait;
 use synctv_livestream::AuthCallback;
@@ -74,6 +78,9 @@ pub struct SyncTvRtmpAuth {
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     /// Redis key prefix from config (e.g., "synctv:") for multi-instance isolation
     key_prefix: String,
+    /// Optional shared restart flag from LivestreamServer. When set, new
+    /// publications are rejected during the StreamHub cleanup/re-register window.
+    is_restarting: Option<Arc<AtomicBool>>,
     /// Optional Redis connection for cross-replica `user_id → stream_key` mapping.
     ///
     /// When set, each successful publish auth additionally writes:
@@ -85,7 +92,7 @@ pub struct SyncTvRtmpAuth {
     /// where EXPIRE would reset the TTL for all users on every write.
     ///
     /// On unpublish, the key is removed: `DEL {key_prefix}rtmp:user_stream:{user_id}`.
-    redis_conn: Option<redis::aio::ConnectionManager>,
+    redis_conn: Option<Arc<RwLock<redis::aio::ConnectionManager>>>,
 }
 
 impl SyncTvRtmpAuth {
@@ -111,6 +118,7 @@ impl SyncTvRtmpAuth {
             grpc_address,
             stream_event_tx,
             key_prefix,
+            is_restarting: None,
             redis_conn: None,
         }
     }
@@ -129,8 +137,21 @@ impl SyncTvRtmpAuth {
     /// Call this after construction when a Redis connection is available.
     /// If not called, cross-replica user→stream lookup falls back to the
     /// publisher registry's reverse index (`stream:user_publishers:{user_id}`).
-    pub fn with_redis(mut self, conn: redis::aio::ConnectionManager) -> Self {
+    pub fn with_redis(mut self, conn: Arc<RwLock<redis::aio::ConnectionManager>>) -> Self {
         self.redis_conn = Some(conn);
+        self
+    }
+
+    async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
+        match &self.redis_conn {
+            Some(conn) => Some(conn.read().await.clone()),
+            None => None,
+        }
+    }
+
+    /// Reject new RTMP publications while StreamHub is restarting.
+    pub fn with_restarting_flag(mut self, is_restarting: Arc<AtomicBool>) -> Self {
+        self.is_restarting = Some(is_restarting);
         self
     }
 }
@@ -146,6 +167,18 @@ impl AuthCallback for SyncTvRtmpAuth {
         Option<synctv_livestream::rtmp_auth::AuthPublishRewrite>,
         Box<dyn std::error::Error + Send + Sync>,
     > {
+        if self
+            .is_restarting
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            tracing::warn!(
+                room_id = %app_name,
+                "RTMP publish rejected: StreamHub is restarting"
+            );
+            return Err("StreamHub is restarting, please retry in a few seconds".into());
+        }
+
         // Phase 1: Validate room, token, user status, and authorization
         let validated = self
             .validate_publish_request(app_name, stream_name, query)
@@ -216,8 +249,7 @@ impl AuthCallback for SyncTvRtmpAuth {
             }
 
             // Clean up the per-user Redis key ({key_prefix}rtmp:user_stream:{user_id})
-            if let Some(ref conn) = self.redis_conn {
-                let mut conn = conn.clone();
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let key = self.user_stream_key(user_id);
                 let result: Result<(), redis::RedisError> =
                     redis::cmd("DEL").arg(&key).query_async(&mut conn).await;
@@ -306,8 +338,7 @@ impl AuthCallback for SyncTvRtmpAuth {
 
         // 3. Clean up per-user Redis key
         if let Some((ref user_id, _, _)) = tracked {
-            if let Some(ref conn) = self.redis_conn {
-                let mut conn = conn.clone();
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let key = self.user_stream_key(user_id);
                 let result: Result<(), redis::RedisError> =
                     redis::cmd("DEL").arg(&key).query_async(&mut conn).await;
@@ -645,8 +676,7 @@ impl SyncTvRtmpAuth {
         //
         // Issue #45: if SET fails after registration succeeded, we roll back the
         // publisher registration to keep Redis consistent.
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let stream_value = format!("{}|{}", validated.room_id, validated.media_id);
             let redis_key = self.user_stream_key(&validated.user_id);
             // SET + EXPIRE in a single pipeline for atomicity
@@ -717,8 +747,7 @@ impl SyncTvRtmpAuth {
         }
 
         // Slow path: check Redis cross-replica mapping ({key_prefix}rtmp:user_stream:{user_id})
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let key = self.user_stream_key(user_id);
             let result: Result<Option<String>, redis::RedisError> =
                 redis::cmd("GET").arg(&key).query_async(&mut conn).await;
@@ -753,6 +782,7 @@ impl SyncTvRtmpAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::RwLock;
 
     // ========== extract_token_from_query ==========
 
@@ -878,6 +908,176 @@ mod tests {
         assert_eq!(
             stream_name, "media_123",
             "query token mode must still reserve stream_name for media binding"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_publish_rejects_during_streamhub_restart() {
+        let restarting = Arc::new(AtomicBool::new(true));
+        let auth = SyncTvRtmpAuth::new(
+            Arc::new(RoomService::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                    .expect("lazy pool"),
+                UserService::new(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                        .expect("lazy pool"),
+                    synctv_core::service::JwtService::new(
+                        "test-secret-key-for-http-router-tests-minimum-32-chars",
+                    )
+                    .expect("jwt"),
+                    synctv_core::cache::UsernameCache::new(
+                        Arc::new(synctv_core::cache::NoopCacheL2),
+                        "test:username:".to_string(),
+                        16,
+                        60,
+                    ),
+                    synctv_core::config::PasswordComplexityConfig::default(),
+                    Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                        128, 3600, 86400,
+                    )),
+                    synctv_core::cache::KeyBuilder::new("test"),
+                    synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string()),
+                ),
+            )),
+            Arc::new(UserService::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                    .expect("lazy pool"),
+                synctv_core::service::JwtService::new(
+                    "test-secret-key-for-http-router-tests-minimum-32-chars",
+                )
+                .expect("jwt"),
+                synctv_core::cache::UsernameCache::new(
+                    Arc::new(synctv_core::cache::NoopCacheL2),
+                    "test:username:".to_string(),
+                    16,
+                    60,
+                ),
+                synctv_core::config::PasswordComplexityConfig::default(),
+                Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                    128, 3600, 86400,
+                )),
+                synctv_core::cache::KeyBuilder::new("test"),
+                synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string()),
+            )),
+            Arc::new(synctv_core::service::PublishKeyService::with_default_ttl(
+                synctv_core::service::JwtService::new(
+                    "test-secret-key-for-http-router-tests-minimum-32-chars",
+                )
+                .expect("jwt"),
+            )),
+            Arc::new(synctv_livestream::api::StreamTracker::new()),
+            Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new()),
+            "node-1".to_string(),
+            "127.0.0.1:50051".to_string(),
+            None,
+            "test:".to_string(),
+        )
+        .with_restarting_flag(restarting);
+
+        let result = auth.on_publish("room", "stream", None).await;
+        let err = result.expect_err("publish must be rejected while restarting");
+        assert!(
+            err.to_string().contains("StreamHub is restarting"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn test_get_user_stream_uses_hot_swapped_shared_redis_connection() {
+        use redis::AsyncCommands;
+
+        let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
+        let shared = Arc::new(RwLock::new(
+            redis::aio::ConnectionManager::new(client.clone())
+                .await
+                .expect("initial connection manager should build"),
+        ));
+
+        let auth = SyncTvRtmpAuth::new(
+            Arc::new(RoomService::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                    .expect("lazy pool"),
+                UserService::new(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                        .expect("lazy pool"),
+                    synctv_core::service::JwtService::new(
+                        "test-secret-key-for-http-router-tests-minimum-32-chars",
+                    )
+                    .expect("jwt"),
+                    synctv_core::cache::UsernameCache::new(
+                        Arc::new(synctv_core::cache::NoopCacheL2),
+                        "test:username:".to_string(),
+                        16,
+                        60,
+                    ),
+                    synctv_core::config::PasswordComplexityConfig::default(),
+                    Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                        128, 3600, 86400,
+                    )),
+                    synctv_core::cache::KeyBuilder::new("test"),
+                    synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string()),
+                ),
+            )),
+            Arc::new(UserService::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                    .expect("lazy pool"),
+                synctv_core::service::JwtService::new(
+                    "test-secret-key-for-http-router-tests-minimum-32-chars",
+                )
+                .expect("jwt"),
+                synctv_core::cache::UsernameCache::new(
+                    Arc::new(synctv_core::cache::NoopCacheL2),
+                    "test:username:".to_string(),
+                    16,
+                    60,
+                ),
+                synctv_core::config::PasswordComplexityConfig::default(),
+                Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                    128, 3600, 86400,
+                )),
+                synctv_core::cache::KeyBuilder::new("test"),
+                synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string()),
+            )),
+            Arc::new(synctv_core::service::PublishKeyService::with_default_ttl(
+                synctv_core::service::JwtService::new(
+                    "test-secret-key-for-http-router-tests-minimum-32-chars",
+                )
+                .expect("jwt"),
+            )),
+            Arc::new(synctv_livestream::api::StreamTracker::new()),
+            Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new()),
+            "node-1".to_string(),
+            "127.0.0.1:50051".to_string(),
+            None,
+            "test-rtmp:".to_string(),
+        )
+        .with_redis(shared.clone());
+
+        let replacement = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .expect("replacement connection manager should build");
+        *shared.write().await = replacement;
+
+        let mut verify_conn = redis::aio::ConnectionManager::new(client)
+            .await
+            .expect("verification connection should build");
+        let _: () = verify_conn
+            .set("test-rtmp:rtmp:user_stream:user-1", "room-1|media-1")
+            .await
+            .expect("seed user stream mapping");
+
+        let user_stream = auth.get_user_stream("user-1").await;
+        assert_eq!(
+            user_stream,
+            Some(("room-1".to_string(), "media-1".to_string())),
+            "RTMP auth must re-read the shared Redis handle after a hot swap"
         );
     }
 

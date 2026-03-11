@@ -13,7 +13,7 @@ use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use crate::{apply_provider_headers, proxy_client};
+use crate::apply_provider_headers;
 
 use super::backend::{CacheBackend, SliceCacheBackend};
 use super::config::{CacheBackendConfig, SliceCacheConfig};
@@ -43,6 +43,8 @@ type SliceLock = Arc<Mutex<()>>;
 /// ETag/Last-Modified validation and conditional requests.
 pub struct SliceCache {
     pub(super) config: SliceCacheConfig,
+    /// Shared outbound HTTP client for cache fill and revalidation requests.
+    client: reqwest::Client,
     /// The cache backend (memory or file).
     backend: Arc<CacheBackend>,
     /// Per-key locks to prevent thundering herd.
@@ -64,6 +66,7 @@ impl Clone for SliceCache {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
+            client: self.client.clone(),
             backend: Arc::clone(&self.backend),
             locks: Arc::clone(&self.locks),
             meta: Arc::clone(&self.meta),
@@ -87,6 +90,17 @@ impl SliceCache {
     /// [`try_new`](Self::try_new) instead.
     #[must_use]
     pub fn new(config: SliceCacheConfig) -> Self {
+        let client =
+            crate::build_proxy_http_client().expect("proxy HTTP client must build for SliceCache");
+        Self::new_with_client(config, client)
+    }
+
+    /// Create a new in-memory `SliceCache` with an explicit outbound HTTP client.
+    ///
+    /// This is the preferred constructor for runtime code so the proxy/cache stack
+    /// shares one injected client instance.
+    #[must_use]
+    pub fn new_with_client(config: SliceCacheConfig, client: reqwest::Client) -> Self {
         assert!(
             matches!(config.backend, CacheBackendConfig::Memory),
             "SliceCache::new() only supports the Memory backend; \
@@ -96,13 +110,22 @@ impl SliceCache {
             config.max_cache_size,
             Duration::from_hours(1),
         ));
-        Self::with_backend(config, backend)
+        Self::with_backend(config, client, backend)
     }
 
     /// Create a new `SliceCache`, initializing the backend from the
     /// configuration.  This is the async variant that supports both
     /// memory and file backends.
     pub async fn try_new(config: SliceCacheConfig) -> anyhow::Result<Self> {
+        let client = crate::build_proxy_http_client()?;
+        Self::try_new_with_client(config, client).await
+    }
+
+    /// Create a new `SliceCache` with an explicit outbound HTTP client.
+    pub async fn try_new_with_client(
+        config: SliceCacheConfig,
+        client: reqwest::Client,
+    ) -> anyhow::Result<Self> {
         let backend = match &config.backend {
             CacheBackendConfig::Memory => {
                 CacheBackend::Memory(super::backend::memory::MemoryBackend::new(
@@ -119,12 +142,12 @@ impl SliceCache {
                 CacheBackend::File(fb)
             }
         };
-        Ok(Self::with_backend(config, backend))
+        Ok(Self::with_backend(config, client, backend))
     }
 
     /// Internal helper: assemble a `SliceCache` from an already-created
     /// backend.
-    fn with_backend(config: SliceCacheConfig, backend: CacheBackend) -> Self {
+    fn with_backend(config: SliceCacheConfig, client: reqwest::Client, backend: CacheBackend) -> Self {
         // seen_keys uses a moka cache with a TTL slightly longer than
         // the main cache's time_to_idle so that "was ever seen" info
         // outlives the data entry but does not grow unbounded.
@@ -135,6 +158,7 @@ impl SliceCache {
 
         Self {
             config,
+            client,
             backend: Arc::new(backend),
             locks: Arc::new(dashmap::DashMap::new()),
             meta: Arc::new(dashmap::DashMap::new()),
@@ -154,6 +178,12 @@ impl SliceCache {
     #[must_use]
     pub const fn backend(&self) -> &Arc<CacheBackend> {
         &self.backend
+    }
+
+    /// Access the injected outbound HTTP client.
+    #[must_use]
+    pub const fn client(&self) -> &reqwest::Client {
+        &self.client
     }
 
     // ---------------------------------------------------------------
@@ -349,7 +379,7 @@ impl SliceCache {
             aligned_range_for_slice(slice_index, self.config.slice_size, total_size)?;
         let range_header = format!("bytes={range_start}-{range_end}");
 
-        let mut request = proxy_client()?.get(url);
+        let mut request = self.client.get(url);
         request = apply_provider_headers(request, url, provider_headers)?;
         request = request.header("Range", &range_header);
 
@@ -389,7 +419,7 @@ impl SliceCache {
             // Entry was evicted between the conditional request and now --
             // fall through to a full re-fetch.  This is an unlikely edge
             // case; we rebuild the request without conditional headers.
-            let mut request2 = proxy_client()?.get(url);
+            let mut request2 = self.client.get(url);
             request2 = apply_provider_headers(request2, url, provider_headers)?;
             request2 = request2.header("Range", &range_header);
             let resp2 = match request2.send().await {

@@ -53,7 +53,7 @@ pub mod store;
 pub use backend::{CacheBackend, SliceCacheBackend};
 pub use config::SliceCacheConfig;
 pub use etag::{CachedResourceMeta, StoredEntry};
-pub use filter::{head_content_length, proxy_with_cache};
+pub use filter::{proxy_with_cache, proxy_with_cache_enabled};
 pub use lifecycle::CacheLifecycleManager;
 pub use range::{
     aligned_range_for_slice, compute_needed_slices, parse_content_range, parse_range_header,

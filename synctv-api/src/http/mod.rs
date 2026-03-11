@@ -86,6 +86,8 @@ pub struct RouterConfig {
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Shared proxy slice cache instance managed by the runtime.
     pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    /// Shared outbound HTTP client used by proxy handlers and cache fills.
+    pub proxy_http_client: reqwest::Client,
     /// Rate limit configuration for WebSocket messaging (chat/danmaku).
     /// This is separate from the HTTP rate limit config used by middleware.
     pub messaging_rate_limit_config: synctv_core::service::RateLimitConfig,
@@ -138,6 +140,8 @@ pub struct AppState {
     pub proxy_signing_key: Arc<ProxySigningKey>,
     /// Shared proxy slice cache used by unified provider proxy routes.
     pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    /// Shared outbound HTTP client used by proxy handlers.
+    pub proxy_http_client: reqwest::Client,
 }
 
 pub struct ProxyCacheLifecycleRuntime {
@@ -321,6 +325,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
 
     let heartbeat_schedule = config.heartbeat_schedule;
     let proxy_slice_cache = config.proxy_slice_cache.clone();
+    let proxy_http_client = config.proxy_http_client.clone();
 
     let shared_content_filter = Arc::new(config.content_filter.clone());
 
@@ -345,6 +350,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         proxy_services,
         proxy_signing_key,
         proxy_slice_cache,
+        proxy_http_client,
     }
 }
 
@@ -872,7 +878,7 @@ mod tests {
     use synctv_proxy::slice_cache::{SliceCache, SliceCacheBackend, SliceCacheConfig, StoredEntry};
     use tower::ServiceExt;
 
-    fn test_app_state() -> super::AppState {
+    pub(crate) fn test_app_state() -> super::AppState {
         test_app_state_with_rate_limits(
             synctv_core::HttpRateLimitConfig::default(),
             synctv_core::GrpcRateLimitConfig::default(),
@@ -958,6 +964,8 @@ mod tests {
             turn_health_checker: None,
             credential_encryption: None,
             proxy_slice_cache: Arc::new(SliceCache::new(SliceCacheConfig::default())),
+            proxy_http_client: synctv_proxy::build_proxy_http_client()
+                .expect("proxy HTTP client should build for tests"),
             messaging_rate_limit_config: RateLimitConfig::default(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: None,
@@ -1070,6 +1078,8 @@ mod tests {
             enabled: false,
             ..SliceCacheConfig::default()
         }));
+        let injected_proxy_http_client = synctv_proxy::build_proxy_http_client()
+            .expect("proxy HTTP client should build for tests");
 
         let state = build_app_state(RouterConfig {
             config: Arc::new(synctv_core::Config::default()),
@@ -1108,6 +1118,7 @@ mod tests {
             turn_health_checker: None,
             credential_encryption: None,
             proxy_slice_cache: injected_cache.clone(),
+            proxy_http_client: injected_proxy_http_client.clone(),
             messaging_rate_limit_config: RateLimitConfig::default(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: None,
@@ -1120,6 +1131,15 @@ mod tests {
         assert!(
             !state.proxy_slice_cache.config().enabled,
             "The injected cache configuration must be preserved"
+        );
+        assert!(
+            state
+                .proxy_http_client
+                .clone()
+                .get("https://example.com")
+                .build()
+                .is_ok(),
+            "The injected proxy HTTP client must remain usable in AppState"
         );
     }
 

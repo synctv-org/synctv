@@ -559,7 +559,11 @@ async fn test_proxy_with_cache_head_request_returns_content_length() {
     let url = format!("{}/video.mp4", mock_server.uri());
     let provider_headers = HashMap::new();
 
-    let total = synctv_proxy::slice_cache::head_content_length(&url, &provider_headers)
+    let total = synctv_proxy::slice_cache::filter::head_content_length(
+        _cache.client(),
+        &url,
+        &provider_headers,
+    )
         .await
         .unwrap();
 
@@ -2181,6 +2185,66 @@ async fn test_file_backend_via_try_new() {
     assert!(cache.is_ok(), "try_new should succeed for file backend");
     let cache = cache.unwrap();
     assert!(cache.config().enabled);
+}
+
+#[tokio::test]
+async fn test_proxy_with_cache_enabled_overrides_disabled_config() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 10 * 1024 * 1024;
+    let slice_body = Bytes::from(vec![0xCD; 2 * 1024 * 1024]);
+
+    Mock::given(method("HEAD"))
+        .and(path("/runtime-toggle.mp4"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/runtime-toggle.mp4"))
+        .and(header("Range", "bytes=0-2097151"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_body.clone())
+                .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
+                .insert_header("Content-Length", "2097152"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = SliceCache::new(SliceCacheConfig {
+        enabled: false,
+        ..SliceCacheConfig::default()
+    });
+    let url = format!("{}/runtime-toggle.mp4", mock_server.uri());
+    let headers = HashMap::new();
+
+    let miss = synctv_proxy::slice_cache::proxy_with_cache_enabled(
+        &cache,
+        true,
+        Some("bytes=0-999"),
+        &url,
+        &headers,
+    )
+    .await
+    .expect("runtime-enabled cache request should succeed");
+    let hit = synctv_proxy::slice_cache::proxy_with_cache_enabled(
+        &cache,
+        true,
+        Some("bytes=0-999"),
+        &url,
+        &headers,
+    )
+    .await
+    .expect("second runtime-enabled cache request should succeed");
+
+    assert_eq!(miss.headers().get("X-Cache-Status").unwrap(), "MISS");
+    assert_eq!(hit.headers().get("X-Cache-Status").unwrap(), "HIT");
 }
 
 /// SliceCache::new panics for file backend config.

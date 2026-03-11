@@ -6,7 +6,8 @@ use std::process::Command;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::Connection as _;
 use sqlx::PgPool;
 use testcontainers::core::wait::LogWaitStrategy;
 use testcontainers::core::{ImageExt, WaitFor};
@@ -279,18 +280,33 @@ pub async fn create_test_pool_with_options_and_label(
         .get_host_port_ipv4(5432)
         .await
         .expect("Failed to get port");
-    let connection_string = format!("postgresql://synctv:synctv_test@127.0.0.1:{port}/{db_name}");
+    let connect_options = PgConnectOptions::new()
+        .host("127.0.0.1")
+        .port(port)
+        .username("synctv")
+        .password("synctv_test")
+        .database(db_name)
+        .ssl_mode(PgSslMode::Disable);
 
     let pool = {
         let mut retries = 0u32;
         loop {
-            match PgPoolOptions::new()
-                .acquire_timeout(acquire_timeout)
-                .max_connections(max_connections)
-                .connect(&connection_string)
-                .await
-            {
-                Ok(p) => break p,
+            match sqlx::postgres::PgConnection::connect_with(&connect_options).await {
+                Ok(mut conn) => {
+                    sqlx::query_scalar::<_, i32>("SELECT 1")
+                        .fetch_one(&mut conn)
+                        .await
+                        .expect("PostgreSQL readiness probe should succeed once connected");
+                    drop(conn);
+
+                    let pool = PgPoolOptions::new()
+                        .acquire_timeout(acquire_timeout)
+                        .max_connections(max_connections)
+                        .connect_with(connect_options.clone())
+                        .await
+                        .expect("PostgreSQL pool creation should succeed after readiness probe");
+                    break pool;
+                }
                 Err(_) if retries < 60 => {
                     retries += 1;
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;

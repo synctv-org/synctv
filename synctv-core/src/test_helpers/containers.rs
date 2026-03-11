@@ -24,15 +24,18 @@ const REDIS_VERSION: &str = "7-alpine";
 const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;
 const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
+const DEFAULT_DOCKER_STARTUP_PARALLELISM: usize = 4;
+const MIN_DOCKER_STARTUP_PARALLELISM: usize = 1;
+const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLELISM";
 static POSTGRES_START_SERIALIZER: std::sync::LazyLock<Semaphore> =
-    std::sync::LazyLock::new(|| Semaphore::new(1));
+    std::sync::LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
 static REDIS_START_SERIALIZER: std::sync::LazyLock<Semaphore> =
-    std::sync::LazyLock::new(|| Semaphore::new(1));
+    std::sync::LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
 
 struct ProcessLock(File);
 
 impl ProcessLock {
-    fn acquire(name: &str) -> Self {
+    fn try_acquire(name: &str) -> Option<Self> {
         let mut path = PathBuf::from("/tmp");
         path.push(format!("synctv-{name}.lock"));
         let file = OpenOptions::new()
@@ -42,9 +45,10 @@ impl ProcessLock {
             .write(true)
             .open(&path)
             .unwrap_or_else(|e| panic!("failed to open lock file {}: {e}", path.display()));
-        file.lock()
-            .unwrap_or_else(|e| panic!("failed to acquire lock file {}: {e}", path.display()));
-        Self(file)
+        match file.try_lock() {
+            Ok(()) => Some(Self(file)),
+            Err(_) => None,
+        }
     }
 }
 
@@ -64,6 +68,38 @@ fn docker_startup_timeout() -> Duration {
         .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS))
+}
+
+fn docker_startup_parallelism() -> usize {
+    std::env::var(DOCKER_STARTUP_PARALLELISM_ENV)
+        .ok()
+        .as_deref()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(|slots| slots.max(MIN_DOCKER_STARTUP_PARALLELISM))
+        .unwrap_or(DEFAULT_DOCKER_STARTUP_PARALLELISM)
+}
+
+async fn acquire_docker_start_slot(
+    serializer: &'static std::sync::LazyLock<Semaphore>,
+    prefix: &'static str,
+) -> ProcessLock {
+    let slots = docker_startup_parallelism();
+    let _local_permit = serializer
+        .acquire()
+        .await
+        .expect("docker startup guard should not be closed");
+
+    tokio::task::spawn_blocking(move || loop {
+        for slot in 0..slots {
+            let slot_name = format!("{prefix}-slot-{slot}");
+            if let Some(lock) = ProcessLock::try_acquire(&slot_name) {
+                return lock;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    })
+    .await
+    .expect("docker process slot task should not panic")
 }
 
 fn sanitize_container_name(raw: &str) -> String {
@@ -241,18 +277,10 @@ impl TestInfra {
         let postgres_name = postgres_container_name("infra");
         let redis_name = redis_container_name("infra");
         let (pg_container, redis_container) = {
-            let _postgres_start_permit = POSTGRES_START_SERIALIZER
-                .acquire()
-                .await
-                .expect("Postgres startup guard should not be closed");
-            let _redis_start_permit = REDIS_START_SERIALIZER
-                .acquire()
-                .await
-                .expect("Redis startup guard should not be closed");
-            let _docker_process_lock =
-                tokio::task::spawn_blocking(|| ProcessLock::acquire("docker-start"))
-                    .await
-                    .expect("docker process lock task should not panic");
+            let _postgres_start_slot =
+                acquire_docker_start_slot(&POSTGRES_START_SERIALIZER, "postgres-start").await;
+            let _redis_start_slot =
+                acquire_docker_start_slot(&REDIS_START_SERIALIZER, "redis-start").await;
             tokio::join!(
                 Postgres::default()
                     .with_db_name("synctv_test")
@@ -337,14 +365,8 @@ impl TestInfra {
     pub async fn postgres_only() -> TestPostgres {
         let postgres_name = postgres_container_name("postgres-only");
         let pg_container = {
-            let _postgres_start_permit = POSTGRES_START_SERIALIZER
-                .acquire()
-                .await
-                .expect("Postgres startup guard should not be closed");
-            let _postgres_process_lock =
-                tokio::task::spawn_blocking(|| ProcessLock::acquire("postgres-start"))
-                    .await
-                    .expect("postgres process lock task should not panic");
+            let _postgres_start_slot =
+                acquire_docker_start_slot(&POSTGRES_START_SERIALIZER, "postgres-start").await;
             Postgres::default()
                 .with_db_name("synctv_test")
                 .with_user("synctv")
@@ -395,14 +417,8 @@ impl TestInfra {
     pub async fn redis_only() -> TestRedis {
         let redis_name = redis_container_name("redis-only");
         let redis_container = {
-            let _redis_start_permit = REDIS_START_SERIALIZER
-                .acquire()
-                .await
-                .expect("Redis startup guard should not be closed");
-            let _redis_process_lock =
-                tokio::task::spawn_blocking(|| ProcessLock::acquire("redis-start"))
-                    .await
-                    .expect("redis process lock task should not panic");
+            let _redis_start_slot =
+                acquire_docker_start_slot(&REDIS_START_SERIALIZER, "redis-start").await;
             Redis::default()
                 .with_tag(REDIS_VERSION)
                 .with_container_name(redis_name.clone())

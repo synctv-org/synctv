@@ -521,8 +521,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         jwt_validator_for_rate_limit,
     );
     let mut server_builder = Server::builder()
-        .layer(blacklist_layer)
-        .layer(distributed_rate_limit_layer);
+        .layer(distributed_rate_limit_layer)
+        .layer(blacklist_layer);
 
     // Get the configured max message size (prevents OOM from oversized messages)
     let max_message_size = config.server.grpc_max_message_size_bytes;
@@ -721,6 +721,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         let provider_jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
             Arc::new(jwt_service_for_provider.clone()),
         ));
+        let provider_proxy_http_client = synctv_proxy::build_proxy_http_client()
+            .expect("provider proxy HTTP client should build");
 
         // Build a RouterConfig for provider gRPC services, sharing common fields
         let provider_router_config = Arc::new(crate::http::RouterConfig {
@@ -751,9 +753,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             builtin_stun_url: None,
             turn_health_checker: None,
             credential_encryption: credential_encryption.clone(),
-            proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+            proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
                 synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                provider_proxy_http_client.clone(),
             )),
+            proxy_http_client: provider_proxy_http_client.clone(),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: Some(Arc::clone(&_providers_mgr)),
@@ -811,6 +815,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             }),
             proxy_signing_key: proxy_signing_key.clone(),
             proxy_slice_cache: provider_proxy_slice_cache,
+            proxy_http_client: provider_proxy_http_client,
         });
 
         // Register provider gRPC services with auth interceptor

@@ -11,6 +11,10 @@
 use std::collections::HashMap;
 use synctv_proxy::{proxy_fetch_and_forward, NoopMetrics, ProxyConfig};
 
+fn proxy_client() -> reqwest::Client {
+    synctv_proxy::build_proxy_http_client().expect("proxy HTTP client should build for tests")
+}
+
 // ==================================================================
 // DNS-level SSRF protection tests
 // ==================================================================
@@ -19,7 +23,9 @@ use synctv_proxy::{proxy_fetch_and_forward, NoopMetrics, ProxyConfig};
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_dns_resolver_blocks_loopback() {
     let headers = axum::http::HeaderMap::new();
+    let client = proxy_client();
     let cfg = ProxyConfig {
+        client: &client,
         url: "http://127.0.0.1/admin",
         provider_headers: &HashMap::new(),
         client_headers: &headers,
@@ -39,7 +45,9 @@ async fn test_dns_resolver_blocks_private_ips() {
 
     for url in &private_ips {
         let headers = axum::http::HeaderMap::new();
+        let client = proxy_client();
         let cfg = ProxyConfig {
+            client: &client,
             url,
             provider_headers: &HashMap::new(),
             client_headers: &headers,
@@ -56,7 +64,9 @@ async fn test_dns_resolver_blocks_private_ips() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_dns_resolver_blocks_cloud_metadata() {
     let headers = axum::http::HeaderMap::new();
+    let client = proxy_client();
     let cfg = ProxyConfig {
+        client: &client,
         url: "http://169.254.169.254/latest/meta-data/",
         provider_headers: &HashMap::new(),
         client_headers: &headers,

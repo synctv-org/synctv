@@ -65,6 +65,13 @@ const MEMBERSHIP_CACHE_TTL: Duration = Duration::from_secs(30);
 /// When exceeded, new messages receive a `ResourceExhausted` error.
 pub const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
 
+fn should_fail_webrtc_signal_broadcast(
+    result: synctv_cluster::sync::BroadcastResult,
+    cluster_redis_enabled: bool,
+) -> bool {
+    cluster_redis_enabled && !result.redis_sent
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeartbeatSchedule {
     membership_cache_ttl: Duration,
@@ -2262,13 +2269,18 @@ impl StreamMessageHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        // Broadcast to cluster. WebRTC signaling is best-effort.
+        // Cross-replica WebRTC signaling must reach Redis when cluster mode is enabled.
         let result = self.cluster_manager.broadcast(event);
-        if !result.redis_sent {
-            tracing::debug!(
+        if should_fail_webrtc_signal_broadcast(result, self.cluster_manager.metrics().redis_enabled)
+        {
+            tracing::warn!(
                 room_id = %self.room_id.as_str(),
-                "WebRTC offer cluster broadcast did not reach Redis (signaling may fail cross-replica)"
+                "WebRTC offer cluster broadcast did not reach Redis while cluster fan-out is enabled"
             );
+            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                .with_label_values(&["webrtc_signal_no_redis"])
+                .inc();
+            return Err("WebRTC offer delivery failed: cluster Redis publish unavailable".to_string());
         }
 
         Ok(())
@@ -2310,13 +2322,18 @@ impl StreamMessageHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        // Broadcast to cluster. WebRTC signaling is best-effort.
+        // Cross-replica WebRTC signaling must reach Redis when cluster mode is enabled.
         let result = self.cluster_manager.broadcast(event);
-        if !result.redis_sent {
-            tracing::debug!(
+        if should_fail_webrtc_signal_broadcast(result, self.cluster_manager.metrics().redis_enabled)
+        {
+            tracing::warn!(
                 room_id = %self.room_id.as_str(),
-                "WebRTC answer cluster broadcast did not reach Redis (signaling may fail cross-replica)"
+                "WebRTC answer cluster broadcast did not reach Redis while cluster fan-out is enabled"
             );
+            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                .with_label_values(&["webrtc_signal_no_redis"])
+                .inc();
+            return Err("WebRTC answer delivery failed: cluster Redis publish unavailable".to_string());
         }
 
         Ok(())
@@ -2358,12 +2375,20 @@ impl StreamMessageHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        // Broadcast to cluster. ICE candidates are best-effort signaling.
+        // Cross-replica ICE signaling must reach Redis when cluster mode is enabled.
         let result = self.cluster_manager.broadcast(event);
-        if !result.redis_sent {
-            tracing::debug!(
+        if should_fail_webrtc_signal_broadcast(result, self.cluster_manager.metrics().redis_enabled)
+        {
+            tracing::warn!(
                 room_id = %self.room_id.as_str(),
-                "ICE candidate cluster broadcast did not reach Redis (signaling may fail cross-replica)"
+                "ICE candidate cluster broadcast did not reach Redis while cluster fan-out is enabled"
+            );
+            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                .with_label_values(&["webrtc_signal_no_redis"])
+                .inc();
+            return Err(
+                "WebRTC ICE candidate delivery failed: cluster Redis publish unavailable"
+                    .to_string(),
             );
         }
 
@@ -4778,6 +4803,36 @@ mod tests {
             !should_retry,
             "single-node mode should not spawn retries when the local subscriber already received UserLeft"
         );
+    }
+
+    #[test]
+    fn test_webrtc_signal_requires_redis_delivery_when_cluster_enabled() {
+        let result = synctv_cluster::sync::BroadcastResult {
+            local_sent: 1,
+            redis_sent: false,
+        };
+
+        assert!(super::should_fail_webrtc_signal_broadcast(result, true));
+    }
+
+    #[test]
+    fn test_webrtc_signal_allows_single_node_delivery_without_redis() {
+        let result = synctv_cluster::sync::BroadcastResult {
+            local_sent: 1,
+            redis_sent: false,
+        };
+
+        assert!(!super::should_fail_webrtc_signal_broadcast(result, false));
+    }
+
+    #[test]
+    fn test_webrtc_signal_allows_cluster_delivery_when_redis_publish_succeeds() {
+        let result = synctv_cluster::sync::BroadcastResult {
+            local_sent: 0,
+            redis_sent: true,
+        };
+
+        assert!(!super::should_fail_webrtc_signal_broadcast(result, true));
     }
 
     #[test]

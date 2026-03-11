@@ -370,6 +370,8 @@ async fn test_hsts_not_added_without_https_forwarding() {
             enabled: false,
             ..SliceCacheConfig::default()
         })),
+        proxy_http_client: synctv_proxy::build_proxy_http_client()
+            .expect("proxy HTTP client should build for tests"),
         messaging_rate_limit_config: RateLimitConfig::default(),
         heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
         providers_manager: None,

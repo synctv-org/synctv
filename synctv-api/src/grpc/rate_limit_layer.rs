@@ -209,9 +209,9 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
         Some("NotificationService") => Some(notification_service_tier(method_name)),
         Some("OAuth2Service") => Some(oauth2_service_tier(method_name)),
         // Provider services
-        Some("AlistProviderService") => Some(GrpcRateLimitTier::Read),
-        Some("BilibiliProviderService") => Some(GrpcRateLimitTier::Read),
-        Some("EmbyProviderService") => Some(GrpcRateLimitTier::Read),
+        Some("AlistProviderService") => Some(alist_provider_tier(method_name)),
+        Some("BilibiliProviderService") => Some(bilibili_provider_tier(method_name)),
+        Some("EmbyProviderService") => Some(emby_provider_tier(method_name)),
         // Internal infrastructure services are explicitly exempt.
         Some("ClusterService" | "StreamRelayService" | "Health" | "ServerReflection") => None,
         // Unknown services default to the conservative read tier so newly added
@@ -270,6 +270,29 @@ fn oauth2_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
             GrpcRateLimitTier::Write
         }
         _ => GrpcRateLimitTier::Auth,
+    }
+}
+
+fn alist_provider_tier(method: Option<&str>) -> GrpcRateLimitTier {
+    match method {
+        Some("Login" | "Logout") => GrpcRateLimitTier::Auth,
+        _ => GrpcRateLimitTier::Read,
+    }
+}
+
+fn bilibili_provider_tier(method: Option<&str>) -> GrpcRateLimitTier {
+    match method {
+        Some(
+            "LoginQr" | "CheckQr" | "GetCaptcha" | "SendSms" | "LoginSms" | "Logout",
+        ) => GrpcRateLimitTier::Auth,
+        _ => GrpcRateLimitTier::Read,
+    }
+}
+
+fn emby_provider_tier(method: Option<&str>) -> GrpcRateLimitTier {
+    match method {
+        Some("Login" | "Logout") => GrpcRateLimitTier::Auth,
+        _ => GrpcRateLimitTier::Read,
     }
 }
 
@@ -683,16 +706,56 @@ mod tests {
     #[test]
     fn test_tier_from_path_providers() {
         assert_eq!(
-            tier_from_path("/synctv.providers.alist.AlistProviderService/ListFiles"),
+            tier_from_path("/synctv.providers.alist.AlistProviderService/List"),
             Some(GrpcRateLimitTier::Read)
         );
         assert_eq!(
-            tier_from_path("/synctv.providers.bilibili.BilibiliProviderService/Search"),
+            tier_from_path("/synctv.providers.alist.AlistProviderService/Login"),
+            Some(GrpcRateLimitTier::Auth)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.providers.alist.AlistProviderService/Logout"),
+            Some(GrpcRateLimitTier::Auth)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.providers.bilibili.BilibiliProviderService/Parse"),
             Some(GrpcRateLimitTier::Read)
         );
         assert_eq!(
-            tier_from_path("/synctv.providers.emby.EmbyProviderService/GetItem"),
+            tier_from_path("/synctv.providers.bilibili.BilibiliProviderService/LoginQr"),
+            Some(GrpcRateLimitTier::Auth)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.providers.bilibili.BilibiliProviderService/CheckQr"),
+            Some(GrpcRateLimitTier::Auth)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.providers.bilibili.BilibiliProviderService/GetCaptcha"),
+            Some(GrpcRateLimitTier::Auth)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.providers.bilibili.BilibiliProviderService/SendSms"),
+            Some(GrpcRateLimitTier::Auth)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.providers.bilibili.BilibiliProviderService/LoginSms"),
+            Some(GrpcRateLimitTier::Auth)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.providers.bilibili.BilibiliProviderService/Logout"),
+            Some(GrpcRateLimitTier::Auth)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.providers.emby.EmbyProviderService/GetMe"),
             Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.providers.emby.EmbyProviderService/Login"),
+            Some(GrpcRateLimitTier::Auth)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.providers.emby.EmbyProviderService/Logout"),
+            Some(GrpcRateLimitTier::Auth)
         );
     }
 

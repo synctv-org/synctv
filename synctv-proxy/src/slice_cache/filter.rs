@@ -13,7 +13,7 @@ use axum::response::Response;
 use bytes::Bytes;
 use futures::StreamExt;
 
-use crate::{apply_provider_headers, proxy_client};
+use crate::apply_provider_headers;
 
 use super::config::is_manifest_content_type;
 use super::range::{aligned_range_for_slice, compute_needed_slices, parse_range_header};
@@ -27,10 +27,11 @@ use super::store::SliceCache;
 /// Send a HEAD request to discover the upstream `Content-Length`.
 #[allow(clippy::implicit_hasher)]
 pub async fn head_content_length(
+    client: &reqwest::Client,
     url: &str,
     provider_headers: &HashMap<String, String>,
 ) -> Result<u64, anyhow::Error> {
-    let mut request = proxy_client()?.head(url);
+    let mut request = client.head(url);
     request = apply_provider_headers(request, url, provider_headers)?;
 
     let resp = request
@@ -76,9 +77,33 @@ pub async fn proxy_with_cache(
     url: &str,
     provider_headers: &HashMap<String, String>,
 ) -> Result<Response, anyhow::Error> {
+    proxy_with_cache_enabled(
+        cache,
+        cache.config().enabled,
+        range_header,
+        url,
+        provider_headers,
+    )
+    .await
+}
+
+/// Serve a request through the slice cache with an explicit runtime enable flag.
+///
+/// This allows callers that support dynamic runtime settings to bypass the
+/// startup-time `SliceCacheConfig.enabled` snapshot and decide cache usage from
+/// their live configuration source.
+#[allow(clippy::implicit_hasher)]
+pub async fn proxy_with_cache_enabled(
+    cache: &SliceCache,
+    cache_enabled: bool,
+    range_header: Option<&str>,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+) -> Result<Response, anyhow::Error> {
     // ------ BYPASS: cache disabled ------
-    if !cache.config().enabled {
+    if !cache_enabled {
         return stream_through_with_status(
+            cache.client(),
             url,
             provider_headers,
             range_header,
@@ -101,7 +126,7 @@ pub async fn proxy_with_cache(
     // range request, even when the slice data is already cached (L4 fix).
     let total_size = match cache.get_resource_meta(url, provider_headers).await {
         Some(meta) if meta.total_size.is_some() => meta.total_size.expect("checked above"),
-        _ => head_content_length(url, provider_headers).await?,
+        _ => head_content_length(cache.client(), url, provider_headers).await?,
     };
 
     let (range_start, range_end) = parse_range_header(range_str, total_size)?;
@@ -118,6 +143,7 @@ pub async fn proxy_with_cache(
     const MAX_BUFFERED_SLICES: usize = 8;
     if needed.len() > MAX_BUFFERED_SLICES {
         return stream_through_with_status(
+            cache.client(),
             url,
             provider_headers,
             range_header,
@@ -236,18 +262,7 @@ pub(super) async fn full_body_cache_path(
             let bg_headers = provider_headers.clone();
             let bg_meta = cache.get_resource_meta(url, provider_headers).await;
             tokio::spawn(async move {
-                let client = match proxy_client() {
-                    Ok(client) => client,
-                    Err(error) => {
-                        tracing::warn!(
-                            url = %bg_url,
-                            error = %error,
-                            "Skipping background cache revalidation due to proxy client init failure"
-                        );
-                        return;
-                    }
-                };
-                let mut req = client.get(&bg_url);
+                let mut req = bg_cache.client().get(&bg_url);
                 req = match apply_provider_headers(req, &bg_url, &bg_headers) {
                     Ok(req) => req,
                     Err(error) => {
@@ -331,7 +346,7 @@ pub(super) async fn full_body_cache_path(
     let pre_status = cache.full_body_pre_status(url, provider_headers).await;
 
     // Fetch from upstream, with conditional headers if we have metadata.
-    let mut request = proxy_client()?.get(url);
+    let mut request = cache.client().get(url);
     request = apply_provider_headers(request, url, provider_headers)?;
 
     // Add conditional request headers from stored metadata to enable 304
@@ -386,7 +401,7 @@ pub(super) async fn full_body_cache_path(
         }
         // Cache entry was evicted between conditional request and now --
         // fall through to a full re-fetch without conditional headers.
-        let mut request2 = proxy_client()?.get(url);
+        let mut request2 = cache.client().get(url);
         request2 = apply_provider_headers(request2, url, provider_headers)?;
         let resp2 = request2
             .send()
@@ -565,12 +580,13 @@ async fn handle_full_body_response(
 /// Stream an upstream response through without caching, attaching the given
 /// `X-Cache-Status` header.
 pub(super) async fn stream_through_with_status(
+    client: &reqwest::Client,
     url: &str,
     provider_headers: &HashMap<String, String>,
     range_header: Option<&str>,
     cache_status: CacheStatus,
 ) -> Result<Response, anyhow::Error> {
-    let mut request = proxy_client()?.get(url);
+    let mut request = client.get(url);
     request = apply_provider_headers(request, url, provider_headers)?;
 
     if let Some(range) = range_header {

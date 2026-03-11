@@ -16,6 +16,10 @@ use synctv_proxy::{
     NoopMetrics, ProxyConfig,
 };
 
+fn proxy_client() -> reqwest::Client {
+    synctv_proxy::build_proxy_http_client().expect("proxy HTTP client should build for tests")
+}
+
 // ==================================================================
 // Response Size Validation Tests
 // ==================================================================
@@ -36,7 +40,9 @@ fn test_oversized_response_blocked() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_content_length_validation_blocks_oversized() {
     let headers = axum::http::HeaderMap::new();
+    let client = proxy_client();
     let cfg = ProxyConfig {
+        client: &client,
         url: "http://127.0.0.1:9999/huge-file.mp4",
         provider_headers: &HashMap::new(),
         client_headers: &headers,

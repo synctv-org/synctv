@@ -30,6 +30,7 @@ use crate::http::{error::AppResult, AppError, AppState};
 ///
 /// Translates the abstract action into concrete `synctv-proxy` calls.
 pub(crate) async fn execute_proxy_action(
+    proxy_http_client: &reqwest::Client,
     action: ProxyAction,
     client_headers: &axum::http::HeaderMap,
 ) -> crate::http::error::AppResult<axum::response::Response> {
@@ -41,6 +42,7 @@ pub(crate) async fn execute_proxy_action(
         )),
         ProxyAction::FetchAndForward { url, headers } => {
             let cfg = synctv_proxy::ProxyConfig {
+                client: proxy_http_client,
                 url: &url,
                 provider_headers: &headers,
                 client_headers,
@@ -53,7 +55,7 @@ pub(crate) async fn execute_proxy_action(
             url,
             headers,
             proxy_base,
-        } => synctv_proxy::proxy_m3u8_and_rewrite(&url, &headers, &proxy_base)
+        } => synctv_proxy::proxy_m3u8_and_rewrite(proxy_http_client, &url, &headers, &proxy_base)
             .await
             .map_err(Into::into),
         ProxyAction::DirectBody {
@@ -93,8 +95,9 @@ async fn execute_proxy_action_with_state(
                 .and_then(|value| value.to_str().ok());
 
             if should_use_proxy_cache(cache_enabled, range_header) {
-                return synctv_proxy::slice_cache::proxy_with_cache(
+                return synctv_proxy::slice_cache::proxy_with_cache_enabled(
                     &state.proxy_slice_cache,
+                    cache_enabled,
                     range_header,
                     &url,
                     &headers,
@@ -104,12 +107,13 @@ async fn execute_proxy_action_with_state(
             }
 
             execute_proxy_action(
+                &state.proxy_http_client,
                 ProxyAction::FetchAndForward { url, headers },
                 client_headers,
             )
             .await
         }
-        other => execute_proxy_action(other, client_headers).await,
+        other => execute_proxy_action(&state.proxy_http_client, other, client_headers).await,
     }
 }
 
@@ -173,7 +177,12 @@ pub(crate) async fn unified_proxy_handler(
         .room_service
         .check_membership(&rid, &uid)
         .await
-        .map_err(|_| AppError::forbidden("Not a member of this room"))?;
+        .map_err(|e| match e {
+            synctv_core::Error::Authorization(_) => AppError::forbidden("Not a member of this room"),
+            other => AppError::internal_server_error(format!(
+                "Failed to check room membership: {other}"
+            )),
+        })?;
 
     // 4. Resolve proxy provider from registry (no hardcoded match)
     let proxy = state
@@ -210,6 +219,17 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
+    use synctv_core::config::PasswordComplexityConfig;
+    use synctv_core::provider::{
+        AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
+        ProviderSet, RtmpProvider,
+    };
+    use synctv_core::service::{
+        AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
+        RemoteProviderManager, RoomService, UserService,
+    };
     use synctv_core::repository::SettingsRepository;
     use synctv_core::service::{SettingsRegistry, SettingsService};
     use synctv_core_testing::postgres::create_test_pool;
@@ -301,6 +321,173 @@ mod tests {
 
         assert!(proxy_cache_enabled(Some(&settings_registry)).unwrap());
         assert!(!proxy_cache_enabled(None).unwrap());
+    }
+
+    fn test_app_state_with_proxy_cache(
+        settings_registry: Option<Arc<SettingsRegistry>>,
+        proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    ) -> AppState {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+        let user_service = Arc::new(UserService::new(
+            pool.clone(),
+            synctv_core::service::JwtService::new(
+                "test-secret-key-for-http-router-tests-minimum-32-chars",
+            )
+            .expect("jwt"),
+            username_cache,
+            PasswordComplexityConfig::default(),
+            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            KeyBuilder::new("test"),
+            synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
+        ));
+        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(
+            Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
+                pool.clone(),
+            )),
+            None,
+            None,
+            "test:",
+        ));
+        let providers = ProviderSet {
+            alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
+            bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
+            emby: Arc::new(EmbyProvider::new(provider_instance_manager.clone())),
+            direct_url: Arc::new(DirectUrlProvider::new()),
+            rtmp: Arc::new(RtmpProvider::new()),
+            live_proxy: Arc::new(LiveProxyProvider::new()),
+        };
+        let jwt_service = synctv_core::service::JwtService::new(
+            "test-secret-key-for-http-router-tests-minimum-32-chars",
+        )
+        .expect("jwt");
+        let (audit_service, _audit_handle) = AuditService::new(pool.clone());
+
+        crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
+            config: Arc::new(synctv_core::Config::default()),
+            user_service,
+            room_service,
+            content_filter: ContentFilter::new(),
+            provider_instance_manager,
+            user_provider_credential_repository: Arc::new(
+                synctv_core::repository::UserProviderCredentialRepository::new(pool),
+            ),
+            providers,
+            cluster_manager: None,
+            connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
+                synctv_cluster::sync::ConnectionLimits::default(),
+            )),
+            jwt_service,
+            redis_publish_tx: None,
+            oauth2_service: None,
+            settings_service: None,
+            settings_registry,
+            email_service: None,
+            email_token_service: None,
+            publish_key_service: None,
+            notification_service: None,
+            chat_service: None,
+            audit_service: Arc::new(audit_service),
+            live_streaming_infrastructure: None,
+            rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
+            ws_ticket_service: None,
+            redis_conn: None,
+            builtin_stun_url: None,
+            turn_health_checker: None,
+            credential_encryption: None,
+            proxy_slice_cache,
+            proxy_http_client: synctv_proxy::build_proxy_http_client()
+                .expect("proxy HTTP client should build for tests"),
+            messaging_rate_limit_config: RateLimitConfig::default(),
+            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
+            providers_manager: None,
+        })
+        .1
+    }
+
+    #[tokio::test]
+    async fn test_execute_proxy_action_with_state_honors_runtime_cache_toggle_even_when_cache_was_built_disabled() {
+        let mock_server = MockServer::start().await;
+        let total_size: u64 = 10 * 1024 * 1024;
+        let slice_body = Bytes::from(vec![0xEF; 2 * 1024 * 1024]);
+
+        Mock::given(method("HEAD"))
+            .and(path("/runtime-enabled.mp4"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Length", total_size.to_string())
+                    .insert_header("Accept-Ranges", "bytes"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/runtime-enabled.mp4"))
+            .and(header("Range", "bytes=0-2097151"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_bytes(slice_body)
+                    .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
+                    .insert_header("Content-Length", "2097152"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let (_pg, pool) = create_test_pool().await;
+        let settings_service = Arc::new(SettingsService::new(
+            SettingsRepository::new(pool.clone()),
+            pool.clone(),
+        ));
+        settings_service.initialize().await.unwrap();
+        let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
+        sqlx::query(
+            "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
+             ON CONFLICT (key) DO NOTHING",
+        )
+        .bind("proxy.proxy_cache_enable")
+        .bind("proxy")
+        .bind("false")
+        .execute(&pool)
+        .await
+        .unwrap();
+        settings_registry
+            .proxy_cache_enable
+            .set(true)
+            .await
+            .unwrap();
+
+        let state = test_app_state_with_proxy_cache(
+            Some(settings_registry),
+            Arc::new(synctv_proxy::slice_cache::SliceCache::new(SliceCacheConfig {
+                enabled: false,
+                ..SliceCacheConfig::default()
+            })),
+        );
+
+        let action = ProxyAction::FetchAndForward {
+            url: format!("{}/runtime-enabled.mp4", mock_server.uri()),
+            headers: HashMap::new(),
+        };
+        let client_headers = axum::http::HeaderMap::from_iter([(
+            axum::http::header::RANGE,
+            axum::http::HeaderValue::from_static("bytes=0-999"),
+        )]);
+
+        let response1 = execute_proxy_action_with_state(&state, action.clone(), &client_headers)
+            .await
+            .expect("first proxy response");
+        let response2 = execute_proxy_action_with_state(&state, action, &client_headers)
+            .await
+            .expect("second proxy response");
+
+        assert_eq!(response1.headers().get("X-Cache-Status").unwrap(), "MISS");
+        assert_eq!(response2.headers().get("X-Cache-Status").unwrap(), "HIT");
     }
 
     #[test]

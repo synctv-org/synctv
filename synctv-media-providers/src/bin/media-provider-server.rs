@@ -13,9 +13,9 @@
 //! consecutive failures and opens after `CIRCUIT_BREAKER_THRESHOLD` failures,
 //! then transitions to half-open after `CIRCUIT_BREAKER_TIMEOUT` to allow recovery.
 //!
-//! `record_success` is called via `CircuitBreakerLayer` (a tower middleware layer)
-//! after each RPC call returns a non-error response, allowing the circuit to
-//! recover to the Closed state after transient failures resolve.
+//! `record_success` is called only for RPCs that complete with an OK gRPC status.
+//! Backend failures that are encoded as gRPC error responses still count as
+//! failures, while client/auth/validation errors do not poison the breaker.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -30,19 +30,53 @@ use synctv_media_providers::grpc::{
     bilibili::bilibili_server::BilibiliServer, bilibili_server::BilibiliService,
     emby::emby_server::EmbyServer, emby_server::EmbyService,
 };
+use tonic::codegen::http::{HeaderMap, Response as HttpResponse};
+use tonic::service::interceptor::InterceptedService;
 use tonic::service::LayerExt as _;
 use tonic::transport::Server;
-use tonic::{Request, Status};
+use tonic::{Code, Request, Status};
 use tower::{Layer, Service};
 use tracing::{info, warn, Level};
+
+const PROVIDER_GRPC_MESSAGE_SIZE_LIMIT: usize = 4 * 1024 * 1024;
+const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = PROVIDER_GRPC_MESSAGE_SIZE_LIMIT as u32;
+
+trait GrpcStatusHeaders {
+    fn grpc_status_headers(&self) -> &HeaderMap;
+}
+
+impl<B> GrpcStatusHeaders for HttpResponse<B> {
+    fn grpc_status_headers(&self) -> &HeaderMap {
+        self.headers()
+    }
+}
+
+fn grpc_status_code(headers: &HeaderMap) -> Code {
+    headers
+        .get(Status::GRPC_STATUS)
+        .map(|value| Code::from_bytes(value.as_bytes()))
+        .unwrap_or(Code::Ok)
+}
+
+fn should_record_circuit_breaker_success(headers: &HeaderMap) -> bool {
+    grpc_status_code(headers) == Code::Ok
+}
+
+fn should_record_circuit_breaker_failure(headers: &HeaderMap) -> bool {
+    matches!(
+        grpc_status_code(headers),
+        Code::Unknown | Code::DeadlineExceeded | Code::Aborted | Code::Internal | Code::Unavailable | Code::DataLoss
+    )
+}
 
 /// Tower [`Layer`] that wraps a gRPC service and signals the circuit breaker
 /// after each RPC call completes.
 ///
-/// On a successful response (`Ok`) it calls [`CircuitBreaker::record_success`],
-/// resetting the failure counter and returning the circuit to the Closed state.
-/// On an error response (`Err`) it calls [`CircuitBreaker::record_failure`] so
-/// that repeated backend errors eventually open the circuit.
+/// On a successful gRPC response (`grpc-status = 0`) it calls
+/// [`CircuitBreaker::record_success`], resetting the failure counter and
+/// returning the circuit to the Closed state. Backend failures returned as gRPC
+/// status responses are classified from the `grpc-status` header so they still
+/// open the circuit, while auth/validation/client errors do not.
 #[derive(Clone)]
 struct CircuitBreakerLayer {
     circuit_breaker: Arc<CircuitBreaker>,
@@ -81,6 +115,7 @@ struct CircuitBreakerService<S> {
 impl<S, Req> Service<Req> for CircuitBreakerService<S>
 where
     S: Service<Req> + Clone + Send + 'static,
+    S::Response: GrpcStatusHeaders + Send + 'static,
     S::Future: Send + 'static,
     S::Error: Send + 'static,
 {
@@ -99,7 +134,14 @@ where
         Box::pin(async move {
             let result = fut.await;
             match &result {
-                Ok(_) => cb.record_success(),
+                Ok(response) => {
+                    let headers = response.grpc_status_headers();
+                    if should_record_circuit_breaker_success(headers) {
+                        cb.record_success();
+                    } else if should_record_circuit_breaker_failure(headers) {
+                        cb.record_failure(service_name);
+                    }
+                }
                 Err(_) => cb.record_failure(service_name),
             }
             result
@@ -217,8 +259,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ProviderAuthInterceptor::new(auth_secret.clone(), bilibili_cb.clone(), "bilibili");
     let emby_auth = ProviderAuthInterceptor::new(auth_secret, emby_cb.clone(), "emby");
 
-    // Create circuit-breaker layers so record_success is called after every
-    // successful RPC response, allowing the circuit to recover to Closed state.
+    // Create circuit-breaker layers so only true gRPC successes reset the
+    // breaker, while backend failures encoded in grpc-status still count.
     let alist_cb_layer = CircuitBreakerLayer::new(alist_cb, "alist");
     let bilibili_cb_layer = CircuitBreakerLayer::new(bilibili_cb, "bilibili");
     let emby_cb_layer = CircuitBreakerLayer::new(emby_cb, "emby");
@@ -246,24 +288,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("All provider services initialized and marked SERVING");
 
     Server::builder()
-        .max_frame_size(Some(4 * 1024 * 1024))
+        .max_frame_size(Some(PROVIDER_GRPC_FRAME_SIZE_LIMIT))
         .concurrency_limit_per_connection(100)
         .add_service(health_service)
         .add_service(
-            alist_cb_layer.named_layer(AlistServer::with_interceptor(alist_service, move |req| {
-                alist_auth.validate(req)
-            })),
+            alist_cb_layer.named_layer(InterceptedService::new(
+                AlistServer::new(alist_service)
+                    .max_decoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT)
+                    .max_encoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT),
+                move |req| alist_auth.validate(req),
+            )),
         )
         .add_service(
-            bilibili_cb_layer.named_layer(BilibiliServer::with_interceptor(
-                bilibili_service,
+            bilibili_cb_layer.named_layer(InterceptedService::new(
+                BilibiliServer::new(bilibili_service)
+                    .max_decoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT)
+                    .max_encoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT),
                 move |req| bilibili_auth.validate(req),
             )),
         )
         .add_service(
-            emby_cb_layer.named_layer(EmbyServer::with_interceptor(emby_service, move |req| {
-                emby_auth.validate(req)
-            })),
+            emby_cb_layer.named_layer(InterceptedService::new(
+                EmbyServer::new(emby_service)
+                    .max_decoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT)
+                    .max_encoding_message_size(PROVIDER_GRPC_MESSAGE_SIZE_LIMIT),
+                move |req| emby_auth.validate(req),
+            )),
         )
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
@@ -294,5 +344,50 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => { info!("Received Ctrl+C, shutting down..."); }
         () = terminate => { info!("Received SIGTERM, shutting down..."); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grpc_headers(code: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(code) = code {
+            headers.insert(Status::GRPC_STATUS, code.parse().expect("valid grpc-status"));
+        }
+        headers
+    }
+
+    #[test]
+    fn circuit_breaker_treats_ok_response_as_success() {
+        assert!(should_record_circuit_breaker_success(&grpc_headers(Some("0"))));
+        assert!(!should_record_circuit_breaker_failure(&grpc_headers(Some("0"))));
+    }
+
+    #[test]
+    fn circuit_breaker_treats_backend_failure_codes_as_failures() {
+        for code in ["2", "4", "10", "13", "14", "15"] {
+            assert!(
+                should_record_circuit_breaker_failure(&grpc_headers(Some(code))),
+                "grpc-status {code} should count as a backend failure"
+            );
+        }
+    }
+
+    #[test]
+    fn circuit_breaker_ignores_client_and_auth_errors() {
+        for code in ["3", "5", "7", "8", "9", "11", "12", "16"] {
+            assert!(
+                !should_record_circuit_breaker_failure(&grpc_headers(Some(code))),
+                "grpc-status {code} should not poison the service breaker"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_grpc_status_defaults_to_success_path() {
+        assert!(should_record_circuit_breaker_success(&grpc_headers(None)));
+        assert!(!should_record_circuit_breaker_failure(&grpc_headers(None)));
     }
 }

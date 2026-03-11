@@ -2,7 +2,9 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 /// Heartbeat interval in seconds for publisher liveness.
@@ -110,14 +112,20 @@ impl PublisherInfo {
 ///   ownership must always be authoritative from Redis.
 #[derive(Clone)]
 pub struct StreamRegistry {
-    redis: RedisConnectionManager,
+    redis: Arc<RwLock<RedisConnectionManager>>,
     key_prefix: String,
 }
 
 impl StreamRegistry {
     /// Create a new stream registry
     #[must_use]
-    pub const fn new(redis: RedisConnectionManager) -> Self {
+    pub fn new(redis: RedisConnectionManager) -> Self {
+        Self::new_with_shared_conn(Arc::new(RwLock::new(redis)))
+    }
+
+    /// Create a new stream registry backed by a shared Redis connection handle.
+    #[must_use]
+    pub fn new_with_shared_conn(redis: Arc<RwLock<RedisConnectionManager>>) -> Self {
         Self {
             redis,
             key_prefix: String::new(),
@@ -127,10 +135,23 @@ impl StreamRegistry {
     /// Create a new stream registry with a Redis namespace prefix.
     #[must_use]
     pub fn with_key_prefix(redis: RedisConnectionManager, key_prefix: impl Into<String>) -> Self {
+        Self::with_shared_conn_and_key_prefix(Arc::new(RwLock::new(redis)), key_prefix)
+    }
+
+    /// Create a new stream registry with a shared Redis handle and key prefix.
+    #[must_use]
+    pub fn with_shared_conn_and_key_prefix(
+        redis: Arc<RwLock<RedisConnectionManager>>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
         Self {
             redis,
             key_prefix: key_prefix.into(),
         }
+    }
+
+    async fn conn(&self) -> RedisConnectionManager {
+        self.redis.read().await.clone()
     }
 
     fn prefixed(&self, key: &str) -> String {
@@ -207,7 +228,7 @@ impl StreamRegistry {
 
         let key = self.publisher_key(room_id, media_id);
         let epoch_key = self.epoch_key(room_id, media_id);
-        let mut conn = self.redis.clone();
+        let mut conn = self.conn().await;
 
         // Create PublisherInfo template (epoch will be filled by Lua script)
         let info = PublisherInfo {
@@ -340,7 +361,7 @@ impl StreamRegistry {
 
         // Refresh publisher key TTL with timeout protection
         with_redis_timeout(|| async {
-            let mut conn = self.redis.clone();
+            let mut conn = self.conn().await;
             let _: () = redis::cmd("EXPIRE")
                 .arg(&key)
                 .arg(PUBLISHER_TTL_SECS)
@@ -398,7 +419,7 @@ impl StreamRegistry {
         };
 
         with_redis_timeout(|| async {
-            let mut conn = self.redis.clone();
+            let mut conn = self.conn().await;
 
             // Atomic Lua script: check epoch (if provided), delete publisher, clean up user index
             let lua_script = r"
@@ -485,7 +506,7 @@ impl StreamRegistry {
         let user_key = self.user_publishers_key(user_id);
 
         with_redis_timeout(|| async {
-            let mut conn = self.redis.clone();
+            let mut conn = self.conn().await;
             let members: Vec<String> = redis::cmd("SMEMBERS")
                 .arg(&user_key)
                 .query_async(&mut conn)
@@ -530,7 +551,7 @@ impl StreamRegistry {
         let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
-            let mut conn = self.redis.clone();
+            let mut conn = self.conn().await;
             let info_json: Option<String> = redis::cmd("HGET")
                 .arg(&key)
                 .arg("publisher")
@@ -563,7 +584,7 @@ impl StreamRegistry {
         let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
-            let mut conn = self.redis.clone();
+            let mut conn = self.conn().await;
             let exists: bool = redis::cmd("HEXISTS")
                 .arg(&key)
                 .arg("publisher")
@@ -592,7 +613,7 @@ impl StreamRegistry {
         loop {
             // Each SCAN call has its own timeout
             let scan_result: Result<(u64, Vec<String>)> = with_redis_timeout(|| async {
-                let mut conn = self.redis.clone();
+                let mut conn = self.conn().await;
                 let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
                     .arg(cursor)
                     .arg("MATCH")
@@ -646,7 +667,7 @@ impl StreamRegistry {
         loop {
             // Each SCAN call has its own timeout
             let scan_result: Result<(u64, Vec<String>)> = with_redis_timeout(|| async {
-                let mut conn = self.redis.clone();
+                let mut conn = self.conn().await;
                 let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
                     .arg(cursor)
                     .arg("MATCH")
@@ -684,7 +705,7 @@ impl StreamRegistry {
         let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
-            let mut conn = self.redis.clone();
+            let mut conn = self.conn().await;
 
             // Get current publisher info
             let info_json: Option<String> = redis::cmd("HGET")
@@ -773,7 +794,7 @@ impl StreamRegistry {
         loop {
             // SCAN for publisher keys with timeout
             let scan_result: Result<(u64, Vec<String>)> = with_redis_timeout(|| async {
-                let mut conn = self.redis.clone();
+                let mut conn = self.conn().await;
                 let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
                     .arg(cursor)
                     .arg("MATCH")
@@ -804,7 +825,7 @@ impl StreamRegistry {
 
                 // Get publisher info with timeout
                 let info_result: Result<Option<String>> = with_redis_timeout(|| async {
-                    let mut conn = self.redis.clone();
+                    let mut conn = self.conn().await;
                     let info_json: Option<String> = redis::cmd("HGET")
                         .arg(&key)
                         .arg("publisher")
@@ -829,7 +850,7 @@ impl StreamRegistry {
                             // Atomically delete with timeout
                             let cleanup_result: Result<Vec<redis::Value>> =
                                 with_redis_timeout(|| async {
-                                    let mut conn = self.redis.clone();
+                                    let mut conn = self.conn().await;
                                     let result: Vec<redis::Value> =
                                         redis::Script::new(cleanup_script)
                                             .key(&key)
@@ -866,7 +887,7 @@ impl StreamRegistry {
 
                                         let _srem_result: Result<()> =
                                             with_redis_timeout(|| async {
-                                                let mut conn = self.redis.clone();
+                                                let mut conn = self.conn().await;
                                                 let _: () = redis::cmd("SREM")
                                                     .arg(&user_key)
                                                     .arg(&member)
@@ -1016,6 +1037,40 @@ mod tests {
             !unprefixed_exists,
             "registry must not leak publisher keys into the global Redis namespace"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_shared_redis_handle_hot_swap_keeps_registry_operational() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let (_container, client, redis) = setup_redis().await;
+        let shared = Arc::new(RwLock::new(redis));
+        let registry = StreamRegistry::with_shared_conn_and_key_prefix(shared.clone(), "tenant-b:");
+
+        let registered = registry
+            .try_register_publisher_with_user("room1", "media1", "node1", "user1", "localhost:50051")
+            .await
+            .expect("initial registration should succeed");
+        assert!(registered);
+
+        let replacement = RedisConnectionManager::new(client.clone())
+            .await
+            .expect("replacement connection manager should build");
+        *shared.write().await = replacement;
+
+        let publisher = registry
+            .get_publisher("room1", "media1")
+            .await
+            .expect("registry must read via the hot-swapped shared connection")
+            .expect("publisher should still exist after connection swap");
+        assert_eq!(publisher.node_id, "node1");
+
+        registry
+            .unregister_publisher("room1", "media1")
+            .await
+            .expect("unregister after connection swap should succeed");
     }
 
     #[tokio::test]

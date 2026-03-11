@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use super::{LeaderCheck, SettingsRegistry};
+use super::{cleanup::CleanupConfig, LeaderCheck, SettingsRegistry};
 
 /// Default chat message retention in days (used when settings are unavailable).
 const DEFAULT_CHAT_MESSAGE_RETENTION_DAYS: i64 = 90;
@@ -28,6 +28,7 @@ const DEFAULT_CHAT_MESSAGE_RETENTION_DAYS: i64 = 90;
 /// background task to avoid duplicate work across replicas.
 pub struct DatabaseMaintenanceService {
     pool: PgPool,
+    config: CleanupConfig,
     leader_check: Arc<dyn LeaderCheck>,
     settings_registry: Option<Arc<SettingsRegistry>>,
 }
@@ -38,9 +39,18 @@ impl DatabaseMaintenanceService {
     pub fn new(pool: PgPool, leader_check: Arc<dyn LeaderCheck>) -> Self {
         Self {
             pool,
+            config: CleanupConfig::default(),
             leader_check,
             settings_registry: None,
         }
+    }
+
+    /// Override cleanup retention/buffer configuration so maintenance and
+    /// runtime cleanup share the same source of truth.
+    #[must_use]
+    pub fn with_cleanup_config(mut self, config: CleanupConfig) -> Self {
+        self.config = config;
+        self
     }
 
     /// Set the settings registry for configurable retention periods.
@@ -56,6 +66,18 @@ impl DatabaseMaintenanceService {
             .as_ref()
             .and_then(|r| r.chat_message_retention_days.get().ok())
             .unwrap_or(DEFAULT_CHAT_MESSAGE_RETENTION_DAYS)
+    }
+
+    fn notification_retention_days(&self) -> i32 {
+        self.config.notification_retention_days as i32
+    }
+
+    fn notification_max_retention_days(&self) -> i32 {
+        self.config.notification_max_retention_days as i32
+    }
+
+    fn expired_credential_buffer_hours(&self) -> i32 {
+        self.config.expired_credential_buffer_hours as i32
     }
 
     /// Create audit log partitions for the next `months_ahead` months.
@@ -81,12 +103,12 @@ impl DatabaseMaintenanceService {
         Ok(())
     }
 
-    /// Delete old notifications with 90-day retention.
+    /// Delete old notifications using the shared cleanup retention settings.
     pub async fn run_cleanup_notifications(&self) -> Result<(), sqlx::Error> {
         let result =
             sqlx::query_scalar::<_, serde_json::Value>("SELECT cleanup_old_notifications($1, $2)")
-                .bind(30i32) // read_retention_days
-                .bind(90i32) // max_retention_days
+                .bind(self.notification_retention_days())
+                .bind(self.notification_max_retention_days())
                 .fetch_one(&self.pool)
                 .await?;
 
@@ -133,7 +155,7 @@ impl DatabaseMaintenanceService {
     pub async fn run_cleanup_credentials(&self) -> Result<(), sqlx::Error> {
         let result =
             sqlx::query_scalar::<_, serde_json::Value>("SELECT cleanup_expired_credentials($1)")
-                .bind(1i32) // buffer_hours
+                .bind(self.expired_credential_buffer_hours())
                 .fetch_one(&self.pool)
                 .await?;
 
@@ -179,6 +201,7 @@ impl DatabaseMaintenanceService {
     pub fn spawn_maintenance_loop(&self, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
         let service = Self {
             pool: self.pool.clone(),
+            config: self.config.clone(),
             leader_check: self.leader_check.clone(),
             settings_registry: self.settings_registry.clone(),
         };
@@ -254,6 +277,25 @@ mod tests {
             svc.chat_message_retention_days(),
             DEFAULT_CHAT_MESSAGE_RETENTION_DAYS
         );
+        assert_eq!(svc.notification_retention_days(), 30);
+        assert_eq!(svc.notification_max_retention_days(), 90);
+        assert_eq!(svc.expired_credential_buffer_hours(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_custom_cleanup_config_is_used_by_db_maintenance() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
+        let leader = Arc::new(AlwaysLeader);
+        let svc = DatabaseMaintenanceService::new(pool, leader).with_cleanup_config(CleanupConfig {
+            expired_credential_buffer_hours: 6,
+            notification_retention_days: 14,
+            notification_max_retention_days: 45,
+            ..CleanupConfig::default()
+        });
+
+        assert_eq!(svc.notification_retention_days(), 14);
+        assert_eq!(svc.notification_max_retention_days(), 45);
+        assert_eq!(svc.expired_credential_buffer_hours(), 6);
     }
 
     /// Dummy leader check that always returns true (for tests).

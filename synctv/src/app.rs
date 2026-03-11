@@ -628,9 +628,10 @@ impl Application {
         );
         info!("Notification partition management started (leader-gated, monthly granularity, check interval: 24 hours)");
 
+        let cleanup_config = synctv_core::service::cleanup::CleanupConfig::default();
         let cleanup_service = synctv_core::service::CleanupService::new(
             infra.pool.clone(),
-            synctv_core::service::cleanup::CleanupConfig::default(),
+            cleanup_config.clone(),
             leader.leader_runtime.clone(),
         )
         .with_settings_registry(core.services.settings_registry.clone());
@@ -644,6 +645,7 @@ impl Application {
             infra.pool.clone(),
             leader.leader_runtime.clone(),
         )
+        .with_cleanup_config(cleanup_config.clone())
         .with_settings_registry(core.services.settings_registry.clone());
         shutdown.register_task(
             "db_maintenance",
@@ -655,10 +657,12 @@ impl Application {
             let pool = infra.pool.clone();
             let settings_registry = core.services.settings_registry.clone();
             let leader_runtime = leader.leader_runtime.clone();
+            let deferred_cleanup_config = cleanup_config.clone();
             let cancel = shutdown.register_token("cluster_leader_startup_work");
             let task_factory: AsyncOnceTaskFactory = Arc::new(move || {
                 let pool = pool.clone();
                 let settings_registry = settings_registry.clone();
+                let cleanup_config = deferred_cleanup_config.clone();
                 Box::pin(async move {
                     info!(
                         "Leadership gained after startup; running deferred singleton maintenance"
@@ -666,7 +670,7 @@ impl Application {
 
                     let cleanup_service = synctv_core::service::CleanupService::new(
                         pool.clone(),
-                        synctv_core::service::cleanup::CleanupConfig::default(),
+                        cleanup_config.clone(),
                         Arc::new(synctv_core::service::AlwaysLeader),
                     )
                     .with_settings_registry(settings_registry.clone());
@@ -687,6 +691,7 @@ impl Application {
                         pool,
                         Arc::new(synctv_core::service::AlwaysLeader),
                     )
+                    .with_cleanup_config(cleanup_config.clone())
                     .with_settings_registry(settings_registry);
                     db_maintenance.run_all_maintenance().await;
                     info!("Deferred database maintenance completed after leadership gain");

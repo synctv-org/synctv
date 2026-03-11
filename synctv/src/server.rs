@@ -96,10 +96,13 @@ pub struct SyncTvServer {
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn build_proxy_slice_cache_config(
-    settings_registry: &Arc<synctv_core::service::SettingsRegistry>,
+    _settings_registry: &Arc<synctv_core::service::SettingsRegistry>,
 ) -> synctv_proxy::slice_cache::SliceCacheConfig {
     synctv_proxy::slice_cache::SliceCacheConfig {
-        enabled: settings_registry.proxy_cache_enable.get().unwrap_or(false),
+        // Runtime enablement is decided per request from SettingsRegistry.
+        // Keep the cache engine itself available so toggling the setting does
+        // not require a process restart.
+        enabled: true,
         ..synctv_proxy::slice_cache::SliceCacheConfig::default()
     }
 }
@@ -737,8 +740,10 @@ impl SyncTvServer {
             &self.config.redis.key_prefix,
             is_cluster_mode,
         )?;
-        let proxy_slice_cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+        let proxy_http_client = synctv_proxy::build_proxy_http_client()?;
+        let proxy_slice_cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
             build_proxy_slice_cache_config(&self.services.settings_registry),
+            proxy_http_client.clone(),
         ));
 
         let (http_router, http_state) = synctv_api::http::create_router_with_state_from_config(
@@ -774,6 +779,7 @@ impl SyncTvServer {
                 turn_health_checker: self.services.turn_health_checker.clone(),
                 credential_encryption: self.services.credential_encryption.clone(),
                 proxy_slice_cache: proxy_slice_cache.clone(),
+                proxy_http_client: proxy_http_client.clone(),
                 messaging_rate_limit_config: synctv_core::service::RateLimitConfig {
                     chat_per_second: self.config.messaging_rate_limits.chat_per_second,
                     danmaku_per_second: self.config.messaging_rate_limits.danmaku_per_second,
@@ -1056,13 +1062,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_slice_cache_defaults_to_disabled_until_setting_enables_it() {
+    async fn test_proxy_slice_cache_runtime_toggle_keeps_engine_available() {
         let registry = test_settings_registry();
         let config = build_proxy_slice_cache_config(&registry);
 
         assert!(
-            !config.enabled,
-            "proxy slice cache must stay disabled until runtime setting enables it"
+            config.enabled,
+            "proxy slice cache engine must stay available so runtime settings can enable caching without restart"
         );
     }
 

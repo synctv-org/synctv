@@ -7,7 +7,6 @@
 pub mod slice_cache;
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use axum::{
@@ -64,33 +63,22 @@ const RETRY_DELAY_MAX_MS: u64 = 500;
 /// These indicate temporary issues that may resolve on retry.
 const RETRYABLE_STATUS_CODES: &[u16] = &[500, 502, 503, 504];
 
-/// Shared HTTP client for proxy requests.
-///
-/// Reuses TCP connections and TLS sessions across requests for performance.
-///
-/// # Panics
-///
 /// Maximum number of redirects to follow manually.
 const MAX_REDIRECTS: usize = 10;
 
-/// Panics during initialization if the HTTP client cannot be built (e.g., TLS backend unavailable).
-/// This is intentional as the proxy cannot function without an HTTP client.
+/// Build a proxy HTTP client for outbound media requests.
 ///
-/// **SSRF Protection**: Uses the shared SSRF-safe DNS resolver that checks every
-/// resolved IP at TCP-connect time against the ACL blocklist. This prevents DNS
-/// rebinding attacks where a hostname resolves to a public IP during pre-request
-/// validation but rebinds to a private IP by connection time.
-static PROXY_CLIENT: LazyLock<Result<reqwest::Client, reqwest::Error>> =
-    LazyLock::new(synctv_common::http::build_proxy_client);
-
-fn proxy_client() -> Result<&'static reqwest::Client, anyhow::Error> {
-    PROXY_CLIENT
-        .as_ref()
+/// Callers are expected to build this once during startup and inject it into
+/// the proxy/cache layers rather than relying on hidden process-global state.
+pub fn build_proxy_http_client() -> Result<reqwest::Client, anyhow::Error> {
+    synctv_common::http::build_proxy_client()
         .map_err(|e| anyhow::anyhow!("failed to build proxy HTTP client: {e}"))
 }
 
 /// Configuration for a single proxy fetch.
 pub struct ProxyConfig<'a> {
+    /// Shared outbound HTTP client.
+    pub client: &'a reqwest::Client,
     /// The remote URL to fetch.
     pub url: &'a str,
     /// Extra headers the provider requires (e.g. Referer, cookies).
@@ -294,7 +282,7 @@ const CLIENT_HEADER_ALLOWLIST: &[&str] = &[
 /// This is the single point of request construction used by both the initial
 /// fetch and retry attempts.
 fn build_proxy_request(cfg: &ProxyConfig<'_>) -> Result<reqwest::RequestBuilder, anyhow::Error> {
-    let mut request = proxy_client()?.get(cfg.url);
+    let mut request = cfg.client.get(cfg.url);
 
     // Forward only allowlisted client headers to avoid leaking auth tokens / cookies
     for (name, value) in cfg.client_headers {
@@ -343,7 +331,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     validate_target_url_against_ssrf(&parsed_url)?;
 
     let request = build_proxy_request(&cfg)?;
-    let proxy_result = send_with_redirect_validation(request).await?;
+    let proxy_result = send_with_redirect_validation(cfg.client, request).await?;
 
     // Retry only on specific retryable 5xx server errors (500, 502, 503, 504).
     // We only retry once to avoid excessive latency for the client.
@@ -360,7 +348,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
             tokio::time::sleep(retry_delay).await;
 
             let retry_req = build_proxy_request(&cfg)?;
-            let retry_result = send_with_redirect_validation(retry_req).await?;
+            let retry_result = send_with_redirect_validation(cfg.client, retry_req).await?;
             (retry_result.response, retry_result.followed_redirects)
         } else {
             (proxy_result.response, proxy_result.followed_redirects)
@@ -498,6 +486,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
 /// Fetch a remote M3U8, rewrite its URLs so segments proxy through
 /// `proxy_base`, and return the rewritten content.
 pub async fn proxy_m3u8_and_rewrite(
+    client: &reqwest::Client,
     url: &str,
     provider_headers: &HashMap<String, String>,
     proxy_base: &str,
@@ -510,9 +499,9 @@ pub async fn proxy_m3u8_and_rewrite(
         }
     }
 
-    let request = apply_provider_headers(proxy_client()?.get(url), url, provider_headers)?;
+    let request = apply_provider_headers(client.get(url), url, provider_headers)?;
 
-    let proxy_result = send_with_redirect_validation(request).await?;
+    let proxy_result = send_with_redirect_validation(client, request).await?;
     let proxy_response = proxy_result.response;
 
     if !proxy_response.status().is_success() {
@@ -976,7 +965,7 @@ struct ProxyResponse {
 /// Send a request via the proxy client, manually following redirects with
 /// full async DNS validation on every hop.
 ///
-/// Automatic redirects are disabled on `PROXY_CLIENT`, so 3xx responses
+/// Automatic redirects are disabled on the injected proxy client, so 3xx responses
 /// are handled here. Each redirect target gets both static URL validation
 /// and async DNS resolution checks to prevent DNS-rebinding SSRF.
 ///
@@ -984,6 +973,7 @@ struct ProxyResponse {
 /// initial request and re-applied on every redirect hop so that provider
 /// and client headers are not lost.
 async fn send_with_redirect_validation(
+    client: &reqwest::Client,
     request: reqwest::RequestBuilder,
 ) -> Result<ProxyResponse, anyhow::Error> {
     // Build the request to capture headers before sending.
@@ -1002,7 +992,7 @@ async fn send_with_redirect_validation(
         .map(|(n, v)| (n.clone(), v.clone()))
         .collect();
 
-    let mut response = proxy_client()?
+    let mut response = client
         .execute(built)
         .await
         .map_err(classify_reqwest_error)?;
@@ -1045,7 +1035,7 @@ async fn send_with_redirect_validation(
         }
 
         // SSRF protection is handled by the DNS resolver at connection time
-        let mut redirect_req = proxy_client()?.get(location.clone());
+        let mut redirect_req = client.get(location.clone());
         for (name, value) in &preserved {
             // Drop sensitive headers (e.g. Referer) on cross-origin redirects
             // to avoid leaking signed URLs to third-party hosts.
@@ -1090,6 +1080,13 @@ fn classify_reqwest_error(error: reqwest::Error) -> anyhow::Error {
 mod tests {
     use super::*;
     use axum::http::StatusCode;
+
+    fn test_proxy_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("test proxy client should build")
+    }
 
     // ------------------------------------------------------------------
     // CORS preflight helper function tests
@@ -1410,7 +1407,9 @@ mod tests {
     async fn test_proxy_fetch_rejects_file_scheme() {
         let provider_headers = HashMap::new();
         let client_headers = HeaderMap::new();
+        let client = test_proxy_client();
         let cfg = ProxyConfig {
+            client: &client,
             url: "file:///etc/passwd",
             provider_headers: &provider_headers,
             client_headers: &client_headers,
@@ -1430,7 +1429,9 @@ mod tests {
     async fn test_proxy_fetch_rejects_ftp_scheme() {
         let provider_headers = HashMap::new();
         let client_headers = HeaderMap::new();
+        let client = test_proxy_client();
         let cfg = ProxyConfig {
+            client: &client,
             url: "ftp://example.com/file.txt",
             provider_headers: &provider_headers,
             client_headers: &client_headers,
@@ -1450,7 +1451,9 @@ mod tests {
     async fn test_proxy_fetch_rejects_javascript_scheme() {
         let provider_headers = HashMap::new();
         let client_headers = HeaderMap::new();
+        let client = test_proxy_client();
         let cfg = ProxyConfig {
+            client: &client,
             url: "javascript:alert(1)",
             provider_headers: &provider_headers,
             client_headers: &client_headers,
@@ -1470,7 +1473,9 @@ mod tests {
     async fn test_proxy_fetch_rejects_data_scheme() {
         let provider_headers = HashMap::new();
         let client_headers = HeaderMap::new();
+        let client = test_proxy_client();
         let cfg = ProxyConfig {
+            client: &client,
             url: "data:text/plain,hello",
             provider_headers: &provider_headers,
             client_headers: &client_headers,
@@ -1534,13 +1539,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let request = reqwest::Client::builder()
+        let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .expect("client should build")
-            .get(format!("{}/start", server.uri()));
+            .expect("client should build");
+        let request = client.get(format!("{}/start", server.uri()));
 
-        let result = send_with_redirect_validation(request).await;
+        let result = send_with_redirect_validation(&client, request).await;
         assert!(
             result.is_ok(),
             "relative redirects should resolve against original URL"
@@ -1570,13 +1575,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let request = reqwest::Client::builder()
+        let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .expect("client should build")
-            .get(format!("{}/start", server.uri()));
+            .expect("client should build");
+        let request = client.get(format!("{}/start", server.uri()));
 
-        let result = send_with_redirect_validation(request).await;
+        let result = send_with_redirect_validation(&client, request).await;
         let err = match result {
             Ok(_) => panic!("redirect to blocked loopback must fail"),
             Err(err) => err,

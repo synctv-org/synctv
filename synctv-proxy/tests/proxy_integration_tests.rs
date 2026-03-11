@@ -28,6 +28,10 @@ fn test_client() -> reqwest::Client {
         .expect("Failed to build test client")
 }
 
+fn proxy_client() -> reqwest::Client {
+    synctv_proxy::build_proxy_http_client().expect("proxy HTTP client should build for tests")
+}
+
 // ==================================================================
 // Full proxy pipeline tests
 // ==================================================================
@@ -200,6 +204,7 @@ async fn test_proxy_cache_control_m3u8() {
     // The SSRF-safe DNS resolver blocks loopback, so we verify the function
     // returns an error for a blocked URL.
     let result = proxy_m3u8_and_rewrite(
+        &proxy_client(),
         "http://127.0.0.1:9999/master.m3u8",
         &HashMap::new(),
         "/proxy",
@@ -243,7 +248,9 @@ async fn test_redirect_chain_over_max_returns_error() {
 
     // Attempt through proxy (will fail at SSRF check before reaching redirects)
     let headers = axum::http::HeaderMap::new();
+    let client = proxy_client();
     let cfg = ProxyConfig {
+        client: &client,
         url: &format!("{}/redirect", server.uri()),
         provider_headers: &HashMap::new(),
         client_headers: &headers,
@@ -333,6 +340,7 @@ async fn test_proxy_m3u8_non_200_returns_error() {
     // The URL uses a non-existent server, so it will fail with a connection error.
     // This test verifies that the function handles errors correctly.
     let result = proxy_m3u8_and_rewrite(
+        &proxy_client(),
         "http://127.0.0.1:12345/missing.m3u8",
         &HashMap::new(),
         "/proxy",
@@ -409,7 +417,9 @@ async fn test_ssrf_blocks_loopback() {
     let loopback_urls = ["http://127.0.0.1/metadata"];
     for url in &loopback_urls {
         let headers = axum::http::HeaderMap::new();
+        let client = proxy_client();
         let cfg = ProxyConfig {
+            client: &client,
             url,
             provider_headers: &HashMap::new(),
             client_headers: &headers,
@@ -429,7 +439,9 @@ async fn test_ssrf_blocks_non_http_schemes() {
     ];
     for url in &bad_schemes {
         let headers = axum::http::HeaderMap::new();
+        let client = proxy_client();
         let cfg = ProxyConfig {
+            client: &client,
             url,
             provider_headers: &HashMap::new(),
             client_headers: &headers,

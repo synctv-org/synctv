@@ -17,6 +17,10 @@ pub struct MockStreamRegistry {
         std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>,
     /// Counter for register calls (for testing task leaks)
     register_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Counter for TTL refresh calls (for heartbeat lifecycle tests)
+    refresh_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Counter for list_active_streams calls (for periodic sync lifecycle tests)
+    list_active_streams_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// When true, `get_publisher` returns an error (simulates Redis failure)
     fail_get_publisher: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -32,6 +36,8 @@ impl MockStreamRegistry {
                 std::collections::HashMap::new(),
             )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            refresh_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            list_active_streams_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -46,6 +52,8 @@ impl MockStreamRegistry {
                 std::collections::HashMap::new(),
             )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            refresh_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            list_active_streams_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -54,6 +62,20 @@ impl MockStreamRegistry {
     #[must_use]
     pub fn register_call_count(&self) -> usize {
         self.register_call_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Get the count of `refresh_publisher_ttl` calls.
+    #[must_use]
+    pub fn refresh_call_count(&self) -> usize {
+        self.refresh_call_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Get the count of `list_active_streams` calls.
+    #[must_use]
+    pub fn list_active_streams_call_count(&self) -> usize {
+        self.list_active_streams_call_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -144,6 +166,8 @@ impl StreamRegistryTrait for MockStreamRegistry {
         _media_id: &str,
         _user_id: &str,
     ) -> Result<()> {
+        self.refresh_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         // No-op for mock
         Ok(())
     }
@@ -173,6 +197,8 @@ impl StreamRegistryTrait for MockStreamRegistry {
     }
 
     async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {
+        self.list_active_streams_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let publishers = self.publishers.lock().await;
         Ok(publishers.keys().cloned().collect())
     }

@@ -10,6 +10,7 @@
 
 use chrono::Utc;
 use sqlx::PgPool;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
@@ -19,6 +20,8 @@ use synctv_core::{
 };
 use synctv_core_testing::{create_test_pool_with_options_and_label, start_redis_with_client};
 use tokio::sync::{Barrier, RwLock};
+use tonic::transport::Server;
+use tonic_health::ServingStatus;
 
 // Test utilities
 
@@ -114,6 +117,30 @@ fn make_test_instance(name: &str) -> ProviderInstance {
         created_at: now,
         updated_at: now,
     }
+}
+
+async fn spawn_health_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("health test server should bind to an ephemeral port");
+    let addr = listener
+        .local_addr()
+        .expect("health test server should expose a local address");
+
+    let (reporter, service) = tonic_health::server::health_reporter();
+    reporter
+        .set_service_status("", ServingStatus::Serving)
+        .await;
+
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+            .await
+            .expect("health test server should run");
+    });
+
+    (addr, handle)
 }
 
 /// Create a test provider instance with TLS
@@ -314,6 +341,7 @@ async fn scenario_redis_invalidation_on_delete() {
 async fn scenario_health_check_integration() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) = spawn_health_server().await;
     let redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
@@ -323,22 +351,25 @@ async fn scenario_health_check_integration() {
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance in DB
-    let instance = make_test_instance("test-instance-6");
+    let mut instance = make_test_instance("test-instance-6");
+    instance.endpoint = format!("http://health-check.test.localhost:{}", health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
     // Run health check
     let health_results = manager.health_check().await;
 
-    // Since there's no actual gRPC server, the instance should be unhealthy
-    // The health check should return the instance in the map with false status
+    // The in-process gRPC health service should be reported as healthy.
     assert!(
         health_results.contains_key("test-instance-6"),
         "Health check should include the instance"
     );
     assert!(
-        !health_results["test-instance-6"],
-        "Instance should be unhealthy when gRPC server is down"
+        health_results["test-instance-6"],
+        "Instance should be healthy when the gRPC health service is serving"
     );
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 7: Health check with enabled/disabled instances ──────────────────

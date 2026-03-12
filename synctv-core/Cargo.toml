@@ -122,6 +122,7 @@ workspace = true
 [dev-dependencies]
 mockall.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tokio-stream.workspace = true
 criterion.workspace = true
 rand.workspace = true
 testcontainers.workspace = true

@@ -220,6 +220,8 @@ impl K8sLeaderElector {
             "K8s Lease leader election started"
         );
 
+        self.try_acquire_or_renew(&leases).await;
+
         loop {
             tokio::select! {
                 () = cancel_token.cancelled() => {

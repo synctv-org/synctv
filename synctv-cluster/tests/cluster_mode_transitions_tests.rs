@@ -1,7 +1,8 @@
 //! CL3: `NodeRegistry` `ClusterMode` transitions
 //!
-//! - Trip circuit breaker (3 failures) -> `ClusterMode::Degraded`, `get_all_nodes` returns local cache
-//! - After degraded mode, `get_all_nodes` falls back to local cache
+//! - Trip circuit breaker (3 failures) -> `ClusterMode::Degraded`
+//! - Degraded mode may fall back to local cache for broad discovery calls
+//! - Routing-sensitive paths must reject stale degraded cache
 //!
 //! Note: These tests use a dummy Redis client that can't actually connect, so
 //! each `get_all_nodes()` call fails and records a circuit breaker error. After 3
@@ -133,6 +134,61 @@ async fn test_degraded_mode_returns_all_local_nodes() {
         5,
         "Should return all 5 local cache nodes in degraded mode"
     );
+}
+
+/// Routing-sensitive consumers must not accept degraded cache once it is stale.
+#[tokio::test]
+async fn test_routable_nodes_fail_closed_when_degraded_cache_is_stale() {
+    let registry = make_registry("self");
+
+    registry
+        .test_insert_local(NodeInfo::new(
+            "self".to_string(),
+            "localhost:50051".to_string(),
+            "localhost:8080".to_string(),
+        ))
+        .await;
+
+    registry.test_set_cluster_mode(ClusterMode::Degraded);
+    registry.test_set_last_refreshed_at(1);
+
+    let err = registry
+        .get_routable_nodes()
+        .await
+        .expect_err("stale degraded cache must be rejected for routing");
+    assert!(
+        err.to_string().contains("stale"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Degraded cache is still usable for routing while the last refresh is within budget.
+#[tokio::test]
+async fn test_routable_nodes_allow_recent_degraded_cache() {
+    let registry = make_registry("self");
+
+    registry
+        .test_insert_local(NodeInfo::new(
+            "self".to_string(),
+            "localhost:50051".to_string(),
+            "localhost:8080".to_string(),
+        ))
+        .await;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    registry.test_set_cluster_mode(ClusterMode::Degraded);
+    registry.test_set_last_refreshed_at(now);
+
+    let (nodes, mode) = registry
+        .get_routable_nodes()
+        .await
+        .expect("recent degraded cache should still be routable");
+    assert_eq!(mode, synctv_cluster::discovery::node_registry::NodeViewMode::DegradedCache);
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].node_id, "self");
 }
 
 /// Verify cluster starts Normal and `is_nodes_stale()` is true initially

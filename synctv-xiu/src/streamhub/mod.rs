@@ -56,6 +56,67 @@ struct PacketSubscriberDropCounter {
 
 use statistics::StatisticsStream;
 
+const EVENT_SEND_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+const EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+pub async fn send_event_with_backpressure_timeout(
+    sender: &StreamHubEventSender,
+    event: StreamHubEvent,
+) -> Result<(), StreamHubError> {
+    match sender.try_send(event) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Closed(_)) => Err(StreamHubError {
+            value: StreamHubErrorValue::SendError,
+        }),
+        Err(mpsc::error::TrySendError::Full(event)) => {
+            let send_future = async {
+                let mut pending = event;
+                loop {
+                    match sender.try_send(pending) {
+                        Ok(()) => return Ok(()),
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            return Err(StreamHubError {
+                                value: StreamHubErrorValue::SendError,
+                            });
+                        }
+                        Err(mpsc::error::TrySendError::Full(event)) => {
+                            pending = event;
+                            tokio::time::sleep(EVENT_SEND_RETRY_DELAY).await;
+                        }
+                    }
+                }
+            };
+
+            match tokio::time::timeout(EVENT_SEND_TIMEOUT, send_future).await {
+                Ok(result) => result,
+                Err(_) => Err(StreamHubError {
+                    value: StreamHubErrorValue::SendError,
+                }),
+            }
+        }
+    }
+}
+
+pub fn spawn_event_delivery_with_backpressure_timeout(
+    sender: StreamHubEventSender,
+    event: StreamHubEvent,
+) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(async move {
+                if let Err(err) = send_event_with_backpressure_timeout(&sender, event).await {
+                    tracing::warn!("deferred event delivery failed: {err}");
+                }
+            });
+        }
+        Err(_) => {
+            if let Err(err) = sender.try_send(event) {
+                tracing::warn!("deferred event delivery failed without runtime: {err}");
+            }
+        }
+    }
+}
+
 //Receive audio data/video data/meta data/media info from a publisher and send to players/subscribers
 //Receive statistic information from a publisher and send to api callers.
 pub struct StreamDataTransceiver {
@@ -1261,5 +1322,61 @@ mod tests {
             err.to_string().contains("event loop"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_send_event_with_backpressure_timeout_retries_when_temporarily_full() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: test_identifier(),
+            })
+            .expect("prefill event channel");
+
+        let send_task = tokio::spawn(async move {
+            send_event_with_backpressure_timeout(
+                &sender,
+                StreamHubEvent::UnSubscribe {
+                    identifier: test_identifier(),
+                    info: test_subscriber(),
+                },
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !send_task.is_finished(),
+            "send helper should wait for temporary backpressure"
+        );
+
+        let first = receiver.recv().await.expect("blocked event should remain queued");
+        assert!(matches!(first, StreamHubEvent::UnPublish { .. }));
+
+        let second = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("unsubscribe should be delivered after queue drains")
+            .expect("event channel should stay open");
+        assert!(matches!(second, StreamHubEvent::UnSubscribe { .. }));
+
+        let result = send_task.await.expect("send task should join");
+        assert!(result.is_ok(), "send helper should eventually succeed");
+    }
+
+    #[tokio::test]
+    async fn test_send_event_with_backpressure_timeout_errors_when_closed() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+
+        let err = send_event_with_backpressure_timeout(
+            &sender,
+            StreamHubEvent::UnPublish {
+                identifier: test_identifier(),
+            },
+        )
+        .await
+        .expect_err("closed channel should surface send error");
+
+        assert!(matches!(err.value, StreamHubErrorValue::SendError));
     }
 }

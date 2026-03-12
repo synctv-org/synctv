@@ -107,6 +107,20 @@ fn partition_startup_error(kind: &str, error: impl std::fmt::Display) -> anyhow:
     )
 }
 
+async fn ensure_administrator_bootstrap_precondition(
+    pool: &PgPool,
+    bootstrap_config: &synctv_core::config::BootstrapConfig,
+) -> Result<()> {
+    if bootstrap_config.create_root_user || has_any_admin_users(pool).await {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "bootstrap.create_root_user=false but no active administrator exists. \
+         The system cannot operate without at least one administrator."
+    ))
+}
+
 fn spawn_on_leadership_gain(
     name: &'static str,
     leader_runtime: Arc<dyn LeaderRuntime>,
@@ -381,6 +395,8 @@ impl Application {
             infra.config.cluster_runtime_enabled(),
         )
         .await?;
+
+        ensure_administrator_bootstrap_precondition(&infra.pool, &infra.config.bootstrap).await?;
 
         // Bootstrap root user
         info!("Checking root user bootstrap...");
@@ -968,6 +984,11 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core::{
+        models::{SignupMethod, User, UserRole, UserStatus},
+        repository::UserRepository,
+        service::auth::hash_password,
+    };
     use synctv_core::config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
         ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
@@ -1137,6 +1158,75 @@ mod tests {
             !should_continue_startup_after_root_bootstrap_failure(false),
             "non-admin user presence must not mask bootstrap failure"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn startup_requires_existing_admin_when_root_bootstrap_is_disabled() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool_with_options_and_label(
+            "synctv_test",
+            "startup-admin-precondition-missing",
+            5,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let error = ensure_administrator_bootstrap_precondition(
+            &pool,
+            &BootstrapConfig {
+                create_root_user: false,
+                root_username: "root".to_string(),
+                root_password: String::new(),
+            },
+        )
+        .await
+        .expect_err("startup must fail when no active administrator exists");
+
+        assert!(
+            error
+                .to_string()
+                .contains("no active administrator exists"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn startup_allows_disabled_root_bootstrap_when_admin_already_exists() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool_with_options_and_label(
+            "synctv_test",
+            "startup-admin-precondition-existing",
+            5,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let password_hash = hash_password("StrongPwd12345!")
+            .await
+            .expect("password hashing should succeed");
+        let mut admin = User::new(
+            "existing-admin".to_string(),
+            Some("existing-admin@example.com".to_string()),
+            password_hash,
+            SignupMethod::AdminCreated,
+        );
+        admin.role = UserRole::Admin;
+        admin.status = UserStatus::Active;
+        UserRepository::new(pool.clone())
+            .create(&admin)
+            .await
+            .expect("existing admin should be inserted");
+
+        ensure_administrator_bootstrap_precondition(
+            &pool,
+            &BootstrapConfig {
+                create_root_user: false,
+                root_username: "root".to_string(),
+                root_password: String::new(),
+            },
+        )
+        .await
+        .expect("existing active admin should satisfy startup precondition");
     }
 
     #[test]

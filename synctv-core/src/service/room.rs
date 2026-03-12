@@ -863,7 +863,7 @@ impl RoomService {
         );
 
         // Touch room activity to prevent TTL expiry on active rooms
-        self.touch_room_activity(room_id);
+        self.touch_room_activity(room_id).await;
 
         Ok((room, created_member, members))
     }
@@ -1963,18 +1963,15 @@ impl RoomService {
             .await
     }
 
-    /// Fire-and-forget: update the room's `last_activity_at` timestamp.
+    /// Update the room's `last_activity_at` timestamp.
     ///
     /// Call this after chat messages, playback state changes, or member
     /// joins/leaves to prevent active rooms from being expired by the TTL
     /// cleanup.
-    pub fn touch_room_activity(&self, room_id: RoomId) {
-        let repo = self.room_repo.clone();
-        tokio::spawn(async move {
-            if let Err(e) = repo.touch_activity(&room_id).await {
-                tracing::debug!(error = %e, room_id = %room_id.as_str(), "Failed to touch room activity");
-            }
-        });
+    pub async fn touch_room_activity(&self, room_id: RoomId) {
+        if let Err(e) = self.room_repo.touch_activity(&room_id).await {
+            tracing::debug!(error = %e, room_id = %room_id.as_str(), "Failed to touch room activity");
+        }
     }
 
     /// Get room members with user info

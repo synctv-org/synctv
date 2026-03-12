@@ -8,9 +8,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::Connection as _;
 use sqlx::PgPool;
 use testcontainers::core::ImageExt;
+use testcontainers::core::wait::LogWaitStrategy;
+use testcontainers::core::WaitFor;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
@@ -146,6 +149,26 @@ fn redis_container_name(label: &str) -> String {
     )
 }
 
+fn postgres_ready_conditions() -> Vec<WaitFor> {
+    vec![WaitFor::log(
+        LogWaitStrategy::stdout_or_stderr("database system is ready to accept connections")
+            .with_times(2),
+    )]
+}
+
+fn named_postgres_request(
+    db_name: &str,
+    container_name: &str,
+) -> testcontainers::ContainerRequest<Postgres> {
+    Postgres::default()
+        .with_db_name(db_name)
+        .with_user("synctv")
+        .with_password("synctv_test")
+        .with_tag(POSTGRES_VERSION)
+        .with_container_name(container_name.to_string())
+        .with_ready_conditions(postgres_ready_conditions())
+}
+
 fn force_remove_container(name: &str) {
     let _ = Command::new("docker")
         .args(["rm", "-f", name])
@@ -171,6 +194,55 @@ async fn wait_for_redis_ready(client: &redis::Client) {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     panic!("Redis container did not become ready in time");
+}
+
+async fn connect_postgres_pool(
+    host: &str,
+    port: u16,
+    db_name: &str,
+    max_connections: u32,
+    acquire_timeout: Duration,
+) -> PgPool {
+    let connect_options = PgConnectOptions::new()
+        .host(host)
+        .port(port)
+        .username("synctv")
+        .password("synctv_test")
+        .database(db_name)
+        .ssl_mode(PgSslMode::Disable);
+    let deadline = std::time::Instant::now() + docker_startup_timeout();
+    let mut last_error = None;
+
+    while std::time::Instant::now() < deadline {
+        match sqlx::postgres::PgConnection::connect_with(&connect_options).await {
+            Ok(mut conn) => {
+                sqlx::query_scalar::<_, i32>("SELECT 1")
+                    .fetch_one(&mut conn)
+                    .await
+                    .expect("PostgreSQL readiness probe should succeed once connected");
+                drop(conn);
+
+                return PgPoolOptions::new()
+                    .acquire_timeout(acquire_timeout)
+                    .max_connections(max_connections)
+                    .connect_with(connect_options.clone())
+                    .await
+                    .expect("PostgreSQL pool creation should succeed after readiness probe");
+            }
+            Err(err) => {
+                last_error = Some(err);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+
+    panic!(
+        "Failed to connect to Postgres container within {:?}: {}",
+        docker_startup_timeout(),
+        last_error
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "connection attempts did not yield an error".to_string())
+    );
 }
 
 struct ManagedPostgres {
@@ -277,13 +349,7 @@ impl TestInfra {
             let _redis_start_slot =
                 acquire_docker_start_slot(&REDIS_START_SERIALIZER, "redis-start").await;
             tokio::join!(
-                Postgres::default()
-                    .with_db_name("synctv_test")
-                    .with_user("synctv")
-                    .with_password("synctv_test")
-                    .with_tag(POSTGRES_VERSION)
-                    .with_container_name(postgres_name.clone())
-                    .start(),
+                named_postgres_request("synctv_test", &postgres_name).start(),
                 Redis::default()
                     .with_tag(REDIS_VERSION)
                     .with_container_name(redis_name.clone())
@@ -302,31 +368,11 @@ impl TestInfra {
         let (pg_host, pg_port) = pg_container.host_port().await;
         let (redis_host, redis_port) = redis_container.host_port().await;
 
-        // Build connection URLs
-        let database_url =
-            format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
         let redis_url = format!("redis://{redis_host}:{redis_port}");
 
-        // Connect to Postgres with retry (container port may be mapped before
-        // the server accepts connections)
-        let pool = {
-            let mut retries = 0u32;
-            loop {
-                match PgPoolOptions::new()
-                    .acquire_timeout(std::time::Duration::from_secs(2))
-                    .max_connections(5)
-                    .connect(&database_url)
-                    .await
-                {
-                    Ok(p) => break p,
-                    Err(_) if retries < 60 => {
-                        retries += 1;
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    }
-                    Err(e) => panic!("Failed to connect to Postgres container: {e}"),
-                }
-            }
-        };
+        let pool =
+            connect_postgres_pool(&pg_host, pg_port, "synctv_test", 5, Duration::from_secs(2))
+                .await;
 
         // Run migrations
         sqlx::migrate!("../migrations")
@@ -362,40 +408,16 @@ impl TestInfra {
         let pg_container = {
             let _postgres_start_slot =
                 acquire_docker_start_slot(&POSTGRES_START_SERIALIZER, "postgres-start").await;
-            Postgres::default()
-                .with_db_name("synctv_test")
-                .with_user("synctv")
-                .with_password("synctv_test")
-                .with_tag(POSTGRES_VERSION)
-                .with_container_name(postgres_name.clone())
+            named_postgres_request("synctv_test", &postgres_name)
                 .start()
                 .await
                 .expect("Failed to start Postgres container")
         };
         let pg_container = ManagedPostgres::new(pg_container, postgres_name);
         let (pg_host, pg_port) = pg_container.host_port().await;
-
-        let database_url =
-            format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
-
-        let pool = {
-            let mut retries = 0u32;
-            loop {
-                match PgPoolOptions::new()
-                    .acquire_timeout(std::time::Duration::from_secs(2))
-                    .max_connections(5)
-                    .connect(&database_url)
-                    .await
-                {
-                    Ok(p) => break p,
-                    Err(_) if retries < 60 => {
-                        retries += 1;
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    }
-                    Err(e) => panic!("Failed to connect to Postgres container: {e}"),
-                }
-            }
-        };
+        let pool =
+            connect_postgres_pool(&pg_host, pg_port, "synctv_test", 5, Duration::from_secs(2))
+                .await;
 
         sqlx::migrate!("../migrations")
             .run(&pool)
@@ -464,5 +486,26 @@ impl TestRedis {
         redis::aio::ConnectionManager::new(self.redis_client.clone())
             .await
             .expect("Failed to create Redis ConnectionManager")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_postgres_request_waits_for_second_ready_log() {
+        let request = named_postgres_request("synctv_test", "synctv-core-pg-test");
+        let ready_conditions = request.ready_conditions();
+
+        assert_eq!(
+            ready_conditions.len(),
+            1,
+            "postgres test container should have a single explicit readiness condition"
+        );
+        assert!(
+            matches!(ready_conditions.as_slice(), [WaitFor::Log(_)]),
+            "postgres test container should wait for the second ready log instead of racing the init server"
+        );
     }
 }

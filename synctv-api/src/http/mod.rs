@@ -1339,16 +1339,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_ticket_route_uses_write_rate_limit_tier() {
-        let jwt = synctv_core::service::JwtService::new(
-            "test-secret-key-for-http-router-tests-minimum-32-chars",
-        )
-        .expect("jwt");
-        let user_id =
-            synctv_core::models::UserId::from_string("user-ticket-rate-limit".to_string());
-        let access_token = jwt
-            .sign_token(&user_id, synctv_core::service::TokenType::Access, 0)
-            .expect("access token");
-
         let state = test_app_state_with_rate_limits(
             synctv_core::HttpRateLimitConfig {
                 write_max_requests: 1,
@@ -1367,20 +1357,16 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/tickets")
-                    .header(
-                        axum::http::header::AUTHORIZATION,
-                        format!("Bearer {access_token}"),
-                    )
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"room123"}"#))
+                    .body(Body::from(r#"{"room_id":"room1234_abx"}"#))
                     .expect("request"),
             )
             .await
             .expect("response");
-        assert_ne!(
+        assert_eq!(
             first.status(),
-            StatusCode::TOO_MANY_REQUESTS,
-            "first ticket request should consume the write bucket"
+            StatusCode::UNAUTHORIZED,
+            "first unauthenticated ticket request should reach auth before exhausting the write bucket"
         );
 
         let second = app
@@ -1388,12 +1374,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/tickets")
-                    .header(
-                        axum::http::header::AUTHORIZATION,
-                        format!("Bearer {access_token}"),
-                    )
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"room123"}"#))
+                    .body(Body::from(r#"{"room_id":"room1234_abx"}"#))
                     .expect("request"),
             )
             .await

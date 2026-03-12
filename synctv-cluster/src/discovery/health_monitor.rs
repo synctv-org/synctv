@@ -405,11 +405,21 @@ impl HealthMonitor {
     pub async fn shutdown(&self) {
         self.cancel_token.cancel();
         let handle = self.join_handle.lock().await.take();
-        if let Some(handle) = handle {
-            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+        if let Some(mut handle) = handle {
+            match tokio::time::timeout(Duration::from_secs(5), &mut handle).await {
                 Ok(Ok(())) => tracing::info!("Health monitor task completed"),
                 Ok(Err(e)) => tracing::warn!("Health monitor task panicked: {}", e),
-                Err(_) => tracing::warn!("Health monitor task did not finish within 5s timeout"),
+                Err(_) => {
+                    tracing::warn!("Health monitor task did not finish within 5s timeout, aborting");
+                    handle.abort();
+                    match handle.await {
+                        Ok(()) => tracing::info!("Health monitor task aborted cleanly"),
+                        Err(e) if e.is_cancelled() => {
+                            tracing::info!("Health monitor task aborted")
+                        }
+                        Err(e) => tracing::warn!("Health monitor task failed after abort: {}", e),
+                    }
+                }
             }
         }
     }
@@ -600,6 +610,24 @@ mod tests {
 
         // Shutdown should complete without error
         monitor.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_health_monitor_shutdown_aborts_stuck_task() {
+        let registry = make_registry();
+        let monitor = HealthMonitor::new(registry, 60);
+        let blocker = std::sync::Arc::new(tokio::sync::Notify::new());
+        let blocker_clone = blocker.clone();
+
+        monitor.set_join_handle(tokio::spawn(async move {
+            blocker_clone.notified().await;
+        }));
+
+        let shutdown = tokio::time::timeout(Duration::from_secs(6), monitor.shutdown()).await;
+        assert!(
+            shutdown.is_ok(),
+            "shutdown should abort a stuck health monitor task instead of hanging"
+        );
     }
 
     // --- probe_nodes with threshold logic ---

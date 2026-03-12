@@ -22,6 +22,7 @@ use {
             StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo, TStreamHandler,
         },
         errors::{StreamHubError, StreamHubErrorValue},
+        send_event_with_backpressure_timeout,
         stream::StreamIdentifier,
         utils::Uuid,
     },
@@ -487,9 +488,14 @@ impl Common {
             identifier,
             info: self.get_subscriber_info(),
         };
-        if let Err(err) = self.event_producer.try_send(subscribe_event) {
-            tracing::error!("unsubscribe_from_stream_hub err {err}");
-        }
+        send_event_with_backpressure_timeout(&self.event_producer, subscribe_event)
+            .await
+            .map_err(|err| {
+                tracing::error!("unsubscribe_from_stream_hub err {err}");
+                SessionError {
+                    value: SessionErrorValue::ChannelError(err),
+                }
+            })?;
 
         Ok(())
     }
@@ -729,5 +735,83 @@ impl TStreamHandler for RtmpStreamHandler {
 impl fmt::Debug for Common {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(fmt, "S2 {{ member: {:?} }}", self.request_url)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rtmp::session::define::SessionType;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn test_unsubscribe_retries_when_event_channel_is_temporarily_full() {
+        let (event_sender, mut event_rx) = mpsc::channel(1);
+        let mut common = Common::new(None, event_sender.clone(), SessionType::Server, None);
+        common.request_url = "/live/room/stream".to_string();
+
+        event_sender
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name: "live".to_string(),
+                    stream_name: "blocker".to_string(),
+                },
+            })
+            .expect("prefill event channel");
+
+        let unsubscribe_task = tokio::spawn(async move {
+            common
+                .unsubscribe_from_stream_hub("live".to_string(), "room/stream".to_string())
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !unsubscribe_task.is_finished(),
+            "unsubscribe should wait for temporary backpressure instead of succeeding early"
+        );
+
+        let first = event_rx.recv().await.expect("blocked event should be readable");
+        assert!(matches!(first, StreamHubEvent::UnPublish { .. }));
+
+        let unsubscribe = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("unsubscribe should eventually be delivered")
+            .expect("event channel should stay open");
+
+        let result = unsubscribe_task.await.expect("unsubscribe task should join");
+        assert!(result.is_ok(), "unsubscribe should succeed after capacity frees");
+
+        match unsubscribe {
+            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
+                StreamIdentifier::Rtmp {
+                    app_name,
+                    stream_name,
+                } => {
+                    assert_eq!(app_name, "live");
+                    assert_eq!(stream_name, "room/stream");
+                }
+                other => panic!("unexpected stream identifier: {other:?}"),
+            },
+            other => panic!("expected unsubscribe event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_returns_error_when_event_channel_is_closed() {
+        let (event_sender, event_rx) = mpsc::channel(1);
+        drop(event_rx);
+
+        let mut common = Common::new(None, event_sender, SessionType::Server, None);
+        common.request_url = "/live/room/stream".to_string();
+        common.stream_handler = Arc::new(RtmpStreamHandler::new());
+
+        let err = common
+            .unsubscribe_from_stream_hub("live".to_string(), "room/stream".to_string())
+            .await
+            .expect_err("closed event channel must surface unsubscribe failure");
+
+        assert!(matches!(err.value, SessionErrorValue::ChannelError(_)));
     }
 }

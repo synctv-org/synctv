@@ -79,8 +79,8 @@ async fn handle_flv_stream(
     );
 
     // Check if stream exists (publisher registered)
-    match state.registry.get_publisher(&room_id, media_id).await {
-        Ok(Some(_)) => {}
+    let publisher_info = match state.registry.get_publisher(&room_id, media_id).await {
+        Ok(Some(info)) => info,
         Ok(None) => {
             warn!("No publisher for room {} / media {}", room_id, media_id);
             return Err(StatusCode::NOT_FOUND);
@@ -89,7 +89,7 @@ async fn handle_flv_stream(
             error!("Failed to query publisher: {}", e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
-    }
+    };
 
     // Create bounded channel for HTTP response data (backpressure for slow clients)
     let (tx, rx) = mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(
@@ -103,11 +103,16 @@ async fn handle_flv_stream(
     // not be spawned without lifecycle tracking.
     let subscriber_guard: Option<StreamSubscriberGuard> =
         if let Some(ref infra) = state.infrastructure {
-            match infra.ensure_pull_stream(&room_id, media_id, None).await {
-                Ok(guard) => Some(guard),
-                Err(e) => {
-                    warn!("Failed to create subscriber guard for FLV session: {}", e);
-                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+            let is_local = !infra.local_node_id.is_empty() && publisher_info.node_id == infra.local_node_id;
+            if is_local {
+                None
+            } else {
+                match infra.ensure_pull_stream(&room_id, media_id, None).await {
+                    Ok(guard) => Some(guard),
+                    Err(e) => {
+                        warn!("Failed to create subscriber guard for FLV session: {}", e);
+                        return Err(StatusCode::SERVICE_UNAVAILABLE);
+                    }
                 }
             }
         } else {
@@ -145,6 +150,10 @@ async fn handle_flv_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{LiveStreamingInfrastructure, StreamTracker};
+    use crate::livestream::{external_publish_manager::ExternalPublishManager, pull_manager::PullStreamManager};
+    use crate::relay::{mock_registry::MockStreamRegistry, PublisherInfo};
+    use chrono::Utc;
 
     #[tokio::test]
     async fn test_http_flv_state_creation() {
@@ -192,5 +201,101 @@ mod tests {
         assert!(!session.has_send_header);
         assert!(!session.has_audio);
         assert!(!session.has_video);
+    }
+
+    #[tokio::test]
+    async fn test_handle_flv_stream_local_publisher_does_not_require_pull_stream() {
+        let registry = Arc::new(MockStreamRegistry::with_publishers(std::collections::HashMap::from([(
+            ("room1".to_string(), "media1".to_string()),
+            PublisherInfo {
+                node_id: "node-local".to_string(),
+                grpc_address: "127.0.0.1:50051".to_string(),
+                app_name: "live".to_string(),
+                user_id: String::new(),
+                started_at: Utc::now(),
+                epoch: 1,
+            },
+        )])));
+        let (event_sender, _) = tokio::sync::mpsc::channel(64);
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                "node-local".to_string(),
+                event_sender.clone(),
+            )
+            .expect("external publish manager should build"),
+        );
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender.clone(),
+            pull_manager,
+            external_publish_manager,
+            Arc::new(StreamTracker::new()),
+        )
+        .with_local_node_id("node-local".to_string());
+        let state = HttpFlvState::new(registry, event_sender).with_infrastructure(infrastructure);
+
+        let response = handle_flv_stream(
+            Path("media1.flv".to_string()),
+            Extension("room1".to_string()),
+            State(state),
+        )
+        .await
+        .expect("local publisher should not require relay setup");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_handle_flv_stream_remote_publisher_requires_pull_stream() {
+        let registry = Arc::new(MockStreamRegistry::with_publishers(std::collections::HashMap::from([(
+            ("room1".to_string(), "media1".to_string()),
+            PublisherInfo {
+                node_id: "node-remote".to_string(),
+                grpc_address: String::new(),
+                app_name: "live".to_string(),
+                user_id: String::new(),
+                started_at: Utc::now(),
+                epoch: 1,
+            },
+        )])));
+        let (event_sender, _) = tokio::sync::mpsc::channel(64);
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                "node-local".to_string(),
+                event_sender.clone(),
+            )
+            .expect("external publish manager should build"),
+        );
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender.clone(),
+            pull_manager,
+            external_publish_manager,
+            Arc::new(StreamTracker::new()),
+        )
+        .with_local_node_id("node-local".to_string());
+        let state = HttpFlvState::new(registry, event_sender).with_infrastructure(infrastructure);
+
+        let response = handle_flv_stream(
+            Path("media1.flv".to_string()),
+            Extension("room1".to_string()),
+            State(state),
+        )
+        .await;
+
+        assert!(
+            matches!(response, Err(StatusCode::SERVICE_UNAVAILABLE)),
+            "remote publishers must still go through relay setup, and invalid relay config should fail closed"
+        );
     }
 }

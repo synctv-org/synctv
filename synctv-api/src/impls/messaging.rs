@@ -2160,7 +2160,9 @@ impl StreamMessageHandler {
             .map_err(|e| e.to_string())?;
 
         // Touch room activity to prevent TTL expiry on active rooms
-        self.room_service.touch_room_activity(self.room_id.clone());
+        self.room_service
+            .touch_room_activity(self.room_id.clone())
+            .await;
 
         // Track chat message metric
         synctv_core::metrics::http::CHAT_MESSAGES_TOTAL

@@ -233,6 +233,7 @@ impl ProvidersManager {
     /// Number of providers loaded
     pub async fn load_from_config(&mut self, config: &Config) -> Result<usize> {
         let mut count = 0;
+        let mut saw_explicit_provider_config = false;
 
         // Read provider configurations from config.media_providers.providers
         // Each provider config should have:
@@ -242,6 +243,7 @@ impl ProvidersManager {
 
         // Check if providers is an object
         if let Some(providers_obj) = config.media_providers.providers.as_object() {
+            saw_explicit_provider_config = !providers_obj.is_empty();
             for (instance_id, provider_config) in providers_obj {
                 // Extract provider_type from config (defaults to first part of instance_id)
                 let provider_type = provider_config
@@ -255,12 +257,9 @@ impl ProvidersManager {
 
                 // Check if this provider type is registered
                 if !self.has_factory(provider_type) {
-                    tracing::warn!(
-                        "Unknown provider type '{}' for instance '{}', skipping",
-                        provider_type,
-                        instance_id
-                    );
-                    continue;
+                    return Err(crate::Error::InvalidInput(format!(
+                        "Unknown provider type '{provider_type}' for instance '{instance_id}'"
+                    )));
                 }
 
                 // Create the provider instance
@@ -277,20 +276,16 @@ impl ProvidersManager {
                         );
                     }
                     Err(e) => {
-                        tracing::error!(
-                            "Failed to load provider instance '{}' (type: {}): {}",
-                            instance_id,
-                            provider_type,
-                            e
-                        );
-                        // Continue loading other providers
+                        return Err(crate::Error::Internal(format!(
+                            "Failed to load provider instance '{instance_id}' (type: {provider_type}): {e}"
+                        )));
                     }
                 }
             }
         }
 
         // If no providers were configured, create default instances for all registered factories
-        if count == 0 {
+        if count == 0 && !saw_explicit_provider_config {
             tracing::info!(
                 "No providers configured, creating default instances for {} provider types",
                 self.factories.len()
@@ -849,7 +844,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_from_config_unknown_provider_skipped() {
-        // Test that unknown provider types are skipped with warning
+        // Explicit provider configuration must fail fast when it contains an
+        // unknown provider type.
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
@@ -871,12 +867,20 @@ mod tests {
             ..Default::default()
         };
 
-        // Load from config (unknown should be skipped)
-        let count = manager.load_from_config(&config).await.unwrap();
-        assert_eq!(count, 1); // Only alist_valid loaded
-
-        // Verify only valid provider exists
-        assert!(manager.get("alist_valid").await.is_some());
+        let error = manager
+            .load_from_config(&config)
+            .await
+            .expect_err("explicit invalid provider config must fail startup");
+        assert!(
+            error
+                .to_string()
+                .contains("Unknown provider type 'does_not_exist'"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            manager.get("alist_valid").await.is_some(),
+            "providers loaded before the error may remain in memory; the critical contract is that startup fails and no default fallback happens"
+        );
         assert!(manager.get("unknown_provider").await.is_none());
     }
 
@@ -914,6 +918,34 @@ mod tests {
         // Verify both provider instances exist.
         assert!(manager.get("alist_valid").await.is_some());
         assert!(manager.get("bilibili_invalid").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_load_from_config_does_not_fallback_to_defaults_after_explicit_errors() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let mut manager = ProvidersManager::new(instance_manager);
+
+        let config = crate::Config {
+            media_providers: crate::config::MediaProvidersConfig {
+                providers: serde_json::json!({
+                    "broken_provider": {
+                        "provider_type": "does_not_exist"
+                    }
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        manager
+            .load_from_config(&config)
+            .await
+            .expect_err("explicit invalid config must not silently fallback to defaults");
+
+        assert!(manager.get("alist_default").await.is_none());
+        assert!(manager.get("bilibili_default").await.is_none());
     }
 
     #[tokio::test]

@@ -18,10 +18,10 @@ use tokio::sync::Semaphore;
 
 /// Default `PostgreSQL` version for test containers
 pub const POSTGRES_VERSION: &str = "16-alpine";
-const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 300;
 const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
-const DEFAULT_DOCKER_STARTUP_PARALLELISM: usize = 4;
+const DEFAULT_DOCKER_STARTUP_PARALLELISM: usize = 1;
 const MIN_DOCKER_STARTUP_PARALLELISM: usize = 1;
 const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLELISM";
 static POSTGRES_START_SERIALIZER: LazyLock<Semaphore> =
@@ -262,8 +262,8 @@ pub async fn create_test_pool_with_options_and_label(
     acquire_timeout: Duration,
 ) -> (TestContainer, PgPool) {
     let container_name = postgres_container_name(label);
+    let _postgres_process_lock = acquire_docker_start_slot("postgres-start").await;
     let postgres = {
-        let _postgres_process_lock = acquire_docker_start_slot("postgres-start").await;
         tokio::time::timeout(
             docker_startup_timeout(),
             named_postgres_request(db_name, &container_name).start(),
@@ -286,7 +286,10 @@ pub async fn create_test_pool_with_options_and_label(
         .ssl_mode(PgSslMode::Disable);
 
     let pool = {
+        let deadline = std::time::Instant::now() + docker_startup_timeout();
         let mut retries = 0u32;
+        let mut last_error = None;
+
         loop {
             match sqlx::postgres::PgConnection::connect_with(&connect_options).await {
                 Ok(mut conn) => {
@@ -304,11 +307,18 @@ pub async fn create_test_pool_with_options_and_label(
                         .expect("PostgreSQL pool creation should succeed after readiness probe");
                     break pool;
                 }
-                Err(_) if retries < 60 => {
+                Err(err) if std::time::Instant::now() < deadline => {
                     retries += 1;
+                    last_error = Some(err);
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
-                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
+                Err(err) => panic!(
+                    "PostgreSQL not ready within {:?} after {retries} retries: {}",
+                    docker_startup_timeout(),
+                    last_error
+                        .as_ref()
+                        .map_or_else(|| err.to_string(), std::string::ToString::to_string)
+                ),
             }
         }
     };

@@ -198,6 +198,29 @@ struct HeartbeatState {
     http_address: String,
 }
 
+async fn await_shutdown_handle(
+    name: &'static str,
+    mut handle: tokio::task::JoinHandle<()>,
+    timeout: Duration,
+) {
+    match tokio::time::timeout(timeout, &mut handle).await {
+        Ok(Ok(())) => info!("{name} completed cleanly during shutdown"),
+        Ok(Err(e)) => warn!(error = %e, "{name} panicked during shutdown"),
+        Err(_) => {
+            warn!(
+                "{name} did not finish within {}s timeout during shutdown; aborting",
+                timeout.as_secs()
+            );
+            handle.abort();
+            match handle.await {
+                Ok(()) => info!("{name} aborted cleanly during shutdown"),
+                Err(e) if e.is_cancelled() => info!("{name} aborted during shutdown"),
+                Err(e) => warn!(error = %e, "{name} failed after abort during shutdown"),
+            }
+        }
+    }
+}
+
 impl ClusterManager {
     /// Create a new cluster manager
     ///
@@ -666,20 +689,12 @@ impl ClusterManager {
                 }
             }
             if let Some(handle) = state.handle.take() {
-                match tokio::time::timeout(self.heartbeat_shutdown_timeout(), handle).await {
-                    Ok(Ok(())) => {
-                        info!("Heartbeat task completed cleanly during shutdown");
-                    }
-                    Ok(Err(e)) => {
-                        warn!(error = %e, "Heartbeat task panicked during shutdown");
-                    }
-                    Err(_) => {
-                        warn!(
-                            "Heartbeat task did not finish within {}s timeout during shutdown; proceeding",
-                            self.heartbeat_shutdown_timeout().as_secs()
-                        );
-                    }
-                }
+                await_shutdown_handle(
+                    "Heartbeat task",
+                    handle,
+                    self.heartbeat_shutdown_timeout(),
+                )
+                .await;
             }
         }
 
@@ -695,17 +710,8 @@ impl ClusterManager {
         {
             let mut forwarder_guard = self.critical_forwarder_task.lock().await;
             if let Some(handle) = forwarder_guard.take() {
-                match tokio::time::timeout(Duration::from_secs(5), handle).await {
-                    Ok(Ok(())) => {
-                        info!("Critical-event forwarder completed cleanly during shutdown");
-                    }
-                    Ok(Err(e)) => {
-                        warn!(error = %e, "Critical-event forwarder panicked during shutdown");
-                    }
-                    Err(_) => {
-                        warn!("Critical-event forwarder did not finish within 5s timeout during shutdown; proceeding");
-                    }
-                }
+                await_shutdown_handle("Critical-event forwarder", handle, Duration::from_secs(5))
+                    .await;
             }
         }
 
@@ -728,17 +734,8 @@ impl ClusterManager {
         {
             let mut publisher_guard = self.publisher_task.lock().await;
             if let Some(handle) = publisher_guard.take() {
-                match tokio::time::timeout(Duration::from_secs(10), handle).await {
-                    Ok(Ok(())) => {
-                        info!("Redis publisher task completed cleanly during shutdown");
-                    }
-                    Ok(Err(e)) => {
-                        warn!(error = %e, "Redis publisher task panicked during shutdown");
-                    }
-                    Err(_) => {
-                        warn!("Redis publisher task did not finish within 10s timeout during shutdown; proceeding");
-                    }
-                }
+                await_shutdown_handle("Redis publisher task", handle, Duration::from_secs(10))
+                    .await;
             }
         }
 

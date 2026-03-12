@@ -11,6 +11,7 @@ use crate::streamhub::{
         FrameData, FrameDataReceiver, NotifyInfo, StreamHubEvent, StreamHubEventSender,
         SubDataType, SubscribeType, SubscriberInfo,
     },
+    send_event_with_backpressure_timeout,
     stream::StreamIdentifier,
     utils::Uuid,
 };
@@ -307,9 +308,12 @@ impl HttpFlvSession {
             info: sub_info,
         };
 
-        if let Err(e) = self.event_producer.try_send(unsubscribe_event) {
-            warn!("Failed to send unsubscribe event: {}", e);
-        }
+        send_event_with_backpressure_timeout(&self.event_producer, unsubscribe_event)
+            .await
+            .map_err(|err| {
+                warn!("Failed to send unsubscribe event: {err}");
+                anyhow::Error::new(err)
+            })?;
 
         info!(
             subscriber_id = %self.subscriber_id,
@@ -324,6 +328,7 @@ impl HttpFlvSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::streamhub::errors::{StreamHubError, StreamHubErrorValue};
 
     #[test]
     fn test_http_flv_session_creation() {
@@ -660,5 +665,86 @@ mod tests {
             },
             _ => panic!("expected unsubscribe event"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_retries_when_event_channel_is_temporarily_full() {
+        let (event_sender, mut event_rx) = tokio::sync::mpsc::channel(1);
+        let (response_tx, _response_rx) = mpsc::channel(FLV_RESPONSE_CHANNEL_CAPACITY);
+
+        let session = HttpFlvSession::new(
+            "live".to_string(),
+            "room/stream".to_string(),
+            event_sender.clone(),
+            response_tx,
+        );
+
+        event_sender
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name: "live".to_string(),
+                    stream_name: "blocker".to_string(),
+                },
+            })
+            .expect("prefill event channel");
+
+        let unsubscribe_task = tokio::spawn(async move { session.unsubscribe_from_stream_hub().await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(
+            !unsubscribe_task.is_finished(),
+            "unsubscribe should wait for temporary backpressure instead of succeeding early"
+        );
+
+        let first = event_rx.recv().await.expect("blocked event should still be readable");
+        assert!(matches!(first, StreamHubEvent::UnPublish { .. }));
+
+        let unsubscribe = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("unsubscribe should eventually be delivered")
+            .expect("event channel should stay open");
+
+        let result = unsubscribe_task
+            .await
+            .expect("unsubscribe task should join");
+        assert!(result.is_ok(), "unsubscribe should succeed after capacity frees");
+
+        match unsubscribe {
+            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
+                StreamIdentifier::Rtmp {
+                    app_name,
+                    stream_name,
+                } => {
+                    assert_eq!(app_name, "live");
+                    assert_eq!(stream_name, "room/stream");
+                }
+                other => panic!("unexpected stream identifier: {other:?}"),
+            },
+            other => panic!("expected unsubscribe event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_returns_error_when_event_channel_is_closed() {
+        let (event_sender, event_rx) = tokio::sync::mpsc::channel(1);
+        let (response_tx, _response_rx) = mpsc::channel(FLV_RESPONSE_CHANNEL_CAPACITY);
+        drop(event_rx);
+
+        let session = HttpFlvSession::new(
+            "live".to_string(),
+            "room/stream".to_string(),
+            event_sender,
+            response_tx,
+        );
+
+        let err = session
+            .unsubscribe_from_stream_hub()
+            .await
+            .expect_err("closed event channel must surface unsubscribe failure");
+
+        let streamhub_err = err
+            .downcast_ref::<StreamHubError>()
+            .expect("error should preserve streamhub context");
+        assert!(matches!(streamhub_err.value, StreamHubErrorValue::SendError));
     }
 }

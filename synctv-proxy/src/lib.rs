@@ -962,6 +962,13 @@ struct ProxyResponse {
     followed_redirects: bool,
 }
 
+pub(crate) async fn send_head_with_redirect_validation(
+    client: &reqwest::Client,
+    request: reqwest::RequestBuilder,
+) -> Result<ProxyResponse, anyhow::Error> {
+    send_with_redirect_validation_inner(client, request, reqwest::Method::HEAD).await
+}
+
 /// Send a request via the proxy client, manually following redirects with
 /// full async DNS validation on every hop.
 ///
@@ -975,6 +982,14 @@ struct ProxyResponse {
 async fn send_with_redirect_validation(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
+) -> Result<ProxyResponse, anyhow::Error> {
+    send_with_redirect_validation_inner(client, request, reqwest::Method::GET).await
+}
+
+async fn send_with_redirect_validation_inner(
+    client: &reqwest::Client,
+    request: reqwest::RequestBuilder,
+    redirect_method: reqwest::Method,
 ) -> Result<ProxyResponse, anyhow::Error> {
     // Build the request to capture headers before sending.
     let built = request
@@ -999,7 +1014,9 @@ async fn send_with_redirect_validation(
         .map_err(classify_reqwest_error)?;
 
     let mut hops = 0usize;
-    while response.status().is_redirection() {
+    while response.status().is_redirection()
+        && response.status() != reqwest::StatusCode::NOT_MODIFIED
+    {
         hops += 1;
         if hops > MAX_REDIRECTS {
             return Err(
@@ -1036,7 +1053,7 @@ async fn send_with_redirect_validation(
         }
 
         // SSRF protection is handled by the DNS resolver at connection time
-        let mut redirect_req = client.get(location.clone());
+        let mut redirect_req = client.request(redirect_method.clone(), location.clone());
         for (name, value) in &preserved {
             // Drop sensitive headers (e.g. Referer) on cross-origin redirects
             // to avoid leaking signed URLs to third-party hosts.

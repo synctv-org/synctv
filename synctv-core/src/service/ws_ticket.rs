@@ -57,7 +57,7 @@ const DEFAULT_TICKET_TTL_SECS: u64 = 30;
 const TICKET_LENGTH: usize = 32;
 
 /// WebSocket ticket data
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WsTicketData {
     /// User ID associated with this ticket
     pub user_id: String,
@@ -104,9 +104,20 @@ pub trait TicketStore: Send + Sync {
 
     /// Try to claim a ticket after validation succeeds.
     ///
+    /// The claim must only succeed if the stored ticket still matches the exact
+    /// ticket data that was previously loaded and validated by the caller.
+    /// This closes the `load -> validate -> consume` TOCTOU window by turning
+    /// the final delete step into a compare-and-delete.
+    ///
     /// Returns `true` if the ticket was successfully consumed by this caller,
-    /// `false` if it had already expired or been consumed concurrently.
-    async fn claim(&self, ticket: &str, expected_room_id: &RoomId) -> Result<bool>;
+    /// `false` if it had already expired, been consumed concurrently, or no
+    /// longer matched the validated value.
+    async fn claim(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        expected_ticket: &WsTicketData,
+    ) -> Result<bool>;
 
     /// Atomically get and delete a ticket scoped to the expected room.
     /// Returns `None` if the ticket does not exist or has expired.
@@ -215,13 +226,35 @@ impl TicketStore for RedisTicketStore {
         Ok(Some(data))
     }
 
-    async fn claim(&self, ticket: &str, expected_room_id: &RoomId) -> Result<bool> {
+    async fn claim(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        expected_ticket: &WsTicketData,
+    ) -> Result<bool> {
         let key = self.redis_key(ticket, expected_room_id);
         let mut conn = self.conn().await;
+        let expected_json = serde_json::to_string(expected_ticket)
+            .map_err(|e| Error::Internal(format!("Failed to serialize ticket data: {e}")))?;
 
         let deleted: i64 = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            redis::cmd("DEL").arg(&key).query_async(&mut conn),
+            redis::Script::new(
+                r#"
+                local value = redis.call("GET", KEYS[1])
+                if not value then
+                    return 0
+                end
+                if value ~= ARGV[1] then
+                    return 0
+                end
+                redis.call("DEL", KEYS[1])
+                return 1
+            "#,
+            )
+            .key(&key)
+            .arg(&expected_json)
+            .invoke_async(&mut conn),
         )
         .await
         .map_err(|_| Error::Internal("Redis timeout: claim ticket".to_string()))?
@@ -347,10 +380,24 @@ impl TicketStore for InMemoryTicketStore {
         Ok(Some(entry.data))
     }
 
-    async fn claim(&self, ticket: &str, expected_room_id: &RoomId) -> Result<bool> {
+    async fn claim(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        expected_ticket: &WsTicketData,
+    ) -> Result<bool> {
         let cache_key = format!("{}:{ticket}", expected_room_id.as_str());
-        let removed = self.cache.remove(&cache_key).await;
-        Ok(removed.is_some())
+        let Some(entry) = self.cache.remove(&cache_key).await else {
+            return Ok(false);
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now.saturating_sub(entry.data.created_at) > entry.ttl.as_secs() {
+            return Ok(false);
+        }
+        Ok(entry.data == *expected_ticket)
     }
 
     async fn consume(
@@ -611,7 +658,11 @@ impl WsTicketService {
             return Err(Error::Authorization("Authentication failed".to_string()));
         }
 
-        if !self.store.claim(ticket, expected_room_id).await? {
+        if !self
+            .store
+            .claim(ticket, expected_room_id, &ticket_data)
+            .await?
+        {
             debug!(
                 ticket = %ticket,
                 mode = %mode,
@@ -835,6 +886,45 @@ mod tests {
             matches!(second_result, Err(Error::Authorization(_))),
             "checked validation must still enforce one-time use"
         );
+    }
+
+    #[tokio::test]
+    async fn test_ticket_checked_validation_concurrent_consumption_only_succeeds_once() {
+        let service = WsTicketService::with_memory(Some(30));
+        let user_id = create_test_user_id("user1");
+        let room_id = create_test_room_id("room-concurrent");
+        let ticket = service.create_ticket(&user_id, &room_id, 2).await.unwrap();
+
+        let validator = Arc::new(StaticUserValidator {
+            result: Ok(UserValidationResult {
+                password_version: 2,
+            }),
+        });
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let service = service.clone();
+            let ticket = ticket.clone();
+            let room_id = room_id.clone();
+            let validator = validator.clone();
+            handles.push(tokio::spawn(async move {
+                service
+                    .validate_and_consume_checked(&ticket, &room_id, &*validator)
+                    .await
+            }));
+        }
+
+        let results: Vec<_> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|result| result.expect("task should join"))
+            .collect();
+
+        let successes = results.iter().filter(|result| result.is_ok()).count();
+        let failures = results.iter().filter(|result| result.is_err()).count();
+
+        assert_eq!(successes, 1, "exactly one checked consume should succeed");
+        assert_eq!(failures, 7, "all remaining concurrent consumers must fail");
     }
 
     #[tokio::test]

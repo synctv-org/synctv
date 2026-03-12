@@ -92,7 +92,7 @@ pub struct StoredCredential {
 
 /// Encrypt sensitive fields in credential data before storage.
 ///
-/// Shared implementation used by both `InMemoryCredentialStorage` and `PostgresCredentialStorage`.
+/// Shared implementation used by credential storage backends.
 pub(crate) fn encrypt_credential_data(
     encryption: Option<&FieldEncryption>,
     data: CredentialData,
@@ -140,7 +140,7 @@ pub(crate) fn encrypt_credential_data(
 
 /// Decrypt sensitive fields in credential data after retrieval.
 ///
-/// Shared implementation used by both `InMemoryCredentialStorage` and `PostgresCredentialStorage`.
+/// Shared implementation used by credential storage backends.
 pub(crate) fn decrypt_credential_data(
     encryption: Option<&FieldEncryption>,
     data: CredentialData,
@@ -190,7 +190,8 @@ pub(crate) fn decrypt_credential_data(
 /// Credential Storage Trait
 ///
 /// Defines the interface for persisting and retrieving provider credentials.
-/// Implementations can use different backends (in-memory, `PostgreSQL`, Redis, etc.)
+/// Implementations can use different backends, but this crate currently only
+/// provides an in-memory implementation.
 #[async_trait]
 pub trait CredentialStorage: Send + Sync {
     /// Get a credential by user, provider, and server
@@ -245,9 +246,8 @@ pub trait CredentialStorage: Send + Sync {
 /// - Load-balanced requests may fail to find credentials stored in a different pod
 /// - Pod restarts will lose all stored credentials
 ///
-/// **For production deployments with multiple replicas, you MUST use
-/// `PostgresCredentialStorage` which provides persistent, shared storage across
-/// all replicas.**
+/// **For production deployments with multiple replicas, inject a shared durable
+/// storage implementation from the application layer instead of using this type.**
 ///
 /// This implementation is only appropriate for:
 /// - Single-replica deployments

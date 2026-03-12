@@ -17,8 +17,8 @@
 //!
 //! ## Production Recommendation
 //!
-//! For production deployments with multiple replicas, use `PostgresCredentialStorage`
-//! which provides persistent and synchronized credential storage across all replicas.
+//! For production deployments with multiple replicas, inject a shared durable
+//! credential store from the application layer instead of using this type.
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;

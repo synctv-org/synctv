@@ -19,15 +19,17 @@
 
 use axum::{
     extract::{Path, Query, State, WebSocketUpgrade},
-    http::{header, HeaderMap},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
+use std::future::Future;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc,
 };
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 use crate::http::{AppError, AppState};
@@ -39,6 +41,7 @@ use synctv_core::service::ContentFilter;
 
 /// Threshold for consecutive slow-client drops before disconnecting them
 const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
+const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ============================================================================
 // MetricsGuard - RAII guard for WebSocket metrics
@@ -554,65 +557,10 @@ pub async fn websocket_handler(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
-    validate_websocket_origin(&headers, &state.config.server.cors_allowed_origins)?;
-
-    // Build the RoomId before authentication so we can pass it for ticket validation.
-    let rid = crate::room_id_validation::parse_room_id(&room_id)
-        .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
-
-    // Extract user ID from authentication credentials.
-    // The room_id is passed so that ticket validation can enforce room-scoping (Issue #65).
-    let (user_id, _auth_method) = extract_user_id(&state, &headers, &query, &rid).await?;
-
-    // Check room membership before upgrading
-    let is_member = state
-        .room_service
-        .member_service()
-        .is_member(&rid, &user_id)
-        .await
-        .map_err(|e| AppError::internal_server_error(format!("Failed to check membership: {e}")))?;
-
-    if !is_member {
-        return Err(AppError::forbidden("Not a member of this room"));
-    }
-
-    // Check if the room is banned before upgrading
-    let room = state
-        .room_service
-        .get_room(&rid)
-        .await
-        .map_err(|e| AppError::internal_server_error(format!("Failed to fetch room: {e}")))?;
-
-    if room.is_banned {
-        return Err(AppError::forbidden("This room has been banned"));
-    }
-
-    // Reject connections to closed rooms
-    if room.status.is_closed() {
-        return Err(AppError::forbidden(
-            "This room is closed and not accepting new connections",
-        ));
-    }
-
-    // Reject requests before upgrade when required runtime dependencies are
-    // missing, instead of accepting the handshake and then disconnecting.
-    validate_websocket_runtime_dependencies(&state)?;
-
-    // CRITICAL: Atomically reserve per-room connection slot BEFORE WebSocket upgrade.
-    // This prevents the TOCTOU race condition where concurrent requests all pass
-    // the limit check before any of them register, bypassing the connection limit.
-    // The reservation is released after join_room completes inside handle_socket.
-    if let Err(e) = state.connection_manager.reserve_room_slot(&rid) {
-        return Err(AppError::too_many_requests(e));
-    }
-
-    // CRITICAL: Atomically reserve per-user connection slot BEFORE WebSocket upgrade.
-    // Same TOCTOU protection as the room reservation above.
-    if let Err(e) = state.connection_manager.reserve_user_slot(&user_id) {
-        // Roll back the room reservation on failure
-        state.connection_manager.release_room_reservation(&rid);
-        return Err(AppError::too_many_requests(e));
-    }
+    let (rid, user_id) = run_websocket_handshake_with_timeout(prepare_websocket_upgrade(
+        &state, &room_id, &query, &headers,
+    ))
+    .await?;
 
     let failed_upgrade_cleanup = build_failed_upgrade_cleanup(
         state.connection_manager.clone(),
@@ -627,6 +575,68 @@ pub async fn websocket_handler(
         .max_message_size(64 * 1024)
         .on_failed_upgrade(failed_upgrade_cleanup)
         .on_upgrade(move |socket| handle_socket(socket, state, rid, user_id)))
+}
+
+async fn run_websocket_handshake_with_timeout<T>(
+    handshake: impl Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+    tokio::time::timeout(WEBSOCKET_HANDSHAKE_TIMEOUT, handshake)
+        .await
+        .map_err(|_| AppError::new(StatusCode::REQUEST_TIMEOUT, "WebSocket handshake timed out"))?
+}
+
+async fn prepare_websocket_upgrade(
+    state: &AppState,
+    room_id: &str,
+    query: &WsQuery,
+    headers: &HeaderMap,
+) -> Result<(RoomId, UserId), AppError> {
+    validate_websocket_origin(headers, &state.config.server.cors_allowed_origins)?;
+
+    let rid = crate::room_id_validation::parse_room_id(room_id)
+        .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
+
+    let (user_id, _auth_method) = extract_user_id(state, headers, query, &rid).await?;
+
+    let is_member = state
+        .room_service
+        .member_service()
+        .is_member(&rid, &user_id)
+        .await
+        .map_err(|e| AppError::internal_server_error(format!("Failed to check membership: {e}")))?;
+
+    if !is_member {
+        return Err(AppError::forbidden("Not a member of this room"));
+    }
+
+    let room = state
+        .room_service
+        .get_room(&rid)
+        .await
+        .map_err(|e| AppError::internal_server_error(format!("Failed to fetch room: {e}")))?;
+
+    if room.is_banned {
+        return Err(AppError::forbidden("This room has been banned"));
+    }
+
+    if room.status.is_closed() {
+        return Err(AppError::forbidden(
+            "This room is closed and not accepting new connections",
+        ));
+    }
+
+    validate_websocket_runtime_dependencies(state)?;
+
+    if let Err(e) = state.connection_manager.reserve_room_slot(&rid) {
+        return Err(AppError::too_many_requests(e));
+    }
+
+    if let Err(e) = state.connection_manager.reserve_user_slot(&user_id) {
+        state.connection_manager.release_room_reservation(&rid);
+        return Err(AppError::too_many_requests(e));
+    }
+
+    Ok((rid, user_id))
 }
 
 fn build_failed_upgrade_cleanup(
@@ -1091,6 +1101,36 @@ mod tests {
 
         validate_websocket_runtime_dependency_flags(true)
             .expect("present dependencies should allow websocket upgrade to proceed");
+    }
+
+    #[test]
+    fn test_websocket_handshake_timeout_matches_global_http_timeout_budget() {
+        assert_eq!(
+            WEBSOCKET_HANDSHAKE_TIMEOUT,
+            Duration::from_secs(30),
+            "websocket handshake timeout should match the HTTP request timeout budget"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_websocket_handshake_timeout_returns_request_timeout_error() {
+        let handshake = async {
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), AppError>(())
+        };
+
+        let timeout_task = tokio::spawn(async move { run_websocket_handshake_with_timeout(handshake).await });
+
+        tokio::time::advance(WEBSOCKET_HANDSHAKE_TIMEOUT + Duration::from_secs(1)).await;
+
+        let err = timeout_task
+            .await
+            .expect("timeout task should complete")
+            .expect_err("pending handshake must time out");
+
+        assert_eq!(err.status, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(err.message, "WebSocket handshake timed out");
     }
 
     // ========== RateLimitConfig Tests ==========

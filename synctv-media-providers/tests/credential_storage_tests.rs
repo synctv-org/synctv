@@ -1,9 +1,6 @@
-//! `PostgreSQL` Credential Storage Tests
+//! Credential Storage Tests
 //!
-//! Integration tests for PostgreSQL-backed credential storage.
-//!
-//! Run with: cargo test --test `credential_storage_tests` -- --ignored
-//! (Requires Docker)
+//! Regression tests for the in-memory credential storage implementation.
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
@@ -11,10 +8,6 @@ use std::collections::HashMap;
 use synctv_media_providers::{
     CredentialData, CredentialStorage, InMemoryCredentialStorage, ProviderType,
 };
-
-// Note: PostgreSQL integration tests require Docker and are marked with #[ignore].
-// The migration path for synctv-core tests is different from this crate.
-// For real integration tests, run from the workspace root or use synctv-core's test infrastructure.
 
 // ========== InMemoryCredentialStorage Tests ==========
 

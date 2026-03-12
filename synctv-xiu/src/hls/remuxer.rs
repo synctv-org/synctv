@@ -22,6 +22,8 @@ use crate::streamhub::{
         BroadcastEvent, BroadcastEventReceiver, FrameData, FrameDataReceiver, NotifyInfo,
         StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo,
     },
+    send_event_with_backpressure_timeout,
+    spawn_event_delivery_with_backpressure_timeout,
     stream::StreamIdentifier,
     utils::Uuid,
 };
@@ -392,17 +394,11 @@ impl Drop for UnsubscribeGuard {
             identifier,
             info: sub_info,
         };
-        if let Err(e) = self.event_producer.try_send(event) {
-            tracing::warn!(
-                subscriber_id = %self.subscriber_id,
-                "UnsubscribeGuard: failed to send unsubscribe on drop: {e}"
-            );
-        } else {
-            tracing::info!(
-                subscriber_id = %self.subscriber_id,
-                "UnsubscribeGuard: sent unsubscribe on drop"
-            );
-        }
+        tracing::info!(
+            subscriber_id = %self.subscriber_id,
+            "UnsubscribeGuard: scheduling unsubscribe on drop"
+        );
+        spawn_event_delivery_with_backpressure_timeout(self.event_producer.clone(), event);
     }
 }
 
@@ -664,9 +660,9 @@ impl StreamHandler {
             info: sub_info,
         };
 
-        if let Err(e) = self.event_producer.try_send(unsubscribe_event) {
-            tracing::error!("Unsubscribe error: {}", e);
-        }
+        send_event_with_backpressure_timeout(&self.event_producer, unsubscribe_event)
+            .await
+            .map_err(|_| HlsRemuxerError::StreamHubEventSendError)?;
 
         tracing::info!(
             "Unsubscribed from stream: {}/{}",

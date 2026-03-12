@@ -118,6 +118,61 @@ pub struct LivestreamHandle {
 }
 
 impl LivestreamHandle {
+    async fn cleanup_local_publishers_on_shutdown(&self) {
+        if self.infrastructure.local_node_id.is_empty() {
+            self.infrastructure.user_stream_tracker.clear();
+            return;
+        }
+
+        if let Err(e) = self
+            .infrastructure
+            .registry
+            .cleanup_all_publishers_for_node(&self.infrastructure.local_node_id)
+            .await
+        {
+            warn!(
+                node_id = %self.infrastructure.local_node_id,
+                error = %e,
+                "Failed to cleanup local publisher registrations during shutdown"
+            );
+        }
+
+        self.infrastructure.user_stream_tracker.clear();
+    }
+
+    fn spawn_local_publisher_cleanup(&self) {
+        let registry = Arc::clone(&self.infrastructure.registry);
+        let tracker = Arc::clone(&self.infrastructure.user_stream_tracker);
+        let node_id = self.infrastructure.local_node_id.clone();
+
+        tracker.clear();
+
+        if node_id.is_empty() {
+            return;
+        }
+
+        let node_id_for_task = node_id.clone();
+        if crate::util::try_spawn(async move {
+            if let Err(e) = registry
+                .cleanup_all_publishers_for_node(&node_id_for_task)
+                .await
+            {
+                warn!(
+                    node_id = %node_id_for_task,
+                    error = %e,
+                    "Failed to cleanup local publisher registrations during shutdown"
+                );
+            }
+        })
+        .is_none()
+        {
+            warn!(
+                node_id = %node_id,
+                "No Tokio runtime available for async local publisher cleanup during shutdown"
+            );
+        }
+    }
+
     /// Abort all spawned tasks in reverse startup order.
     ///
     /// This is a fast shutdown that immediately aborts all tasks.
@@ -134,6 +189,7 @@ impl LivestreamHandle {
         self.hls_cleanup_handle.abort();
         self.hls_remuxer_handle.abort();
         self.hub_handle.abort();
+        self.spawn_local_publisher_cleanup();
     }
 
     /// Shutdown all spawned tasks.
@@ -234,6 +290,11 @@ impl LivestreamHandle {
         let _ = (&mut self.hub_handle).await;
         info!("StreamHub stopped");
 
+        // 8. Final local publisher cleanup. Shutdown may interrupt the normal
+        // on_unpublish -> PublisherManager cleanup chain, so clear local tracker
+        // and remove this node's publisher registrations explicitly.
+        self.cleanup_local_publishers_on_shutdown().await;
+
         if all_graceful {
             info!("Shutdown completed successfully");
         } else {
@@ -283,6 +344,8 @@ impl Drop for LivestreamHandle {
         self.hub_handle.abort();
         self.pull_manager_cleanup.abort();
         self.external_publish_cleanup.abort();
+
+        self.spawn_local_publisher_cleanup();
     }
 }
 
@@ -1053,6 +1116,50 @@ mod tests {
         assert!(
             handle.reregister_task_handle.is_finished(),
             "reregister_task_handle should be finished after graceful shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_graceful_cleans_local_publishers_from_registry_and_tracker() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let tracker = test_tracker();
+
+        let server = LivestreamServer::new(test_config(), registry.clone(), tracker.clone());
+        let mut handle = server.start().await.expect("Failed to start server");
+
+        registry
+            .try_register_publisher(
+                "room-shutdown",
+                "media-shutdown",
+                "test-node",
+                "user-shutdown",
+                "127.0.0.1:50051",
+            )
+            .await
+            .expect("publisher should register in mock registry");
+        tracker.insert(
+            "user-shutdown".to_string(),
+            "room-shutdown".to_string(),
+            "media-shutdown".to_string(),
+            "live",
+            "stream-token",
+        );
+
+        let result = timeout(Duration::from_secs(2), handle.shutdown_graceful(1))
+            .await
+            .expect("shutdown_graceful should complete");
+        assert!(result, "shutdown_graceful should complete cleanly");
+
+        assert!(
+            !registry
+                .is_stream_active("room-shutdown", "media-shutdown")
+                .await
+                .expect("registry query should succeed"),
+            "shutdown must remove local publisher registrations from the registry"
+        );
+        assert!(
+            tracker.is_empty(),
+            "shutdown must clear local publisher tracking entries"
         );
     }
 

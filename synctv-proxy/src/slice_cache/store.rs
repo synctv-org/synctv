@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::apply_provider_headers;
+use crate::send_with_redirect_validation;
 
 use super::backend::{CacheBackend, SliceCacheBackend};
 use super::config::{CacheBackendConfig, SliceCacheConfig};
@@ -398,8 +399,8 @@ impl SliceCache {
             }
         }
 
-        let resp = match request.send().await {
-            Ok(r) => r,
+        let resp = match send_with_redirect_validation(&self.client, request).await {
+            Ok(proxy_response) => proxy_response.response,
             Err(e) => {
                 // Clean up updating_keys on send failure so the key is not
                 // permanently stuck in "updating" state.
@@ -426,8 +427,8 @@ impl SliceCache {
             let mut request2 = self.client.get(url);
             request2 = apply_provider_headers(request2, url, provider_headers)?;
             request2 = request2.header("Range", &range_header);
-            let resp2 = match request2.send().await {
-                Ok(r) => r,
+            let resp2 = match send_with_redirect_validation(&self.client, request2).await {
+                Ok(proxy_response) => proxy_response.response,
                 Err(e) => {
                     self.updating_keys.remove(&key);
                     return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}"));
@@ -737,6 +738,25 @@ impl SliceCache {
         None
     }
 
+    /// Retrieve the cached full-body entry regardless of freshness state.
+    ///
+    /// Used by conditional 304 revalidation paths, which need access to the
+    /// expired bytes in order to refresh TTL without forcing a full re-download.
+    pub(super) async fn get_full_body_cached_entry(
+        &self,
+        url: &str,
+        provider_headers: &HashMap<String, String>,
+    ) -> Option<(Bytes, Option<String>)> {
+        let key = Self::full_body_key(url, provider_headers);
+        self.backend.get(&key).await.map(|entry| {
+            let ct = self
+                .meta
+                .get(&Self::meta_key(url, provider_headers))
+                .and_then(|m| m.content_type.clone());
+            (entry.data, ct)
+        })
+    }
+
     /// Determine the full-body cache status *before* fetching.
     pub(super) async fn full_body_pre_status(
         &self,
@@ -757,6 +777,8 @@ impl SliceCache {
         url: &str,
         provider_headers: &HashMap<String, String>,
         data: Bytes,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
         content_type: Option<&str>,
         ttl: Duration,
     ) {
@@ -777,8 +799,8 @@ impl SliceCache {
         self.meta.insert(
             mk,
             CachedResourceMeta {
-                etag: None,
-                last_modified: None,
+                etag: etag.map(std::string::ToString::to_string),
+                last_modified: last_modified.map(std::string::ToString::to_string),
                 total_size: None,
                 content_type: content_type.map(std::string::ToString::to_string),
                 last_accessed: std::time::SystemTime::now(),

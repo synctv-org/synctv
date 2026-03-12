@@ -18,6 +18,13 @@ test-group = "docker-integration"
 slow-timeout = { period = "120s", terminate-after = 2 }
 leak-timeout = "180s"
 
+[[profile.default.overrides]]
+filter = 'package(synctv) and test(ignored)'
+threads-required = 1
+test-group = "docker-exclusive"
+slow-timeout = { period = "120s", terminate-after = 2 }
+leak-timeout = "180s"
+
 [profile.docker]
 fail-fast = false
 retries = 0
@@ -34,5 +41,13 @@ filter = 'package(synctv-api) and binary(websocket_test)'
 threads-required = 1
 test-group = "docker-integration"
 
+[[profile.docker.overrides]]
+filter = 'package(synctv) and test(ignored)'
+threads-required = 1
+test-group = "docker-exclusive"
+
 [test-groups.docker-integration]
 max-threads = 6
+
+[test-groups.docker-exclusive]
+max-threads = 1

@@ -61,13 +61,8 @@ aes-gcm.workspace = true
 base64.workspace = true
 hex.workspace = true
 
-# Database (optional, for PostgreSQL storage)
-sqlx = { workspace = true, optional = true }
-chrono = { workspace = true, optional = true }
-
 [features]
 default = []
-postgres = ["dep:sqlx", "dep:chrono"]
 
 [lints]
 workspace = true

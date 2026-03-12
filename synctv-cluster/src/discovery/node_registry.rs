@@ -152,6 +152,21 @@ pub enum ClusterMode {
     Standalone,
 }
 
+/// Node view policy for routing and other correctness-sensitive consumers.
+///
+/// `LoadBalancer` and similar call paths must not silently consume stale local
+/// cache entries as if they were authoritative cluster membership data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeViewMode {
+    /// Fresh Redis-backed view in normal clustered operation.
+    Fresh,
+    /// Degraded mode fallback to local cache while the cache is still within
+    /// the staleness budget.
+    DegradedCache,
+    /// Local-only mode without Redis. The local cache is the source of truth.
+    LocalOnly,
+}
+
 impl std::fmt::Display for ClusterMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1476,6 +1491,33 @@ impl NodeRegistry {
         self.last_refreshed.load(Ordering::Relaxed)
     }
 
+    /// Return the node set that is safe to use for routing decisions.
+    ///
+    /// This differs from [`get_all_nodes`] by refusing to silently serve stale
+    /// local cache data once the cache has exceeded the staleness budget.
+    pub async fn get_routable_nodes(&self) -> Result<(Vec<NodeInfo>, NodeViewMode)> {
+        if self.local_only {
+            return Ok((self.get_all_nodes_local().await, NodeViewMode::LocalOnly));
+        }
+
+        match self.get_all_nodes().await {
+            Ok(nodes) if self.cluster_mode() == ClusterMode::Normal => {
+                Ok((nodes, NodeViewMode::Fresh))
+            }
+            Ok(nodes) => {
+                if self.is_nodes_stale() {
+                    Err(Error::NotFound(
+                        "Cluster node view is stale while Redis is degraded; refusing to route on stale topology"
+                            .to_string(),
+                    ))
+                } else {
+                    Ok((nodes, NodeViewMode::DegradedCache))
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     fn node_key(&self, node_id: &str) -> String {
         format!("{}:{}", self.key_prefix, node_id)
     }
@@ -1510,6 +1552,18 @@ impl NodeRegistry {
     #[doc(hidden)]
     pub async fn test_get_local(&self, node_id: &str) -> Option<NodeInfo> {
         self.get_node_local(node_id).await
+    }
+
+    /// Test-only hook to override the cluster mode.
+    #[doc(hidden)]
+    pub fn test_set_cluster_mode(&self, mode: ClusterMode) {
+        *self.cluster_mode.write() = mode;
+    }
+
+    /// Test-only hook to override the last refresh timestamp.
+    #[doc(hidden)]
+    pub fn test_set_last_refreshed_at(&self, unix_secs: u64) {
+        self.last_refreshed.store(unix_secs, Ordering::Relaxed);
     }
 
     // ============ Re-registration backoff methods ============

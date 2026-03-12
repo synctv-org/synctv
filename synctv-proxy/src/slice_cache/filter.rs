@@ -14,9 +14,12 @@ use bytes::Bytes;
 use futures::StreamExt;
 
 use crate::apply_provider_headers;
+use crate::{send_head_with_redirect_validation, send_with_redirect_validation};
 
 use super::config::is_manifest_content_type;
-use super::range::{aligned_range_for_slice, compute_needed_slices, parse_range_header};
+use super::range::{
+    aligned_range_for_slice, compute_needed_slices, parse_content_range, parse_range_header,
+};
 use super::status::CacheStatus;
 use super::store::SliceCache;
 
@@ -24,7 +27,54 @@ use super::store::SliceCache;
 // HEAD helper
 // ------------------------------------------------------------------
 
+fn parse_content_length_header(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
+fn parse_total_size_from_content_range(resp: &reqwest::Response) -> Result<Option<u64>, anyhow::Error> {
+    let Some(value) = resp.headers().get("content-range") else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .map_err(|e| anyhow::anyhow!("Invalid Content-Range header in fallback response: {e}"))?;
+    let parsed = parse_content_range(value)?;
+    Ok(parsed.complete_length)
+}
+
+async fn discover_content_length_via_range_get(
+    client: &reqwest::Client,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+) -> Result<u64, anyhow::Error> {
+    let mut request = client.get(url);
+    request = apply_provider_headers(request, url, provider_headers)?;
+    request = request.header("Range", "bytes=0-0");
+    let resp = send_with_redirect_validation(client, request)
+        .await
+        .map_err(|e| anyhow::anyhow!("Range GET fallback failed: {e}"))?
+        .response;
+
+    match resp.status() {
+        StatusCode::PARTIAL_CONTENT => parse_total_size_from_content_range(&resp)?
+            .ok_or_else(|| anyhow::anyhow!("Missing complete length in Content-Range fallback response")),
+        StatusCode::OK => parse_content_length_header(&resp)
+            .ok_or_else(|| anyhow::anyhow!("Missing or invalid Content-Length in fallback GET response")),
+        status => Err(anyhow::anyhow!(
+            "Range GET fallback returned status {}",
+            status
+        )),
+    }
+}
+
 /// Send a HEAD request to discover the upstream `Content-Length`.
+///
+/// Falls back to a constrained `GET Range: bytes=0-0` request when the origin
+/// rejects HEAD or omits `Content-Length`, while still reusing the proxy's
+/// SSRF-safe redirect validation path.
 #[allow(clippy::implicit_hasher)]
 pub async fn head_content_length(
     client: &reqwest::Client,
@@ -33,27 +83,20 @@ pub async fn head_content_length(
 ) -> Result<u64, anyhow::Error> {
     let mut request = client.head(url);
     request = apply_provider_headers(request, url, provider_headers)?;
-
-    let resp = request
-        .send()
+    let resp = send_head_with_redirect_validation(client, request)
         .await
-        .map_err(|e| anyhow::anyhow!("HEAD request failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("HEAD request failed: {e}"))?
+        .response;
 
     if !resp.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "HEAD request returned status {}",
-            resp.status()
-        ));
+        return discover_content_length_via_range_get(client, url, provider_headers).await;
     }
 
-    let content_length = resp
-        .headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-        .ok_or_else(|| anyhow::anyhow!("Missing or invalid Content-Length in HEAD response"))?;
+    if let Some(content_length) = parse_content_length_header(&resp) {
+        return Ok(content_length);
+    }
 
-    Ok(content_length)
+    discover_content_length_via_range_get(client, url, provider_headers).await
 }
 
 // ------------------------------------------------------------------
@@ -282,14 +325,21 @@ pub(super) async fn full_body_cache_path(
                         req = req.header("If-Modified-Since", lm.as_str());
                     }
                 }
-                match req.send().await {
-                    Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
+                match send_with_redirect_validation(bg_cache.client(), req).await {
+                    Ok(proxy_response)
+                        if proxy_response.response.status() == reqwest::StatusCode::NOT_MODIFIED =>
+                    {
+                        let resp = proxy_response.response;
                         // Still valid -- refresh TTL so the next request is a HIT instead of
                         // repeatedly re-entering the stale path.
                         let _ = resp.bytes().await;
-                        if let Some((data, content_type, _)) =
-                            bg_cache.get_full_body(&bg_url, &bg_headers).await
+                        if let Some((data, content_type)) =
+                            bg_cache.get_full_body_cached_entry(&bg_url, &bg_headers).await
                         {
+                            let (etag, last_modified) = bg_meta
+                                .as_ref()
+                                .map(|meta| (meta.etag.as_deref(), meta.last_modified.as_deref()))
+                                .unwrap_or((None, None));
                             let ttl = match content_type.as_deref() {
                                 Some(ct) if is_manifest_content_type(ct) => {
                                     bg_cache.config().manifest_ttl
@@ -301,13 +351,16 @@ pub(super) async fn full_body_cache_path(
                                     &bg_url,
                                     &bg_headers,
                                     data,
+                                    etag,
+                                    last_modified,
                                     content_type.as_deref(),
                                     ttl,
                                 )
                                 .await;
                         }
                     }
-                    Ok(resp) => {
+                    Ok(proxy_response) => {
+                        let resp = proxy_response.response;
                         if let Err(error) =
                             refresh_full_body_cache_entry(&bg_cache, &bg_url, &bg_headers, resp)
                                 .await
@@ -351,7 +404,8 @@ pub(super) async fn full_body_cache_path(
 
     // Add conditional request headers from stored metadata to enable 304
     // responses and avoid re-downloading unchanged resources.
-    if let Some(meta) = cache.get_resource_meta(url, provider_headers).await {
+    let existing_meta = cache.get_resource_meta(url, provider_headers).await;
+    if let Some(meta) = existing_meta.as_ref() {
         if let Some(ref etag) = meta.etag {
             request = request.header("If-None-Match", etag.as_str());
         }
@@ -360,10 +414,10 @@ pub(super) async fn full_body_cache_path(
         }
     }
 
-    let resp = request
-        .send()
+    let resp = send_with_redirect_validation(cache.client(), request)
         .await
-        .map_err(|e| anyhow::anyhow!("Upstream request failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Upstream request failed: {e}"))?
+        .response;
 
     // Handle 304 Not Modified: upstream confirmed the cached copy is still
     // valid.  Re-insert the full body with a fresh TTL and serve it.
@@ -372,8 +426,14 @@ pub(super) async fn full_body_cache_path(
         let _ = resp.bytes().await;
 
         // Re-fetch from our cache (it may have been evicted in the meantime).
-        if let Some((data, content_type, _)) = cache.get_full_body(url, provider_headers).await {
+        if let Some((data, content_type)) =
+            cache.get_full_body_cached_entry(url, provider_headers).await
+        {
             // Refresh the TTL by re-inserting.
+            let (etag, last_modified) = existing_meta
+                .as_ref()
+                .map(|meta| (meta.etag.as_deref(), meta.last_modified.as_deref()))
+                .unwrap_or((None, None));
             let ttl = match content_type.as_deref() {
                 Some(ct) if is_manifest_content_type(ct) => cache.config().manifest_ttl,
                 _ => cache.config().segment_ttl,
@@ -383,6 +443,8 @@ pub(super) async fn full_body_cache_path(
                     url,
                     provider_headers,
                     data.clone(),
+                    etag,
+                    last_modified,
                     content_type.as_deref(),
                     ttl,
                 )
@@ -403,10 +465,10 @@ pub(super) async fn full_body_cache_path(
         // fall through to a full re-fetch without conditional headers.
         let mut request2 = cache.client().get(url);
         request2 = apply_provider_headers(request2, url, provider_headers)?;
-        let resp2 = request2
-            .send()
+        let resp2 = send_with_redirect_validation(cache.client(), request2)
             .await
-            .map_err(|e| anyhow::anyhow!("Full-body re-fetch after 304 failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Full-body re-fetch after 304 failed: {e}"))?
+            .response;
         return handle_full_body_response(cache, url, provider_headers, resp2, pre_status).await;
     }
 
@@ -423,6 +485,16 @@ async fn refresh_full_body_cache_entry(
     let content_type = resp
         .headers()
         .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(ToString::to_string);
+    let etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(ToString::to_string);
+    let last_modified = resp
+        .headers()
+        .get("last-modified")
         .and_then(|v| v.to_str().ok())
         .map(ToString::to_string);
 
@@ -449,6 +521,8 @@ async fn refresh_full_body_cache_entry(
             url,
             provider_headers,
             Bytes::from(buf),
+            etag.as_deref(),
+            last_modified.as_deref(),
             content_type.as_deref(),
             ttl,
         )
@@ -473,6 +547,16 @@ async fn handle_full_body_response(
     let content_type = resp
         .headers()
         .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(ToString::to_string);
+    let etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(ToString::to_string);
+    let last_modified = resp
+        .headers()
+        .get("last-modified")
         .and_then(|v| v.to_str().ok())
         .map(ToString::to_string);
 
@@ -555,6 +639,8 @@ async fn handle_full_body_response(
             url,
             provider_headers,
             body_bytes.clone(),
+            etag.as_deref(),
+            last_modified.as_deref(),
             content_type.as_deref(),
             ttl,
         )

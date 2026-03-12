@@ -17,6 +17,27 @@ use synctv_proxy::slice_cache::{
     CacheStatus, CachedResourceMeta, SliceCache, SliceCacheBackend, SliceCacheConfig,
 };
 
+fn mock_public_origin(mock_server: &MockServer) -> String {
+    format!("http://cdn.example.com:{}", mock_server.address().port())
+}
+
+fn mock_public_url(mock_server: &MockServer, path: &str) -> String {
+    format!("{}{}", mock_public_origin(mock_server), path)
+}
+
+fn mock_client(mock_server: &MockServer) -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve("cdn.example.com", *mock_server.address())
+        .build()
+        .expect("client should build")
+}
+
+fn slice_cache_for_mock(config: SliceCacheConfig, mock_server: &MockServer) -> SliceCache {
+    let client = mock_client(mock_server);
+    SliceCache::new_with_client(config, client)
+}
+
 // ==================================================================
 // SliceCacheConfig tests
 // ==================================================================
@@ -255,9 +276,9 @@ async fn test_get_or_fetch_slice_fetches_from_upstream() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let headers = HashMap::new();
     let total_size = 10 * 1024 * 1024; // 10MB
 
@@ -305,9 +326,9 @@ async fn test_get_or_fetch_slice_last_slice_partial() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let headers = HashMap::new();
 
     let (slice, _status) = cache
@@ -354,9 +375,9 @@ async fn test_proxy_with_cache_returns_206_for_range_request() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
     let response = synctv_proxy::slice_cache::proxy_with_cache(
@@ -399,9 +420,9 @@ async fn test_proxy_with_cache_no_range_streams_through() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
     let response = synctv_proxy::slice_cache::proxy_with_cache(
@@ -447,9 +468,9 @@ async fn test_proxy_with_cache_x_cache_status_miss() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
     let response = synctv_proxy::slice_cache::proxy_with_cache(
@@ -502,9 +523,9 @@ async fn test_proxy_with_cache_x_cache_status_hit() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
     // First request - cache miss
@@ -540,6 +561,7 @@ async fn test_proxy_with_cache_x_cache_status_hit() {
 #[tokio::test]
 async fn test_proxy_with_cache_head_request_returns_content_length() {
     let mock_server = MockServer::start().await;
+    let public_origin = mock_public_origin(&mock_server);
 
     let total_size: u64 = 10 * 1024 * 1024;
 
@@ -555,12 +577,17 @@ async fn test_proxy_with_cache_head_request_returns_content_length() {
 
     let config = SliceCacheConfig::default();
     let _cache = SliceCache::new(config);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve("cdn.example.com", *mock_server.address())
+        .build()
+        .expect("client should build");
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = format!("{public_origin}/video.mp4");
     let provider_headers = HashMap::new();
 
     let total = synctv_proxy::slice_cache::filter::head_content_length(
-        _cache.client(),
+        &client,
         &url,
         &provider_headers,
     )
@@ -568,6 +595,133 @@ async fn test_proxy_with_cache_head_request_returns_content_length() {
     .unwrap();
 
     assert_eq!(total, total_size);
+}
+
+#[tokio::test]
+async fn test_head_content_length_falls_back_to_range_get_when_head_is_not_supported() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 10 * 1024 * 1024;
+    let client = mock_client(&mock_server);
+
+    Mock::given(method("HEAD"))
+        .and(path("/head-405.mp4"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/head-405.mp4"))
+        .and(header("Range", "bytes=0-0"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("Content-Range", format!("bytes 0-0/{total_size}"))
+                .insert_header("Content-Length", "1")
+                .set_body_bytes(Bytes::from_static(b"x")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let total = synctv_proxy::slice_cache::filter::head_content_length(
+        &client,
+        &mock_public_url(&mock_server, "/head-405.mp4"),
+        &HashMap::new(),
+    )
+    .await
+    .expect("range GET fallback should recover total size");
+
+    assert_eq!(total, total_size);
+}
+
+#[tokio::test]
+async fn test_head_content_length_falls_back_when_head_omits_content_length() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 2_097_152;
+    let client = mock_client(&mock_server);
+
+    Mock::given(method("HEAD"))
+        .and(path("/head-no-cl.mp4"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/head-no-cl.mp4"))
+        .and(header("Range", "bytes=0-0"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("Content-Range", format!("bytes 0-0/{total_size}"))
+                .insert_header("Content-Length", "1")
+                .set_body_bytes(Bytes::from_static(b"y")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let total = synctv_proxy::slice_cache::filter::head_content_length(
+        &client,
+        &mock_public_url(&mock_server, "/head-no-cl.mp4"),
+        &HashMap::new(),
+    )
+    .await
+    .expect("range GET fallback should recover total size when HEAD omits content length");
+
+    assert_eq!(total, total_size);
+}
+
+#[tokio::test]
+async fn test_head_content_length_rejects_blocked_ip_like_main_proxy_path() {
+    let config = SliceCacheConfig::default();
+    let cache = SliceCache::new(config);
+
+    let err = synctv_proxy::slice_cache::filter::head_content_length(
+        cache.client(),
+        "http://127.0.0.1:12345/private",
+        &HashMap::new(),
+    )
+    .await
+    .expect_err("HEAD to blocked loopback must fail before network IO");
+
+    assert!(
+        err.to_string().contains("HEAD request failed"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string().contains("blocked by SSRF policy"),
+        "HEAD path must reuse SSRF validation: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_head_content_length_rejects_redirect_to_blocked_ip_like_main_proxy_path() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/start"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", "http://127.0.0.1:12345/private"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig::default();
+    let cache = SliceCache::new(config);
+
+    let err = synctv_proxy::slice_cache::filter::head_content_length(
+        cache.client(),
+        &format!("{}/start", mock_server.uri()),
+        &HashMap::new(),
+    )
+    .await
+    .expect_err("HEAD redirect to blocked loopback must fail");
+
+    assert!(
+        err.to_string().contains("HEAD request failed"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string().contains("blocked by SSRF policy"),
+        "HEAD redirect path must reuse SSRF validation: {err}"
+    );
 }
 
 #[tokio::test]
@@ -622,9 +776,9 @@ async fn test_concurrent_fetches_same_slice_only_one_upstream_request() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = std::sync::Arc::new(SliceCache::new(config));
+    let cache = std::sync::Arc::new(slice_cache_for_mock(config, &mock_server));
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let headers = HashMap::new();
 
     // Spawn 10 concurrent requests for the same slice
@@ -674,9 +828,9 @@ async fn test_disabled_cache_streams_directly() {
         enabled: false,
         ..Default::default()
     };
-    let disabled_cache = SliceCache::new(config);
+    let disabled_cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
     // Even with a range header, disabled cache should stream through
@@ -762,8 +916,8 @@ async fn test_full_body_cache_no_range_cached_then_hit() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
     // First request - MISS, should fetch and cache
@@ -809,7 +963,7 @@ async fn test_full_body_cache_oversized_not_cached() {
         max_cacheable_body: 512,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
     let body = Bytes::from(vec![0xCCu8; 1024]); // Larger than max_cacheable_body (512)
 
@@ -825,7 +979,7 @@ async fn test_full_body_cache_oversized_not_cached() {
         .mount(&mock_server)
         .await;
 
-    let url = format!("{}/big.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/big.mp4");
     let provider_headers = HashMap::new();
 
     // First request
@@ -879,9 +1033,9 @@ async fn test_full_body_cache_m3u8_uses_manifest_ttl() {
         segment_ttl: Duration::from_mins(5),
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/live.m3u8", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/live.m3u8");
     let provider_headers = HashMap::new();
 
     let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
@@ -936,9 +1090,9 @@ async fn test_full_body_cache_expiry_returns_expired() {
         stale_while_revalidate: false,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/short.bin", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/short.bin");
     let provider_headers = HashMap::new();
 
     // First request - MISS
@@ -1033,9 +1187,9 @@ async fn test_etag_consistency_same_etag_both_cached() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let headers = HashMap::new();
 
     // Fetch both slices - both should succeed since ETag matches
@@ -1095,9 +1249,9 @@ async fn test_etag_consistency_mismatch_triggers_invalidation() {
         slice_size,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let headers = HashMap::new();
 
     // Fetch slice 0 - succeeds, establishes ETag for this resource
@@ -1145,8 +1299,8 @@ async fn test_cache_status_bypass_when_disabled() {
         enabled: false,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/video.mp4");
 
     let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &HashMap::new())
         .await
@@ -1178,8 +1332,8 @@ async fn test_cache_status_bypass_for_multi_range() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/video.mp4");
 
     let result = synctv_proxy::slice_cache::proxy_with_cache(
         &cache,
@@ -1232,8 +1386,8 @@ async fn test_cache_status_expired_for_slice_request() {
         stale_while_revalidate: false,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
     // First request: MISS
@@ -1297,8 +1451,8 @@ async fn test_resource_meta_stored_after_fetch() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let headers = HashMap::new();
 
     let _ = cache
@@ -1447,16 +1601,16 @@ fn test_parse_content_range_zero_start() {
 /// After inserting entries, seen_keys should track them.
 #[tokio::test]
 async fn test_seen_keys_bounded_tracks_inserted() {
+    let mock_server = MockServer::start().await;
     let config = SliceCacheConfig {
         slice_size: 1024,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
     // seen_keys_count should start at 0
     assert_eq!(cache.seen_keys_count(), 0);
 
-    let mock_server = MockServer::start().await;
     let total_size: u64 = 2048;
     let slice0 = Bytes::from(vec![0xAAu8; 1024]);
 
@@ -1472,7 +1626,7 @@ async fn test_seen_keys_bounded_tracks_inserted() {
         .mount(&mock_server)
         .await;
 
-    let url = format!("{}/test.bin", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/test.bin");
     let headers = HashMap::new();
 
     let _ = cache
@@ -1494,13 +1648,12 @@ async fn test_seen_keys_bounded_tracks_inserted() {
 /// After fetching slices and cleaning up, stale locks should be removed.
 #[tokio::test]
 async fn test_stale_locks_cleaned_up() {
+    let mock_server = MockServer::start().await;
     let config = SliceCacheConfig {
         slice_size: 1024,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-
-    let mock_server = MockServer::start().await;
+    let cache = slice_cache_for_mock(config, &mock_server);
     let total_size: u64 = 3072;
     let slice_data = Bytes::from(vec![0xBBu8; 1024]);
 
@@ -1521,7 +1674,7 @@ async fn test_stale_locks_cleaned_up() {
             .await;
     }
 
-    let url = format!("{}/test.bin", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/test.bin");
     let headers = HashMap::new();
 
     // Fetch 3 slices - this creates 3 per-key locks
@@ -1585,8 +1738,8 @@ async fn test_cached_meta_avoids_head_request() {
         .await;
 
     let config = SliceCacheConfig::default();
-    let cache = SliceCache::new(config);
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
     // First range request: must HEAD to discover total_size
@@ -1665,8 +1818,8 @@ async fn test_full_body_stale_when_expired_within_window() {
         stale_while_revalidate: true,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/stale.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/stale.bin");
     let provider_headers = HashMap::new();
 
     // First request - MISS
@@ -1726,8 +1879,8 @@ async fn test_full_body_stale_background_revalidation_updates_next_request() {
         stale_while_revalidate: true,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/stale-refresh.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/stale-refresh.bin");
     let provider_headers = HashMap::new();
 
     let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
@@ -1810,8 +1963,8 @@ async fn test_full_body_failed_revalidation_does_not_stick_updating_forever() {
         stale_while_revalidate: true,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/stale-retry.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/stale-retry.bin");
     let provider_headers = HashMap::new();
 
     let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
@@ -1919,8 +2072,8 @@ async fn test_slice_stale_when_expired_within_window() {
         stale_while_revalidate: true,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/video.mp4", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
     // First request: MISS
@@ -1994,8 +2147,8 @@ async fn test_slice_updating_status_on_stale_entry() {
         stale_while_revalidate: true,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/video.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/video.bin");
     let headers = HashMap::new();
 
     // First fetch - MISS
@@ -2057,8 +2210,8 @@ async fn test_conditional_request_304_returns_revalidated() {
         stale_while_revalidate: false, // Disable stale so we go through lock path
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/video.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/video.bin");
     let headers = HashMap::new();
 
     // First fetch - MISS
@@ -2112,6 +2265,73 @@ async fn test_conditional_request_304_returns_revalidated() {
     assert_eq!(data2, data);
 }
 
+#[tokio::test]
+async fn test_full_body_conditional_request_304_returns_revalidated() {
+    let mock_server = MockServer::start().await;
+
+    let first_guard = Mock::given(method("GET"))
+        .and(path("/full-revalidate.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("full-body-v1")
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("Content-Length", "12")
+                .insert_header("ETag", "\"full-etag-v1\"")
+                .insert_header("Last-Modified", "Wed, 01 Jan 2025 00:00:00 GMT"),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        segment_ttl: Duration::from_millis(50),
+        stale_while_revalidate: false,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/full-revalidate.bin");
+    let provider_headers = HashMap::new();
+
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
+    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body1.as_ref(), b"full-body-v1");
+
+    let meta = cache.get_resource_meta(&url, &provider_headers).await;
+    assert!(meta.is_some(), "full-body fetch should store metadata");
+    let meta = meta.unwrap();
+    assert_eq!(meta.etag.as_deref(), Some("\"full-etag-v1\""));
+    assert_eq!(
+        meta.last_modified.as_deref(),
+        Some("Wed, 01 Jan 2025 00:00:00 GMT")
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(first_guard);
+
+    Mock::given(method("GET"))
+        .and(path("/full-revalidate.bin"))
+        .and(header("if-none-match", "\"full-etag-v1\""))
+        .respond_with(ResponseTemplate::new(304))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
+    assert_eq!(
+        resp2
+            .headers()
+            .get("X-Cache-Status")
+            .and_then(|v| v.to_str().ok()),
+        Some("REVALIDATED")
+    );
+    let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body2.as_ref(), b"full-body-v1");
+}
+
 /// Last-Modified is tracked in resource metadata.
 #[tokio::test]
 async fn test_last_modified_tracked_in_metadata() {
@@ -2137,8 +2357,8 @@ async fn test_last_modified_tracked_in_metadata() {
         slice_size: 1024,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/test.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/test.bin");
     let headers = HashMap::new();
 
     let _ = cache
@@ -2217,11 +2437,14 @@ async fn test_proxy_with_cache_enabled_overrides_disabled_config() {
         .mount(&mock_server)
         .await;
 
-    let cache = SliceCache::new(SliceCacheConfig {
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
         enabled: false,
         ..SliceCacheConfig::default()
-    });
-    let url = format!("{}/runtime-toggle.mp4", mock_server.uri());
+    },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/runtime-toggle.mp4");
     let headers = HashMap::new();
 
     let miss = synctv_proxy::slice_cache::proxy_with_cache_enabled(
@@ -2245,6 +2468,46 @@ async fn test_proxy_with_cache_enabled_overrides_disabled_config() {
 
     assert_eq!(miss.headers().get("X-Cache-Status").unwrap(), "MISS");
     assert_eq!(hit.headers().get("X-Cache-Status").unwrap(), "HIT");
+}
+
+#[tokio::test]
+async fn test_proxy_with_cache_rejects_redirect_to_blocked_ip_on_slice_fetch() {
+    let mock_server = MockServer::start().await;
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+
+    Mock::given(method("HEAD"))
+        .and(path("/video.mp4"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", (10 * 1024 * 1024).to_string())
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/video.mp4"))
+        .and(header("Range", "bytes=0-2097151"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", "http://127.0.0.1:12345/private"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let err = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=0-999"),
+        &mock_public_url(&mock_server, "/video.mp4"),
+        &HashMap::new(),
+    )
+    .await
+    .expect_err("range fetch redirect to blocked loopback must fail");
+
+    assert!(
+        err.to_string().contains("blocked by SSRF policy"),
+        "slice fetch path must reuse redirect SSRF validation: {err}"
+    );
 }
 
 /// SliceCache::new panics for file backend config.
@@ -2296,8 +2559,10 @@ async fn test_file_backend_slice_cache_integration() {
         stale_while_revalidate: false,
         ..Default::default()
     };
-    let cache = SliceCache::try_new(config).await.unwrap();
-    let url = format!("{}/file-test.bin", mock_server.uri());
+    let cache = SliceCache::try_new_with_client(config, mock_client(&mock_server))
+        .await
+        .unwrap();
+    let url = mock_public_url(&mock_server, "/file-test.bin");
     let headers = HashMap::new();
 
     // First fetch - MISS
@@ -2353,8 +2618,8 @@ async fn test_get_or_fetch_slice_returns_cache_status() {
         slice_size: 1024,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/status-test.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/status-test.bin");
     let headers = HashMap::new();
 
     // First: MISS
@@ -2409,8 +2674,8 @@ async fn test_updating_status_correctly_distinguishes_stale_and_updating() {
         stale_while_revalidate: true,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/c1-test.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/c1-test.bin");
     let headers = HashMap::new();
 
     // First fetch - MISS, populates cache
@@ -2484,8 +2749,8 @@ async fn test_updating_keys_cleaned_on_fetch_failure() {
         stale_while_revalidate: true,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/c2-test.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/c2-test.bin");
     let headers = HashMap::new();
 
     // Populate cache
@@ -2655,8 +2920,8 @@ async fn test_200_response_rejected_for_slice_request() {
         slice_size: 1024,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/h3-test.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/h3-test.bin");
     let headers = HashMap::new();
 
     let result = cache
@@ -2689,7 +2954,7 @@ async fn test_full_body_oom_protection() {
         max_cacheable_body: 100,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
     // Upstream returns 500 bytes WITHOUT Content-Length header (chunked).
     // This simulates a chunked transfer where we don't know size upfront.
@@ -2703,7 +2968,7 @@ async fn test_full_body_oom_protection() {
         .mount(&mock_server)
         .await;
 
-    let url = format!("{}/h2-test.bin", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/h2-test.bin");
     let provider_headers = HashMap::new();
 
     let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
@@ -2742,7 +3007,7 @@ async fn test_full_body_oversized_drains_for_connection_reuse() {
         max_cacheable_body: 100,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
     // Upstream returns 500 bytes WITHOUT Content-Length header (chunked).
     // The body is much larger than max_cacheable_body (100 bytes).
@@ -2757,7 +3022,7 @@ async fn test_full_body_oversized_drains_for_connection_reuse() {
         .mount(&mock_server)
         .await;
 
-    let url = format!("{}/drain-test.bin", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/drain-test.bin");
     let provider_headers = HashMap::new();
 
     // First request - body exceeds max_cacheable_body, should be BYPASS
@@ -2811,7 +3076,7 @@ async fn test_full_body_oversized_large_stream_drain() {
         max_cacheable_body: 50,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
+    let cache = slice_cache_for_mock(config, &mock_server);
 
     // Create a body much larger than max_cacheable_body
     // Using multiple "chunks" worth of data
@@ -2826,7 +3091,7 @@ async fn test_full_body_oversized_large_stream_drain() {
         .mount(&mock_server)
         .await;
 
-    let url = format!("{}/large-stream.bin", mock_server.uri());
+    let url = mock_public_url(&mock_server, "/large-stream.bin");
     let provider_headers = HashMap::new();
 
     // Request should complete successfully without hanging
@@ -2927,8 +3192,8 @@ async fn test_full_body_put_triggers_lock_cleanup() {
         slice_size: 1024,
         ..Default::default()
     };
-    let cache = SliceCache::new(config);
-    let url = format!("{}/m2-slice.bin", mock_server.uri());
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/m2-slice.bin");
     let headers = HashMap::new();
 
     // Create a lock by fetching a slice
@@ -2952,7 +3217,7 @@ async fn test_full_body_put_triggers_lock_cleanup() {
             .mount(&mock_server)
             .await;
 
-        let url_i = format!("{}/m2-full-{}.bin", mock_server.uri(), i);
+        let url_i = mock_public_url(&mock_server, &format!("/m2-full-{i}.bin"));
         let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url_i, &headers)
             .await
             .unwrap();

@@ -97,6 +97,7 @@ pub struct HlsProxyClient {
 }
 
 impl HlsProxyClient {
+    const GRPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
     /// Default maximum total byte size for the segment cache (512 MB).
     const DEFAULT_MAX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -254,13 +255,22 @@ impl HlsProxyClient {
             media_id: media_id.to_string(),
             segment_url_base: segment_url_base.to_string(),
         });
+        request.set_timeout(Self::GRPC_REQUEST_TIMEOUT);
         self.attach_auth(&mut request)?;
 
-        let response = client
-            .get_hls_playlist(request)
-            .await
-            .map_err(|e| anyhow::anyhow!("gRPC GetHlsPlaylist failed: {e}"))?
-            .into_inner();
+        let response = match client.get_hls_playlist(request).await {
+            Ok(response) => {
+                self.connection_pool.record_connection_success(grpc_address);
+                response.into_inner()
+            }
+            Err(error) => {
+                self.connection_pool.record_connection_error(grpc_address);
+                if should_invalidate_connection(&error) {
+                    self.connection_pool.invalidate(grpc_address);
+                }
+                return Err(anyhow::anyhow!("gRPC GetHlsPlaylist failed: {error}"));
+            }
+        };
 
         let result = if response.found {
             Some(response.playlist)
@@ -313,13 +323,22 @@ impl HlsProxyClient {
             media_id: media_id.to_string(),
             segment_name: segment_name.to_string(),
         });
+        request.set_timeout(Self::GRPC_REQUEST_TIMEOUT);
         self.attach_auth(&mut request)?;
 
-        let response = client
-            .get_hls_segment(request)
-            .await
-            .map_err(|e| anyhow::anyhow!("gRPC GetHlsSegment failed: {e}"))?
-            .into_inner();
+        let response = match client.get_hls_segment(request).await {
+            Ok(response) => {
+                self.connection_pool.record_connection_success(grpc_address);
+                response.into_inner()
+            }
+            Err(error) => {
+                self.connection_pool.record_connection_error(grpc_address);
+                if should_invalidate_connection(&error) {
+                    self.connection_pool.invalidate(grpc_address);
+                }
+                return Err(anyhow::anyhow!("gRPC GetHlsSegment failed: {error}"));
+            }
+        };
 
         if response.found {
             let data = response.data;
@@ -680,6 +699,17 @@ impl HlsProxyClient {
         }
         Ok(())
     }
+}
+
+fn should_invalidate_connection(error: &tonic::Status) -> bool {
+    matches!(
+        error.code(),
+        tonic::Code::DeadlineExceeded
+            | tonic::Code::Unavailable
+            | tonic::Code::Unknown
+            | tonic::Code::Cancelled
+            | tonic::Code::Internal
+    )
 }
 
 #[cfg(test)]
@@ -1242,6 +1272,18 @@ mod tests {
             negative_expiry < found_expiry,
             "negative cache TTL must be shorter so newly started streams become discoverable quickly"
         );
+    }
+
+    #[test]
+    fn test_should_invalidate_connection_for_transport_level_statuses() {
+        assert!(should_invalidate_connection(&tonic::Status::deadline_exceeded("timeout")));
+        assert!(should_invalidate_connection(&tonic::Status::unavailable("down")));
+        assert!(should_invalidate_connection(&tonic::Status::cancelled("cancelled")));
+        assert!(should_invalidate_connection(&tonic::Status::internal("internal")));
+        assert!(should_invalidate_connection(&tonic::Status::unknown("unknown")));
+        assert!(!should_invalidate_connection(&tonic::Status::not_found("segment missing")));
+        assert!(!should_invalidate_connection(&tonic::Status::permission_denied("forbidden")));
+        assert!(!should_invalidate_connection(&tonic::Status::invalid_argument("bad request")));
     }
 
     #[tokio::test]

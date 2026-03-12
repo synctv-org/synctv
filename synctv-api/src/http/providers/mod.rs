@@ -246,6 +246,26 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    fn mock_public_origin(mock_server: &MockServer) -> String {
+        format!("http://cdn.example.com:{}", mock_server.address().port())
+    }
+
+    fn mock_public_url(mock_server: &MockServer, path: &str) -> String {
+        format!("{}{}", mock_public_origin(mock_server), path)
+    }
+
+    fn test_slice_cache_for_mock(
+        config: SliceCacheConfig,
+        mock_server: &MockServer,
+    ) -> synctv_proxy::slice_cache::SliceCache {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve("cdn.example.com", *mock_server.address())
+            .build()
+            .expect("client should build");
+        synctv_proxy::slice_cache::SliceCache::new_with_client(config, client)
+    }
+
     #[tokio::test]
     async fn test_slice_cache_hits_second_range_request() {
         let mock_server = MockServer::start().await;
@@ -276,8 +296,8 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let cache = synctv_proxy::slice_cache::SliceCache::new(SliceCacheConfig::default());
-        let url = format!("{}/video.mp4", mock_server.uri());
+        let cache = test_slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+        let url = mock_public_url(&mock_server, "/video.mp4");
         let headers = HashMap::new();
 
         let response1 = synctv_proxy::slice_cache::proxy_with_cache(
@@ -482,18 +502,27 @@ mod tests {
             .await
             .unwrap();
 
+        let proxy_cache_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve("cdn.example.com", *mock_server.address())
+            .build()
+            .expect("client should build");
         let state = test_app_state_with_proxy_cache(
             Some(settings_registry),
-            Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+            Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
                 SliceCacheConfig {
                     enabled: false,
                     ..SliceCacheConfig::default()
                 },
+                proxy_cache_client.clone(),
             )),
         );
+        let proxy_http_client = proxy_cache_client;
+        let mut state = state;
+        state.proxy_http_client = proxy_http_client;
 
         let action = ProxyAction::FetchAndForward {
-            url: format!("{}/runtime-enabled.mp4", mock_server.uri()),
+            url: mock_public_url(&mock_server, "/runtime-enabled.mp4"),
             headers: HashMap::new(),
         };
         let client_headers = axum::http::HeaderMap::from_iter([(

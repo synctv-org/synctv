@@ -35,7 +35,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Touch room activity to prevent TTL expiry on active rooms
-        self.room_service.touch_room_activity(rid);
+        self.room_service.touch_room_activity(rid).await;
 
         Ok(crate::proto::client::StartPlaybackResponse {})
     }

@@ -51,7 +51,7 @@ impl LoadBalancer {
 
     /// Get healthy nodes, filtering by health monitor if available
     async fn get_healthy_nodes(&self) -> Result<Vec<NodeInfo>> {
-        let nodes = self.node_registry.get_all_nodes_local().await;
+        let (nodes, _view_mode) = self.node_registry.get_routable_nodes().await?;
 
         // If no health monitor, return all nodes (stale nodes already filtered by registry)
         let Some(ref monitor) = self.health_monitor else {
@@ -189,12 +189,7 @@ mod tests {
     /// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
     fn make_registry() -> Arc<NodeRegistry> {
         Arc::new(
-            NodeRegistry::new(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
-                "self".to_string(),
-                30,
-                "test:",
-            )
+            NodeRegistry::new_local_only("self".to_string(), 30, "test:")
             .unwrap(),
         )
     }
@@ -446,6 +441,52 @@ mod tests {
 
         let count = lb.available_count().await.unwrap();
         assert_eq!(count, 4);
+    }
+
+    #[tokio::test]
+    async fn test_select_node_uses_routable_nodes_in_degraded_mode_when_fresh_enough() {
+        let registry = make_registry();
+        register_nodes(&registry, 2).await;
+        registry.test_set_cluster_mode(super::super::node_registry::ClusterMode::Degraded);
+        registry.test_set_last_refreshed_at(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
+        let selected = lb.select_node().await.unwrap();
+        assert!(
+            selected == "self" || selected == "node-1",
+            "degraded mode should still route while the cached topology is fresh enough"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_select_node_fails_closed_when_degraded_cache_is_stale() {
+        let registry = Arc::new(
+            NodeRegistry::new(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+                "self".to_string(),
+                30,
+                "test-stale:",
+            )
+            .unwrap(),
+        );
+        register_nodes(&registry, 2).await;
+        registry.test_set_cluster_mode(super::super::node_registry::ClusterMode::Degraded);
+        registry.test_set_last_refreshed_at(1);
+
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
+        let err = lb
+            .select_node()
+            .await
+            .expect_err("stale degraded cache must not be used for routing");
+        assert!(
+            err.to_string().contains("stale"),
+            "error should explain the fail-closed stale topology guard: {err}"
+        );
     }
 
     // --- Health filtering ---

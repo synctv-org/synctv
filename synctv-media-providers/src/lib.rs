@@ -44,6 +44,3 @@ pub use credential::{
     CredentialData, CredentialStorage, CredentialStorageError, FieldEncryption,
     InMemoryCredentialStorage, ProviderType, Result as CredentialResult, StoredCredential,
 };
-
-#[cfg(feature = "postgres")]
-pub use credential::PostgresCredentialStorage;

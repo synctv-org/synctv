@@ -1,5 +1,5 @@
 use anyhow::Result;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -91,13 +91,19 @@ async fn run_migrate(pool: &PgPool) -> Result<()> {
         anyhow::anyhow!("Failed to acquire DB connection for running migrations: {e}")
     })?;
 
+    run_migrate_with_connection(&mut conn).await
+}
+
+async fn run_migrate_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Postgres>,
+) -> Result<()> {
     sqlx::query("SET statement_timeout = 0")
-        .execute(&mut *conn)
+        .execute(&mut **conn)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to disable statement_timeout for migrations: {e}"))?;
 
     sqlx::migrate!("../migrations")
-        .run_direct(&mut *conn)
+        .run_direct(&mut **conn)
         .await
         .map_err(|e| {
             error!("Failed to run migrations: {}", e);
@@ -108,11 +114,22 @@ async fn run_migrate(pool: &PgPool) -> Result<()> {
 /// Check whether all known migrations have already been applied by comparing
 /// the migrator's list against the `_sqlx_migrations` table.
 async fn migrations_already_applied(pool: &PgPool) -> bool {
+    let mut conn = match pool.acquire().await {
+        Ok(conn) => conn,
+        Err(_) => return false,
+    };
+
+    migrations_already_applied_with_connection(&mut conn).await
+}
+
+async fn migrations_already_applied_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Postgres>,
+) -> bool {
     let migrator = sqlx::migrate!("../migrations");
     let applied: Vec<(i64, Vec<u8>)> = match sqlx::query_as(
         "SELECT version, checksum FROM _sqlx_migrations WHERE success = true ORDER BY version",
     )
-    .fetch_all(pool)
+    .fetch_all(&mut **conn)
     .await
     {
         Ok(rows) => rows,
@@ -235,7 +252,7 @@ async fn run_migrations_with_pg_advisory_lock(pool: &PgPool) -> Result<()> {
 
             // Another replica may have completed migrations while we waited.
             // Avoid re-running migrations if they are already applied.
-            if migrations_already_applied(pool).await {
+            if migrations_already_applied_with_connection(&mut conn).await {
                 info!("Migrations already applied by another replica, skipping (PG advisory lock path)");
                 let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
                     .bind(PG_ADVISORY_LOCK_KEY)
@@ -245,7 +262,7 @@ async fn run_migrations_with_pg_advisory_lock(pool: &PgPool) -> Result<()> {
             }
 
             info!("Running migrations under PostgreSQL advisory lock");
-            let result = run_migrate(pool).await;
+            let result = run_migrate_with_connection(&mut conn).await;
 
             // Always release the advisory lock on the same connection.
             let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
@@ -823,5 +840,24 @@ mod tests {
             timeout, "0",
             "migration connection should run with statement_timeout disabled"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn standalone_pg_advisory_lock_path_reuses_the_lock_connection_for_migrations() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool_with_options_and_label(
+            "synctv_test",
+            "migration-pg-lock-single-conn",
+            1,
+            Duration::from_secs(1),
+        )
+        .await;
+        let lock = Arc::new(FailingMigrationLock {
+            acquire_called: Arc::new(AtomicBool::new(false)),
+        });
+
+        run_migrations_with_mode(&pool, lock, "test:", false)
+            .await
+            .expect("PG advisory fallback should not deadlock when the pool has a single connection");
     }
 }

@@ -71,6 +71,8 @@ pub struct Services {
     pub cache_invalidation: Arc<CacheInvalidationService>,
     /// Cache manager coordinating all cache layers
     pub cache_manager: CacheManager,
+    /// Shared user cache for fast-path auth checks and hot user lookups.
+    pub user_cache: Arc<UserCache>,
     /// Shared Redis connection (optional in standalone mode).
     ///
     /// In Sentinel mode, the background health check hot-swaps the inner
@@ -107,6 +109,26 @@ impl Services {
             None => None,
         }
     }
+}
+
+const fn should_require_email_verification(email_service_available: bool) -> bool {
+    email_service_available
+}
+
+fn build_email_token_service(
+    pool: PgPool,
+    email_service_available: bool,
+    rate_limiter: &RateLimiter,
+) -> Option<Arc<EmailTokenService>> {
+    if !email_service_available {
+        return None;
+    }
+
+    Some(Arc::new(EmailTokenService::with_rate_limiter(
+        pool,
+        rate_limiter.clone(),
+        None,
+    )))
 }
 
 fn handle_provider_invalidation_listener_result(
@@ -488,12 +510,13 @@ pub async fn init_services(
         info!("Email service not configured (set SYNCTV_EMAIL_SMTP_HOST)");
     }
 
+    user_service.set_email_verification_required(should_require_email_verification(
+        email_service.is_some(),
+    ));
+
     // Initialize Email Token service (optional - requires email service)
-    let email_token_service = if email_service.is_some() {
-        Some(Arc::new(EmailTokenService::new(pool.clone())))
-    } else {
-        None
-    };
+    let email_token_service =
+        build_email_token_service(pool.clone(), email_service.is_some(), &rate_limiter);
     if email_token_service.is_some() {
         info!("Email token service initialized");
     } else {
@@ -587,6 +610,7 @@ pub async fn init_services(
         audit_service,
         cache_invalidation,
         cache_manager,
+        user_cache,
         redis_conn: redis_handles.as_ref().map(|h| h.conn.clone()),
         redis_client: redis_handles.as_ref().map(|h| h.client.clone()),
         settings_cancel,
@@ -1416,6 +1440,46 @@ mod tests {
         assert_eq!(rate_limit_config.chat_per_second, 21);
         assert_eq!(rate_limit_config.danmaku_per_second, 8);
         assert_eq!(rate_limit_config.window_seconds, 5);
+    }
+
+    #[test]
+    fn test_email_verification_requirement_tracks_email_service_availability() {
+        assert!(
+            should_require_email_verification(true),
+            "email verification must be enabled when email delivery is configured"
+        );
+        assert!(
+            !should_require_email_verification(false),
+            "email verification must stay disabled when email delivery is unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_email_token_service_requires_email_service() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let limiter = RateLimiter::in_memory_only("test-email-token:".to_string());
+
+        assert!(
+            build_email_token_service(pool.clone(), false, &limiter).is_none(),
+            "email token service must not start without email delivery"
+        );
+
+        let service = build_email_token_service(pool, true, &limiter)
+            .expect("email token service should be built when email delivery is configured");
+        assert!(
+            service.has_rate_limiter(),
+            "email token service should inherit the shared rate limiter by default"
+        );
+        assert_eq!(
+            service.rate_limit_config().max_tokens_per_user,
+            5,
+            "email token service should use the default per-user hourly cap"
+        );
+        assert_eq!(
+            service.rate_limit_config().window_seconds,
+            3600,
+            "email token service should use the default hourly window"
+        );
     }
 
     #[tokio::test]

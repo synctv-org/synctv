@@ -944,6 +944,7 @@ impl Application {
             notification_service: Some(core.services.notification_service.clone()),
             chat_service: core.services.chat_service.clone(),
             audit_service: core.services.audit_service.clone(),
+            user_cache: core.services.user_cache.clone(),
             live_streaming_infrastructure: servers.live_infra,
             stun_server: servers.stun_server,
             turn_health_checker: servers.turn_health_checker,

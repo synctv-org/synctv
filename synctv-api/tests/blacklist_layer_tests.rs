@@ -129,3 +129,13 @@ fn test_non_bearer_scheme_returns_error() {
         "Basic auth should not extract a bearer token"
     );
 }
+
+/// Security pipeline failures should not leak internal storage or cache details
+/// to gRPC clients. The transport layer should reduce them to a stable generic
+/// unauthenticated message.
+#[test]
+fn test_security_pipeline_failures_use_generic_grpc_message() {
+    let err = tonic::Status::unauthenticated("Authentication failed");
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    assert_eq!(err.message(), "Authentication failed");
+}

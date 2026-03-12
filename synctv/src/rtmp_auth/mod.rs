@@ -30,7 +30,7 @@ use tokio::sync::RwLock;
 use synctv_livestream::relay::registry::PUBLISHER_TTL_SECS;
 
 use synctv_core::{
-    models::{MediaId, RoomStatus, UserId, UserStatus},
+    models::{MediaId, Room, RoomStatus, UserId, UserStatus},
     service::{PublishKeyService, RoomService, UserService},
 };
 
@@ -391,11 +391,54 @@ fn extract_token_from_query(query: &str) -> Option<String> {
 }
 
 /// Validated publish claims with authorization level
+#[derive(Debug)]
 struct ValidatedPublish {
     room_id: String,
     media_id: String,
     user_id: String,
     auth_level: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoomAccessRejection {
+    Banned,
+    Pending,
+    Closed,
+}
+
+impl RoomAccessRejection {
+    fn into_error(
+        self,
+        app_name: &str,
+    ) -> Box<dyn std::error::Error + Send + Sync> {
+        match self {
+            Self::Banned => format!("Room {app_name} is banned").into(),
+            Self::Pending => format!("Room {app_name} is pending, need admin approval").into(),
+            Self::Closed => format!("Room {app_name} is closed").into(),
+        }
+    }
+
+    const fn log_message(self) -> &'static str {
+        match self {
+            Self::Banned => "RTMP play rejected: room is banned",
+            Self::Pending => "RTMP play rejected: room is pending approval",
+            Self::Closed => "RTMP play rejected: room is closed",
+        }
+    }
+}
+
+fn validate_rtmp_room_state(room: &Room) -> Result<(), RoomAccessRejection> {
+    if room.is_banned {
+        return Err(RoomAccessRejection::Banned);
+    }
+    if room.status == RoomStatus::Pending {
+        return Err(RoomAccessRejection::Pending);
+    }
+    if room.status == RoomStatus::Closed {
+        return Err(RoomAccessRejection::Closed);
+    }
+
+    Ok(())
 }
 
 impl SyncTvRtmpAuth {
@@ -416,12 +459,7 @@ impl SyncTvRtmpAuth {
             .await
             .map_err(|e| format!("Failed to load room: {e}"))?;
 
-        if room.is_banned {
-            return Err(format!("Room {app_name} is banned").into());
-        }
-        if room.status == RoomStatus::Pending {
-            return Err(format!("Room {app_name} is pending, need admin approval").into());
-        }
+        validate_rtmp_room_state(&room).map_err(|reason| reason.into_error(app_name))?;
 
         // Extract token: prefer query string parameter (URL-decoded), fall back to stream_name
         let token_owned: Option<String> = query.and_then(extract_token_from_query);
@@ -509,28 +547,9 @@ impl SyncTvRtmpAuth {
             .await
             .map_err(|e| format!("Failed to load room: {e}"))?;
 
-        if room.is_banned {
-            tracing::warn!(
-                room_id = %app_name,
-                "RTMP play rejected: room is banned"
-            );
-            return Err(format!("Room {app_name} is banned").into());
-        }
-
-        if room.status == RoomStatus::Pending {
-            tracing::warn!(
-                room_id = %app_name,
-                "RTMP play rejected: room is pending approval"
-            );
-            return Err(format!("Room {app_name} is pending, need admin approval").into());
-        }
-
-        if room.status == RoomStatus::Closed {
-            tracing::warn!(
-                room_id = %app_name,
-                "RTMP play rejected: room is closed"
-            );
-            return Err(format!("Room {app_name} is closed").into());
+        if let Err(reason) = validate_rtmp_room_state(&room) {
+            tracing::warn!(room_id = %app_name, "{}", reason.log_message());
+            return Err(reason.into_error(app_name));
         }
 
         // Check room settings for RTMP player
@@ -989,6 +1008,52 @@ mod tests {
         assert!(
             err.to_string().contains("StreamHub is restarting"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_rtmp_room_state_rejects_closed_room() {
+        let room = Room::new_with_status(
+            "Closed room".to_string(),
+            String::new(),
+            UserId::from_string("user-1".to_string()),
+            RoomStatus::Closed,
+        );
+        let err = validate_rtmp_room_state(&room)
+            .expect_err("closed room must reject RTMP publish/play");
+        assert!(
+            matches!(err, RoomAccessRejection::Closed),
+            "unexpected rejection: {err:?}"
+        );
+        assert_eq!(
+            err.into_error("closed-room").to_string(),
+            "Room closed-room is closed"
+        );
+    }
+
+    #[test]
+    fn test_validate_rtmp_room_state_rejects_pending_room() {
+        let room = Room::new_with_status(
+            "Pending room".to_string(),
+            String::new(),
+            UserId::from_string("user-1".to_string()),
+            RoomStatus::Pending,
+        );
+
+        assert_eq!(
+            validate_rtmp_room_state(&room),
+            Err(RoomAccessRejection::Pending)
+        );
+    }
+
+    #[test]
+    fn test_validate_rtmp_room_state_rejects_banned_room() {
+        let mut room = Room::new("Banned room".to_string(), UserId::from_string("user-1".to_string()));
+        room.ban();
+
+        assert_eq!(
+            validate_rtmp_room_state(&room),
+            Err(RoomAccessRejection::Banned)
         );
     }
 

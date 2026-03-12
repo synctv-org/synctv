@@ -253,11 +253,11 @@ impl From<synctv_core::Error> for AppError {
             ),
             Error::Database(e) => {
                 tracing::error!("Database error: {}", e);
-                Self::internal_server_error("Database error")
+                Self::service_unavailable()
             }
             Error::Redis(e) => {
                 tracing::error!("Redis error: {}", e);
-                Self::internal_server_error("Service temporarily unavailable")
+                Self::service_unavailable()
             }
             Error::Serialization(e) => {
                 tracing::error!("Serialization error: {}", e);
@@ -276,8 +276,8 @@ impl From<synctv_core::Error> for AppError {
                 "Resource was modified concurrently, please retry",
             ),
             Error::Timeout(msg) => {
-                tracing::warn!("Request timeout: {}", msg);
-                Self::new(StatusCode::REQUEST_TIMEOUT, msg)
+                tracing::warn!("Backend timeout: {}", msg);
+                Self::service_unavailable()
             }
         }
     }
@@ -664,6 +664,41 @@ mod tests {
         assert_eq!(app_err.status, StatusCode::INTERNAL_SERVER_ERROR);
         // Internal error messages should NOT leak to the client
         assert_eq!(app_err.message, "Internal server error");
+    }
+
+    #[test]
+    fn test_from_core_redis_maps_to_service_unavailable() {
+        let redis_err = redis::RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "redis temporarily unavailable",
+        ));
+        let app_err = AppError::from(synctv_core::Error::Redis(redis_err));
+        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            app_err.message.contains("temporarily unavailable"),
+            "redis outages should surface as retryable service unavailability"
+        );
+    }
+
+    #[test]
+    fn test_from_core_database_maps_to_service_unavailable() {
+        let app_err = AppError::from(synctv_core::Error::Database(sqlx::Error::PoolTimedOut));
+        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            app_err.message.contains("temporarily unavailable"),
+            "database pool exhaustion should surface as retryable service unavailability"
+        );
+    }
+
+    #[test]
+    fn test_from_core_timeout_maps_to_service_unavailable() {
+        let core_err = synctv_core::Error::Timeout("redis lock renewal timed out".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            app_err.message.contains("temporarily unavailable"),
+            "backend timeouts should not be reported as client-side request mistakes"
+        );
     }
 
     #[test]

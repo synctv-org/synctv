@@ -152,6 +152,12 @@ impl SecurityPipeline {
         self.token_blacklist.is_some() && self.key_builder.is_some()
     }
 
+    /// Check if the fast-path [`UserCache`] is configured.
+    #[must_use]
+    pub const fn has_user_cache(&self) -> bool {
+        self.user_cache.is_some()
+    }
+
     /// Run post-JWT security checks (steps 2-3).
     ///
     /// The caller is responsible for step 1 (JWT verification) and must

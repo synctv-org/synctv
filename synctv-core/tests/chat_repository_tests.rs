@@ -749,15 +749,10 @@ async fn test_list_by_room_cursor_initial_load_has_partition_lower_bound() {
     assert_eq!(messages[0].content, "recent cursor message");
 }
 
-/// Performance regression test: compare cleanup queries with and without partition pruning filter
+/// Regression guard: cleanup query must keep the partition-pruning filter.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cleanup_query_performance_comparison() {
-    // Task #46: Compare query performance with and without partition pruning
-    //
-    // This test demonstrates the performance impact of having the created_at
-    // filter on the outer DELETE query for partition pruning.
-
+async fn test_cleanup_query_keeps_partition_pruning_filter() {
     let (_container, pool) = create_test_pool().await;
     let (user, room) = setup_room(&pool, "chat_perf", "chat_perf_room").await;
 
@@ -793,7 +788,7 @@ async fn test_cleanup_query_performance_comparison() {
     .await
     .expect("Failed to get plan with filter");
 
-    // Query WITHOUT partition pruning filter (buggy implementation for comparison)
+    // Query WITHOUT partition pruning filter (buggy reference shape)
     let plan_without_filter: serde_json::Value = sqlx::query_scalar(
         r"
         EXPLAIN (FORMAT JSON)
@@ -826,24 +821,17 @@ async fn test_cleanup_query_performance_comparison() {
         "Plan without filter should be array"
     );
 
-    // The plan with filter should be more efficient (uses partition pruning)
-    // In practice, with partitioned tables, the filtered version would show
-    // fewer partitions scanned
-    println!("Plan WITH partition pruning filter:");
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&plan_with_filter).unwrap()
-    );
-    println!("\nPlan WITHOUT partition pruning filter:");
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&plan_without_filter).unwrap()
-    );
-
-    // Key assertion: the corrected query has the created_at filter
+    // Key assertion: the guarded query shape keeps the created_at filter so
+    // PostgreSQL can prune old partitions.
     let filter_plan_str = plan_with_filter.to_string();
     assert!(
         filter_plan_str.contains("created_at") || filter_plan_str.contains("90"),
         "Plan with filter should reference created_at condition"
+    );
+
+    let unfiltered_plan_str = plan_without_filter.to_string();
+    assert!(
+        !unfiltered_plan_str.is_empty(),
+        "reference plan without the outer filter should still be explainable"
     );
 }

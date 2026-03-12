@@ -197,6 +197,26 @@ mod ticket_types {
         assert!(obj.contains_key("expires_in_secs"));
         assert!(obj.contains_key("usage"));
     }
+
+    #[test]
+    fn test_ticket_response_usage_points_to_registered_websocket_route() {
+        let room_id = "room_abc";
+        let resp = TicketResponse {
+            ticket: "ticket_abc123".to_string(),
+            room_id: room_id.to_string(),
+            expires_in_secs: 30,
+            usage: format!("Use in WebSocket URL: ws://host/ws/rooms/{room_id}?ticket=xxx"),
+        };
+
+        assert!(
+            resp.usage.contains("/ws/rooms/"),
+            "ticket usage must point at the registered websocket route"
+        );
+        assert!(
+            !resp.usage.contains("/ws/room/"),
+            "legacy singular websocket route must not appear in ticket usage"
+        );
+    }
 }
 
 // ============================================================================
@@ -928,6 +948,16 @@ mod websocket_e2e {
             turn_health_checker: Default::default(),
             config,
             user_service: user_service.clone(),
+            user_cache: Arc::new(
+                synctv_core::cache::UserCache::new(
+                    Arc::new(synctv_core::cache::NoopCacheL2),
+                    128,
+                    60,
+                    300,
+                    "test:user:".to_string(),
+                )
+                .expect("user cache"),
+            ),
             room_service: room_service.clone(),
             content_filter: synctv_core::service::ContentFilter::new(),
             provider_instance_manager,
@@ -3985,6 +4015,16 @@ mod websocket_connection_limit_timing {
             turn_health_checker: Default::default(),
             config,
             user_service: user_service.clone(),
+            user_cache: Arc::new(
+                synctv_core::cache::UserCache::new(
+                    Arc::new(synctv_core::cache::NoopCacheL2),
+                    128,
+                    60,
+                    300,
+                    "test:user:".to_string(),
+                )
+                .expect("user cache"),
+            ),
             room_service: room_service.clone(),
             content_filter: synctv_core::service::ContentFilter::new(),
             provider_instance_manager,

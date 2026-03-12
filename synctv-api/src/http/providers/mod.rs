@@ -379,6 +379,16 @@ mod tests {
         crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
             config: Arc::new(synctv_core::Config::default()),
             user_service,
+            user_cache: Arc::new(
+                synctv_core::cache::UserCache::new(
+                    Arc::new(synctv_core::cache::NoopCacheL2),
+                    128,
+                    60,
+                    300,
+                    "test:user:".to_string(),
+                )
+                .expect("user cache"),
+            ),
             room_service,
             content_filter: ContentFilter::new(),
             provider_instance_manager,

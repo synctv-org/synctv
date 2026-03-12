@@ -132,7 +132,7 @@ where
                         Err(e) => {
                             tracing::warn!("gRPC request rejected by security pipeline: {e}");
                             let response =
-                                tonic::Status::unauthenticated(format!("{e}")).into_http();
+                                tonic::Status::unauthenticated("Authentication failed").into_http();
                             return Ok(response);
                         }
                     };

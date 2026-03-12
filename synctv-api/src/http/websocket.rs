@@ -14,7 +14,7 @@
 //!
 //! For browser clients, the ticket system is recommended:
 //! - First call POST /api/tickets to get a short-lived ticket
-//! - Then use `ws://host/ws/room/{room_id}?ticket=xxx`
+//! - Then use `ws://host/ws/rooms/{room_id}?ticket=xxx`
 //! - Tickets are single-use and expire quickly (30 seconds by default)
 
 use axum::{
@@ -545,8 +545,8 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
 /// 2. Ticket query parameter: `?ticket=<ticket>` (recommended for browsers)
 ///
 /// Example:
-/// - Native clients: `ws://host/ws/room/{room_id}` with `Authorization: Bearer <token>`
-/// - Browser clients: `ws://host/ws/room/{room_id}?ticket=<ticket>` (obtained from POST /api/tickets)
+/// - Native clients: `ws://host/ws/rooms/{room_id}` with `Authorization: Bearer <token>`
+/// - Browser clients: `ws://host/ws/rooms/{room_id}?ticket=<ticket>` (obtained from POST /api/tickets)
 pub async fn websocket_handler(
     State(state): State<AppState>,
     Path(room_id): Path<String>,

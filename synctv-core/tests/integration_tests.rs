@@ -1024,12 +1024,12 @@ async fn test_playback_state_concurrent_updates() {
 }
 
 // ============================================================================
-// Permission Bits Stress Test
+// Permission Bits Concurrency Test
 // ============================================================================
 
-/// Stress test for permission bit operations.
+/// Concurrent permission bit updates must preserve the base permission set.
 #[test]
-fn test_permission_bits_stress() {
+fn test_permission_bits_remain_consistent_under_concurrent_updates() {
     use std::sync::Arc;
     use std::thread;
     use synctv_core::models::PermissionBits;

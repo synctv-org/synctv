@@ -7,7 +7,7 @@
 //! Instead of passing JWT tokens directly in WebSocket URLs (which appear in
 //! browser history and server logs), clients can:
 //! 1. Call POST /api/tickets to get a short-lived ticket
-//! 2. Use the ticket in WebSocket URL: <ws://host/ws/room/{room_id}?ticket=xxx>
+//! 2. Use the ticket in WebSocket URL: <ws://host/ws/rooms/{room_id}?ticket=xxx>
 //!
 //! The ticket is:
 //! - Short-lived (default 30 seconds)
@@ -66,7 +66,7 @@ pub struct TicketResponse {
 ///   "ticket": "abc123...",
 ///   "room_id": "abc123",
 ///   "expires_in_secs": 30,
-///   "usage": "Use in WebSocket URL: ws://host/ws/room/abc123?ticket=xxx"
+///   "usage": "Use in WebSocket URL: ws://host/ws/rooms/abc123?ticket=xxx"
 /// }
 /// ```
 pub async fn create_ticket(
@@ -128,7 +128,7 @@ pub async fn create_ticket(
         room_id: room_id.as_str().to_string(),
         expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
         usage: format!(
-            "Use in WebSocket URL: ws://host/ws/room/{}?ticket=xxx",
+            "Use in WebSocket URL: ws://host/ws/rooms/{}?ticket=xxx",
             room_id.as_str()
         ),
     };

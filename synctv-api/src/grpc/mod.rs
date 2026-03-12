@@ -287,6 +287,7 @@ pub struct GrpcServerConfig<'a> {
     pub config: &'a Config,
     pub jwt_service: JwtService,
     pub user_service: Arc<CoreUserService>,
+    pub user_cache: Arc<synctv_core::cache::UserCache>,
     pub room_service: Arc<CoreRoomService>,
     pub cluster_manager: Option<Arc<ClusterManager>>,
     pub redis_publish_tx: Option<tokio::sync::mpsc::Sender<PublishRequest>>,
@@ -336,6 +337,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         config,
         jwt_service,
         user_service,
+        user_cache,
         room_service,
         cluster_manager,
         redis_publish_tx,
@@ -509,11 +511,15 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // 3. User status check (banned/pending/deleted)
     // It runs before tonic routes and interceptors, so public endpoints (no Authorization header)
     // pass through without security checks.
-    let security_pipeline = synctv_core::service::SecurityPipeline::new(user_service.clone())
-        .with_token_blacklist(
-            user_service.token_blacklist_store(),
-            user_service.key_builder().clone(),
-        );
+    let security_pipeline =
+        synctv_core::service::auth::SecurityPipelineBuilder::new(user_service.clone())
+            .with_user_cache(user_cache.clone())
+            .with_token_blacklist(
+                user_service.token_blacklist_store(),
+                user_service.key_builder().clone(),
+            )
+            .build()
+            .expect("gRPC security pipeline wiring must be complete at startup");
     let blacklist_layer =
         blacklist_layer::BlacklistCheckLayer::new(jwt_service.clone(), security_pipeline);
     // Distributed rate limiting layer: uses Redis when available (shared across
@@ -740,6 +746,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         let provider_router_config = Arc::new(crate::http::RouterConfig {
             config: Arc::new(config.clone()),
             user_service: user_service_for_provider,
+            user_cache: user_cache.clone(),
             room_service: room_service_for_provider,
             content_filter: (*shared_content_filter_for_provider).clone(),
             provider_instance_manager: _providers_mgr.instance_manager().clone(),
@@ -786,6 +793,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             jwt_validator: provider_jwt_validator,
             security_pipeline: Arc::new(
                 synctv_core::service::SecurityPipeline::new(user_service.clone())
+                    .with_user_cache(user_cache.clone())
                     .with_token_blacklist(
                         user_service.token_blacklist_store(),
                         user_service.key_builder().clone(),

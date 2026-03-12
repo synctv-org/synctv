@@ -106,6 +106,16 @@ impl EmailTokenService {
         }
     }
 
+    #[must_use]
+    pub const fn has_rate_limiter(&self) -> bool {
+        self.rate_limiter.is_some()
+    }
+
+    #[must_use]
+    pub const fn rate_limit_config(&self) -> &EmailTokenRateLimitConfig {
+        &self.rate_limit_config
+    }
+
     /// Generate a new email token
     ///
     /// # Rate Limiting

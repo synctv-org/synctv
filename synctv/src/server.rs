@@ -15,6 +15,7 @@ use tracing::{error, info, warn};
 
 use synctv_cluster::sync::ClusterEvent;
 use synctv_core::{
+    cache::UserCache,
     repository::UserProviderCredentialRepository,
     service::{RoomService, UserService},
     Config,
@@ -70,6 +71,7 @@ pub struct Services {
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub chat_service: Arc<synctv_core::service::ChatService>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
+    pub user_cache: Arc<UserCache>,
     pub live_streaming_infrastructure:
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
@@ -669,6 +671,7 @@ impl SyncTvServer {
                 config: &config,
                 jwt_service: services.jwt_service,
                 user_service: services.user_service,
+                user_cache: services.user_cache,
                 room_service: services.room_service,
                 cluster_manager,
                 redis_publish_tx: services.redis_publish_tx,
@@ -747,6 +750,7 @@ impl SyncTvServer {
             synctv_api::http::RouterConfig {
                 config: Arc::new(self.config.clone()),
                 user_service,
+                user_cache: self.services.user_cache.clone(),
                 room_service,
                 content_filter: self.services.content_filter.clone(),
                 provider_instance_manager,

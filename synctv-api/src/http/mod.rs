@@ -53,6 +53,7 @@ pub use error::{AppError, AppResult};
 pub struct RouterConfig {
     pub config: Arc<synctv_core::Config>,
     pub user_service: Arc<UserService>,
+    pub user_cache: Arc<synctv_core::cache::UserCache>,
     pub room_service: Arc<RoomService>,
     pub content_filter: synctv_core::service::ContentFilter,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
@@ -191,13 +192,17 @@ fn build_app_state(config: RouterConfig) -> AppState {
         config.config.jwt.secret.as_bytes(),
     ));
 
-    // Create shared security pipeline for post-JWT checks (password version, user status, access token blacklist)
+    // Build the shared security pipeline through the builder so startup fails
+    // early if blacklist wiring becomes partial during future refactors.
     let security_pipeline = Arc::new(
-        synctv_core::service::SecurityPipeline::new(config.user_service.clone())
+        synctv_core::service::auth::SecurityPipelineBuilder::new(config.user_service.clone())
+            .with_user_cache(config.user_cache.clone())
             .with_token_blacklist(
                 config.user_service.token_blacklist_store(),
                 config.user_service.key_builder().clone(),
-            ),
+            )
+            .build()
+            .expect("HTTP security pipeline wiring must be complete at startup"),
     );
 
     let client_api = Arc::new(
@@ -1003,8 +1008,16 @@ mod tests {
         config.grpc_rate_limits = grpc_rate_limits;
         let router_config = RouterConfig {
             config: Arc::new(config),
-            user_service: user_service,
-            room_service: room_service,
+            user_cache: Arc::new(synctv_core::cache::UserCache::new(
+                Arc::new(NoopCacheL2),
+                128,
+                60,
+                300,
+                "test:user:".to_string(),
+            )
+            .expect("user cache")),
+            user_service,
+            room_service,
             content_filter: ContentFilter::new(),
             provider_instance_manager: provider_instance_manager,
             user_provider_credential_repository: Arc::new(
@@ -1156,6 +1169,14 @@ mod tests {
         let state = build_app_state(RouterConfig {
             config: Arc::new(synctv_core::Config::default()),
             user_service,
+            user_cache: Arc::new(synctv_core::cache::UserCache::new(
+                Arc::new(NoopCacheL2),
+                128,
+                60,
+                300,
+                "test:user:".to_string(),
+            )
+            .expect("user cache")),
             room_service,
             content_filter: ContentFilter::new(),
             provider_instance_manager,
@@ -1207,11 +1228,32 @@ mod tests {
         assert!(
             state
                 .proxy_http_client
-                
                 .get("https://example.com")
                 .build()
                 .is_ok(),
             "The injected proxy HTTP client must remain usable in AppState"
+        );
+        assert!(
+            state.security_pipeline.has_user_cache(),
+            "AppState security pipeline should carry the shared user cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_app_state_wires_user_cache_into_security_pipeline() {
+        let state = test_app_state();
+        assert!(
+            state.security_pipeline.has_user_cache(),
+            "build_app_state should wire the shared user cache into the auth security pipeline"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_app_state_wires_blacklist_into_security_pipeline() {
+        let state = test_app_state();
+        assert!(
+            state.security_pipeline.has_blacklist_store(),
+            "build_app_state should wire token blacklist configuration through the builder"
         );
     }
 

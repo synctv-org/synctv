@@ -713,25 +713,25 @@ async fn test_concurrent_join_and_leave_operations() {
 }
 
 // ============================================================================
-// Test: Stress Test - Many Concurrent Operations
+// Test: Concurrent Capacity Enforcement
 // ============================================================================
 
-/// Stress test with many concurrent operations.
+/// Concurrent joins must still respect the room capacity limit.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_stress_many_concurrent_joins() {
+async fn test_concurrent_joins_respect_room_capacity() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
 
     // Room with capacity 50
-    let (_owner, room, _settings) = setup_test_room(pool, "Stress Room", 50).await;
+    let (_owner, room, _settings) = setup_test_room(pool, "Concurrent Join Room", 50).await;
 
     // Create 100 users
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(100);
     for i in 0..100 {
         let user = user_repo
-            .create(&make_user(&format!("stress_{i}")))
+            .create(&make_user(&format!("concurrent_join_{i}")))
             .await
             .expect("Failed to create user");
         users.push(user);
@@ -784,9 +784,5 @@ async fn test_stress_many_concurrent_joins() {
     assert_eq!(success, 49, "49 users should join successfully");
     assert_eq!(rejected, 51, "51 users should be rejected (room full)");
 
-    tracing::info!(
-        "Stress test results: {} succeeded, {} rejected",
-        success,
-        rejected
-    );
+    tracing::info!("Concurrent join results: {} succeeded, {} rejected", success, rejected);
 }

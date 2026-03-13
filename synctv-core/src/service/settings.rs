@@ -74,17 +74,21 @@ impl SettingsService {
 
     /// Validate a setting value using the registered provider for its key.
     ///
-    /// Returns `Ok(())` if no provider is registered for the key (unknown keys
-    /// are allowed through) or if the provider accepts the value.
+    /// Returns `Ok(())` only if a provider is registered for the key and the
+    /// provider accepts the value.
     pub fn validate_setting(&self, key: &str, value: &str) -> Result<(), Error> {
         let providers_lock = self.setting_providers.read();
         if let Some(providers) = providers_lock.as_ref() {
             let providers_read = providers.read();
             if let Some(provider) = providers_read.get(key) {
                 provider.is_valid_raw(value)?;
+                return Ok(());
             }
+            return Err(Error::InvalidInput(format!("Unknown setting key: {key}")));
         }
-        Ok(())
+        Err(Error::Internal(
+            "Settings providers are not initialized; refusing to validate update".to_string(),
+        ))
     }
 
     /// Subscribe to reload events triggered by remote replicas.
@@ -847,11 +851,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_setting_passes_unknown_keys() {
+    async fn test_validate_setting_rejects_unknown_keys() {
         let service = service_with_mock_provider("test.key");
-        // A key with no registered provider should pass validation
         let result = service.validate_setting("unknown.key", "anything");
-        assert!(result.is_ok(), "Unknown keys should pass validation");
+        assert!(result.is_err(), "Unknown keys must be rejected");
     }
 
     #[tokio::test]
@@ -867,8 +870,8 @@ mod tests {
 
         let result = service.validate_setting("any.key", "any_value");
         assert!(
-            result.is_ok(),
-            "Should pass when no providers are registered"
+            result.is_err(),
+            "Validation must fail closed when providers are not registered"
         );
     }
 

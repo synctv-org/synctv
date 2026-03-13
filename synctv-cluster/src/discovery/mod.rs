@@ -17,6 +17,14 @@ pub use static_discovery::{StaticDiscovery, StaticDiscoveryConfig, StaticPeerCon
 use std::time::Duration;
 use tonic::transport::Endpoint;
 
+use crate::grpc::synctv::cluster::{self, GetNodesRequest};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbedNodeIdentity {
+    pub node_id: String,
+    pub grpc_address: String,
+}
+
 /// Probe a node's gRPC service by calling `GetNodes`.
 ///
 /// Validates that the application-layer gRPC service is responsive, not just
@@ -24,6 +32,20 @@ use tonic::transport::Endpoint;
 ///
 /// Returns `true` if the node responds successfully to the `GetNodes` RPC.
 pub async fn probe_node_grpc(grpc_address: &str, timeout_secs: u64, cluster_secret: &str) -> bool {
+    probe_node_identity(grpc_address, timeout_secs, cluster_secret)
+        .await
+        .is_some()
+}
+
+/// Probe a node and return the peer-reported node identity.
+///
+/// This is used by static discovery so registrations use the remote node's
+/// actual `node_id` instead of a synthetic ID derived from the address.
+pub async fn probe_node_identity(
+    grpc_address: &str,
+    timeout_secs: u64,
+    cluster_secret: &str,
+) -> Option<ProbedNodeIdentity> {
     let uri = if grpc_address.starts_with("http://") || grpc_address.starts_with("https://") {
         grpc_address.to_string()
     } else {
@@ -35,17 +57,16 @@ pub async fn probe_node_grpc(grpc_address: &str, timeout_secs: u64, cluster_secr
         Ok(ep) => ep.connect_timeout(connect_timeout).timeout(connect_timeout),
         Err(e) => {
             tracing::warn!(peer = %grpc_address, error = %e, "Invalid peer address");
-            return false;
+            return None;
         }
     };
 
     let channel = match endpoint.connect().await {
         Ok(ch) => ch,
-        Err(_) => return false,
+        Err(_) => return None,
     };
 
     use crate::grpc::synctv::cluster::cluster_service_client::ClusterServiceClient;
-    use crate::grpc::synctv::cluster::GetNodesRequest;
     let mut client = ClusterServiceClient::new(channel);
     let mut request = tonic::Request::new(GetNodesRequest { status_filter: 0 });
 
@@ -59,16 +80,50 @@ pub async fn probe_node_grpc(grpc_address: &str, timeout_secs: u64, cluster_secr
                     error = %e,
                     "cluster_secret contains invalid characters for gRPC metadata, skipping probe"
                 );
-                return false;
+                return None;
             }
         }
     }
 
     match client.get_nodes(request).await {
-        Ok(_) => true,
+        Ok(response) => extract_probed_node_identity(response.into_inner(), grpc_address),
         Err(e) => {
             tracing::debug!(peer = %grpc_address, error = %e, "Peer health check failed");
-            false
+            None
         }
     }
+}
+
+fn extract_probed_node_identity(
+    response: cluster::GetNodesResponse,
+    probed_address: &str,
+) -> Option<ProbedNodeIdentity> {
+    response.nodes.into_iter().find_map(|node| {
+        normalize_cluster_node_address(&node.address).and_then(|node_address| {
+            if node.node_id.is_empty() {
+                return None;
+            }
+            if node_address == normalize_cluster_node_address(probed_address)? {
+                Some(ProbedNodeIdentity {
+                    node_id: node.node_id,
+                    grpc_address: node_address,
+                })
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn normalize_cluster_node_address(address: &str) -> Option<String> {
+    if let Some(rest) = address.strip_prefix("http://") {
+        return Some(rest.to_string());
+    }
+    if let Some(rest) = address.strip_prefix("https://") {
+        return Some(rest.to_string());
+    }
+    if address.is_empty() {
+        return None;
+    }
+    Some(address.to_string())
 }

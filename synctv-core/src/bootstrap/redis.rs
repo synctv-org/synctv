@@ -10,6 +10,10 @@ use tracing::info;
 use crate::config::RedisDeploymentMode;
 use crate::Config;
 
+type RedisConnectionManagerConfig = redis::aio::ConnectionManagerConfig;
+type SentinelNodeConnectionInfo = redis::sentinel::SentinelNodeConnectionInfo;
+type RedisNodeSettings = redis::RedisConnectionInfo;
+
 /// Shared Redis handles created once at startup.
 ///
 /// In Sentinel mode the background health check hot-swaps the inner
@@ -111,12 +115,67 @@ mod init_tests {
             "unexpected error: {err}"
         );
     }
+
+    #[test]
+    fn test_parse_redis_node_settings_preserves_auth_and_db_from_url() {
+        let mut config = Config::default();
+        config.redis.url = "redis://sync-user:secret@redis.example.com:6380/7".to_string();
+
+        let redis_settings = parse_redis_node_settings(&config)
+            .expect("parse redis settings")
+            .expect("redis.url should produce redis settings");
+
+        assert_eq!(redis_settings.username(), Some("sync-user"));
+        assert_eq!(redis_settings.password(), Some("secret"));
+        assert_eq!(redis_settings.db(), 7);
+    }
+
+    #[test]
+    fn test_redis_connection_manager_config_uses_connect_timeout() {
+        let mut config = Config::default();
+        config.redis.connect_timeout_seconds = 9;
+
+        let manager_config = redis_connection_manager_config(&config);
+
+        assert_eq!(
+            manager_config.connection_timeout(),
+            Some(std::time::Duration::from_secs(9))
+        );
+    }
+}
+
+fn redis_connection_manager_config(config: &Config) -> RedisConnectionManagerConfig {
+    RedisConnectionManagerConfig::new()
+        .set_connection_timeout(Some(std::time::Duration::from_secs(
+            config.redis.connect_timeout_seconds,
+        )))
+}
+
+fn parse_redis_node_settings(config: &Config) -> Result<Option<RedisNodeSettings>, anyhow::Error> {
+    if config.redis.url.is_empty() {
+        return Ok(None);
+    }
+
+    let connection_info: redis::ConnectionInfo = config.redis.url.parse()?;
+    Ok(Some(connection_info.redis_settings().clone()))
+}
+
+fn build_sentinel_node_info(
+    config: &Config,
+) -> Result<Option<SentinelNodeConnectionInfo>, anyhow::Error> {
+    Ok(parse_redis_node_settings(config)?.map(|redis_settings| {
+        SentinelNodeConnectionInfo::default().set_redis_connection_info(redis_settings)
+    }))
 }
 
 async fn init_standalone(config: &Config) -> Result<RedisHandles, anyhow::Error> {
     info!("Initializing Redis in standalone mode");
     let client = redis::Client::open(config.redis.url.clone())?;
-    let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
+    let conn = redis::aio::ConnectionManager::new_with_config(
+        client.clone(),
+        redis_connection_manager_config(config),
+    )
+    .await?;
     let shared = Arc::new(RwLock::new(conn));
     Ok(RedisHandles {
         client,
@@ -148,16 +207,7 @@ async fn init_sentinel(
         .map(String::as_str)
         .collect();
     let mut sentinel = redis::sentinel::Sentinel::build(sentinel_addrs.clone())?;
-
-    let node_info = if config.redis.url.is_empty() {
-        None
-    } else {
-        let connection_info: redis::ConnectionInfo = config.redis.url.parse()?;
-        Some(
-            redis::sentinel::SentinelNodeConnectionInfo::default()
-                .set_redis_connection_info(connection_info.redis_settings().clone()),
-        )
-    };
+    let node_info = build_sentinel_node_info(config)?;
     let client = sentinel
         .async_master_for(master_name.as_str(), node_info.as_ref())
         .await
@@ -166,7 +216,9 @@ async fn init_sentinel(
     let initial_master_addr = client.get_connection_info().addr().to_string();
     info!(master = %initial_master_addr, "Sentinel discovered initial master");
 
-    let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
+    let conn =
+        redis::aio::ConnectionManager::new_with_config(client.clone(), redis_connection_manager_config(config))
+            .await?;
     let shared_conn = Arc::new(RwLock::new(conn));
 
     // Start background health check for Sentinel failover detection.
@@ -174,6 +226,8 @@ async fn init_sentinel(
         let sentinel_addresses = config.redis.sentinel_addresses.clone();
         let master_name = master_name.clone();
         let known_master_addr = initial_master_addr.clone();
+        let node_info = node_info.clone();
+        let manager_config = redis_connection_manager_config(config);
         let shared_conn_clone = shared_conn.clone();
         crate::spawn::spawn_monitored("sentinel_master_health_check", async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -245,9 +299,8 @@ async fn init_sentinel(
                     }
                 };
 
-                let node_info: Option<&redis::sentinel::SentinelNodeConnectionInfo> = None;
                 match sentinel
-                    .async_master_for(master_name.as_str(), node_info)
+                    .async_master_for(master_name.as_str(), node_info.as_ref())
                     .await
                 {
                     Ok(new_master_client) => {
@@ -265,7 +318,12 @@ async fn init_sentinel(
                             );
                         }
 
-                        match redis::aio::ConnectionManager::new(new_master_client).await {
+                        match redis::aio::ConnectionManager::new_with_config(
+                            new_master_client,
+                            manager_config.clone(),
+                        )
+                        .await
+                        {
                             Ok(new_conn) => {
                                 *shared_conn_clone.write().await = new_conn;
                                 known_master = new_addr;

@@ -2285,7 +2285,8 @@ mod tests {
         let user_id = UserId::from_string("user-1".to_string());
         let mut rx = message_hub
             .subscribe(room_id.clone(), user_id.clone(), "conn-1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         for _ in 0..512 {
             let sent = message_hub.broadcast(
@@ -2469,7 +2470,8 @@ mod tests {
         let user_id = UserId::from_string("test_user".to_string());
         let mut rx = message_hub
             .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         // Wait for Redis room channel subscription to complete in both pubsub instances.
         // The lifecycle event triggers async Redis SUBSCRIBE which takes time.
@@ -2838,7 +2840,8 @@ mod tests {
         let user1_id = UserId::from_string("test_user_1".to_string());
         let mut rx1 = message_hub
             .subscribe(room1_id.clone(), user1_id.clone(), "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         let received = publish_until_received(
             &publish_tx1,
@@ -2863,7 +2866,8 @@ mod tests {
         let user2_id = UserId::from_string("test_user_2".to_string());
         let mut rx2 = message_hub
             .subscribe(room2_id.clone(), user2_id.clone(), "conn2".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         let received = publish_until_received(
             &publish_tx1,
@@ -3010,10 +3014,12 @@ mod tests {
         let user2 = synctv_core::models::id::UserId::from_string("user2".to_string());
         let mut rx1 = message_hub
             .subscribe(room_id.clone(), user1, "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         let mut rx2 = message_hub
             .subscribe(room_id.clone(), user2, "conn2".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         pubsub
             .dispatch_event(
@@ -3068,7 +3074,8 @@ mod tests {
         let user_id = synctv_core::models::id::UserId::from_string("dedup-user".to_string());
         let mut rx = message_hub
             .subscribe(room_id.clone(), user_id.clone(), "dedup-conn".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         let event = ClusterEvent::ChatMessage {
             event_id: "duplicate-event-id".to_string(),

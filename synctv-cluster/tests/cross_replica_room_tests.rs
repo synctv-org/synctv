@@ -82,7 +82,10 @@ async fn test_cross_replica_room_event_propagation() {
     let user_id = UserId::from_string("viewer_user".to_string());
 
     // User subscribes to room on node A (simulating a WebSocket connection on node A)
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
+    let (mut room_rx, conn_id) = node_a
+        .subscribe(room_id.clone(), user_id.clone())
+        .await
+        .expect("subscribe should succeed");
 
     let received = broadcast_until_room_event(
         &node_b,
@@ -133,7 +136,10 @@ async fn test_cross_replica_kick_publisher() {
     // Also subscribe to the room on node A so Redis subscriber is active for this room
     let room_id = RoomId::from_string("stream_room".to_string());
     let user_id = UserId::from_string("publisher_user".to_string());
-    let (_room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
+    let (_room_rx, conn_id) = node_a
+        .subscribe(room_id.clone(), user_id.clone())
+        .await
+        .expect("subscribe should succeed");
 
     let received = broadcast_until_admin_event(
         &node_b,
@@ -185,7 +191,10 @@ async fn test_cross_replica_room_deleted() {
     let user_id = UserId::from_string("user_in_room".to_string());
 
     // Subscribe user on node A
-    let (mut room_rx, _conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
+    let (mut room_rx, _conn_id) = node_a
+        .subscribe(room_id.clone(), user_id.clone())
+        .await
+        .expect("subscribe should succeed");
 
     // Verify subscriber exists
     let metrics = node_a.metrics();
@@ -244,7 +253,10 @@ async fn test_cross_replica_room_settings_changed() {
     let user_id = UserId::from_string("settings_listener".to_string());
 
     // Subscribe on node A
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
+    let (mut room_rx, conn_id) = node_a
+        .subscribe(room_id.clone(), user_id.clone())
+        .await
+        .expect("subscribe should succeed");
 
     let received = broadcast_until_room_event(
         &node_b,
@@ -294,8 +306,14 @@ async fn test_multiple_rooms_cross_replica() {
     let user2 = UserId::from_string("user_2".to_string());
 
     // User1 in room1 on node A, User2 in room2 on node A
-    let (mut rx1, conn1) = node_a.subscribe(room1.clone(), user1.clone()).await;
-    let (mut rx2, conn2) = node_a.subscribe(room2.clone(), user2.clone()).await;
+    let (mut rx1, conn1) = node_a
+        .subscribe(room1.clone(), user1.clone())
+        .await
+        .expect("subscribe should succeed");
+    let (mut rx2, conn2) = node_a
+        .subscribe(room2.clone(), user2.clone())
+        .await
+        .expect("subscribe should succeed");
 
     let msg1 = broadcast_until_room_event(
         &node_b,

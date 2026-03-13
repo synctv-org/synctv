@@ -6,8 +6,8 @@ use tracing::{info, warn};
 #[cfg(feature = "k8s")]
 use synctv_cluster::discovery::K8sDnsDiscovery;
 use synctv_cluster::discovery::{
-    HealthMonitor, LoadBalancer, LoadBalancingStrategy, NodeRegistry, StaticDiscovery,
-    StaticDiscoveryConfig, StaticPeerConfig,
+    health_monitor::HealthProbeConfig, HealthMonitor, LoadBalancer, LoadBalancingStrategy,
+    NodeRegistry, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig,
 };
 use synctv_cluster::sync::{ClusterManager, ConnectionManager};
 use synctv_core::bootstrap::RedisHandles;
@@ -65,7 +65,15 @@ pub async fn init_cluster_components(
     )
     .await;
 
-    let health_monitor = Arc::new(HealthMonitor::new(registry.clone(), 15));
+    let health_monitor = Arc::new(HealthMonitor::with_cancellation_token_and_probe_config(
+        registry.clone(),
+        15,
+        &cm.cancel_token(),
+        HealthProbeConfig {
+            cluster_secret: config.server.cluster_secret.clone(),
+            ..HealthProbeConfig::default()
+        },
+    ));
     match health_monitor.start().await {
         Ok(hm_handle) => {
             info!("Health monitor started");

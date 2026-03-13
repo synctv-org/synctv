@@ -170,13 +170,20 @@ impl ClusterService for ClusterServer {
             .unregister_remote(&req.node_id, Some(req.epoch))
             .await
         {
+            let elapsed = start.elapsed().as_secs_f64();
+            synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
+                .with_label_values(&["cluster", "deregister_node", "error"])
+                .observe(elapsed);
+            synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+                .with_label_values(&["cluster", "deregister_node", "error"])
+                .inc();
             tracing::warn!(
                 node_id = %req.node_id,
                 epoch = req.epoch,
                 error = %e,
                 "Failed to deregister node from cluster"
             );
-            // Don't fail the response — best-effort cleanup, TTL will expire anyway
+            return Err(Status::unavailable(e.to_string()));
         }
 
         let elapsed = start.elapsed().as_secs_f64();

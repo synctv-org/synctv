@@ -112,7 +112,7 @@ async fn test_deregister_node_invalid_chars_rejected() {
 
 /// Valid `node_id` characters: alphanumeric, underscore, hyphen.
 #[tokio::test]
-async fn test_deregister_node_valid_id_accepted() {
+async fn test_deregister_node_valid_id_returns_error_when_registry_cleanup_fails() {
     let server = make_server();
     let request = Request::new(DeregisterNodeRequest {
         node_id: "valid-node_123".to_string(),
@@ -120,11 +120,14 @@ async fn test_deregister_node_valid_id_accepted() {
         reason: "graceful shutdown".to_string(),
     });
 
-    // This will fail at the Redis level (no Redis running), but should
-    // pass the validation step (no InvalidArgument error).
-    // deregister_node is best-effort and returns success even if Redis fails.
     let result = server.deregister_node(request).await;
-    assert!(result.is_ok(), "Valid node_id should pass validation");
+    assert!(
+        result.is_err(),
+        "registry cleanup failures must not be reported as successful deregistration"
+    );
+
+    let status = result.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unavailable);
 }
 
 // ============================================================================
@@ -248,7 +251,7 @@ async fn test_deregister_node_epoch_zero_rejected() {
 
 /// `deregister_node` with valid epoch should pass validation.
 #[tokio::test]
-async fn test_deregister_node_valid_epoch_accepted() {
+async fn test_deregister_node_valid_epoch_returns_error_when_cleanup_fails() {
     let server = make_server();
     let request = Request::new(DeregisterNodeRequest {
         node_id: "valid-node".to_string(),
@@ -256,9 +259,14 @@ async fn test_deregister_node_valid_epoch_accepted() {
         reason: "graceful shutdown".to_string(),
     });
 
-    // Redis fails but the response is still success (best-effort cleanup)
     let result = server.deregister_node(request).await;
-    assert!(result.is_ok(), "Valid epoch should pass validation");
+    assert!(
+        result.is_err(),
+        "failed deregistration must not return success=true"
+    );
+
+    let status = result.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unavailable);
 }
 
 // ============================================================================

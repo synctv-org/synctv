@@ -726,7 +726,7 @@ impl ClusterManager {
         }
 
         // Shut down RoomMessageHub background tasks (Redis TTL refresh and stale cleanup)
-        self.message_hub.shutdown();
+        self.message_hub.shutdown().await;
 
         // Await the publisher task so any in-flight events are fully flushed before
         // we return. A 10-second timeout prevents hanging indefinitely when Redis is
@@ -901,10 +901,9 @@ impl ClusterManager {
         &self,
         room_id: RoomId,
         user_id: UserId,
-    ) -> (tokio::sync::mpsc::Receiver<ClusterEvent>, ConnectionId) {
+    ) -> crate::Result<(tokio::sync::mpsc::Receiver<ClusterEvent>, ConnectionId)> {
         let connection_id = format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8));
-        self.subscribe_with_id(room_id, user_id, connection_id)
-            .await
+        self.subscribe_with_id(room_id, user_id, connection_id).await
     }
 
     /// Subscribe a client to room events using an existing connection ID.
@@ -917,13 +916,13 @@ impl ClusterManager {
         room_id: RoomId,
         user_id: UserId,
         connection_id: ConnectionId,
-    ) -> (tokio::sync::mpsc::Receiver<ClusterEvent>, ConnectionId) {
+    ) -> crate::Result<(tokio::sync::mpsc::Receiver<ClusterEvent>, ConnectionId)> {
         let room_id_str = room_id.as_str().to_string();
         let user_id_str = user_id.as_str().to_string();
         let rx = self
             .message_hub
             .subscribe(room_id, user_id, connection_id.clone())
-            .await;
+            .await?;
 
         info!(
             room_id = %room_id_str,
@@ -932,7 +931,7 @@ impl ClusterManager {
             "Client subscribed to room"
         );
 
-        (rx, connection_id)
+        Ok((rx, connection_id))
     }
 
     /// Unsubscribe a client from room events
@@ -1052,7 +1051,9 @@ mod tests {
         // Subscribe a client
         let room_id = RoomId::from_string("room1".to_string());
         let user_id = UserId::from_string("user1".to_string());
-        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
+        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone())
+            .await
+            .expect("subscribe should succeed");
 
         // Broadcast event
         let event = ClusterEvent::ChatMessage {
@@ -1228,7 +1229,9 @@ mod tests {
         // Verify the manager operates normally in single-node mode
         let room_id = RoomId::from_string("room1".to_string());
         let user_id = UserId::from_string("user1".to_string());
-        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
+        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone())
+            .await
+            .expect("subscribe should succeed");
 
         // Broadcast should work locally
         let event = ClusterEvent::ChatMessage {
@@ -1295,7 +1298,9 @@ mod tests {
         // Verify normal operation
         let room_id = RoomId::from_string("room2".to_string());
         let user_id = UserId::from_string("user2".to_string());
-        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
+        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone())
+            .await
+            .expect("subscribe should succeed");
 
         let event = ClusterEvent::ChatMessage {
             event_id: nanoid::nanoid!(16),
@@ -1509,7 +1514,9 @@ mod tests {
         let mut manager = ClusterManager::new(config, None, None).await.unwrap();
         let room_id = RoomId::from_string("shutdown-room".to_string());
         let user_id = UserId::from_string("shutdown-user".to_string());
-        let (mut room_rx, _conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
+        let (mut room_rx, _conn_id) = manager.subscribe(room_id.clone(), user_id.clone())
+            .await
+            .expect("subscribe should succeed");
         let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
         manager.redis_publish_tx = Some(publish_tx);
         manager.shutdown_started.store(true, Ordering::Release);
@@ -1596,7 +1603,9 @@ mod tests {
         // the manager is still functional)
         let room_id = RoomId::from_string("room_epoch".to_string());
         let user_id = UserId::from_string("user_epoch".to_string());
-        let (_rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
+        let (_rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone())
+            .await
+            .expect("subscribe should succeed");
 
         // Broadcast should work in non-quarantined state
         let event = ClusterEvent::ChatMessage {

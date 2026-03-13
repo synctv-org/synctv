@@ -3,7 +3,7 @@
 //! # Architecture (similar to Go's synctv/internal/provider/providers)
 //!
 //! 1. **Provider Registry**: Map of provider type -> provider instance
-//! 2. **Factory Pattern**: `create_provider()` looks up registry and clones with config
+//! 2. **Factory Pattern**: `ProviderRegistry::create_provider()` looks up registry and clones with config
 //! 3. **Decoupled**: Factory doesn't need to know about provider-specific configs
 //! 4. **Clone Pattern**: Each provider implements Clone to create instances
 
@@ -142,34 +142,4 @@ impl std::fmt::Debug for ProviderRegistry {
             .field("registered_count", &count)
             .finish()
     }
-}
-
-// ============================================================================
-// Global registry for provider factories
-// ============================================================================
-
-/// Global provider registry singleton used by `register_provider_factory()`
-/// and `create_provider()` free functions.
-static PROVIDER_REGISTRY: std::sync::LazyLock<ProviderRegistry> =
-    std::sync::LazyLock::new(ProviderRegistry::new);
-
-/// Register an `OAuth2` provider factory function in the global registry.
-///
-/// Call this for each provider type during initialization.
-pub fn register_provider_factory(provider_type: &str, factory: ProviderFactory) {
-    PROVIDER_REGISTRY.register(provider_type, factory);
-}
-
-// ============================================================================
-// Factory Pattern (convenience free function)
-// ============================================================================
-
-/// Create a provider instance with configuration using the global registry.
-///
-/// Prefer `ProviderRegistry::create_provider()` on an injected instance.
-pub async fn create_provider(
-    provider_type: &str,
-    config: &serde_json::Value,
-) -> Result<Box<dyn Provider>, Error> {
-    PROVIDER_REGISTRY.create_provider(provider_type, config)
 }

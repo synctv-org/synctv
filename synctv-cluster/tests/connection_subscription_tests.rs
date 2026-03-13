@@ -44,8 +44,14 @@ async fn test_room_hub_connection_manager_state_consistency() {
     let user2 = UserId::from_string("user_2".to_string());
 
     // Subscribe two users via ClusterManager (RoomMessageHub)
-    let (_rx1, conn_id_1) = manager.subscribe(room_id.clone(), user1.clone()).await;
-    let (_rx2, conn_id_2) = manager.subscribe(room_id.clone(), user2.clone()).await;
+    let (_rx1, conn_id_1) = manager
+        .subscribe(room_id.clone(), user1.clone())
+        .await
+        .expect("subscribe should succeed");
+    let (_rx2, conn_id_2) = manager
+        .subscribe(room_id.clone(), user2.clone())
+        .await
+        .expect("subscribe should succeed");
 
     // Register connections via ConnectionManager
     conn_manager
@@ -153,7 +159,10 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
     // Rapidly subscribe and unsubscribe 100 connections
     for i in 0..100 {
         let user = UserId::from_string(format!("rapid_user_{i}"));
-        let (_rx, conn_id) = manager.subscribe(room_id.clone(), user).await;
+        let (_rx, conn_id) = manager
+            .subscribe(room_id.clone(), user)
+            .await
+            .expect("subscribe should succeed");
         manager.unsubscribe(&conn_id);
     }
 
@@ -187,7 +196,10 @@ async fn test_multi_replica_websocket_connections() {
     let mut clients_a = Vec::new();
     for i in 0..5 {
         let user_id = UserId::from_string(format!("ws_client_a_{i}"));
-        let (rx, conn_id) = node_a.subscribe(room_id.clone(), user_id).await;
+        let (rx, conn_id) = node_a
+            .subscribe(room_id.clone(), user_id)
+            .await
+            .expect("subscribe should succeed");
         clients_a.push((rx, conn_id));
     }
 
@@ -195,7 +207,10 @@ async fn test_multi_replica_websocket_connections() {
     let mut clients_b = Vec::new();
     for i in 0..5 {
         let user_id = UserId::from_string(format!("ws_client_b_{i}"));
-        let (rx, conn_id) = node_b.subscribe(room_id.clone(), user_id).await;
+        let (rx, conn_id) = node_b
+            .subscribe(room_id.clone(), user_id)
+            .await
+            .expect("subscribe should succeed");
         clients_b.push((rx, conn_id));
     }
 
@@ -203,7 +218,10 @@ async fn test_multi_replica_websocket_connections() {
     let mut clients_c = Vec::new();
     for i in 0..5 {
         let user_id = UserId::from_string(format!("ws_client_c_{i}"));
-        let (rx, conn_id) = node_c.subscribe(room_id.clone(), user_id).await;
+        let (rx, conn_id) = node_c
+            .subscribe(room_id.clone(), user_id)
+            .await
+            .expect("subscribe should succeed");
         clients_c.push((rx, conn_id));
     }
 

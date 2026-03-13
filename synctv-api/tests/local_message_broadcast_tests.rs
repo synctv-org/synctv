@@ -82,7 +82,10 @@ async fn test_local_subscribe_and_broadcast() {
     let user_id = UserId::from_string("user1".to_string());
 
     // Subscribe to room
-    let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
+    let (mut rx, conn_id) = manager
+        .subscribe(room_id.clone(), user_id.clone())
+        .await
+        .expect("subscribe should succeed");
 
     // Broadcast a chat message
     use chrono::Utc;
@@ -161,7 +164,10 @@ async fn test_multiple_subscribers_receive_broadcasts() {
     let mut subscribers = Vec::new();
     for i in 0..3 {
         let user_id = UserId::from_string(format!("user_{i}"));
-        let (rx, conn_id) = manager.subscribe(room_id.clone(), user_id).await;
+        let (rx, conn_id) = manager
+            .subscribe(room_id.clone(), user_id)
+            .await
+            .expect("subscribe should succeed");
         subscribers.push((rx, conn_id));
     }
 
@@ -275,7 +281,8 @@ impl LocalMessageBroadcaster {
         let rx = self
             .message_hub
             .subscribe(room_id, user_id, connection_id.clone())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         (rx, connection_id)
     }
 
@@ -489,7 +496,10 @@ async fn test_local_cluster_manager_supports_room_operations() {
     let user_id = UserId::from_string("user1".to_string());
 
     // Test subscribe
-    let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
+    let (mut rx, conn_id) = manager
+        .subscribe(room_id.clone(), user_id.clone())
+        .await
+        .expect("subscribe should succeed");
 
     // Test broadcast
     use chrono::Utc;

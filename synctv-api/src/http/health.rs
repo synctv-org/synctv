@@ -566,40 +566,35 @@ fn check_memory_health_macos() -> Option<MemoryHealth> {
 
 /// Prometheus metrics endpoint
 ///
-/// When `server.metrics_bearer_token` is configured (non-empty), this endpoint
-/// requires an `Authorization: Bearer <token>` header matching the configured
-/// value. Requests without the correct token receive HTTP 401 Unauthorized.
-///
-/// When the token is empty (default), the endpoint is unauthenticated and
-/// operators must ensure it is network-restricted (e.g. not exposed externally).
+/// Startup validation requires `server.metrics_bearer_token` whenever metrics
+/// are enabled, so this endpoint always enforces bearer authentication in
+/// production. Requests without the correct token receive HTTP 401 Unauthorized.
 pub async fn prometheus_metrics(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let expected_token = &state.config.server.metrics_bearer_token;
 
-    if !expected_token.is_empty() {
-        // Check Authorization: Bearer <token>
-        let provided = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| synctv_core::service::auth::JwtValidator::extract_bearer_token(s).ok());
+    // Check Authorization: Bearer <token>
+    let provided = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| synctv_core::service::auth::JwtValidator::extract_bearer_token(s).ok());
 
-        match provided {
-            Some(ref token) if token == expected_token => {
-                // Token matches — proceed to return metrics
-            }
-            _ => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    [(
-                        axum::http::header::CONTENT_TYPE,
-                        "text/plain; charset=utf-8",
-                    )],
-                    "Unauthorized".to_string(),
-                )
-                    .into_response();
-            }
+    match provided {
+        Some(ref token) if token == expected_token => {
+            // Token matches — proceed to return metrics
+        }
+        _ => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
+                "Unauthorized".to_string(),
+            )
+                .into_response();
         }
     }
 
@@ -616,8 +611,13 @@ pub async fn prometheus_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::tests::test_app_state;
+    use axum::extract::State;
+    use axum::http::header::AUTHORIZATION;
+    use axum::http::HeaderValue;
     use axum::response::IntoResponse;
     use http_body_util::BodyExt;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_liveness_check_returns_ok() {
@@ -841,6 +841,38 @@ mod tests {
             result.is_ok(),
             "missing redis should be treated as not configured"
         );
+    }
+
+    fn metrics_test_state(metrics_bearer_token: &str) -> crate::http::AppState {
+        let mut state = test_app_state();
+        Arc::make_mut(&mut state.router_config).config = Arc::new({
+            let mut config = (*state.config).clone();
+            config.server.metrics_enabled = true;
+            config.server.metrics_bearer_token = metrics_bearer_token.to_string();
+            config
+        });
+        state
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_metrics_rejects_missing_auth_when_token_configured() {
+        let response = prometheus_metrics(State(metrics_test_state("secret")), HeaderMap::new())
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_metrics_accepts_matching_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
+
+        let response = prometheus_metrics(State(metrics_test_state("secret")), headers)
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

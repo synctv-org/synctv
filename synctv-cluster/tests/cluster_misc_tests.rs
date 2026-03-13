@@ -25,7 +25,10 @@ async fn test_critical_events_high_priority() {
     let room_id = RoomId::from_string("critical_room".to_string());
     let user_id = UserId::from_string("listener".to_string());
 
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
+    let (mut room_rx, conn_id) = node_a
+        .subscribe(room_id.clone(), user_id.clone())
+        .await
+        .expect("subscribe should succeed");
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 

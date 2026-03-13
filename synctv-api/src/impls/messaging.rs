@@ -659,7 +659,8 @@ impl StreamMessageHandler {
                 self.user_id.clone(),
                 self.connection_id.clone(),
             )
-            .await;
+            .await
+            .map_err(|e| format!("Failed to subscribe to cluster events: {e}"))?;
 
         // Subscribe to disconnect signals
         let mut disconnect_rx = self.connection_manager.subscribe_disconnect();
@@ -1683,7 +1684,8 @@ impl StreamMessageHandler {
         let (mut rx_events, _connection_id) = self
             .cluster_manager
             .subscribe_with_id(room_id, user_id, self.connection_id.clone())
-            .await;
+            .await
+            .map_err(|e| format!("Failed to subscribe to cluster events: {e}"))?;
         let sender = self.sender.clone();
 
         let event_token = cancel_token.clone();
@@ -3675,7 +3677,9 @@ mod tests {
 
         let room = handler.room_id.clone();
         let user = handler.user_id.clone();
-        let (mut rx, conn_id) = cluster_manager.subscribe(room, user).await;
+        let (mut rx, conn_id) = cluster_manager.subscribe(room, user)
+            .await
+            .expect("subscribe should succeed");
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
         let maybe_presence_event =
@@ -3823,7 +3827,8 @@ mod tests {
 
         let (mut rx, conn_id) = cluster_manager
             .subscribe(handler.room_id.clone(), handler.user_id.clone())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         let (mut stream, _stream_state) = FailingStream::fail_after(0);
         let task_handler = handler.clone();
         let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });

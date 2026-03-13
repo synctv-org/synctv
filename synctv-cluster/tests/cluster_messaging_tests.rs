@@ -146,7 +146,8 @@ async fn test_cross_node_broadcast() {
     let user = uid("user1");
     let (mut rx, _conn_id) = manager1
         .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let received = broadcast_until_room_event(
         &manager2,
         &mut rx,
@@ -335,7 +336,8 @@ async fn test_single_node_mode_without_redis() {
     let user = uid("user1");
     let (mut rx, _conn_id) = manager
         .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // Local broadcast should still work
     let event = ClusterEvent::ChatMessage {
@@ -379,7 +381,8 @@ async fn test_pubsub_subscription_tracking() {
     // Subscribe
     let (_rx, conn_id) = manager
         .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // Unsubscribe
     manager.unsubscribe(&conn_id);
@@ -410,10 +413,12 @@ async fn test_multiple_subscriptions_same_room() {
     // Subscribe with multiple connections
     let (mut rx1, _) = manager
         .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let (mut rx2, _) = manager
         .subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // Broadcast a message
     let event = ClusterEvent::ChatMessage {
@@ -494,7 +499,8 @@ async fn test_critical_event_delivery() {
     // Subscribe to room on node1
     let (mut room_rx, _) = manager1
         .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let room_received = broadcast_until_room_event(
         &manager2,
@@ -703,13 +709,16 @@ async fn test_broadcast_recipient_count() {
     // Subscribe 3 connections
     let (_rx1, _) = manager
         .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let (_rx2, _) = manager
         .subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let (_rx3, _) = manager
         .subscribe_with_id(room.clone(), uid("user3"), "conn3".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // Broadcast a message
     let event = ClusterEvent::ChatMessage {
@@ -882,10 +891,12 @@ async fn test_get_room_subscribers() {
 
     let (_rx1, _) = manager
         .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let (_rx2, _) = manager
         .subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let subscribers = manager.get_room_subscribers(&room);
     assert_eq!(subscribers.len(), 2, "Should have 2 subscribers");
@@ -915,7 +926,8 @@ async fn test_cluster_metrics() {
     let room = rid("room1");
     let (_rx, _) = manager
         .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let metrics = manager.metrics();
     assert_eq!(metrics.node_id, "test_node");

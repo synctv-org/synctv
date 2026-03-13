@@ -31,6 +31,37 @@ pub trait ShutdownHook: Send + Sync {
 /// every pending item. The overall shutdown budget always takes precedence.
 const MIN_PER_TASK_TIMEOUT: Duration = Duration::from_secs(5);
 
+struct AbortOnDropJoinHandle {
+    handle: Option<JoinHandle<()>>,
+}
+
+impl AbortOnDropJoinHandle {
+    fn new(handle: JoinHandle<()>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    async fn wait(&mut self) -> Result<(), tokio::task::JoinError> {
+        match self.handle.as_mut() {
+            Some(handle) => handle.await,
+            None => Ok(()),
+        }
+    }
+
+    fn disarm(&mut self) {
+        let _ = self.handle.take();
+    }
+}
+
+impl Drop for AbortOnDropJoinHandle {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
 /// Centralized collection of all shutdown resources.
 ///
 /// Resources are executed in this order during shutdown:
@@ -278,7 +309,9 @@ impl ShutdownHook for SettingsListenHook {
         Box::pin(async move {
             let mut guard = self.task.lock().await;
             if let Some(task) = guard.take() {
-                let _ = task.await;
+                let mut task = AbortOnDropJoinHandle::new(task);
+                let _ = task.wait().await;
+                task.disarm();
             }
         })
     }
@@ -302,8 +335,29 @@ impl ShutdownHook for ProviderInvalidationHook {
             self.cancel.cancel();
             let mut guard = self.task.lock().await;
             if let Some(task) = guard.take() {
-                let _ = task.await;
+                let mut task = AbortOnDropJoinHandle::new(task);
+                let _ = task.wait().await;
+                task.disarm();
             }
+        })
+    }
+}
+
+/// Stops the health monitor background task.
+pub struct HealthMonitorShutdownHook {
+    pub monitor: Arc<synctv_cluster::discovery::HealthMonitor>,
+}
+
+impl ShutdownHook for HealthMonitorShutdownHook {
+    fn name(&self) -> &'static str {
+        "health_monitor"
+    }
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            self.monitor.shutdown().await;
         })
     }
 }
@@ -311,6 +365,7 @@ impl ShutdownHook for ProviderInvalidationHook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[tokio::test]
     async fn test_budget_per_item_divides_evenly() {
@@ -368,8 +423,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_coordinator_aborts_timed_out_tasks() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
         struct DropFlag(Arc<AtomicBool>);
 
         impl Drop for DropFlag {
@@ -400,6 +453,43 @@ mod tests {
         assert!(
             dropped.load(Ordering::SeqCst),
             "timed-out background task should be aborted so its future is dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_coordinator_aborts_timed_out_settings_hook_task() {
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let budget = Duration::from_millis(50);
+        let mut coord = ShutdownCoordinator::new(budget);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_for_task = Arc::clone(&dropped);
+
+        let task = tokio::spawn(async move {
+            let _drop_flag = DropFlag(dropped_for_task);
+            std::future::pending::<()>().await;
+        });
+        coord.register_hook(SettingsListenHook {
+            task: Arc::new(Mutex::new(Some(task))),
+        });
+
+        coord.shutdown().await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while !dropped.load(Ordering::SeqCst) && tokio::time::Instant::now() < deadline {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "timed-out shutdown hook must abort the owned background task instead of detaching it"
         );
     }
 }

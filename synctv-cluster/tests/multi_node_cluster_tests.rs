@@ -28,10 +28,12 @@ async fn test_three_node_cluster() {
     // Subscribe on node A and node C
     let (rx_a, conn_a) = node_a
         .subscribe(room_id.clone(), UserId::from_string("user_a".to_string()))
-        .await;
+            .await
+            .expect("subscribe should succeed");
     let (rx_c, conn_c) = node_c
         .subscribe(room_id.clone(), UserId::from_string("user_c".to_string()))
-        .await;
+            .await
+            .expect("subscribe should succeed");
 
     let message_from_b = "Hello from B";
     let mut clients_a = vec![(rx_a, conn_a.clone())];

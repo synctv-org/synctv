@@ -107,7 +107,10 @@ async fn test_cross_replica_permission_changed() {
     let user_id = UserId::from_string("perm_user".to_string());
 
     // Subscribe on node A (simulating a WebSocket client on node A watching the room)
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
+    let (mut room_rx, conn_id) = node_a
+        .subscribe(room_id.clone(), user_id.clone())
+        .await
+        .expect("subscribe should succeed");
 
     let received = broadcast_until_room_event(
         &node_b,

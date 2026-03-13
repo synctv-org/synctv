@@ -45,7 +45,8 @@ async fn test_cross_replica_subscription_visibility() {
         let connection_id = "conn_a_1".to_string();
         let rx = hub_a
             .subscribe(room_id.clone(), user_id.clone(), connection_id.clone())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         (rx, connection_id)
     };
 
@@ -93,7 +94,8 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
     let conn_id = "conn_unsub_1".to_string();
     let _rx = hub_a
         .subscribe(room_id.clone(), user_id.clone(), conn_id.clone())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -138,10 +140,12 @@ async fn test_remove_room_removes_redis_state_across_replicas() {
 
     let _rx1 = hub_a
         .subscribe(room_id.clone(), user_a, "remove_conn_1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let _rx2 = hub_a
         .subscribe(room_id.clone(), user_b, "remove_conn_2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -185,14 +189,16 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
             UserId::from_string("user_a1".to_string()),
             "conn_a1".to_string(),
         )
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let _rx2 = hub_a
         .subscribe(
             room_id.clone(),
             UserId::from_string("user_a2".to_string()),
             "conn_a2".to_string(),
         )
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // Subscribe 1 user on hub B
     let _rx3 = hub_b
@@ -201,7 +207,8 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
             UserId::from_string("user_b1".to_string()),
             "conn_b1".to_string(),
         )
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -270,7 +277,8 @@ async fn test_room_lifecycle_events_across_replicas() {
     // First subscriber should trigger RoomActivated
     let _rx = hub_a
         .subscribe(room_id.clone(), user_id.clone(), "lc_conn_1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let event = tokio::time::timeout(Duration::from_secs(2), lifecycle_rx.recv())
         .await
@@ -293,7 +301,8 @@ async fn test_room_lifecycle_events_across_replicas() {
             UserId::from_string("lifecycle_user_2".to_string()),
             "lc_conn_2".to_string(),
         )
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let no_event = tokio::time::timeout(Duration::from_millis(200), lifecycle_rx.recv()).await;
     assert!(
@@ -349,21 +358,24 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
             UserId::from_string("rec_user_1".to_string()),
             "rec_conn_1".to_string(),
         )
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let _rx2 = hub_a
         .subscribe(
             room_id.clone(),
             UserId::from_string("rec_user_2".to_string()),
             "rec_conn_2".to_string(),
         )
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let _rx3 = hub_a
         .subscribe(
             room_id.clone(),
             UserId::from_string("rec_user_3".to_string()),
             "rec_conn_3".to_string(),
         )
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -422,7 +434,8 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
                     UserId::from_string(format!("user_a_{i}")),
                     format!("conn_a_{i}"),
                 )
-                .await;
+                .await
+                .expect("subscribe should succeed");
         }));
     }
     for i in 0..5 {
@@ -435,7 +448,8 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
                     UserId::from_string(format!("user_b_{i}")),
                     format!("conn_b_{i}"),
                 )
-                .await;
+                .await
+                .expect("subscribe should succeed");
         }));
     }
 
@@ -492,14 +506,16 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
             UserId::from_string("user_a".to_string()),
             "conn_a".to_string(),
         )
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let _rx_b = hub_b
         .subscribe(
             room_id.clone(),
             UserId::from_string("user_b".to_string()),
             "conn_b".to_string(),
         )
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 

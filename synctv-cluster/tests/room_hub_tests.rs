@@ -54,10 +54,12 @@ async fn test_broadcast_to_connection_targeted() {
 
     let mut rx1 = hub
         .subscribe(room.clone(), u1.clone(), "c1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx2 = hub
         .subscribe(room.clone(), u2.clone(), "c2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let event = chat_event(&room, &u1);
     let sent = hub.broadcast_to_connection(&room, "c2", event);
@@ -86,7 +88,8 @@ async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full
 
     let mut rx = hub
         .subscribe(room.clone(), user, "conn-target".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     for _ in 0..512 {
         let sent = hub.broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")));
@@ -136,13 +139,16 @@ async fn test_broadcast_to_user_multi_connection() {
     // Same user with two connections
     let mut rx1 = hub
         .subscribe(room.clone(), user.clone(), "c1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx2 = hub
         .subscribe(room.clone(), user.clone(), "c2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx3 = hub
         .subscribe(room.clone(), other.clone(), "c3".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let event = chat_event(&room, &user);
     let sent = hub.broadcast_to_user(&room, &user, event);
@@ -179,10 +185,12 @@ async fn test_remove_room_cleans_connections() {
 
     let _rx1 = hub
         .subscribe(room.clone(), u1.clone(), "c1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let _rx2 = hub
         .subscribe(room.clone(), u2.clone(), "c2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     assert_eq!(hub.subscriber_count(&room), 2);
     assert_eq!(hub.connection_count(), 2);
@@ -237,7 +245,8 @@ async fn test_lifecycle_events_emitted_on_subscribe_unsubscribe() {
     // Subscribe should emit RoomActivated
     let _rx = hub
         .subscribe(room.clone(), user.clone(), "lc_conn".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let event = lifecycle_rx.try_recv().unwrap();
     match event {
@@ -271,7 +280,8 @@ async fn test_lifecycle_events_not_lost_under_room_churn() {
 
         let _rx = hub
             .subscribe(room.clone(), user.clone(), conn_id.clone())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         hub.unsubscribe(&conn_id);
     }
 
@@ -318,7 +328,8 @@ async fn test_unsubscribe_last_then_subscribe_emits_activated() {
     // Subscribe first user -> RoomActivated
     let _rx1 = hub
         .subscribe(room.clone(), user1.clone(), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let event = lifecycle_rx.try_recv().unwrap();
     assert!(matches!(event, RoomLifecycleEvent::RoomActivated(_)));
@@ -333,7 +344,8 @@ async fn test_unsubscribe_last_then_subscribe_emits_activated() {
     // emit another RoomActivated (the room is re-created from scratch).
     let _rx2 = hub
         .subscribe(room.clone(), user2.clone(), "conn2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let event = lifecycle_rx.try_recv().unwrap();
     match event {
@@ -359,7 +371,8 @@ async fn test_remove_room_emits_deactivated_event() {
 
     let _rx = hub
         .subscribe(room.clone(), user.clone(), "rm_conn".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // Consume the RoomActivated event
     let _ = lifecycle_rx.try_recv().unwrap();

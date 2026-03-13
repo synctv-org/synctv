@@ -2,7 +2,7 @@ use dashmap::DashMap;
 use redis::AsyncCommands;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::{broadcast, mpsc};
@@ -212,6 +212,8 @@ pub struct RoomMessageHub {
 
     /// Guards idempotent startup of Redis-backed background tasks.
     background_tasks_started: Arc<AtomicBool>,
+    ttl_refresh_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    stale_cleanup_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -236,6 +238,8 @@ impl RoomMessageHub {
             stale_cleanup_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             pending_redis_cleanup: Arc::new(DashMap::new()),
             background_tasks_started: Arc::new(AtomicBool::new(false)),
+            ttl_refresh_handle: Arc::new(Mutex::new(None)),
+            stale_cleanup_handle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -306,18 +310,44 @@ impl RoomMessageHub {
         let refresh_interval_secs =
             (self.redis_key_ttl_secs as f64 * 0.4).clamp(30.0, 120.0) as u64;
         let stale_cancel = (*self.stale_cleanup_cancel).clone();
-        let _handle =
+        let ttl_handle =
             self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), ttl_cancel);
-        let _cleanup_handle =
+        let cleanup_handle =
             self.spawn_stale_subscription_cleanup_task(Duration::from_mins(1), stale_cancel);
+
+        *self
+            .ttl_refresh_handle
+            .lock()
+            .expect("ttl refresh handle mutex poisoned") = Some(ttl_handle);
+        *self
+            .stale_cleanup_handle
+            .lock()
+            .expect("stale cleanup handle mutex poisoned") = Some(cleanup_handle);
     }
 
-    /// Cancel the auto-spawned background tasks (TTL refresh and stale cleanup).
-    ///
-    /// Should be called during graceful shutdown to stop background tasks.
-    pub fn shutdown(&self) {
+    /// Cancel the auto-spawned background tasks (TTL refresh and stale cleanup)
+    /// and wait for them to exit.
+    pub async fn shutdown(&self) {
         self.ttl_refresh_cancel.cancel();
         self.stale_cleanup_cancel.cancel();
+
+        let ttl_handle = self
+            .ttl_refresh_handle
+            .lock()
+            .expect("ttl refresh handle mutex poisoned")
+            .take();
+        if let Some(handle) = ttl_handle {
+            let _ = handle.await;
+        }
+        let stale_cleanup_handle = self
+            .stale_cleanup_handle
+            .lock()
+            .expect("stale cleanup handle mutex poisoned")
+            .take();
+        if let Some(handle) = stale_cleanup_handle {
+            let _ = handle.await;
+        }
+        self.background_tasks_started.store(false, Ordering::Release);
     }
 
     #[cfg(test)]
@@ -352,7 +382,7 @@ impl RoomMessageHub {
         room_id: RoomId,
         user_id: UserId,
         connection_id: ConnectionId,
-    ) -> mpsc::Receiver<ClusterEvent> {
+    ) -> crate::Result<mpsc::Receiver<ClusterEvent>> {
         self.start();
         let (tx, rx) = mpsc::channel(SUBSCRIBER_CHANNEL_CAPACITY);
 
@@ -389,9 +419,9 @@ impl RoomMessageHub {
             .insert(connection_id.clone(), (room_id.clone(), user_id.clone()));
 
         // Persist to Redis for cross-replica visibility.
-        // Awaited so callers can rely on the subscription being visible to other
-        // replicas before this function returns. Errors are logged and propagated
-        // so the caller knows if cross-replica state could not be written.
+        // In Redis-backed mode this is part of the subscription contract: if the
+        // distributed state cannot be written, the local subscription must be
+        // rolled back so callers do not observe a false-success join.
         if let Some(mut conn_clone) = self.redis_conn_clone().await {
             let room_key = format!(
                 "{}room_hub:room:{}",
@@ -408,17 +438,28 @@ impl RoomMessageHub {
                 .hset::<_, _, _, ()>(&room_key, &connection_id, &user_id_str)
                 .await
             {
-                warn!("Failed to persist room subscription to Redis: {e}");
+                self.rollback_local_subscription(&room_id, &connection_id);
+                return Err(crate::error::Error::Redis(format!(
+                    "Failed to persist room subscription to Redis: {e}"
+                )));
             }
-            // Set TTL on room key so stale data expires if the node crashes
-            let _: Result<(), _> = conn_clone.expire::<_, ()>(&room_key, ttl_secs).await;
+            if let Err(e) = conn_clone.expire::<_, ()>(&room_key, ttl_secs).await {
+                let _ = conn_clone.hdel::<_, _, ()>(&room_key, &connection_id).await;
+                self.rollback_local_subscription(&room_id, &connection_id);
+                return Err(crate::error::Error::Redis(format!(
+                    "Failed to refresh room subscription TTL in Redis: {e}"
+                )));
+            }
 
-            // Store connection -> room_id mapping for cleanup, with TTL
             if let Err(e) = conn_clone
                 .set_ex::<_, _, ()>(&conn_key, &room_id_str, ttl_secs as u64)
                 .await
             {
-                warn!("Failed to persist connection mapping to Redis: {e}");
+                let _ = conn_clone.hdel::<_, _, ()>(&room_key, &connection_id).await;
+                self.rollback_local_subscription(&room_id, &connection_id);
+                return Err(crate::error::Error::Redis(format!(
+                    "Failed to persist connection mapping to Redis: {e}"
+                )));
             }
         }
 
@@ -436,7 +477,17 @@ impl RoomMessageHub {
             "Client subscribed to room"
         );
 
-        rx
+        Ok(rx)
+    }
+
+    fn rollback_local_subscription(&self, room_id: &RoomId, connection_id: &str) {
+        self.pending_redis_cleanup.remove(connection_id);
+        self.connections.remove(connection_id);
+        if let Some(mut subscribers) = self.rooms.get_mut(room_id) {
+            subscribers.remove(connection_id);
+            drop(subscribers);
+        }
+        self.rooms.remove_if(room_id, |_, subscribers| subscribers.is_empty());
     }
 
     /// Unsubscribe a client from room events
@@ -1338,7 +1389,8 @@ mod tests {
         // Subscribe
         let mut rx = hub
             .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         assert_eq!(hub.subscriber_count(&room_id), 1);
         assert_eq!(hub.connection_count(), 1);
@@ -1372,7 +1424,8 @@ mod tests {
         // Subscribe
         let _rx = hub
             .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         assert_eq!(hub.subscriber_count(&room_id), 1);
 
         // Unsubscribe
@@ -1392,10 +1445,12 @@ mod tests {
         // Subscribe two clients
         let mut rx1 = hub
             .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         let mut rx2 = hub
             .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         assert_eq!(hub.subscriber_count(&room_id), 2);
 
@@ -1432,10 +1487,12 @@ mod tests {
         // Subscribe two clients
         let mut rx1 = hub
             .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         let mut rx2 = hub
             .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         // Broadcast to user1 only
         let event = ClusterEvent::SystemNotification {
@@ -1478,7 +1535,8 @@ mod tests {
         // First subscriber triggers RoomActivated
         let _rx1 = hub
             .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         let event = lifecycle_rx.try_recv().unwrap();
         assert!(
             matches!(event, RoomLifecycleEvent::RoomActivated(ref rid) if rid.as_str() == "test_room")
@@ -1487,7 +1545,8 @@ mod tests {
         // Second subscriber does NOT trigger RoomActivated
         let _rx2 = hub
             .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         assert!(lifecycle_rx.try_recv().is_err());
 
         // Unsubscribe first user: room still has subscribers, no event
@@ -1513,7 +1572,8 @@ mod tests {
         // Subscribe triggers RoomActivated
         let _rx = hub
             .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         let _ = lifecycle_rx.try_recv().unwrap(); // consume RoomActivated
 
         // remove_room triggers RoomDeactivated
@@ -1533,7 +1593,8 @@ mod tests {
 
         let mut rx = hub
             .subscribe(room_id.clone(), filler_user, "conn-critical".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
             let sent = hub.broadcast(
@@ -1614,7 +1675,8 @@ mod tests {
                 user_id,
                 "conn-critical-broadcast".to_string(),
             )
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
             let sent = hub.broadcast(
@@ -1690,7 +1752,8 @@ mod tests {
 
         let _rx = hub
             .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         assert_eq!(hub.subscriber_count(&room_id), 1);
         assert_eq!(hub.connection_count(), 1);
 
@@ -1745,7 +1808,8 @@ mod tests {
 
         let _rx = hub
             .subscribe(room_id, user_id, "conn_reuse".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         assert!(
             !hub.pending_redis_cleanup.contains_key("conn_reuse"),
@@ -1813,7 +1877,7 @@ mod tests {
     fn test_start_without_redis_is_noop_even_without_runtime() {
         let hub = RoomMessageHub::new();
         hub.start();
-        hub.shutdown();
+        futures::executor::block_on(hub.shutdown());
     }
 
     #[tokio::test]
@@ -1826,10 +1890,12 @@ mod tests {
 
         let _rx1 = hub
             .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
         let _rx2 = hub
             .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
-            .await;
+            .await
+            .expect("subscribe should succeed");
 
         assert_eq!(hub.connection_count(), 2);
 

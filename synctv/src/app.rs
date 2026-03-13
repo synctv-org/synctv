@@ -32,8 +32,8 @@ use crate::bootstrap::webrtc::init_webrtc;
 use crate::cluster_bridge::ClusterPlaybackBroadcaster;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
-    AuditFlushHook, CacheInvalidationStopHook, ProviderInvalidationHook, SettingsListenHook,
-    ShutdownCoordinator,
+    AuditFlushHook, CacheInvalidationStopHook, HealthMonitorShutdownHook,
+    ProviderInvalidationHook, SettingsListenHook, ShutdownCoordinator,
 };
 
 /// Infrastructure: Redis (optional), Database, `NodeID`.
@@ -859,6 +859,11 @@ impl Application {
         }
         if let Some(handle) = dns_bridge_handle {
             shutdown.register_task("dns_bridge", handle);
+        }
+        if let Some(ref health_monitor) = health_monitor {
+            shutdown.register_hook(HealthMonitorShutdownHook {
+                monitor: health_monitor.clone(),
+            });
         }
 
         let redis_publish_tx = cluster_manager.redis_publish_tx().cloned();

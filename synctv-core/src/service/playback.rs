@@ -195,6 +195,7 @@ impl PlaybackService {
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) {
         let cache = self.playback_cache.clone();
+        let l2_cache = self.l2_cache.clone();
         let mut receiver = service.subscribe();
 
         crate::spawn::spawn_monitored("playback_invalidation_listener", async move {
@@ -271,6 +272,16 @@ impl PlaybackService {
                         }
                         InvalidationMessage::PlaybackState { room_id } => {
                             cache.invalidate(&room_id).await;
+                            if let Some(ref l2_cache) = l2_cache {
+                                let room_id = RoomId::from_string(room_id.clone());
+                                if let Err(e) = l2_cache.invalidate(&room_id).await {
+                                    tracing::warn!(
+                                        room_id = %room_id.as_str(),
+                                        error = %e,
+                                        "Failed to invalidate playback state from L2 cache"
+                                    );
+                                }
+                            }
                             tracing::debug!(
                                 room_id = %room_id,
                                 "Playback state cache invalidated (cross-replica)"
@@ -279,9 +290,22 @@ impl PlaybackService {
                         InvalidationMessage::Room { room_id } => {
                             // Room-scoped invalidation also clears playback cache
                             cache.invalidate(&room_id).await;
+                            if let Some(ref l2_cache) = l2_cache {
+                                let room_id = RoomId::from_string(room_id.clone());
+                                if let Err(e) = l2_cache.invalidate(&room_id).await {
+                                    tracing::warn!(
+                                        room_id = %room_id.as_str(),
+                                        error = %e,
+                                        "Failed to invalidate room-scoped playback state from L2 cache"
+                                    );
+                                }
+                            }
                         }
                         InvalidationMessage::All => {
                             cache.invalidate_all();
+                            if let Some(ref l2_cache) = l2_cache {
+                                l2_cache.clear().await;
+                            }
                             tracing::debug!("All playback state cache invalidated (cross-replica)");
                         }
                         _ => {
@@ -303,6 +327,9 @@ impl PlaybackService {
                                 "Playback cache invalidation listener lagged, flushing all entries (rate-limited)"
                             );
                             cache.invalidate_all();
+                            if let Some(ref l2_cache) = l2_cache {
+                                l2_cache.clear().await;
+                            }
                             crate::metrics::cache::CACHE_LAG_FLUSH_TOTAL
                                 .with_label_values(&["playback"])
                                 .inc();
@@ -476,7 +503,10 @@ impl PlaybackService {
                 async move {
                     let state = match repo.get(&room_id_clone).await {
                         Ok(Some(s)) => s,
-                        Ok(None) => RoomPlaybackState::new(room_id_clone),
+                        Ok(None) => match repo.create_or_get(&room_id_clone).await {
+                            Ok(state) => state,
+                            Err(e) => return Err(e.to_string()),
+                        },
                         Err(e) => return Err(e.to_string()),
                     };
 

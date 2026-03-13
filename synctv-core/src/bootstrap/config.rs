@@ -44,16 +44,14 @@ pub fn load_config() -> Result<Config> {
                 cfg
             }
             Err(e) => {
-                // If SYNCTV_CONFIG_PATH was explicitly set, fail hard instead of
-                // silently falling back to defaults, which would hide misconfigurations.
-                if explicit_config_path.is_some() {
-                    return Err(anyhow::anyhow!(
-                        "Failed to load config from explicitly set SYNCTV_CONFIG_PATH '{path}': {e}"
-                    ));
-                }
-                eprintln!("Failed to load {path}: {e}");
-                eprintln!("Falling back to environment variables");
-                Config::from_env()?
+                let source = if explicit_config_path.is_some() {
+                    "explicitly set SYNCTV_CONFIG_PATH"
+                } else {
+                    "auto-discovered config file"
+                };
+                return Err(anyhow::anyhow!(
+                    "Failed to load config from {source} '{path}': {e}"
+                ));
             }
         }
     } else if let Some(ref explicit_path) = explicit_config_path {
@@ -83,4 +81,97 @@ pub fn load_config() -> Result<Config> {
     eprintln!("HTTP address: {}", config.http_address());
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_config;
+    use tempfile::tempdir;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        value: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl Into<String>) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value.into());
+            Self {
+                key,
+                value: previous,
+            }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self {
+                key,
+                value: previous,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.value.take() {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    struct CurrentDirGuard {
+        previous: std::path::PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn change_to(path: &std::path::Path) -> Self {
+            let previous = std::env::current_dir().expect("current dir should be readable");
+            std::env::set_current_dir(path).expect("current dir should be settable");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.previous).expect("current dir should be restored");
+        }
+    }
+
+    #[test]
+    fn test_load_config_fails_for_invalid_auto_discovered_file() {
+        let dir = tempdir().expect("temp dir should be created");
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "not: [valid").expect("invalid config should be written");
+        let _cwd = CurrentDirGuard::change_to(dir.path());
+        let _env = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
+
+        let err = load_config().expect_err("invalid auto-discovered config must fail closed");
+
+        assert!(
+            err.to_string().contains("auto-discovered config file"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_load_config_fails_for_invalid_explicit_file() {
+        let dir = tempdir().expect("temp dir should be created");
+        let config_path = dir.path().join("explicit-config.yaml");
+        std::fs::write(&config_path, "not: [valid").expect("invalid config should be written");
+        let _env = EnvVarGuard::set(
+            "SYNCTV_CONFIG_PATH",
+            config_path.to_string_lossy().to_string(),
+        );
+
+        let err = load_config().expect_err("invalid explicit config must fail closed");
+
+        assert!(
+            err.to_string().contains("explicitly set SYNCTV_CONFIG_PATH"),
+            "unexpected error: {err}"
+        );
+    }
 }

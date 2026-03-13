@@ -239,7 +239,12 @@ impl LiveStreamingInfrastructure {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
 
-        if publisher.is_some() {
+        if let Some(publisher_info) = publisher {
+            let is_local = !self.local_node_id.is_empty() && publisher_info.node_id == self.local_node_id;
+            if is_local {
+                return Ok(StreamSubscriberGuard::new(|| {}));
+            }
+
             // Publisher found in Redis -- create gRPC relay pull stream
             let stream = self
                 .pull_manager
@@ -291,6 +296,79 @@ impl LiveStreamingInfrastructure {
             .get_publisher(room_id, media_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("No publisher found for {room_id}/{media_id}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::relay::{mock_registry::MockStreamRegistry, PublisherInfo};
+    use chrono::Utc;
+
+    fn make_infrastructure_with_publisher(
+        local_node_id: &str,
+        publisher_node_id: &str,
+        grpc_address: &str,
+    ) -> LiveStreamingInfrastructure {
+        let registry = Arc::new(MockStreamRegistry::with_publishers(std::collections::HashMap::from([(
+            ("room1".to_string(), "media1".to_string()),
+            PublisherInfo {
+                node_id: publisher_node_id.to_string(),
+                grpc_address: grpc_address.to_string(),
+                app_name: "live".to_string(),
+                user_id: String::new(),
+                started_at: Utc::now(),
+                epoch: 1,
+            },
+        )])));
+        let (event_sender, _event_receiver) = mpsc::channel(64);
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                local_node_id.to_string(),
+                event_sender.clone(),
+            )
+            .expect("external publish manager should build"),
+        );
+
+        LiveStreamingInfrastructure::new(
+            registry,
+            event_sender,
+            pull_manager,
+            external_publish_manager,
+            Arc::new(StreamTracker::new()),
+        )
+        .with_local_node_id(local_node_id.to_string())
+    }
+
+    #[tokio::test]
+    async fn test_ensure_pull_stream_skips_grpc_relay_for_local_publisher() {
+        let infrastructure = make_infrastructure_with_publisher("node-local", "node-local", "");
+
+        let guard = infrastructure
+            .ensure_pull_stream("room1", "media1", None)
+            .await
+            .expect("local publisher should not require a relay stream");
+
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn test_create_session_with_pull_keeps_local_publishers_local() {
+        let infrastructure = make_infrastructure_with_publisher("node-local", "node-local", "");
+
+        let result =
+            FlvStreamingApi::create_session_with_pull(&infrastructure, "room1", "media1", None)
+                .await;
+
+        assert!(
+            result.is_ok(),
+            "local publisher should create FLV session without requiring gRPC pull"
+        );
     }
 }
 

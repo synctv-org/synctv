@@ -5652,6 +5652,7 @@ dependencies = [
  "synctv-core-testing",
  "synctv-media-providers",
  "synctv-proto",
+ "tempfile",
  "testcontainers",
  "testcontainers-modules",
  "thiserror 2.0.18",

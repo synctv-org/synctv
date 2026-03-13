@@ -148,6 +148,26 @@ impl HealthMonitor {
         }
     }
 
+    /// Create a new health monitor that participates in an external shutdown hierarchy
+    /// and uses a caller-supplied probe configuration.
+    #[must_use]
+    pub fn with_cancellation_token_and_probe_config(
+        node_registry: Arc<NodeRegistry>,
+        check_interval_secs: u64,
+        parent_token: &CancellationToken,
+        probe_config: HealthProbeConfig,
+    ) -> Self {
+        Self {
+            node_registry,
+            check_interval_secs,
+            health_status: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            cancel_token: parent_token.child_token(),
+            probe_config,
+            probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            join_handle: tokio::sync::Mutex::new(None),
+        }
+    }
+
     /// Replace the cancellation token with a child of the given parent.
     ///
     /// Must be called **before** [`start`](Self::start). Calling it after the
@@ -691,6 +711,35 @@ mod tests {
         assert!(
             !parent.is_cancelled(),
             "Parent token should not be cancelled by child shutdown"
+        );
+    }
+
+    #[test]
+    fn test_with_cancellation_token_and_probe_config_preserves_secret() {
+        let registry = make_registry();
+        let parent = CancellationToken::new();
+        let monitor = HealthMonitor::with_cancellation_token_and_probe_config(
+            registry,
+            15,
+            &parent,
+            HealthProbeConfig {
+                probe_timeout_secs: 5,
+                failure_threshold: 3,
+                success_threshold: 2,
+                probe_interval_secs: 11,
+                cluster_secret: "cluster-secret".to_string(),
+            },
+        );
+
+        assert_eq!(monitor.check_interval_secs, 15);
+        assert_eq!(monitor.probe_config.probe_timeout_secs, 5);
+        assert_eq!(monitor.probe_config.failure_threshold, 3);
+        assert_eq!(monitor.probe_config.success_threshold, 2);
+        assert_eq!(monitor.probe_config.probe_interval_secs, 11);
+        assert_eq!(monitor.probe_config.cluster_secret, "cluster-secret");
+        assert!(
+            !parent.is_cancelled(),
+            "Constructing the child monitor must not cancel the parent token"
         );
     }
 

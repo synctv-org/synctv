@@ -299,6 +299,17 @@ async fn cleanup_partial_startup(
     }
 }
 
+async fn shutdown_after_startup_failure(
+    shutdown_tx: &watch::Sender<bool>,
+    cleanup_cancel: &tokio_util::sync::CancellationToken,
+    cleanup_handle: Option<JoinHandle<()>>,
+    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    coordinator: ShutdownCoordinator,
+) {
+    cleanup_partial_startup(shutdown_tx, cleanup_cancel, cleanup_handle, grpc_handle).await;
+    coordinator.shutdown().await;
+}
+
 async fn spawn_admin_event_listener(
     cluster_mgr: Arc<synctv_cluster::sync::ClusterManager>,
     infra: Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
@@ -412,8 +423,14 @@ impl SyncTvServer {
         let grpc_handle = match self.start_grpc_server(shutdown_rx.clone()).await {
             Ok(handle) => handle,
             Err(err) => {
-                cleanup_partial_startup(&shutdown_tx, &cleanup_cancel, Some(cleanup_handle), None)
-                    .await;
+                shutdown_after_startup_failure(
+                    &shutdown_tx,
+                    &cleanup_cancel,
+                    Some(cleanup_handle),
+                    None,
+                    coordinator,
+                )
+                .await;
                 return Err(err);
             }
         };
@@ -424,11 +441,12 @@ impl SyncTvServer {
             Ok(handle) => handle,
             Err(err) => {
                 let grpc_handle = self.grpc_handle.take();
-                cleanup_partial_startup(
+                shutdown_after_startup_failure(
                     &shutdown_tx,
                     &cleanup_cancel,
                     Some(cleanup_handle),
                     grpc_handle,
+                    coordinator,
                 )
                 .await;
                 return Err(err);
@@ -913,11 +931,12 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
+    use crate::shutdown::ShutdownCoordinator;
     use super::{
         await_runtime_server_shutdown, await_task_shutdown, build_proxy_slice_cache_config,
         build_ws_ticket_service, cleanup_partial_startup, map_background_task_exit,
-        map_runtime_server_exit, shutdown_livestream_state, shutdown_runtime_phase,
-        spawn_admin_event_listener, LivestreamShutdown,
+        map_runtime_server_exit, shutdown_after_startup_failure, shutdown_livestream_state,
+        shutdown_runtime_phase, spawn_admin_event_listener, LivestreamShutdown,
     };
     use async_trait::async_trait;
     use std::sync::{
@@ -1106,6 +1125,53 @@ mod tests {
         assert!(cleanup_cancel.is_cancelled());
         assert!(cleanup_stopped.load(Ordering::SeqCst));
         assert!(grpc_stopped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_after_startup_failure_runs_coordinator_hooks() {
+        use crate::shutdown::ShutdownHook;
+        use std::future::Future;
+        use std::pin::Pin;
+
+        struct FlagHook(Arc<AtomicBool>);
+
+        impl ShutdownHook for FlagHook {
+            fn name(&self) -> &str {
+                "flag_hook"
+            }
+
+            fn timeout(&self) -> Duration {
+                Duration::from_secs(1)
+            }
+
+            fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                let flag = Arc::clone(&self.0);
+                Box::pin(async move {
+                    flag.store(true, Ordering::SeqCst);
+                })
+            }
+        }
+
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        let cleanup_cancel = CancellationToken::new();
+        let cleanup_handle = tokio::spawn(async move {});
+        let hook_called = Arc::new(AtomicBool::new(false));
+        let mut coordinator = ShutdownCoordinator::new(Duration::from_secs(1));
+        coordinator.register_hook(FlagHook(Arc::clone(&hook_called)));
+
+        shutdown_after_startup_failure(
+            &shutdown_tx,
+            &cleanup_cancel,
+            Some(cleanup_handle),
+            None,
+            coordinator,
+        )
+        .await;
+
+        assert!(
+            hook_called.load(Ordering::SeqCst),
+            "startup failure cleanup must run the centralized shutdown coordinator"
+        );
     }
 
     #[tokio::test]

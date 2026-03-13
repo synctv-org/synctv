@@ -632,8 +632,7 @@ async fn init_oauth2_service(
     redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     cluster_mode: bool,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
-    // 0. Initialize provider registry (register all factory functions)
-    crate::oauth2::providers::init_providers();
+    let provider_registry = crate::oauth2::providers::provider_registry();
     info!("OAuth2 provider registry initialized");
 
     // 1. Get OAuth2 provider configurations from main config
@@ -675,7 +674,8 @@ async fn init_oauth2_service(
             Arc::new(crate::service::InMemoryOAuthStateStore::new())
         }
     };
-    let oauth2_service = OAuth2Service::new(oauth2_repo, state_store, cluster_mode)
+    let oauth2_service =
+        OAuth2Service::new(oauth2_repo, state_store, provider_registry.clone(), cluster_mode)
         .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?;
     let oauth2_service = Arc::new(oauth2_service);
 
@@ -713,7 +713,7 @@ async fn init_oauth2_service(
         }
 
         // Use factory to create provider with full config
-        match crate::oauth2::create_provider(&provider_type, &full_config).await {
+        match provider_registry.create_provider(&provider_type, &full_config) {
             Ok(provider) => {
                 let provider_enum = if let Some(p) =
                     crate::models::oauth2_client::OAuth2Provider::from_str_name(&provider_type)

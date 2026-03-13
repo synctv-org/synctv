@@ -241,6 +241,54 @@ async fn test_playback_state_l2_miss_reads_from_db() {
     assert_eq!(db_state.room_id, room.id);
 }
 
+/// Test that `get_state()` persists the default row via `create_or_get()` instead of
+/// returning an unpersisted synthetic value.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_playback_state_get_state_persists_missing_row() {
+    let (_pg_container, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("persist_missing_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Persist Missing Playback Row".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
+        .bind(room.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let state = room_service.playback_service().get_state(&room.id).await.unwrap();
+
+    let persisted: Option<(String,)> = sqlx::query_as(
+        "SELECT room_id FROM room_playback_state WHERE room_id = $1",
+    )
+    .bind(room.id.as_str())
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(state.room_id, room.id);
+    assert!(
+        persisted.is_some(),
+        "get_state() must create the missing playback row instead of caching an ephemeral default"
+    );
+}
+
 // ============================================================================
 // Test 4: Cross-Replica Consistency via L2
 // ============================================================================
@@ -582,6 +630,79 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
     assert!(
         (fresh_state.current_time - 200.0).abs() < f64::EPSILON,
         "State should be read correctly from DB after L1 invalidation"
+    );
+}
+
+/// Test that cross-replica playback invalidation clears Redis L2 so stale entries
+/// cannot repopulate L1 after an invalidation event.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_playback_state_cross_replica_invalidation_clears_l2() {
+    let (_pg_container, pool) = synctv_core_testing::create_test_pool().await;
+    let (redis_container, redis_conn) = start_redis().await;
+
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+
+    let l2_backend: Arc<dyn CacheL2Backend> = Arc::new(RedisCacheL2::new(redis_conn.clone()));
+    let l2_cache = PlaybackStateCache::new(
+        l2_backend,
+        128,
+        5,
+        60,
+        "test:playback:invalidate:".to_string(),
+    )
+    .unwrap();
+
+    let cache_stream = format!("test:playback:invalidate:stream:{}", nanoid::nanoid!(8));
+    let redis_url = format!(
+        "redis://127.0.0.1:{}",
+        redis_container.get_host_port_ipv4(6379).await.unwrap()
+    );
+    let subscriber = Arc::new(synctv_core::cache::CacheInvalidationService::new(
+        Some(redis::Client::open(redis_url.clone()).unwrap()),
+        "node-subscriber".to_string(),
+        cache_stream.clone(),
+    ));
+    subscriber.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let publisher = Arc::new(synctv_core::cache::CacheInvalidationService::new(
+        Some(redis::Client::open(redis_url).unwrap()),
+        "node-publisher".to_string(),
+        cache_stream,
+    ));
+
+    room_service.set_playback_l2_cache(l2_cache.clone());
+    room_service.set_playback_cache_invalidation(subscriber.clone());
+
+    let owner = user_repo
+        .create(&make_user("invalidate_l2_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Invalidate L2 Playback".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let playback_service = room_service.playback_service();
+    let state = playback_service.get_state(&room.id).await.unwrap();
+    l2_cache.set(&room.id, state.clone()).await.unwrap();
+    assert!(l2_cache.get(&room.id).await.unwrap().is_some());
+
+    publisher.invalidate_playback_state(&room.id).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    assert!(
+        l2_cache.get(&room.id).await.unwrap().is_none(),
+        "cross-replica invalidation must remove stale playback state from Redis L2"
     );
 }
 

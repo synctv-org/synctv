@@ -115,11 +115,11 @@ pub struct ServerConfig {
     /// Defaults to 30 seconds. Increase for deployments with many long-lived connections.
     pub shutdown_drain_timeout_seconds: u64,
     /// Bearer token required to access the `/metrics` Prometheus endpoint.
-    /// When set (non-empty), requests to `/metrics` must include an
-    /// `Authorization: Bearer <token>` header with this value.
-    /// When empty (default), the endpoint is open to anyone who can reach it —
-    /// only enable metrics in this mode when the endpoint is network-restricted
-    /// (e.g. inside a Kubernetes cluster with no external ingress).
+    /// When `server.metrics_enabled=true`, requests to `/metrics` must include
+    /// `Authorization: Bearer <token>` with this value. Startup validation
+    /// refuses to enable metrics when this token is empty.
+    ///
+    /// The empty default is only valid while metrics are disabled.
     /// Set via `SYNCTV_SERVER_METRICS_BEARER_TOKEN` env var or config file.
     pub metrics_bearer_token: String,
     /// Maximum gRPC message size in bytes for both incoming (decoding) and
@@ -1486,6 +1486,14 @@ impl Config {
             errors.push("server.shutdown_drain_timeout_seconds must be greater than 0".to_string());
         }
 
+        if self.server.metrics_enabled && self.server.metrics_bearer_token.is_empty() {
+            errors.push(
+                "server.metrics_bearer_token must be set when server.metrics_enabled=true. \
+                 Refusing to expose /metrics without authentication."
+                    .to_string(),
+            );
+        }
+
         // Validate JWT secret
         if self.jwt.secret.is_empty() {
             errors.push("JWT secret is empty".to_string());
@@ -1970,26 +1978,6 @@ impl Config {
             tracing::warn!(
                 "server.cors_allowed_origins is empty. \
                  CORS requests will be rejected. Set allowed origins."
-            );
-        }
-
-        // SECURITY: Warn if metrics endpoint is enabled without authentication
-        // The /metrics endpoint exposes sensitive operational data including:
-        // - Request rates and latencies
-        // - Internal service topology
-        // - Database connection pool states
-        // - Memory and CPU usage patterns
-        // Without authentication, anyone who can reach the endpoint can access this data.
-        if self.server.metrics_enabled && self.server.metrics_bearer_token.is_empty() {
-            tracing::warn!(
-                "SECURITY WARNING: server.metrics_enabled=true but server.metrics_bearer_token is empty. \
-                 The /metrics endpoint is COMPLETELY OPEN to anyone who can reach it. \
-                 This exposes sensitive operational data (request rates, internal topology, \
-                 resource usage) that could aid attackers in reconnaissance. \
-                 STRONGLY RECOMMENDED: Set SYNCTV_SERVER_METRICS_BEARER_TOKEN to a secure random value \
-                 (e.g., output of `openssl rand -hex 32`). \
-                 Only leave this empty if the /metrics endpoint is protected at the network level \
-                 (e.g., Kubernetes NetworkPolicy restricting access to monitoring pods only)."
             );
         }
 
@@ -3188,6 +3176,38 @@ jwt:
         assert!(
             config.validate().is_ok(),
             "cluster_secret alone should not require cluster runtime services"
+        );
+    }
+
+    #[test]
+    fn test_validate_metrics_endpoint_requires_bearer_token_when_enabled() {
+        let mut config = valid_prod_config();
+        config.server.metrics_enabled = true;
+        config.server.metrics_bearer_token.clear();
+
+        let errors = config
+            .validate()
+            .expect_err("metrics endpoint must fail closed when enabled without auth");
+
+        assert!(
+            errors.iter().any(|e| {
+                e.contains("server.metrics_bearer_token")
+                    && e.contains("metrics_enabled")
+                    && e.contains("must be set")
+            }),
+            "unexpected errors: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_metrics_endpoint_accepts_bearer_token_when_enabled() {
+        let mut config = valid_prod_config();
+        config.server.metrics_enabled = true;
+        config.server.metrics_bearer_token = "metrics-secret".to_string();
+
+        assert!(
+            config.validate().is_ok(),
+            "authenticated metrics endpoint should be allowed"
         );
     }
 

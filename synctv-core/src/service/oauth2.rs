@@ -324,6 +324,8 @@ pub struct OAuth2Service {
     providers: Arc<RwLock<HashMap<String, OAuth2ProviderEntry>>>,
     /// State storage backend — injected via trait object
     state_store: Arc<dyn OAuthStateStore>,
+    /// Factory registry used to build providers without relying on global state.
+    provider_registry: crate::oauth2::ProviderRegistry,
     /// Allowlist of permitted redirect domains (empty = relative paths only)
     allowed_redirect_domains: Arc<Vec<String>>,
 }
@@ -354,6 +356,7 @@ impl OAuth2Service {
     pub fn new(
         repository: UserOAuthProviderRepository,
         state_store: Arc<dyn OAuthStateStore>,
+        provider_registry: crate::oauth2::ProviderRegistry,
         cluster_mode: bool,
     ) -> Result<Self> {
         // Validate that Redis-backed state store is used in cluster mode
@@ -379,8 +382,14 @@ impl OAuth2Service {
             repository,
             providers: Arc::new(RwLock::new(HashMap::new())),
             state_store,
+            provider_registry,
             allowed_redirect_domains: Arc::new(Vec::new()),
         })
+    }
+
+    #[must_use]
+    pub fn provider_registry(&self) -> &crate::oauth2::ProviderRegistry {
+        &self.provider_registry
     }
 
     /// Set allowlist of permitted redirect domains
@@ -994,7 +1003,12 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
         let state_store = Arc::new(InMemoryOAuthStateStore::new());
-        OAuth2Service::new(repo, state_store, cluster_mode)
+        OAuth2Service::new(
+            repo,
+            state_store,
+            crate::oauth2::ProviderRegistry::new(),
+            cluster_mode,
+        )
             .expect("Failed to create OAuth2 service")
     }
 
@@ -2156,7 +2170,12 @@ mod tests {
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
         let state_store = Arc::new(InMemoryOAuthStateStore::new());
 
-        let result = OAuth2Service::new(repo, state_store, true);
+        let result = OAuth2Service::new(
+            repo,
+            state_store,
+            crate::oauth2::ProviderRegistry::new(),
+            true,
+        );
 
         assert!(
             result.is_err(),
@@ -2189,7 +2208,12 @@ mod tests {
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
         let state_store = Arc::new(InMemoryOAuthStateStore::new());
 
-        let result = OAuth2Service::new(repo, state_store, true);
+        let result = OAuth2Service::new(
+            repo,
+            state_store,
+            crate::oauth2::ProviderRegistry::new(),
+            true,
+        );
         let err_msg = result.unwrap_err().to_string();
 
         // Should suggest configuring Redis
@@ -2207,7 +2231,12 @@ mod tests {
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
         let state_store = Arc::new(InMemoryOAuthStateStore::new());
 
-        let result = OAuth2Service::new(repo, state_store, false);
+        let result = OAuth2Service::new(
+            repo,
+            state_store,
+            crate::oauth2::ProviderRegistry::new(),
+            false,
+        );
 
         assert!(
             result.is_ok(),
@@ -2223,7 +2252,12 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
         let state_store = Arc::new(InMemoryOAuthStateStore::new());
-        let service_result = OAuth2Service::new(repo, state_store, true);
+        let service_result = OAuth2Service::new(
+            repo,
+            state_store,
+            crate::oauth2::ProviderRegistry::new(),
+            true,
+        );
 
         assert!(
             service_result.is_err(),

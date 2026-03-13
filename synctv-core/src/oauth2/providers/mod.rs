@@ -18,15 +18,13 @@ pub use google::{GoogleConfig, GoogleProvider};
 pub use logto::{LogtoConfig, LogtoProvider};
 pub use oidc::{OidcConfig, OidcProvider};
 
-/// Initialize `OAuth2` provider registry
-///
-/// Call this during application startup to register all available provider types.
-pub fn init_providers() {
-    use crate::oauth2::register_provider_factory;
-
-    // Register all provider factory functions
-    register_provider_factory("github", github::github_factory);
-    register_provider_factory("google", google::google_factory);
-    register_provider_factory("logto", logto::logto_factory);
-    register_provider_factory("oidc", oidc::oidc_factory);
+/// Build a registry populated with all built-in `OAuth2` providers.
+#[must_use]
+pub fn provider_registry() -> crate::oauth2::ProviderRegistry {
+    let registry = crate::oauth2::ProviderRegistry::new();
+    registry.register("github", github::github_factory);
+    registry.register("google", google::google_factory);
+    registry.register("logto", logto::logto_factory);
+    registry.register("oidc", oidc::oidc_factory);
+    registry
 }

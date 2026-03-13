@@ -215,14 +215,29 @@ const fn should_mark_livestream_relay_serving(
     should_register_livestream_relay_service(config, live_streaming_infrastructure_available)
 }
 
+#[cfg(test)]
 const fn should_mark_notification_service_serving(notification_service_available: bool) -> bool {
     notification_service_available
 }
 
+const fn should_register_email_service(email_available: bool, email_token_available: bool) -> bool {
+    email_available && email_token_available
+}
+
+#[cfg(test)]
+const fn should_mark_email_service_serving(
+    email_available: bool,
+    email_token_available: bool,
+) -> bool {
+    should_register_email_service(email_available, email_token_available)
+}
+
+#[cfg(test)]
 const fn should_mark_oauth2_service_serving(oauth2_service_available: bool) -> bool {
     oauth2_service_available
 }
 
+#[cfg(test)]
 const fn should_mark_provider_services_serving(providers_available: bool) -> bool {
     providers_available
 }
@@ -234,10 +249,173 @@ const fn should_mark_cluster_service_serving(
     should_register_cluster_grpc_service(config, node_registry_available)
 }
 
-const fn effective_grpc_request_timeout() -> std::time::Duration {
-    // Match the existing HTTP global timeout budget so one transport cannot
-    // hang indefinitely while the other fails fast.
-    std::time::Duration::from_secs(30)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GrpcHealthRegistrationState {
+    email_registered: bool,
+    notification_registered: bool,
+    oauth2_registered: bool,
+    provider_services_registered: bool,
+    cluster_service_registered: bool,
+    livestream_relay_registered: bool,
+}
+
+const fn effective_grpc_request_timeout() -> Option<std::time::Duration> {
+    // Tonic's server-wide timeout applies to the entire RPC lifetime, which
+    // breaks long-lived streaming calls such as MessageStream. Keep it disabled
+    // at the transport level and enforce timeouts in unary business paths.
+    None
+}
+
+async fn set_registered_grpc_services_serving(
+    health_reporter: &tonic_health::server::HealthReporter,
+    state: GrpcHealthRegistrationState,
+) {
+    use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
+
+    health_reporter
+        .set_service_status("", tonic_health::ServingStatus::Serving)
+        .await;
+    health_reporter
+        .set_serving::<AuthServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_serving::<UserServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_serving::<RoomServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_serving::<MediaServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_serving::<PublicServiceServer<ClientServiceImpl>>()
+        .await;
+    if state.email_registered {
+        health_reporter
+            .set_serving::<EmailServiceServer<ClientServiceImpl>>()
+            .await;
+    }
+    health_reporter
+        .set_serving::<AdminServiceServer<AdminServiceImpl>>()
+        .await;
+    if state.notification_registered {
+        health_reporter
+            .set_serving::<NotificationServiceServer<NotificationServiceImpl>>()
+            .await;
+    }
+    if state.oauth2_registered {
+        health_reporter
+            .set_serving::<OAuth2ServiceServer<oauth2_service::OAuth2GrpcService>>()
+            .await;
+    }
+    if state.provider_services_registered {
+        use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
+        use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
+        use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
+
+        health_reporter
+            .set_serving::<AlistProviderServiceServer<providers::alist::AlistProviderGrpcService>>()
+            .await;
+        health_reporter
+            .set_serving::<BilibiliProviderServiceServer<providers::bilibili::BilibiliProviderGrpcService>>()
+            .await;
+        health_reporter
+            .set_serving::<EmbyProviderServiceServer<providers::emby::EmbyProviderGrpcService>>()
+            .await;
+    }
+    if state.cluster_service_registered {
+        health_reporter
+            .set_serving::<synctv_cluster::grpc::ClusterServiceServer<
+                synctv_cluster::grpc::ClusterServer,
+            >>()
+            .await;
+    }
+    if state.livestream_relay_registered {
+        health_reporter
+            .set_serving::<synctv_livestream::grpc::StreamRelayServiceServer<
+                synctv_livestream::grpc::StreamRelayServiceImpl,
+            >>()
+            .await;
+    }
+}
+
+async fn set_registered_grpc_services_not_serving(
+    health_reporter: &tonic_health::server::HealthReporter,
+    state: GrpcHealthRegistrationState,
+) {
+    use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
+
+    health_reporter
+        .set_service_status("", tonic_health::ServingStatus::NotServing)
+        .await;
+    health_reporter
+        .set_not_serving::<AuthServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_not_serving::<UserServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_not_serving::<RoomServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_not_serving::<MediaServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_not_serving::<PublicServiceServer<ClientServiceImpl>>()
+        .await;
+    if state.email_registered {
+        health_reporter
+            .set_not_serving::<EmailServiceServer<ClientServiceImpl>>()
+            .await;
+    }
+    health_reporter
+        .set_not_serving::<AdminServiceServer<AdminServiceImpl>>()
+        .await;
+    if state.notification_registered {
+        health_reporter
+            .set_not_serving::<NotificationServiceServer<NotificationServiceImpl>>()
+            .await;
+    }
+    if state.oauth2_registered {
+        health_reporter
+            .set_not_serving::<OAuth2ServiceServer<oauth2_service::OAuth2GrpcService>>()
+            .await;
+    }
+    if state.provider_services_registered {
+        use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
+        use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
+        use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
+
+        health_reporter
+            .set_not_serving::<AlistProviderServiceServer<
+                providers::alist::AlistProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_not_serving::<BilibiliProviderServiceServer<
+                providers::bilibili::BilibiliProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_not_serving::<EmbyProviderServiceServer<
+                providers::emby::EmbyProviderGrpcService,
+            >>()
+            .await;
+    }
+    if state.cluster_service_registered {
+        health_reporter
+            .set_not_serving::<synctv_cluster::grpc::ClusterServiceServer<
+                synctv_cluster::grpc::ClusterServer,
+            >>()
+            .await;
+    }
+    if state.livestream_relay_registered {
+        health_reporter
+            .set_not_serving::<synctv_livestream::grpc::StreamRelayServiceServer<
+                synctv_livestream::grpc::StreamRelayServiceImpl,
+            >>()
+            .await;
+    }
 }
 
 fn validate_cluster_grpc_runtime_requirements(
@@ -404,6 +582,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let connection_manager_for_provider = connection_manager.clone();
 
     let email_service_for_admin = email_service.clone();
+    let email_service_registered =
+        should_register_email_service(email_service.is_some(), email_token_service.is_some());
     let providers_manager_for_client = providers_manager.clone();
     let rate_limiter_for_provider = rate_limiter.clone();
     let shared_content_filter_for_provider = Arc::new(content_filter.clone());
@@ -534,13 +714,17 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     );
     let grpc_request_timeout = effective_grpc_request_timeout();
     let mut server_builder = Server::builder()
-        .timeout(grpc_request_timeout)
         .layer(distributed_rate_limit_layer)
         .layer(blacklist_layer);
-    tracing::info!(
-        grpc_request_timeout_secs = grpc_request_timeout.as_secs(),
-        "gRPC request timeout configured"
-    );
+    if let Some(timeout) = grpc_request_timeout {
+        server_builder = server_builder.timeout(timeout);
+        tracing::info!(
+            grpc_request_timeout_secs = timeout.as_secs(),
+            "gRPC request timeout configured"
+        );
+    } else {
+        tracing::info!("gRPC server-wide request timeout disabled");
+    }
 
     // Get the configured max message size (prevents OOM from oversized messages)
     let max_message_size = config.server.grpc_max_message_size_bytes;
@@ -572,6 +756,17 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let provider_services_registered = providers_manager.is_some();
     let cluster_service_registered =
         should_mark_cluster_service_serving(config, node_registry.is_some());
+    let grpc_health_state = GrpcHealthRegistrationState {
+        email_registered: email_service_registered,
+        notification_registered: notification_service_registered,
+        oauth2_registered: oauth2_service_registered,
+        provider_services_registered,
+        cluster_service_registered,
+        livestream_relay_registered: should_mark_livestream_relay_serving(
+            config,
+            live_streaming_infrastructure.is_some(),
+        ),
+    };
 
     let mut router = server_builder
         // AuthService (public: register, login, refresh_token)
@@ -601,15 +796,17 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 .with_message_size_limit(max_message_size),
         )
         // EmailService (send codes, confirm with token)
-        .add_service(
-            EmailServiceServer::new(client_service_clone5)
-                .with_message_size_limit(max_message_size),
-        )
         // AdminService - JWT authentication (inject UserContext)
         .add_service(tonic::codegen::InterceptedService::new(
             AdminServiceServer::new(admin_service).with_message_size_limit(max_message_size),
             move |req| admin_interceptor.inject_user(req),
         ));
+
+    if email_service_registered {
+        router = router.add_service(
+            EmailServiceServer::new(client_service_clone5).with_message_size_limit(max_message_size),
+        );
+    }
 
     // Register NotificationService if notification_service is configured
     if let Some(notif_svc) = notification_service {
@@ -949,67 +1146,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // All registered services are marked as SERVING so gRPC health probes
     // return the correct status rather than UNKNOWN.
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
-    health_reporter
-        .set_serving::<AuthServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_serving::<UserServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_serving::<RoomServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_serving::<MediaServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_serving::<PublicServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_serving::<EmailServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_serving::<AdminServiceServer<AdminServiceImpl>>()
-        .await;
-    if should_mark_notification_service_serving(notification_service_registered) {
-        health_reporter
-            .set_serving::<NotificationServiceServer<NotificationServiceImpl>>()
-            .await;
-    }
-    if should_mark_oauth2_service_serving(oauth2_service_registered) {
-        use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
-        health_reporter
-            .set_serving::<OAuth2ServiceServer<oauth2_service::OAuth2GrpcService>>()
-            .await;
-    }
-    if should_mark_provider_services_serving(provider_services_registered) {
-        use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
-        use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
-        use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
-
-        health_reporter
-            .set_serving::<AlistProviderServiceServer<providers::alist::AlistProviderGrpcService>>()
-            .await;
-        health_reporter
-            .set_serving::<BilibiliProviderServiceServer<providers::bilibili::BilibiliProviderGrpcService>>()
-            .await;
-        health_reporter
-            .set_serving::<EmbyProviderServiceServer<providers::emby::EmbyProviderGrpcService>>()
-            .await;
-    }
-    if cluster_service_registered {
-        health_reporter
-            .set_serving::<synctv_cluster::grpc::ClusterServiceServer<
-                synctv_cluster::grpc::ClusterServer,
-            >>()
-            .await;
-    }
-    if should_mark_livestream_relay_serving(config, live_streaming_infrastructure.is_some()) {
-        health_reporter
-            .set_serving::<synctv_livestream::grpc::StreamRelayServiceServer<
-                synctv_livestream::grpc::StreamRelayServiceImpl,
-            >>()
-            .await;
-    }
+    set_registered_grpc_services_serving(&health_reporter, grpc_health_state).await;
     router = router.add_service(health_service);
     tracing::info!("gRPC health check service registered");
 
@@ -1028,6 +1165,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // Use pre-bound listener if provided (for proper error propagation), otherwise bind internally
     if let Some(listener) = grpc_listener {
         let incoming = TcpListenerStream::new(listener);
+        let shutdown_health_reporter = health_reporter.clone();
         router
             .serve_with_incoming_shutdown(incoming, async move {
                 if let Some(mut rx) = shutdown_rx {
@@ -1037,10 +1175,16 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                     // Fallback: listen for Ctrl+C
                     tokio::signal::ctrl_c().await.ok();
                 }
+                set_registered_grpc_services_not_serving(
+                    &shutdown_health_reporter,
+                    grpc_health_state,
+                )
+                .await;
             })
             .await
             .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
     } else {
+        let shutdown_health_reporter = health_reporter.clone();
         router
             .serve_with_shutdown(addr, async move {
                 if let Some(mut rx) = shutdown_rx {
@@ -1050,6 +1194,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                     // Fallback: listen for Ctrl+C
                     tokio::signal::ctrl_c().await.ok();
                 }
+                set_registered_grpc_services_not_serving(
+                    &shutdown_health_reporter,
+                    grpc_health_state,
+                )
+                .await;
             })
             .await
             .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
@@ -1061,14 +1210,37 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_grpc_request_timeout, extract_client_ip, should_mark_cluster_service_serving,
-        should_mark_livestream_relay_serving, should_mark_notification_service_serving,
-        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
-        should_register_cluster_grpc_service, should_register_livestream_relay_service,
-        validate_cluster_grpc_runtime_requirements,
+        effective_grpc_request_timeout, extract_client_ip, set_registered_grpc_services_not_serving,
+        set_registered_grpc_services_serving, should_mark_cluster_service_serving,
+        should_mark_email_service_serving, should_mark_livestream_relay_serving,
+        should_mark_notification_service_serving, should_mark_oauth2_service_serving,
+        should_mark_provider_services_serving, should_register_cluster_grpc_service,
+        should_register_email_service, should_register_livestream_relay_service,
+        validate_cluster_grpc_runtime_requirements, GrpcHealthRegistrationState,
     };
     use std::net::SocketAddr;
     use tonic::metadata::{MetadataKey, MetadataValue};
+    use tonic_health::server::HealthService;
+    use tonic_health::pb::health_check_response::ServingStatus;
+    use tonic_health::pb::health_server::Health;
+    use tonic_health::pb::HealthCheckRequest;
+
+    async fn health_status_for_service(
+        health_service: &impl Health,
+        service_name: &str,
+    ) -> Result<ServingStatus, tonic::Code> {
+        match health_service
+            .check(tonic::Request::new(HealthCheckRequest {
+                service: service_name.to_string(),
+            }))
+            .await
+        {
+            Ok(response) => {
+                Ok(ServingStatus::try_from(response.into_inner().status).expect("valid health status"))
+            }
+            Err(status) => Err(status.code()),
+        }
+    }
 
     fn request_with_peer_and_headers(
         peer: SocketAddr,
@@ -1154,6 +1326,33 @@ mod tests {
 
         validate_cluster_grpc_runtime_requirements(&config, false)
             .expect("standalone gRPC runtime should allow missing NodeRegistry");
+    }
+
+    #[test]
+    fn test_email_service_requires_both_dependencies() {
+        assert!(
+            !should_register_email_service(false, false),
+            "email gRPC must stay hidden when no email infrastructure exists"
+        );
+        assert!(
+            !should_register_email_service(true, false),
+            "email gRPC must stay hidden when token service is missing"
+        );
+        assert!(
+            !should_register_email_service(false, true),
+            "email gRPC must stay hidden when email sender is missing"
+        );
+        assert!(
+            should_register_email_service(true, true),
+            "email gRPC may only be exposed when both dependencies are configured"
+        );
+    }
+
+    #[test]
+    fn test_email_service_serving_state_matches_registration() {
+        assert!(!should_mark_email_service_serving(true, false));
+        assert!(!should_mark_email_service_serving(false, true));
+        assert!(should_mark_email_service_serving(true, true));
     }
 
     #[test]
@@ -1256,10 +1455,11 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_grpc_request_timeout_matches_http_budget() {
+    fn test_effective_grpc_request_timeout_is_disabled_for_streaming_rpcs() {
         assert_eq!(
             effective_grpc_request_timeout(),
-            std::time::Duration::from_secs(30)
+            None,
+            "server-wide tonic timeout must stay disabled because it aborts long-lived streaming RPCs"
         );
     }
 
@@ -1276,6 +1476,94 @@ mod tests {
         assert!(
             !should_mark_cluster_service_serving(&config, false),
             "missing node registry must not report cluster service serving"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grpc_health_registered_services_transition_to_not_serving_on_shutdown() {
+        let health_reporter = tonic_health::server::HealthReporter::new();
+        let health_service = HealthService::from_health_reporter(health_reporter.clone());
+        let state = GrpcHealthRegistrationState {
+            email_registered: true,
+            notification_registered: true,
+            oauth2_registered: false,
+            provider_services_registered: false,
+            cluster_service_registered: false,
+            livestream_relay_registered: false,
+        };
+
+        set_registered_grpc_services_serving(&health_reporter, state).await;
+
+        assert_eq!(
+            health_status_for_service(&health_service, "").await,
+            Ok(ServingStatus::Serving),
+        );
+        assert_eq!(
+            health_status_for_service(
+                &health_service,
+                <crate::proto::client::auth_service_server::AuthServiceServer<
+                    crate::grpc::ClientServiceImpl,
+                > as tonic::server::NamedService>::NAME,
+            )
+            .await,
+            Ok(ServingStatus::Serving),
+        );
+        assert_eq!(
+            health_status_for_service(
+                &health_service,
+                <crate::proto::client::email_service_server::EmailServiceServer<
+                    crate::grpc::ClientServiceImpl,
+                > as tonic::server::NamedService>::NAME,
+            )
+            .await,
+            Ok(ServingStatus::Serving),
+        );
+        assert_eq!(
+            health_status_for_service(
+                &health_service,
+                <crate::proto::client::notification_service_server::NotificationServiceServer<
+                    crate::grpc::NotificationServiceImpl,
+                > as tonic::server::NamedService>::NAME,
+            )
+            .await,
+            Ok(ServingStatus::Serving),
+        );
+
+        set_registered_grpc_services_not_serving(&health_reporter, state).await;
+
+        assert_eq!(
+            health_status_for_service(&health_service, "").await,
+            Ok(ServingStatus::NotServing),
+        );
+        assert_eq!(
+            health_status_for_service(
+                &health_service,
+                <crate::proto::client::auth_service_server::AuthServiceServer<
+                    crate::grpc::ClientServiceImpl,
+                > as tonic::server::NamedService>::NAME,
+            )
+            .await,
+            Ok(ServingStatus::NotServing),
+        );
+        assert_eq!(
+            health_status_for_service(
+                &health_service,
+                <crate::proto::client::email_service_server::EmailServiceServer<
+                    crate::grpc::ClientServiceImpl,
+                > as tonic::server::NamedService>::NAME,
+            )
+            .await,
+            Ok(ServingStatus::NotServing),
+        );
+        assert_eq!(
+            health_status_for_service(
+                &health_service,
+                <crate::proto::client::notification_service_server::NotificationServiceServer<
+                    crate::grpc::NotificationServiceImpl,
+                > as tonic::server::NamedService>::NAME,
+            )
+            .await,
+            Ok(ServingStatus::NotServing),
         );
     }
 }

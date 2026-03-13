@@ -8,12 +8,45 @@ use synctv_xiu::streamhub::{
     stream::StreamIdentifier,
     utils::Uuid,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tonic::Request;
 use tracing::{error, info, warn};
 
 use super::connection_pool::GrpcConnectionPool;
 use super::proto::{stream_relay_service_client::StreamRelayServiceClient, PullRtmpStreamRequest};
+
+const STREAM_MESSAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const STREAM_HUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn next_packet_with_timeout(
+    stream: &mut tonic::Streaming<super::proto::RtmpPacket>,
+) -> anyhow::Result<Option<super::proto::RtmpPacket>> {
+    tokio::time::timeout(STREAM_MESSAGE_TIMEOUT, stream.message())
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "No gRPC relay frame received for {}s, stream appears dead",
+                STREAM_MESSAGE_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| anyhow::anyhow!("Stream error: {e}"))
+}
+
+async fn send_frame_with_backpressure(
+    data_sender: &FrameDataSender,
+    frame_data: FrameData,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(FRAME_SEND_TIMEOUT, data_sender.send(frame_data))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Timed out waiting {}s for local relay backpressure to clear",
+                FRAME_SEND_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|_| anyhow::anyhow!("Local relay stream channel closed"))
+}
 /// gRPC Stream Puller
 /// Pulls RTMP stream from remote Publisher node via gRPC and publishes to local `StreamHub`
 pub struct GrpcStreamPuller {
@@ -232,7 +265,7 @@ impl GrpcStreamPuller {
         const DROP_LOG_INTERVAL: u64 = 100;
 
         loop {
-            match stream.message().await {
+            match next_packet_with_timeout(&mut stream).await {
                 Ok(Some(packet)) => {
                     let frame_data = match packet.frame_type {
                         1 => FrameData::Video {
@@ -253,28 +286,31 @@ impl GrpcStreamPuller {
                         }
                     };
 
-                    // Use try_send for non-blocking behavior
-                    // If channel is full, drop the packet (backpressure)
-                    if let Err(mpsc::error::TrySendError::Full(_)) =
-                        data_sender.try_send(frame_data)
-                    {
+                    if let Err(e) = send_frame_with_backpressure(data_sender, frame_data).await {
                         dropped_frames += 1;
                         synctv_core::metrics::livestream::LIVESTREAM_RELAY_FRAME_DROPS.inc();
-                        if dropped_frames % DROP_LOG_INTERVAL == 1 {
-                            warn!(
-                                room_id = %self.room_id,
-                                media_id = %self.media_id,
-                                total_dropped = dropped_frames,
-                                "Frame dropped due to backpressure"
-                            );
-                        }
+                        warn!(
+                            room_id = %self.room_id,
+                            media_id = %self.media_id,
+                            total_blocked = dropped_frames,
+                            "Relay frame delivery failed under backpressure: {e}"
+                        );
+                        return Err(e);
                     }
                 }
                 Ok(None) => break, // Stream ended normally
                 Err(e) => {
                     self.connection_pool
                         .record_connection_error(&self.publisher_node_addr);
-                    return Err(anyhow::anyhow!("Stream error: {e}"));
+                    if dropped_frames >= DROP_LOG_INTERVAL {
+                        warn!(
+                            room_id = %self.room_id,
+                            media_id = %self.media_id,
+                            blocked_frames_before_failure = dropped_frames,
+                            "Relay stream terminated after sustained backpressure failures"
+                        );
+                    }
+                    return Err(e);
                 }
             }
         }
@@ -315,9 +351,18 @@ impl GrpcStreamPuller {
             result_sender: event_result_sender,
         };
 
-        self.stream_hub_event_sender
-            .try_send(publish_event)
-            .map_err(|_| anyhow::anyhow!("Failed to send publish event"))?;
+        tokio::time::timeout(
+            STREAM_HUB_EVENT_SEND_TIMEOUT,
+            self.stream_hub_event_sender.send(publish_event),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Timed out waiting {}s to publish relay stream into StreamHub",
+                STREAM_HUB_EVENT_SEND_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|_| anyhow::anyhow!("Failed to send publish event"))?;
 
         let result = event_result_receiver
             .await
@@ -357,6 +402,14 @@ impl GrpcStreamPuller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
+    use futures::StreamExt as _;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tonic::Response;
+    use super::super::proto::stream_relay_service_server::StreamRelayServiceServer;
+
+    const TEST_STREAM_MESSAGE_TIMEOUT: Duration = Duration::from_millis(50);
     #[tokio::test]
     async fn test_puller_creation() {
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
@@ -625,5 +678,191 @@ mod tests {
         pool.record_connection_error(addr);
         pool.invalidate(addr);
         assert!(pool.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_send_frame_with_backpressure_times_out_instead_of_dropping_silently() {
+        let (data_sender, mut data_receiver) = mpsc::channel(1);
+        data_sender
+            .send(FrameData::MetaData {
+                timestamp: 1,
+                data: bytes::Bytes::from_static(b"first"),
+            })
+            .await
+            .expect("initial send should fill channel");
+
+        let send_future = send_frame_with_backpressure(
+            &data_sender,
+            FrameData::Video {
+                timestamp: 2,
+                data: bytes::Bytes::from_static(b"second"),
+            },
+        );
+
+        let err = tokio::time::timeout(FRAME_SEND_TIMEOUT + Duration::from_secs(1), send_future)
+            .await
+            .expect("send should resolve with timeout error")
+            .expect_err("second send must fail once backpressure exceeds timeout");
+        assert!(
+            err.to_string().contains("backpressure"),
+            "unexpected error: {err}"
+        );
+
+        let first = data_receiver.recv().await.expect("first frame remains queued");
+        assert!(matches!(first, FrameData::MetaData { .. }));
+        assert!(
+            data_receiver.try_recv().is_err(),
+            "timed out send must not enqueue an extra frame"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_to_local_stream_hub_waits_for_backpressure_instead_of_failing_immediately() {
+        let (stream_hub_event_sender, mut stream_hub_event_receiver) = mpsc::channel(1);
+        stream_hub_event_sender
+            .send(StreamHubEvent::UnPublish {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name: "occupied".to_string(),
+                    stream_name: "occupied".to_string(),
+                },
+            })
+            .await
+            .expect("fill stream hub event queue");
+
+        let release_handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            stream_hub_event_receiver
+                .recv()
+                .await
+                .expect("occupied event should be drained");
+            if let Some(StreamHubEvent::Publish { result_sender, .. }) =
+                stream_hub_event_receiver.recv().await
+            {
+                let (data_sender, _) = mpsc::channel(4);
+                let _ = result_sender.send(Ok((Some(data_sender), None, None)));
+            } else {
+                panic!("expected publish event after backpressure cleared");
+            }
+        });
+
+        let mut puller = GrpcStreamPuller::new(
+            "room".to_string(),
+            "media".to_string(),
+            "publisher:50051".to_string(),
+            stream_hub_event_sender,
+            GrpcConnectionPool::with_defaults(),
+        );
+
+        let result = tokio::time::timeout(
+            STREAM_HUB_EVENT_SEND_TIMEOUT,
+            puller.publish_to_local_stream_hub(),
+        )
+        .await
+        .expect("publish should complete once backpressure clears");
+
+        assert!(result.is_ok(), "publish should succeed after brief backpressure");
+        release_handle.await.expect("release task should complete");
+    }
+
+    #[tokio::test]
+    async fn test_next_packet_with_timeout_fails_when_stream_stalls() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            let svc = tonic::transport::Server::builder().add_service(
+                StreamRelayServiceServer::new(TestStalledStreamRelayService),
+            );
+            svc.serve_with_incoming(incoming)
+                .await
+                .expect("test grpc server should run");
+        });
+
+        let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+            .expect("valid endpoint")
+            .connect()
+            .await
+            .expect("client should connect");
+        let mut client = StreamRelayServiceClient::new(endpoint);
+        let response = client
+            .pull_rtmp_stream(Request::new(PullRtmpStreamRequest {
+                room_id: "room".to_string(),
+                media_id: "media".to_string(),
+                is_reconnect: false,
+            }))
+            .await
+            .expect("stream should open");
+
+        let mut stream = response.into_inner();
+        let err = tokio::time::timeout(TEST_STREAM_MESSAGE_TIMEOUT + Duration::from_secs(1), async {
+            tokio::time::timeout(TEST_STREAM_MESSAGE_TIMEOUT, stream.message())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "No gRPC relay frame received for {}ms, stream appears dead",
+                        TEST_STREAM_MESSAGE_TIMEOUT.as_millis()
+                    )
+                })?
+                .map_err(|e| anyhow::anyhow!("Stream error: {e}"))
+        })
+        .await
+        .expect("helper should return timeout error")
+        .expect_err("stalled stream must be reported as dead");
+        assert!(
+            err.to_string().contains("stream appears dead"),
+            "unexpected error: {err}"
+        );
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    struct TestStalledStreamRelayService;
+
+    #[tonic::async_trait]
+    impl super::super::proto::stream_relay_service_server::StreamRelayService
+        for TestStalledStreamRelayService
+    {
+        type PullRtmpStreamStream = std::pin::Pin<
+            Box<
+                dyn tokio_stream::Stream<Item = Result<super::super::proto::RtmpPacket, tonic::Status>>
+                    + Send,
+            >,
+        >;
+
+        async fn pull_rtmp_stream(
+            &self,
+            _request: Request<PullRtmpStreamRequest>,
+        ) -> Result<Response<Self::PullRtmpStreamStream>, tonic::Status> {
+            let pending_stream = stream::once(async {
+                tokio::time::sleep(TEST_STREAM_MESSAGE_TIMEOUT + Duration::from_secs(1)).await;
+                Ok(super::super::proto::RtmpPacket {
+                    data: bytes::Bytes::new(),
+                    timestamp: 0,
+                    frame_type: 1,
+                })
+            })
+            .boxed();
+            Ok(Response::new(Box::pin(pending_stream)))
+        }
+
+        async fn get_hls_playlist(
+            &self,
+            _request: Request<super::super::proto::GetHlsPlaylistRequest>,
+        ) -> Result<Response<super::super::proto::GetHlsPlaylistResponse>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("not used in test"))
+        }
+
+        async fn get_hls_segment(
+            &self,
+            _request: Request<super::super::proto::GetHlsSegmentRequest>,
+        ) -> Result<Response<super::super::proto::GetHlsSegmentResponse>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("not used in test"))
+        }
     }
 }

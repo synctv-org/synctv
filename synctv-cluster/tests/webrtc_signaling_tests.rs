@@ -81,10 +81,12 @@ async fn test_ice_candidate_routing() {
     // Both users subscribe
     let mut rx1 = hub
         .subscribe(room.clone(), user1.clone(), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx2 = hub
         .subscribe(room.clone(), user2.clone(), "conn2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // Send ICE candidate from user1 to user2
     let event = ClusterEvent::WebRTCSignaling {
@@ -122,10 +124,12 @@ async fn test_ice_candidate_routing_supports_conn_id_only_target() {
 
     let mut rx1 = hub
         .subscribe(room.clone(), user1.clone(), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx2 = hub
         .subscribe(room.clone(), user2.clone(), "conn2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     let event = ClusterEvent::WebRTCSignaling {
         event_id: nanoid::nanoid!(16),
@@ -239,10 +243,12 @@ async fn test_sdp_offer_answer_flow() {
 
     let mut rx_caller = hub
         .subscribe(room.clone(), caller.clone(), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx_callee = hub
         .subscribe(room.clone(), callee.clone(), "conn2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // Caller sends offer
     let offer = ClusterEvent::WebRTCSignaling {
@@ -332,10 +338,12 @@ async fn test_webrtc_join_leave_broadcast() {
 
     let mut rx1 = hub
         .subscribe(room.clone(), user1.clone(), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx2 = hub
         .subscribe(room.clone(), user2.clone(), "conn2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // User1 joins WebRTC
     let join_event = ClusterEvent::WebRTCJoin {
@@ -471,13 +479,16 @@ async fn test_multi_user_signaling() {
     // 3 users in same room
     let mut rx1 = hub
         .subscribe(room.clone(), uid("user1"), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx2 = hub
         .subscribe(room.clone(), uid("user2"), "conn2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx3 = hub
         .subscribe(room.clone(), uid("user3"), "conn3".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // User1 sends ICE candidate to user2 only
     let event = ClusterEvent::WebRTCSignaling {
@@ -633,13 +644,16 @@ async fn test_broadcast_to_user_all_connections() {
     // Same user with multiple connections (e.g., multiple tabs)
     let mut rx1 = hub
         .subscribe(room.clone(), user.clone(), "conn1".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx2 = hub
         .subscribe(room.clone(), user.clone(), "conn2".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
     let mut rx3 = hub
         .subscribe(room.clone(), user.clone(), "conn3".to_string())
-        .await;
+        .await
+        .expect("subscribe should succeed");
 
     // Broadcast to user (all connections)
     let event = ClusterEvent::WebRTCSignaling {

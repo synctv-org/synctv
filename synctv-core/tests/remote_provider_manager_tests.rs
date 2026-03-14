@@ -82,10 +82,7 @@ where
             return;
         }
         let now = tokio::time::Instant::now();
-        assert!(
-            now < deadline,
-            "condition not satisfied within {timeout:?}"
-        );
+        assert!(now < deadline, "condition not satisfied within {timeout:?}");
         tokio::time::sleep(interval.min(deadline - now)).await;
     }
 }

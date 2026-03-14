@@ -103,7 +103,8 @@ async fn handle_flv_stream(
     // not be spawned without lifecycle tracking.
     let subscriber_guard: Option<StreamSubscriberGuard> =
         if let Some(ref infra) = state.infrastructure {
-            let is_local = !infra.local_node_id.is_empty() && publisher_info.node_id == infra.local_node_id;
+            let is_local =
+                !infra.local_node_id.is_empty() && publisher_info.node_id == infra.local_node_id;
             if is_local {
                 None
             } else {
@@ -151,7 +152,9 @@ async fn handle_flv_stream(
 mod tests {
     use super::*;
     use crate::api::{LiveStreamingInfrastructure, StreamTracker};
-    use crate::livestream::{external_publish_manager::ExternalPublishManager, pull_manager::PullStreamManager};
+    use crate::livestream::{
+        external_publish_manager::ExternalPublishManager, pull_manager::PullStreamManager,
+    };
     use crate::relay::{mock_registry::MockStreamRegistry, PublisherInfo};
     use chrono::Utc;
 
@@ -205,17 +208,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_flv_stream_local_publisher_does_not_require_pull_stream() {
-        let registry = Arc::new(MockStreamRegistry::with_publishers(std::collections::HashMap::from([(
-            ("room1".to_string(), "media1".to_string()),
-            PublisherInfo {
-                node_id: "node-local".to_string(),
-                grpc_address: "127.0.0.1:50051".to_string(),
-                app_name: "live".to_string(),
-                user_id: String::new(),
-                started_at: Utc::now(),
-                epoch: 1,
-            },
-        )])));
+        let registry = Arc::new(MockStreamRegistry::with_publishers(
+            std::collections::HashMap::from([(
+                ("room1".to_string(), "media1".to_string()),
+                PublisherInfo {
+                    node_id: "node-local".to_string(),
+                    grpc_address: "127.0.0.1:50051".to_string(),
+                    app_name: "live".to_string(),
+                    user_id: String::new(),
+                    started_at: Utc::now(),
+                    epoch: 1,
+                },
+            )]),
+        ));
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
         let pull_manager = Arc::new(PullStreamManager::new(
             registry.clone(),
@@ -252,17 +257,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_flv_stream_remote_publisher_requires_pull_stream() {
-        let registry = Arc::new(MockStreamRegistry::with_publishers(std::collections::HashMap::from([(
-            ("room1".to_string(), "media1".to_string()),
-            PublisherInfo {
-                node_id: "node-remote".to_string(),
-                grpc_address: String::new(),
-                app_name: "live".to_string(),
-                user_id: String::new(),
-                started_at: Utc::now(),
-                epoch: 1,
-            },
-        )])));
+        let registry = Arc::new(MockStreamRegistry::with_publishers(
+            std::collections::HashMap::from([(
+                ("room1".to_string(), "media1".to_string()),
+                PublisherInfo {
+                    node_id: "node-remote".to_string(),
+                    grpc_address: String::new(),
+                    app_name: "live".to_string(),
+                    user_id: String::new(),
+                    started_at: Utc::now(),
+                    epoch: 1,
+                },
+            )]),
+        ));
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
         let pull_manager = Arc::new(PullStreamManager::new(
             registry.clone(),

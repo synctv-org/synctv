@@ -9,7 +9,8 @@ fn docker_startup_timeout() -> Duration {
     std::env::var("SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .map(|secs| secs.max(30)).map_or_else(|| Duration::from_mins(2), Duration::from_secs)
+        .map(|secs| secs.max(30))
+        .map_or_else(|| Duration::from_mins(2), Duration::from_secs)
 }
 
 async fn setup_redis() -> (RedisContainer, redis::Client) {

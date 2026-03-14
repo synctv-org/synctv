@@ -145,10 +145,9 @@ mod init_tests {
 }
 
 fn redis_connection_manager_config(config: &Config) -> RedisConnectionManagerConfig {
-    RedisConnectionManagerConfig::new()
-        .set_connection_timeout(Some(std::time::Duration::from_secs(
-            config.redis.connect_timeout_seconds,
-        )))
+    RedisConnectionManagerConfig::new().set_connection_timeout(Some(
+        std::time::Duration::from_secs(config.redis.connect_timeout_seconds),
+    ))
 }
 
 fn parse_redis_node_settings(config: &Config) -> Result<Option<RedisNodeSettings>, anyhow::Error> {
@@ -216,9 +215,11 @@ async fn init_sentinel(
     let initial_master_addr = client.get_connection_info().addr().to_string();
     info!(master = %initial_master_addr, "Sentinel discovered initial master");
 
-    let conn =
-        redis::aio::ConnectionManager::new_with_config(client.clone(), redis_connection_manager_config(config))
-            .await?;
+    let conn = redis::aio::ConnectionManager::new_with_config(
+        client.clone(),
+        redis_connection_manager_config(config),
+    )
+    .await?;
     let shared_conn = Arc::new(RwLock::new(conn));
 
     // Start background health check for Sentinel failover detection.

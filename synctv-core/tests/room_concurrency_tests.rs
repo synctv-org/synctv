@@ -784,5 +784,9 @@ async fn test_concurrent_joins_respect_room_capacity() {
     assert_eq!(success, 49, "49 users should join successfully");
     assert_eq!(rejected, 51, "51 users should be rejected (room full)");
 
-    tracing::info!("Concurrent join results: {} succeeded, {} rejected", success, rejected);
+    tracing::info!(
+        "Concurrent join results: {} succeeded, {} rejected",
+        success,
+        rejected
+    );
 }

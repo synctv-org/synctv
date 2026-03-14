@@ -1009,7 +1009,7 @@ mod tests {
             crate::oauth2::ProviderRegistry::new(),
             cluster_mode,
         )
-            .expect("Failed to create OAuth2 service")
+        .expect("Failed to create OAuth2 service")
     }
 
     fn create_test_service_with_domains(domains: Vec<String>) -> OAuth2Service {

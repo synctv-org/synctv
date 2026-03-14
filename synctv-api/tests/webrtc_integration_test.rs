@@ -310,14 +310,23 @@ mod permissions {
     use synctv_core::service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, RoomService, UserService,
     };
-    use synctv_core_testing::{create_test_pool_with_db_and_label, start_redis_url_with_label};
+    use synctv_core_testing::{
+        create_test_pool_with_db_and_label, start_redis_url_with_label, RedisContainer,
+        TestContainer,
+    };
 
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_get_ice_servers_denies_member_without_use_webrtc_permission() {
-        let (_postgres, pool) =
-            create_test_pool_with_db_and_label("synctv_test", "api-webrtc-permissions").await;
-        let (_redis, redis_url) = start_redis_url_with_label("api-webrtc-permissions").await;
+    struct ClientApiFixture {
+        _postgres: TestContainer,
+        _redis: RedisContainer,
+        pool: sqlx::PgPool,
+        user_service: Arc<UserService>,
+        room_service: Arc<RoomService>,
+        client_api: ClientApiImpl,
+    }
+
+    async fn build_client_api_fixture(label: &str) -> ClientApiFixture {
+        let (postgres, pool) = create_test_pool_with_db_and_label("synctv_test", label).await;
+        let (redis, redis_url) = start_redis_url_with_label(label).await;
 
         let redis_client = redis::Client::open(redis_url.as_str()).expect("Redis client");
         let redis_conn = Arc::new(tokio::sync::RwLock::new(
@@ -360,7 +369,23 @@ mod permissions {
             None,
         );
 
-        let (creator, _, _) = user_service
+        ClientApiFixture {
+            _postgres: postgres,
+            _redis: redis,
+            pool,
+            user_service,
+            room_service,
+            client_api,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_ice_servers_denies_member_without_use_webrtc_permission() {
+        let fixture = build_client_api_fixture("api-webrtc-permissions").await;
+
+        let (creator, _, _) = fixture
+            .user_service
             .register(
                 "webrtc_creator".to_string(),
                 Some("webrtc_creator@test.com".to_string()),
@@ -369,7 +394,8 @@ mod permissions {
             )
             .await
             .expect("register creator");
-        let (member, _, _) = user_service
+        let (member, _, _) = fixture
+            .user_service
             .register(
                 "webrtc_member".to_string(),
                 Some("webrtc_member@test.com".to_string()),
@@ -379,7 +405,8 @@ mod permissions {
             .await
             .expect("register member");
 
-        let (room, _) = room_service
+        let (room, _) = fixture
+            .room_service
             .create_room(
                 "WebRTC Permission Room".to_string(),
                 String::new(),
@@ -389,12 +416,14 @@ mod permissions {
             )
             .await
             .expect("create room");
-        room_service
+        fixture
+            .room_service
             .join_room(room.id.clone(), member.id.clone(), None)
             .await
             .expect("join room");
 
-        room_service
+        fixture
+            .room_service
             .member_service()
             .revoke_permission(
                 room.id.clone(),
@@ -405,7 +434,8 @@ mod permissions {
             .await
             .expect("revoke USE_WEBRTC");
 
-        let err = client_api
+        let err = fixture
+            .client_api
             .get_ice_servers(&room.id, &member.id)
             .await
             .expect_err("members without USE_WEBRTC must be denied");
@@ -417,6 +447,134 @@ mod permissions {
                     "expected permission failure to map to authorization error: {message}"
                 );
             }
+            other => panic!("expected authorization error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_ice_servers_rejects_banned_room() {
+        let fixture = build_client_api_fixture("api-webrtc-banned-room").await;
+
+        let (creator, _, _) = fixture
+            .user_service
+            .register(
+                "webrtc_banned_creator".to_string(),
+                Some("webrtc_banned_creator@test.com".to_string()),
+                "TestPassword123!".to_string(),
+                None,
+            )
+            .await
+            .expect("register creator");
+        let (member, _, _) = fixture
+            .user_service
+            .register(
+                "webrtc_banned_member".to_string(),
+                Some("webrtc_banned_member@test.com".to_string()),
+                "TestPassword123!".to_string(),
+                None,
+            )
+            .await
+            .expect("register member");
+
+        let (room, _) = fixture
+            .room_service
+            .create_room(
+                "WebRTC Banned Room".to_string(),
+                String::new(),
+                creator.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("create room");
+        fixture
+            .room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("join room");
+        fixture
+            .room_service
+            .ban_room(&room.id, &creator.id)
+            .await
+            .expect("ban room");
+
+        let err = fixture
+            .client_api
+            .get_ice_servers(&room.id, &member.id)
+            .await
+            .expect_err("banned room must reject webrtc bootstrap");
+
+        match err {
+            ApiError::Authorization(message) => assert!(
+                message.contains("Forbidden"),
+                "banned room should be rejected as authorization failure: {message}"
+            ),
+            other => panic!("expected authorization error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_ice_servers_rejects_closed_room() {
+        let fixture = build_client_api_fixture("api-webrtc-closed-room").await;
+
+        let (creator, _, _) = fixture
+            .user_service
+            .register(
+                "webrtc_closed_creator".to_string(),
+                Some("webrtc_closed_creator@test.com".to_string()),
+                "TestPassword123!".to_string(),
+                None,
+            )
+            .await
+            .expect("register creator");
+        let (member, _, _) = fixture
+            .user_service
+            .register(
+                "webrtc_closed_member".to_string(),
+                Some("webrtc_closed_member@test.com".to_string()),
+                "TestPassword123!".to_string(),
+                None,
+            )
+            .await
+            .expect("register member");
+
+        let (mut room, _) = fixture
+            .room_service
+            .create_room(
+                "WebRTC Closed Room".to_string(),
+                String::new(),
+                creator.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("create room");
+        fixture
+            .room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("join room");
+
+        let original_version = room.version;
+        room.status = synctv_core::models::RoomStatus::Closed;
+        synctv_core::repository::RoomRepository::new(fixture.pool.clone())
+            .update(&room, original_version)
+            .await
+            .expect("close room");
+
+        let err = fixture
+            .client_api
+            .get_ice_servers(&room.id, &member.id)
+            .await
+            .expect_err("closed room must reject webrtc bootstrap");
+
+        match err {
+            ApiError::Authorization(message) => assert!(
+                message.contains("Forbidden"),
+                "closed room should be rejected as authorization failure: {message}"
+            ),
             other => panic!("expected authorization error, got {other:?}"),
         }
     }

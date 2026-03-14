@@ -170,7 +170,8 @@ mod tests {
         let err = load_config().expect_err("invalid explicit config must fail closed");
 
         assert!(
-            err.to_string().contains("explicitly set SYNCTV_CONFIG_PATH"),
+            err.to_string()
+                .contains("explicitly set SYNCTV_CONFIG_PATH"),
             "unexpected error: {err}"
         );
     }

@@ -32,8 +32,8 @@ use crate::bootstrap::webrtc::init_webrtc;
 use crate::cluster_bridge::ClusterPlaybackBroadcaster;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
-    AuditFlushHook, CacheInvalidationStopHook, HealthMonitorShutdownHook,
-    ProviderInvalidationHook, SettingsListenHook, ShutdownCoordinator,
+    AuditFlushHook, CacheInvalidationStopHook, HealthMonitorShutdownHook, ProviderInvalidationHook,
+    SettingsListenHook, ShutdownCoordinator,
 };
 
 /// Infrastructure: Redis (optional), Database, `NodeID`.
@@ -240,9 +240,7 @@ fn require_cluster_redis_conn(
     })
 }
 
-fn require_cluster_redis_handles(
-    redis_handles: Option<&RedisHandles>,
-) -> Result<&RedisHandles> {
+fn require_cluster_redis_handles(redis_handles: Option<&RedisHandles>) -> Result<&RedisHandles> {
     redis_handles.ok_or_else(|| {
         anyhow::anyhow!(
             "startup invariant violated: cluster runtime reached without Redis handle wiring"
@@ -450,6 +448,9 @@ impl Application {
             cache_invalidation_svc
         };
         let cache_invalidation = Arc::new(cache_invalidation_svc);
+        shutdown.register_hook(CacheInvalidationStopHook {
+            service: cache_invalidation.clone(),
+        });
 
         // Start the cache invalidation Redis subscriber BEFORE init_services.
         // Issue #44: subscriber must be running before any service publishes an
@@ -480,9 +481,6 @@ impl Application {
 
         // Track settings cancellation token and listen task in shutdown coordinator
         shutdown.track_token("settings", synctv_services.settings_cancel.clone());
-        shutdown.register_hook(CacheInvalidationStopHook {
-            service: cache_invalidation.clone(),
-        });
         shutdown.register_hook(AuditFlushHook {
             handle: synctv_services.audit_flush_handle.clone(),
         });
@@ -989,16 +987,16 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synctv_core::{
-        models::{SignupMethod, User, UserRole, UserStatus},
-        repository::UserRepository,
-        service::auth::hash_password,
-    };
     use synctv_core::config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
         ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
         HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
         OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig, WebRTCConfig,
+    };
+    use synctv_core::{
+        models::{SignupMethod, User, UserRole, UserStatus},
+        repository::UserRepository,
+        service::auth::hash_password,
     };
     use tokio::sync::broadcast;
 
@@ -1188,9 +1186,7 @@ mod tests {
         .expect_err("startup must fail when no active administrator exists");
 
         assert!(
-            error
-                .to_string()
-                .contains("no active administrator exists"),
+            error.to_string().contains("no active administrator exists"),
             "unexpected error: {error}"
         );
     }

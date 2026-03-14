@@ -37,7 +37,7 @@ use crate::impls::messaging::{MessageSender, ProtoCodec, StreamMessage, StreamMe
 use crate::proto::client::{ClientMessage, ServerMessage};
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::auth::JwtValidator;
-use synctv_core::service::ContentFilter;
+use synctv_core::service::{ContentFilter, PendingValidatedTicket};
 
 /// Threshold for consecutive slow-client drops before disconnecting them
 const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
@@ -113,6 +113,18 @@ pub enum AuthMethod {
     Ticket,
 }
 
+#[derive(Debug, Clone)]
+struct TicketAuthCommit {
+    ticket: String,
+    pending: PendingValidatedTicket,
+}
+
+#[derive(Debug, Clone)]
+struct HandshakeAuthContext {
+    user_id: UserId,
+    ticket_commit: Option<TicketAuthCommit>,
+}
+
 /// Extract user ID from authentication credentials
 ///
 /// Priority:
@@ -131,7 +143,7 @@ async fn extract_user_id(
     headers: &HeaderMap,
     query: &WsQuery,
     room_id: &synctv_core::models::RoomId,
-) -> Result<(UserId, AuthMethod), AppError> {
+) -> Result<HandshakeAuthContext, AppError> {
     // Use the shared JwtValidator from AppState (created once at startup)
     let validator = &state.jwt_validator;
 
@@ -152,7 +164,10 @@ async fn extract_user_id(
             .await
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
-        return Ok((authenticated.user_id, AuthMethod::Header));
+        return Ok(HandshakeAuthContext {
+            user_id: authenticated.user_id,
+            ticket_commit: None,
+        });
     }
 
     // Second, try ticket query parameter (recommended for browsers).
@@ -161,13 +176,18 @@ async fn extract_user_id(
     // to prevent TOCTOU race conditions (Issue #17).
     if let Some(ref ticket) = query.ticket {
         if let Some(ref ws_ticket_service) = state.ws_ticket_service {
-            // Use validate_and_consume_checked for TOCTOU-safe validation
-            let validated = ws_ticket_service
-                .validate_and_consume_checked(ticket, room_id, &*state.user_service)
+            let pending = ws_ticket_service
+                .validate_checked(ticket, room_id, &*state.user_service)
                 .await
                 .map_err(|e| AppError::unauthorized(format!("Invalid or expired ticket: {e}")))?;
 
-            return Ok((validated.user_id, AuthMethod::Ticket));
+            return Ok(HandshakeAuthContext {
+                user_id: pending.user_id.clone(),
+                ticket_commit: Some(TicketAuthCommit {
+                    ticket: ticket.clone(),
+                    pending,
+                }),
+            });
         }
         return Err(AppError::internal_server_error(
             "WebSocket ticket service not configured",
@@ -226,7 +246,10 @@ fn validate_websocket_origin(
         .get(header::HOST)
         .and_then(|host| host.to_str().ok())
     {
-        if parsed_origin.host_str().is_some() && same_origin_as_host(&parsed_origin, host) {
+        let forwarded_proto = headers
+            .get("x-forwarded-proto")
+            .and_then(|value| value.to_str().ok());
+        if same_origin_as_host(&parsed_origin, host, forwarded_proto) {
             return Ok(());
         }
     }
@@ -240,25 +263,11 @@ fn validate_websocket_origin(
     ))
 }
 
-pub(crate) fn websocket_runtime_dependencies_available(state: &AppState) -> bool {
-    state.cluster_manager.is_some() && state.chat_service.is_some()
-}
-
-fn validate_websocket_runtime_dependencies(state: &AppState) -> Result<(), AppError> {
-    validate_websocket_runtime_dependency_flags(websocket_runtime_dependencies_available(state))
-}
-
-fn validate_websocket_runtime_dependency_flags(
-    dependencies_available: bool,
-) -> Result<(), AppError> {
-    if !dependencies_available {
-        return Err(AppError::service_unavailable());
-    }
-
-    Ok(())
-}
-
-fn same_origin_as_host(origin: &url::Url, host_header: &str) -> bool {
+fn same_origin_as_host(
+    origin: &url::Url,
+    host_header: &str,
+    forwarded_proto: Option<&str>,
+) -> bool {
     let Some(origin_host) = origin.host_str() else {
         return false;
     };
@@ -266,6 +275,12 @@ fn same_origin_as_host(origin: &url::Url, host_header: &str) -> bool {
     let (request_host, request_port) = split_host_and_port(host_header);
     if !origin_host.eq_ignore_ascii_case(request_host) {
         return false;
+    }
+
+    if let Some(request_scheme) = forwarded_proto {
+        if !origin.scheme().eq_ignore_ascii_case(request_scheme) {
+            return false;
+        }
     }
 
     origin.port_or_known_default()
@@ -296,6 +311,24 @@ fn default_port_for_scheme(scheme: &str) -> Option<u16> {
         "https" => Some(443),
         _ => None,
     }
+}
+
+pub(crate) fn websocket_runtime_dependencies_available(state: &AppState) -> bool {
+    state.cluster_manager.is_some() && state.chat_service.is_some()
+}
+
+pub(crate) fn validate_websocket_runtime_dependencies(state: &AppState) -> Result<(), AppError> {
+    validate_websocket_runtime_dependency_flags(websocket_runtime_dependencies_available(state))
+}
+
+fn validate_websocket_runtime_dependency_flags(
+    dependencies_available: bool,
+) -> Result<(), AppError> {
+    if !dependencies_available {
+        return Err(AppError::service_unavailable());
+    }
+
+    Ok(())
 }
 
 /// WebSocket stream implementation of `StreamMessage` trait
@@ -421,10 +454,16 @@ const fn requires_state_resync(message: &ServerMessage) -> bool {
     use crate::proto::client::server_message::Message;
     matches!(
         &message.message,
-        Some(Message::UserJoined(_) | Message::UserLeft(_) | Message::MediaAdded(_) |
-Message::MediaRemoved(_) | Message::PlaylistCreated(_) |
-Message::PlaylistUpdated(_) | Message::PlaylistDeleted(_) |
-Message::Notification(_))
+        Some(
+            Message::UserJoined(_)
+                | Message::UserLeft(_)
+                | Message::MediaAdded(_)
+                | Message::MediaRemoved(_)
+                | Message::PlaylistCreated(_)
+                | Message::PlaylistUpdated(_)
+                | Message::PlaylistDeleted(_)
+                | Message::Notification(_)
+        )
     )
 }
 
@@ -557,10 +596,20 @@ pub async fn websocket_handler(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
-    let (rid, user_id) = run_websocket_handshake_with_timeout(prepare_websocket_upgrade(
+    validate_websocket_runtime_dependencies(&state)?;
+
+    let (rid, auth) = run_websocket_handshake_with_timeout(prepare_websocket_upgrade(
         &state, &room_id, &query, &headers,
     ))
     .await?;
+    let user_id = auth.user_id.clone();
+    commit_prevalidated_ticket(&state, &rid, &auth)
+        .await
+        .map_err(|error| {
+            state.connection_manager.release_room_reservation(&rid);
+            state.connection_manager.release_user_reservation(&user_id);
+            error
+        })?;
 
     let failed_upgrade_cleanup = build_failed_upgrade_cleanup(
         state.connection_manager.clone(),
@@ -574,7 +623,27 @@ pub async fn websocket_handler(
     Ok(ws
         .max_message_size(64 * 1024)
         .on_failed_upgrade(failed_upgrade_cleanup)
-        .on_upgrade(move |socket| handle_socket(socket, state, rid, user_id)))
+        .on_upgrade(move |socket| handle_socket(socket, state, rid, auth)))
+}
+
+async fn commit_prevalidated_ticket(
+    state: &AppState,
+    room_id: &RoomId,
+    auth: &HandshakeAuthContext,
+) -> Result<(), AppError> {
+    let Some(ticket_commit) = auth.ticket_commit.as_ref() else {
+        return Ok(());
+    };
+
+    let ws_ticket_service = state.ws_ticket_service.as_ref().ok_or_else(|| {
+        AppError::internal_server_error("WebSocket ticket service not configured")
+    })?;
+
+    ws_ticket_service
+        .consume_prevalidated(&ticket_commit.ticket, room_id, &ticket_commit.pending)
+        .await
+        .map(|_| ())
+        .map_err(AppError::from)
 }
 
 async fn run_websocket_handshake_with_timeout<T>(
@@ -590,13 +659,14 @@ async fn prepare_websocket_upgrade(
     room_id: &str,
     query: &WsQuery,
     headers: &HeaderMap,
-) -> Result<(RoomId, UserId), AppError> {
+) -> Result<(RoomId, HandshakeAuthContext), AppError> {
     validate_websocket_origin(headers, &state.config.server.cors_allowed_origins)?;
 
     let rid = crate::room_id_validation::parse_room_id(room_id)
         .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
 
-    let (user_id, _auth_method) = extract_user_id(state, headers, query, &rid).await?;
+    let auth = extract_user_id(state, headers, query, &rid).await?;
+    let user_id = auth.user_id.clone();
 
     let is_member = state
         .room_service
@@ -636,7 +706,7 @@ async fn prepare_websocket_upgrade(
         return Err(AppError::too_many_requests(e));
     }
 
-    Ok((rid, user_id))
+    Ok((rid, auth))
 }
 
 fn build_failed_upgrade_cleanup(
@@ -704,13 +774,16 @@ async fn handle_socket(
     socket: axum::extract::ws::WebSocket,
     state: AppState,
     room_id: RoomId,
-    user_id: UserId,
+    auth: HandshakeAuthContext,
 ) {
+    let user_id = auth.user_id.clone();
     let mut reservation_guard = ReservationGuard::new(
         state.connection_manager.clone(),
         room_id.clone(),
         user_id.clone(),
     );
+
+    let socket = socket;
 
     // Get username from user service
     let username = state
@@ -1044,13 +1117,25 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_websocket_origin_allows_same_origin_host() {
+    fn test_validate_websocket_origin_allows_same_origin_host_when_explicitly_allowlisted() {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, "app.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
 
-        validate_websocket_origin(&headers, &[])
-            .expect("same-origin browser websocket should be allowed");
+        validate_websocket_origin(&headers, &["https://app.example.com".to_string()]).expect(
+            "same-origin browser websocket should only be allowed when explicitly configured",
+        );
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_allows_same_origin_host_without_explicit_allowlist() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "app.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+
+        validate_websocket_origin(&headers, &[]).expect(
+            "same-origin browser websocket should be allowed without explicit CORS allowlist",
+        );
     }
 
     #[test]
@@ -1061,6 +1146,25 @@ mod tests {
 
         validate_websocket_origin(&headers, &["https://app.example.com".to_string()])
             .expect("configured frontend origin should be allowed");
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_rejects_same_host_with_mismatched_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "app.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "http://app.example.com".parse().unwrap());
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+
+        let err = validate_websocket_origin(&headers, &[])
+            .expect_err("same host with proxy-reported https must reject an http origin");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_split_host_and_port_supports_ipv6_host_header() {
+        let (host, port) = split_host_and_port("[::1]:8080");
+        assert_eq!(host, "::1");
+        assert_eq!(port, Some(8080));
     }
 
     #[test]
@@ -1084,13 +1188,6 @@ mod tests {
         let err = validate_websocket_origin(&headers, &[])
             .expect_err("null origin should not be trusted");
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
-    }
-
-    #[test]
-    fn test_split_host_and_port_supports_ipv6_host_header() {
-        let (host, port) = split_host_and_port("[::1]:8080");
-        assert_eq!(host, "::1");
-        assert_eq!(port, Some(8080));
     }
 
     #[test]
@@ -1120,7 +1217,8 @@ mod tests {
             Ok::<(), AppError>(())
         };
 
-        let timeout_task = tokio::spawn(async move { run_websocket_handshake_with_timeout(handshake).await });
+        let timeout_task =
+            tokio::spawn(async move { run_websocket_handshake_with_timeout(handshake).await });
 
         tokio::time::advance(WEBSOCKET_HANDSHAKE_TIMEOUT + Duration::from_secs(1)).await;
 

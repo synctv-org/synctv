@@ -586,13 +586,10 @@ async fn test_proxy_with_cache_head_request_returns_content_length() {
     let url = format!("{public_origin}/video.mp4");
     let provider_headers = HashMap::new();
 
-    let total = synctv_proxy::slice_cache::filter::head_content_length(
-        &client,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let total =
+        synctv_proxy::slice_cache::filter::head_content_length(&client, &url, &provider_headers)
+            .await
+            .unwrap();
 
     assert_eq!(total, total_size);
 }
@@ -697,8 +694,7 @@ async fn test_head_content_length_rejects_redirect_to_blocked_ip_like_main_proxy
     Mock::given(method("HEAD"))
         .and(path("/start"))
         .respond_with(
-            ResponseTemplate::new(302)
-                .insert_header("Location", "http://127.0.0.1:12345/private"),
+            ResponseTemplate::new(302).insert_header("Location", "http://127.0.0.1:12345/private"),
         )
         .mount(&mock_server)
         .await;
@@ -2439,9 +2435,9 @@ async fn test_proxy_with_cache_enabled_overrides_disabled_config() {
 
     let cache = slice_cache_for_mock(
         SliceCacheConfig {
-        enabled: false,
-        ..SliceCacheConfig::default()
-    },
+            enabled: false,
+            ..SliceCacheConfig::default()
+        },
         &mock_server,
     );
     let url = mock_public_url(&mock_server, "/runtime-toggle.mp4");
@@ -2489,8 +2485,7 @@ async fn test_proxy_with_cache_rejects_redirect_to_blocked_ip_on_slice_fetch() {
         .and(path("/video.mp4"))
         .and(header("Range", "bytes=0-2097151"))
         .respond_with(
-            ResponseTemplate::new(302)
-                .insert_header("Location", "http://127.0.0.1:12345/private"),
+            ResponseTemplate::new(302).insert_header("Location", "http://127.0.0.1:12345/private"),
         )
         .mount(&mock_server)
         .await;
@@ -2507,6 +2502,80 @@ async fn test_proxy_with_cache_rejects_redirect_to_blocked_ip_on_slice_fetch() {
     assert!(
         err.to_string().contains("blocked by SSRF policy"),
         "slice fetch path must reuse redirect SSRF validation: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_proxy_with_cache_disabled_rejects_redirect_to_blocked_ip_on_bypass_path() {
+    let mock_server = MockServer::start().await;
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            enabled: false,
+            ..SliceCacheConfig::default()
+        },
+        &mock_server,
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/video.mp4"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("Location", "http://127.0.0.1:12345/private"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let err = synctv_proxy::slice_cache::proxy_with_cache_enabled(
+        &cache,
+        false,
+        None,
+        &mock_public_url(&mock_server, "/video.mp4"),
+        &HashMap::new(),
+    )
+    .await
+    .expect_err("disabled-cache bypass path must still enforce redirect SSRF validation");
+
+    assert!(
+        err.to_string().contains("blocked by SSRF policy"),
+        "bypass path must reuse redirect SSRF validation: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_proxy_with_cache_large_range_bypass_rejects_redirect_to_blocked_ip() {
+    let mock_server = MockServer::start().await;
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+
+    Mock::given(method("HEAD"))
+        .and(path("/video.mp4"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", (32 * 1024 * 1024).to_string())
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/video.mp4"))
+        .and(header("Range", "bytes=0-18874367"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("Location", "http://127.0.0.1:12345/private"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let err = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=0-18874367"),
+        &mock_public_url(&mock_server, "/video.mp4"),
+        &HashMap::new(),
+    )
+    .await
+    .expect_err("large-range bypass path must still enforce redirect SSRF validation");
+
+    assert!(
+        err.to_string().contains("blocked by SSRF policy"),
+        "large-range bypass path must reuse redirect SSRF validation: {err}"
     );
 }
 

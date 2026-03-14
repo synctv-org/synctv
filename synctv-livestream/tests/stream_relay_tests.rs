@@ -26,15 +26,17 @@ fn create_test_service() -> synctv_livestream::grpc::StreamRelayServiceImpl {
 }
 
 #[tokio::test]
-async fn test_authenticate_no_secret_allows_all() {
+async fn test_authenticate_without_configured_secret_fails_closed() {
     let service = create_test_service();
-    // No cluster_secret configured, so authentication should pass for any request
     let request: Request<()> = Request::new(());
     let result = service.authenticate(&request);
     assert!(
-        result.is_ok(),
-        "No secret configured should allow all requests"
+        result.is_err(),
+        "Missing server-side cluster secret must fail closed for internal relay RPCs"
     );
+
+    let status = result.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
 }
 
 #[tokio::test]

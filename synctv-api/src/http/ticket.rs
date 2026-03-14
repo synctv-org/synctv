@@ -44,6 +44,13 @@ pub struct TicketResponse {
     pub usage: String,
 }
 
+fn map_room_lookup_error(room_id: &str, err: synctv_core::Error) -> AppError {
+    match err {
+        synctv_core::Error::NotFound(_) => AppError::not_found(format!("Room {room_id} not found")),
+        other => AppError::from(other),
+    }
+}
+
 /// Create a room-bound WebSocket ticket for secure authentication
 ///
 /// This endpoint creates a short-lived, one-time-use ticket that can be used
@@ -74,6 +81,8 @@ pub async fn create_ticket(
     State(state): State<AppState>,
     Json(req): Json<CreateTicketRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::websocket::validate_websocket_runtime_dependencies(&state)?;
+
     // Validate room_id is non-empty
     if req.room_id.trim().is_empty() {
         return Err(AppError::bad_request("room_id is required"));
@@ -87,7 +96,7 @@ pub async fn create_ticket(
         .room_service
         .get_room(&room_id)
         .await
-        .map_err(|_| AppError::not_found(format!("Room {} not found", req.room_id)))?;
+        .map_err(|err| map_room_lookup_error(&req.room_id, err))?;
 
     if room.is_banned {
         return Err(AppError::forbidden("Room is banned"));
@@ -134,4 +143,29 @@ pub async fn create_ticket(
     };
 
     Ok((StatusCode::OK, Json(response)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_room_lookup_error;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn room_lookup_not_found_maps_to_404() {
+        let err = map_room_lookup_error(
+            "room_123",
+            synctv_core::Error::NotFound("missing".to_string()),
+        );
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+        assert!(err.message.contains("room_123"));
+    }
+
+    #[test]
+    fn room_lookup_database_error_does_not_map_to_404() {
+        let err = map_room_lookup_error(
+            "room_123",
+            synctv_core::Error::Database(sqlx::Error::PoolTimedOut),
+        );
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
 }

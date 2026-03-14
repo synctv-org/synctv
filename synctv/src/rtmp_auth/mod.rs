@@ -407,10 +407,7 @@ enum RoomAccessRejection {
 }
 
 impl RoomAccessRejection {
-    fn into_error(
-        self,
-        app_name: &str,
-    ) -> Box<dyn std::error::Error + Send + Sync> {
+    fn into_error(self, app_name: &str) -> Box<dyn std::error::Error + Send + Sync> {
         match self {
             Self::Banned => format!("Room {app_name} is banned").into(),
             Self::Pending => format!("Room {app_name} is pending, need admin approval").into(),
@@ -1019,8 +1016,8 @@ mod tests {
             UserId::from_string("user-1".to_string()),
             RoomStatus::Closed,
         );
-        let err = validate_rtmp_room_state(&room)
-            .expect_err("closed room must reject RTMP publish/play");
+        let err =
+            validate_rtmp_room_state(&room).expect_err("closed room must reject RTMP publish/play");
         assert!(
             matches!(err, RoomAccessRejection::Closed),
             "unexpected rejection: {err:?}"
@@ -1048,7 +1045,10 @@ mod tests {
 
     #[test]
     fn test_validate_rtmp_room_state_rejects_banned_room() {
-        let mut room = Room::new("Banned room".to_string(), UserId::from_string("user-1".to_string()));
+        let mut room = Room::new(
+            "Banned room".to_string(),
+            UserId::from_string("user-1".to_string()),
+        );
         room.ban();
 
         assert_eq!(

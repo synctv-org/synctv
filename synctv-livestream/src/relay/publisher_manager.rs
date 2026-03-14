@@ -861,9 +861,7 @@ impl PublisherManager {
             // Skip during StreamHub restart to avoid false cleanups while
             // publishers are reconnecting to the new hub instance.
             let idle_secs = entry.idle_secs();
-            if idle_secs > self.silent_timeout_secs
-                && !self.is_restarting.load(Ordering::Acquire)
-            {
+            if idle_secs > self.silent_timeout_secs && !self.is_restarting.load(Ordering::Acquire) {
                 warn!(
                     "Silent publisher detected: room={} media={} (no data for {}s, threshold={}s)",
                     room_id, media_id, idle_secs, self.silent_timeout_secs
@@ -1395,17 +1393,19 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_start_stops_heartbeat_and_sync_when_broadcast_channel_closes() {
-        let registry = Arc::new(MockStreamRegistry::with_publishers(std::collections::HashMap::from([(
-            ("room1".to_string(), "media1".to_string()),
-            PublisherInfo {
-                node_id: "test-node".to_string(),
-                grpc_address: "127.0.0.1:50051".to_string(),
-                app_name: "live".to_string(),
-                user_id: "user1".to_string(),
-                started_at: Utc::now(),
-                epoch: 1,
-            },
-        )])));
+        let registry = Arc::new(MockStreamRegistry::with_publishers(
+            std::collections::HashMap::from([(
+                ("room1".to_string(), "media1".to_string()),
+                PublisherInfo {
+                    node_id: "test-node".to_string(),
+                    grpc_address: "127.0.0.1:50051".to_string(),
+                    app_name: "live".to_string(),
+                    user_id: "user1".to_string(),
+                    started_at: Utc::now(),
+                    epoch: 1,
+                },
+            )]),
+        ));
         let (hub_tx, _hub_rx) = tokio::sync::mpsc::channel(16);
         let manager = Arc::new(PublisherManager::new(
             registry.clone(),

@@ -26,7 +26,11 @@ fn docker_startup_timeout() -> Duration {
     std::env::var(DOCKER_STARTUP_TIMEOUT_ENV)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS)).map_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS), Duration::from_secs)
+        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
+        .map_or_else(
+            || Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS),
+            Duration::from_secs,
+        )
 }
 
 /// Redis test infrastructure that manages a single Redis container.

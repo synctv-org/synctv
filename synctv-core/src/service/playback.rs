@@ -878,10 +878,15 @@ impl PlaybackService {
                     // 3. Re-shuffle when all items played
                     // See: /Volumes/workspace/rust/design/13-自动连播设计.md §3.4
                     if let Some(ref current_id) = state.playing_media_id {
-                        playlist
+                        let other_media = playlist
                             .iter()
                             .filter(|m| &m.id != current_id)
-                            .choose(&mut rand::rng())
+                            .collect::<Vec<_>>();
+                        if other_media.is_empty() {
+                            playlist.iter().find(|m| &m.id == current_id)
+                        } else {
+                            other_media.into_iter().choose(&mut rand::rng())
+                        }
                     } else {
                         playlist.first()
                     }

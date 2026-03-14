@@ -772,7 +772,10 @@ mod tests {
             "unsubscribe should wait for temporary backpressure instead of succeeding early"
         );
 
-        let first = event_rx.recv().await.expect("blocked event should be readable");
+        let first = event_rx
+            .recv()
+            .await
+            .expect("blocked event should be readable");
         assert!(matches!(first, StreamHubEvent::UnPublish { .. }));
 
         let unsubscribe = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
@@ -780,8 +783,13 @@ mod tests {
             .expect("unsubscribe should eventually be delivered")
             .expect("event channel should stay open");
 
-        let result = unsubscribe_task.await.expect("unsubscribe task should join");
-        assert!(result.is_ok(), "unsubscribe should succeed after capacity frees");
+        let result = unsubscribe_task
+            .await
+            .expect("unsubscribe task should join");
+        assert!(
+            result.is_ok(),
+            "unsubscribe should succeed after capacity frees"
+        );
 
         match unsubscribe {
             StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {

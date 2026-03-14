@@ -15,7 +15,8 @@ use synctv_cluster::NodeHealth;
 
 /// Helper: create a local-only `NodeRegistry` and populate it with nodes.
 async fn setup_registry(node_ids: &[&str]) -> Arc<NodeRegistry> {
-    let registry = Arc::new(NodeRegistry::new_local_only("self".to_string(), 30, "cl8test:").unwrap());
+    let registry =
+        Arc::new(NodeRegistry::new_local_only("self".to_string(), 30, "cl8test:").unwrap());
 
     for id in node_ids {
         let node = NodeInfo::new(id.to_string(), format!("{id}:50051"), format!("{id}:8080"));
@@ -146,11 +147,8 @@ async fn test_round_robin_cycles_through_healthy() {
 /// Empty registry -> error.
 #[tokio::test]
 async fn test_empty_registry_returns_error() {
-    let registry = Arc::new(NodeRegistry::new_local_only(
-        "self".to_string(),
-        30,
-        "cl8empty:",
-    ).unwrap());
+    let registry =
+        Arc::new(NodeRegistry::new_local_only("self".to_string(), 30, "cl8empty:").unwrap());
 
     let lb = LoadBalancer::new(registry, LoadBalancingStrategy::Random);
     let selected = lb.select_node().await;

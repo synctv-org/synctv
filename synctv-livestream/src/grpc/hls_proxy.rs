@@ -1276,14 +1276,30 @@ mod tests {
 
     #[test]
     fn test_should_invalidate_connection_for_transport_level_statuses() {
-        assert!(should_invalidate_connection(&tonic::Status::deadline_exceeded("timeout")));
-        assert!(should_invalidate_connection(&tonic::Status::unavailable("down")));
-        assert!(should_invalidate_connection(&tonic::Status::cancelled("cancelled")));
-        assert!(should_invalidate_connection(&tonic::Status::internal("internal")));
-        assert!(should_invalidate_connection(&tonic::Status::unknown("unknown")));
-        assert!(!should_invalidate_connection(&tonic::Status::not_found("segment missing")));
-        assert!(!should_invalidate_connection(&tonic::Status::permission_denied("forbidden")));
-        assert!(!should_invalidate_connection(&tonic::Status::invalid_argument("bad request")));
+        assert!(should_invalidate_connection(
+            &tonic::Status::deadline_exceeded("timeout")
+        ));
+        assert!(should_invalidate_connection(&tonic::Status::unavailable(
+            "down"
+        )));
+        assert!(should_invalidate_connection(&tonic::Status::cancelled(
+            "cancelled"
+        )));
+        assert!(should_invalidate_connection(&tonic::Status::internal(
+            "internal"
+        )));
+        assert!(should_invalidate_connection(&tonic::Status::unknown(
+            "unknown"
+        )));
+        assert!(!should_invalidate_connection(&tonic::Status::not_found(
+            "segment missing"
+        )));
+        assert!(!should_invalidate_connection(
+            &tonic::Status::permission_denied("forbidden")
+        ));
+        assert!(!should_invalidate_connection(
+            &tonic::Status::invalid_argument("bad request")
+        ));
     }
 
     #[tokio::test]

@@ -286,7 +286,7 @@ async fn test_cache_invalidation_self_origin_not_received() {
     let service = Arc::new(CacheInvalidationService::new(
         Some(redis_client),
         "self_node".to_string(),
-        "test:cache:self_origin".to_string(),
+        unique_stream_key(),
     ));
 
     service.start().await.expect("Failed to start service");
@@ -308,6 +308,8 @@ async fn test_cache_invalidation_self_origin_not_received() {
         result.is_err(),
         "Self-originated message should NOT be delivered to the same node's subscriber"
     );
+
+    service.stop().await;
 }
 
 #[tokio::test]

@@ -84,6 +84,16 @@ pub struct ValidatedTicket {
     pub password_version: i32,
 }
 
+/// Outcome of a successful pre-validation before the ticket is finally consumed.
+#[derive(Debug, Clone)]
+pub struct PendingValidatedTicket {
+    /// User ID associated with the ticket
+    pub user_id: UserId,
+    /// Password version at ticket creation time
+    pub password_version: i32,
+    ticket_data: WsTicketData,
+}
+
 // ============================================================================
 // TicketStore trait
 // ============================================================================
@@ -622,6 +632,51 @@ impl WsTicketService {
     ) -> Result<ValidatedTicket> {
         let mode = self.store.backend_name();
 
+        let pending = self
+            .validate_checked(ticket, expected_room_id, user_validator)
+            .await?;
+
+        if !self
+            .store
+            .claim(ticket, expected_room_id, &pending.ticket_data)
+            .await?
+        {
+            debug!(
+                ticket = %ticket,
+                mode = %mode,
+                "WebSocket ticket already consumed during checked validation"
+            );
+            return Err(Error::Authorization(
+                "Invalid or expired ticket".to_string(),
+            ));
+        }
+
+        debug!(
+            user_id = %pending.user_id.as_str(),
+            room_id = %pending.ticket_data.room_id,
+            mode = %mode,
+            "WebSocket ticket validated and consumed with user check"
+        );
+
+        Ok(ValidatedTicket {
+            user_id: pending.user_id,
+            password_version: pending.password_version,
+        })
+    }
+
+    /// Validate a ticket and user state without consuming the ticket yet.
+    ///
+    /// This is intended for handshake flows that still have additional checks
+    /// before the connection is definitively established. The caller must later
+    /// call [`Self::consume_prevalidated`] to preserve one-time-use semantics.
+    pub async fn validate_checked(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        user_validator: &dyn UserValidator,
+    ) -> Result<PendingValidatedTicket> {
+        let mode = self.store.backend_name();
+
         let Some(ticket_data) = self.store.load(ticket, expected_room_id).await? else {
             debug!(ticket = %ticket, mode = %mode, "WebSocket ticket not found or expired");
             return Err(Error::Authorization(
@@ -658,15 +713,38 @@ impl WsTicketService {
             return Err(Error::Authorization("Authentication failed".to_string()));
         }
 
+        debug!(
+            user_id = %user_id.as_str(),
+            room_id = %ticket_data.room_id,
+            mode = %mode,
+            "WebSocket ticket prevalidated with user check"
+        );
+
+        Ok(PendingValidatedTicket {
+            user_id,
+            password_version: ticket_data.password_version,
+            ticket_data,
+        })
+    }
+
+    /// Consume a previously prevalidated ticket.
+    pub async fn consume_prevalidated(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        pending: &PendingValidatedTicket,
+    ) -> Result<ValidatedTicket> {
+        let mode = self.store.backend_name();
+
         if !self
             .store
-            .claim(ticket, expected_room_id, &ticket_data)
+            .claim(ticket, expected_room_id, &pending.ticket_data)
             .await?
         {
             debug!(
                 ticket = %ticket,
                 mode = %mode,
-                "WebSocket ticket already consumed during checked validation"
+                "WebSocket ticket already consumed before final handshake commit"
             );
             return Err(Error::Authorization(
                 "Invalid or expired ticket".to_string(),
@@ -674,15 +752,15 @@ impl WsTicketService {
         }
 
         debug!(
-            user_id = %user_id.as_str(),
-            room_id = %ticket_data.room_id,
+            user_id = %pending.user_id.as_str(),
+            room_id = %pending.ticket_data.room_id,
             mode = %mode,
-            "WebSocket ticket validated and consumed with user check"
+            "WebSocket ticket consumed after prevalidated handshake succeeded"
         );
 
         Ok(ValidatedTicket {
-            user_id,
-            password_version: ticket_data.password_version,
+            user_id: pending.user_id.clone(),
+            password_version: pending.password_version,
         })
     }
 
@@ -792,7 +870,8 @@ mod tests {
     #[async_trait]
     impl UserValidator for StaticUserValidator {
         async fn validate_for_ticket(&self, _user_id: &UserId) -> Result<UserValidationResult> {
-            self.result.clone()
+            self.result
+                .clone()
                 .map_err(|message| Error::Authorization((*message).to_string()))
         }
     }
@@ -885,6 +964,49 @@ mod tests {
         assert!(
             matches!(second_result, Err(Error::Authorization(_))),
             "checked validation must still enforce one-time use"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ticket_prevalidation_does_not_consume_until_commit() {
+        let service = WsTicketService::with_memory(Some(30));
+        let user_id = create_test_user_id("user1");
+        let room_id = create_test_room_id("room-prevalidated");
+        let ticket = service.create_ticket(&user_id, &room_id, 5).await.unwrap();
+
+        let allow_validator = StaticUserValidator {
+            result: Ok(UserValidationResult {
+                password_version: 5,
+            }),
+        };
+
+        service
+            .validate_checked(&ticket, &room_id, &allow_validator)
+            .await
+            .expect("prevalidation should succeed");
+
+        let still_valid = service
+            .validate_and_consume(&ticket, &room_id)
+            .await
+            .expect("prevalidation alone must not consume the ticket");
+        assert_eq!(still_valid.user_id.as_str(), "user1");
+        assert_eq!(still_valid.password_version, 5);
+
+        let second_ticket = service.create_ticket(&user_id, &room_id, 5).await.unwrap();
+        let pending = service
+            .validate_checked(&second_ticket, &room_id, &allow_validator)
+            .await
+            .expect("second prevalidation should succeed");
+        let committed = service
+            .consume_prevalidated(&second_ticket, &room_id, &pending)
+            .await
+            .expect("commit should consume the prevalidated ticket");
+        assert_eq!(committed.user_id.as_str(), "user1");
+
+        let consumed_again = service.validate_and_consume(&second_ticket, &room_id).await;
+        assert!(
+            matches!(consumed_again, Err(Error::Authorization(_))),
+            "committed prevalidated ticket must become one-time-use"
         );
     }
 

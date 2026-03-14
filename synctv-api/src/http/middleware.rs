@@ -497,6 +497,20 @@ pub async fn websocket_rate_limit(
     rate_limit_middleware(state, RateLimitCategory::WebSocket, request, next).await
 }
 
+/// Middleware for routes that require the WebSocket runtime to be fully wired.
+///
+/// This runs before request extractors in the handler, ensuring these endpoints
+/// fail closed with 503 instead of leaking auth/validation-specific status codes
+/// when the runtime is unavailable.
+pub async fn websocket_runtime_required(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    crate::http::websocket::validate_websocket_runtime_dependencies(&state)?;
+    Ok(next.run(request).await)
+}
+
 /// Security headers middleware
 ///
 /// Adds security-related HTTP headers to all responses to protect against

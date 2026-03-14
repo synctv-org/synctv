@@ -14,8 +14,8 @@ pub mod services;
 // Re-export commonly used items
 pub use fixtures::{TestRoom, TestUser};
 pub use postgres::{
-    create_test_pool, create_test_pool_with_db, create_test_pool_with_db_and_label,
-    create_test_pool_with_options_and_label, TestContainer,
+    create_test_database_url_with_label, create_test_pool, create_test_pool_with_db,
+    create_test_pool_with_db_and_label, create_test_pool_with_options_and_label, TestContainer,
 };
 pub use redis::{
     start_redis, start_redis_handle, start_redis_url, start_redis_url_with_label,

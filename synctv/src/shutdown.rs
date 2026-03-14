@@ -120,6 +120,16 @@ impl ShutdownCoordinator {
     /// Execute the full shutdown sequence within the total budget.
     pub async fn shutdown(self) {
         let deadline = tokio::time::Instant::now() + self.total_budget;
+        self.shutdown_with_deadline(deadline).await;
+    }
+
+    /// Execute the full shutdown sequence within the remaining time until `deadline`.
+    ///
+    /// This allows callers that already spent part of the process-level shutdown
+    /// budget on higher-priority phases to pass the same absolute deadline down,
+    /// ensuring the coordinator does not accidentally re-spend a fresh full
+    /// budget and exceed the container termination window.
+    pub async fn shutdown_with_deadline(self, deadline: tokio::time::Instant) {
         info!(
             "Starting shutdown sequence (total budget: {}s)",
             self.total_budget.as_secs()
@@ -419,6 +429,28 @@ mod tests {
 
         // Should complete quickly (tasks respond to cancel)
         assert!(elapsed < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_with_deadline_respects_external_remaining_budget() {
+        let mut coord = ShutdownCoordinator::new(Duration::from_secs(30));
+        coord.register_task(
+            "stuck_task",
+            tokio::spawn(async move {
+                std::future::pending::<()>().await;
+            }),
+        );
+
+        let start = tokio::time::Instant::now();
+        coord
+            .shutdown_with_deadline(start + Duration::from_millis(50))
+            .await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "external deadline should cap shutdown duration, got {elapsed:?}"
+        );
     }
 
     #[tokio::test]

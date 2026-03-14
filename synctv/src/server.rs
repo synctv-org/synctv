@@ -193,12 +193,14 @@ async fn await_runtime_server_shutdown(
     }
 
     let mut handle = handle;
-    if let Ok(join_result) = tokio::time::timeout(timeout, &mut handle).await { match join_result {
-        Ok(Ok(())) => info!("{name} stopped"),
-        Ok(Err(err)) => warn!("{name} stopped with error during shutdown: {err}"),
-        Err(err) if err.is_cancelled() => info!("{name} task cancelled during shutdown"),
-        Err(err) => warn!("{name} panicked during shutdown: {err}"),
-    } } else {
+    if let Ok(join_result) = tokio::time::timeout(timeout, &mut handle).await {
+        match join_result {
+            Ok(Ok(())) => info!("{name} stopped"),
+            Ok(Err(err)) => warn!("{name} stopped with error during shutdown: {err}"),
+            Err(err) if err.is_cancelled() => info!("{name} task cancelled during shutdown"),
+            Err(err) => warn!("{name} panicked during shutdown: {err}"),
+        }
+    } else {
         warn!(
             "{name} did not stop within {}s, aborting task",
             timeout.as_secs()
@@ -286,16 +288,27 @@ async fn cleanup_partial_startup(
     cleanup_cancel: &tokio_util::sync::CancellationToken,
     cleanup_handle: Option<JoinHandle<()>>,
     grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    deadline: tokio::time::Instant,
 ) {
     let _ = shutdown_tx.send(true);
     cleanup_cancel.cancel();
 
     if let Some(handle) = cleanup_handle {
-        await_task_shutdown("connection cleanup task", handle, STARTUP_CLEANUP_TIMEOUT).await;
+        await_task_shutdown(
+            "connection cleanup task",
+            handle,
+            remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT),
+        )
+        .await;
     }
 
     if let Some(handle) = grpc_handle {
-        await_runtime_server_shutdown("gRPC server", handle, STARTUP_CLEANUP_TIMEOUT).await;
+        let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
+        if timeout.is_zero() {
+            force_abort_runtime_server("gRPC server", handle).await;
+        } else {
+            await_runtime_server_shutdown("gRPC server", handle, timeout).await;
+        }
     }
 }
 
@@ -304,10 +317,20 @@ async fn shutdown_after_startup_failure(
     cleanup_cancel: &tokio_util::sync::CancellationToken,
     cleanup_handle: Option<JoinHandle<()>>,
     grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    deadline: tokio::time::Instant,
+    component_cleanup: impl std::future::Future<Output = ()> + Send,
     coordinator: ShutdownCoordinator,
 ) {
-    cleanup_partial_startup(shutdown_tx, cleanup_cancel, cleanup_handle, grpc_handle).await;
-    coordinator.shutdown().await;
+    cleanup_partial_startup(
+        shutdown_tx,
+        cleanup_cancel,
+        cleanup_handle,
+        grpc_handle,
+        deadline,
+    )
+    .await;
+    component_cleanup.await;
+    coordinator.shutdown_with_deadline(deadline).await;
 }
 
 async fn spawn_admin_event_listener(
@@ -423,14 +446,23 @@ impl SyncTvServer {
         let grpc_handle = match self.start_grpc_server(shutdown_rx.clone()).await {
             Ok(handle) => handle,
             Err(err) => {
+                let startup_cleanup_budget =
+                    Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
+                        .min(STARTUP_CLEANUP_TIMEOUT);
+                let startup_cleanup_deadline = tokio::time::Instant::now() + startup_cleanup_budget;
                 shutdown_after_startup_failure(
                     &shutdown_tx,
                     &cleanup_cancel,
                     Some(cleanup_handle),
                     None,
+                    startup_cleanup_deadline,
+                    self.shutdown_startup_failure_components(startup_cleanup_deadline),
                     coordinator,
                 )
                 .await;
+                info!("Closing database connection pool after startup failure...");
+                self.pool.close().await;
+                info!("Database pool closed after startup failure");
                 return Err(err);
             }
         };
@@ -441,14 +473,23 @@ impl SyncTvServer {
             Ok(handle) => handle,
             Err(err) => {
                 let grpc_handle = self.grpc_handle.take();
+                let startup_cleanup_budget =
+                    Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
+                        .min(STARTUP_CLEANUP_TIMEOUT);
+                let startup_cleanup_deadline = tokio::time::Instant::now() + startup_cleanup_budget;
                 shutdown_after_startup_failure(
                     &shutdown_tx,
                     &cleanup_cancel,
                     Some(cleanup_handle),
                     grpc_handle,
+                    startup_cleanup_deadline,
+                    self.shutdown_startup_failure_components(startup_cleanup_deadline),
                     coordinator,
                 )
                 .await;
+                info!("Closing database connection pool after startup failure...");
+                self.pool.close().await;
+                info!("Database pool closed after startup failure");
                 return Err(err);
             }
         };
@@ -607,7 +648,9 @@ impl SyncTvServer {
             .await;
 
         // Centralized shutdown: cancel tokens -> drain tasks -> run hooks
-        coordinator.shutdown().await;
+        coordinator
+            .shutdown_with_deadline(shutdown_start + total_drain_budget)
+            .await;
 
         // Close the database connection pool (after audit flush and settings task)
         info!("Closing database connection pool...");
@@ -625,8 +668,8 @@ impl SyncTvServer {
     ///
     /// This is separate from the `ShutdownCoordinator` because these components
     /// have custom shutdown protocols (not just cancellation tokens or join handles).
-    async fn shutdown_components(&mut self, remaining_budget: Duration) {
-        let _deadline = tokio::time::Instant::now() + remaining_budget;
+    async fn shutdown_components(&mut self, budget_remaining: Duration) {
+        let deadline = tokio::time::Instant::now() + budget_remaining;
 
         // Shut down connection manager (stops TTL refresh background task)
         info!("Shutting down connection manager...");
@@ -646,11 +689,8 @@ impl SyncTvServer {
         }
 
         // Stop livestream
-        shutdown_livestream_state(
-            &mut self.livestream_state,
-            self.config.server.shutdown_drain_timeout_seconds,
-        )
-        .await;
+        let livestream_budget = remaining_budget(deadline);
+        shutdown_livestream_state(&mut self.livestream_state, livestream_budget.as_secs()).await;
 
         // Shut down health monitor
         if let Some(ref health_monitor) = self.services.health_monitor {
@@ -663,6 +703,25 @@ impl SyncTvServer {
         if self.services.redis_publish_tx.is_some() {
             info!("Closing Redis publish channel");
         }
+    }
+
+    async fn shutdown_startup_failure_components(&mut self, deadline: tokio::time::Instant) {
+        if let Some(ref cluster_mgr) = self.services.cluster_manager {
+            info!("Shutting down cluster manager during startup rollback...");
+            let timeout = remaining_budget(deadline);
+            if timeout.is_zero() {
+                warn!("Skipping cluster manager shutdown during startup rollback: no budget left");
+            } else if tokio::time::timeout(timeout, cluster_mgr.shutdown())
+                .await
+                .is_ok()
+            {
+                info!("Cluster manager shut down during startup rollback");
+            } else {
+                warn!("Cluster manager shutdown exceeded startup rollback budget");
+            }
+        }
+
+        self.shutdown_components(remaining_budget(deadline)).await;
     }
 
     /// Start gRPC server
@@ -931,13 +990,13 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use crate::shutdown::ShutdownCoordinator;
     use super::{
         await_runtime_server_shutdown, await_task_shutdown, build_proxy_slice_cache_config,
         build_ws_ticket_service, cleanup_partial_startup, map_background_task_exit,
         map_runtime_server_exit, shutdown_after_startup_failure, shutdown_livestream_state,
         shutdown_runtime_phase, spawn_admin_event_listener, LivestreamShutdown,
     };
+    use crate::shutdown::ShutdownCoordinator;
     use async_trait::async_trait;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -1119,6 +1178,7 @@ mod tests {
             &cleanup_cancel,
             Some(cleanup_handle),
             Some(grpc_handle),
+            tokio::time::Instant::now() + Duration::from_secs(5),
         )
         .await;
 
@@ -1156,6 +1216,7 @@ mod tests {
         let cleanup_cancel = CancellationToken::new();
         let cleanup_handle = tokio::spawn(async move {});
         let hook_called = Arc::new(AtomicBool::new(false));
+        let component_cleanup_called = Arc::new(AtomicBool::new(false));
         let mut coordinator = ShutdownCoordinator::new(Duration::from_secs(1));
         coordinator.register_hook(FlagHook(Arc::clone(&hook_called)));
 
@@ -1164,13 +1225,74 @@ mod tests {
             &cleanup_cancel,
             Some(cleanup_handle),
             None,
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            {
+                let component_cleanup_called = Arc::clone(&component_cleanup_called);
+                async move {
+                    component_cleanup_called.store(true, Ordering::SeqCst);
+                }
+            },
             coordinator,
         )
         .await;
 
         assert!(
+            component_cleanup_called.load(Ordering::SeqCst),
+            "startup failure cleanup must run component-specific shutdown before coordinator hooks"
+        );
+        assert!(
             hook_called.load(Ordering::SeqCst),
             "startup failure cleanup must run the centralized shutdown coordinator"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_after_startup_failure_shares_single_deadline() {
+        use crate::shutdown::ShutdownHook;
+        use std::future::Future;
+        use std::pin::Pin;
+
+        struct PendingHook;
+
+        impl ShutdownHook for PendingHook {
+            fn name(&self) -> &str {
+                "pending_hook"
+            }
+
+            fn timeout(&self) -> Duration {
+                Duration::from_secs(30)
+            }
+
+            fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                Box::pin(async move {
+                    std::future::pending::<()>().await;
+                })
+            }
+        }
+
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        let cleanup_cancel = CancellationToken::new();
+        let cleanup_handle = tokio::spawn(async move {
+            std::future::pending::<()>().await;
+        });
+        let mut coordinator = ShutdownCoordinator::new(Duration::from_secs(30));
+        coordinator.register_hook(PendingHook);
+
+        let start = tokio::time::Instant::now();
+        shutdown_after_startup_failure(
+            &shutdown_tx,
+            &cleanup_cancel,
+            Some(cleanup_handle),
+            None,
+            start + Duration::from_millis(50),
+            async {},
+            coordinator,
+        )
+        .await;
+
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "startup rollback must respect a shared absolute deadline"
         );
     }
 

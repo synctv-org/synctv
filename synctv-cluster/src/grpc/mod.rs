@@ -47,7 +47,12 @@ impl ClusterAuthInterceptor {
     #[allow(clippy::result_large_err)]
     pub fn validate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
         if self.secret.is_empty() {
-            return Ok(request);
+            tracing::error!(
+                "Cluster gRPC auth interceptor is misconfigured: shared secret is empty"
+            );
+            return Err(Status::unauthenticated(
+                "Cluster authentication secret is not configured",
+            ));
         }
 
         let token = request

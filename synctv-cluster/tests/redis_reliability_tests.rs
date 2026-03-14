@@ -61,9 +61,10 @@ async fn test_redis_pubsub_no_message_loss() {
     let user_id = UserId::from_string("listener".to_string());
 
     // Subscribe on node A and establish the cross-replica subscription path first.
-    let (rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone())
-            .await
-            .expect("subscribe should succeed");
+    let (rx, conn_id) = node_a
+        .subscribe(room_id.clone(), user_id.clone())
+        .await
+        .expect("subscribe should succeed");
     let mut baseline_clients = vec![(rx, conn_id.clone())];
     broadcast_until_all_clients_receive(
         &node_b,
@@ -153,8 +154,8 @@ async fn test_redis_stream_catchup() {
     // Subscribe a user to the room in the hub
     let mut rx = message_hub
         .subscribe(room_id.clone(), user_id.clone(), "catchup_conn".to_string())
-            .await
-            .expect("subscribe should succeed");
+        .await
+        .expect("subscribe should succeed");
 
     // Create the publisher node separately to write events to Redis streams
     let publisher = create_node(&redis.redis_url, "publisher_node").await;
@@ -522,9 +523,10 @@ async fn test_cross_replica_deduplication() {
     let room_id = RoomId::from_string("dedup_room".to_string());
     let user_id = UserId::from_string("listener".to_string());
 
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone())
-            .await
-            .expect("subscribe should succeed");
+    let (mut room_rx, conn_id) = node_a
+        .subscribe(room_id.clone(), user_id.clone())
+        .await
+        .expect("subscribe should succeed");
 
     // Broadcast the same event twice locally (simulating duplicate delivery)
     let event = ClusterEvent::ChatMessage {

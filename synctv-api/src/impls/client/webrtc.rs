@@ -5,6 +5,24 @@ use synctv_core::models::{PermissionBits, RoomId, UserId};
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 
+fn validate_realtime_room_access_for_webrtc(
+    room: &synctv_core::models::Room,
+) -> Result<(), ApiError> {
+    if room.is_banned {
+        return Err(ApiError::Authorization(
+            "Forbidden: This room is banned".to_string(),
+        ));
+    }
+
+    if room.status.is_closed() {
+        return Err(ApiError::Authorization(
+            "Forbidden: This room is closed and not accepting new connections".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 impl ClientApiImpl {
     /// Get ICE servers configuration for WebRTC.
     ///
@@ -28,6 +46,12 @@ impl ClientApiImpl {
             .check_permission(room_id, user_id, PermissionBits::USE_WEBRTC)
             .await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+        let room = self
+            .room_service
+            .get_room(room_id)
+            .await
+            .map_err(ApiError::from)?;
+        validate_realtime_room_access_for_webrtc(&room)?;
 
         let webrtc_config = &self.config.webrtc;
         let mut servers = Vec::new();
@@ -153,5 +177,40 @@ impl ClientApiImpl {
         );
 
         Ok(GetNetworkQualityResponse { peers: vec![] })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_realtime_room_access_for_webrtc;
+    use crate::impls::ApiError;
+    use synctv_core::models::{Room, RoomStatus, UserId};
+
+    #[test]
+    fn validate_realtime_room_access_for_webrtc_rejects_banned_room() {
+        let mut room = Room::new("test-room".to_string(), UserId::new());
+        room.ban();
+
+        let err = validate_realtime_room_access_for_webrtc(&room)
+            .expect_err("banned room must reject webrtc bootstrap");
+        match err {
+            ApiError::Authorization(message) => assert!(message.contains("banned")),
+            other => panic!("expected authorization error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_realtime_room_access_for_webrtc_rejects_closed_room() {
+        let mut room = Room::new("test-room".to_string(), UserId::new());
+        room.status = RoomStatus::Closed;
+
+        let err = validate_realtime_room_access_for_webrtc(&room)
+            .expect_err("closed room must reject webrtc bootstrap");
+        match err {
+            ApiError::Authorization(message) => {
+                assert!(message.contains("not accepting new connections"))
+            }
+            other => panic!("expected authorization error, got {other:?}"),
+        }
     }
 }

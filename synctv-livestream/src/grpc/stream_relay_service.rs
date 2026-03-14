@@ -24,12 +24,79 @@ type ResponseStream = Pin<Box<dyn Stream<Item = Result<RtmpPacket, Status>> + Se
 
 /// Metadata key for cluster authentication shared secret
 const AUTH_SECRET_METADATA_KEY: &str = "x-cluster-secret";
+const STREAM_HUB_SUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Callback invoked when the relay service forwards frames from a local publisher.
 ///
 /// Used to record publisher data activity so that silent publisher detection does not
 /// incorrectly time out publishers that are actively sending data via gRPC relay.
 pub type RelayActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+async fn forward_rtmp_packets(
+    mut frame_receiver: tokio::sync::mpsc::Receiver<synctv_xiu::streamhub::define::FrameData>,
+    tx: mpsc::Sender<Result<RtmpPacket, Status>>,
+    cancel_token: CancellationToken,
+    room_id: &str,
+    media_id: &str,
+    activity_callback: Option<RelayActivityCallback>,
+) {
+    info!("Streaming live data to puller");
+    let mut frame_count: u64 = 0;
+
+    loop {
+        let frame_data = tokio::select! {
+            () = cancel_token.cancelled() => {
+                info!("Relay forwarding task cancelled (shutdown)");
+                break;
+            }
+            result = frame_receiver.recv() => {
+                match result {
+                    Some(data) => data,
+                    None => break,
+                }
+            }
+        };
+
+        let (data, timestamp, frame_type) = match frame_data {
+            synctv_xiu::streamhub::define::FrameData::Video { data, timestamp } => {
+                (data, timestamp, FrameType::Video as i32)
+            }
+            synctv_xiu::streamhub::define::FrameData::Audio { data, timestamp } => {
+                (data, timestamp, FrameType::Audio as i32)
+            }
+            synctv_xiu::streamhub::define::FrameData::MetaData { data, timestamp } => {
+                (data, timestamp, FrameType::Metadata as i32)
+            }
+            _ => continue,
+        };
+
+        let packet = RtmpPacket {
+            data,
+            timestamp,
+            frame_type,
+        };
+
+        let send_result = tokio::select! {
+            () = cancel_token.cancelled() => {
+                info!("Relay forwarding task cancelled while waiting on client backpressure");
+                break;
+            }
+            result = tx.send(Ok(packet)) => result,
+        };
+
+        if send_result.is_err() {
+            warn!("Client disconnected during live streaming");
+            break;
+        }
+
+        frame_count += 1;
+        if frame_count % 100 == 1 {
+            if let Some(ref callback) = activity_callback {
+                callback(room_id, media_id);
+            }
+        }
+    }
+}
 
 /// `StreamRelayService` implementation
 /// Publisher nodes use this to serve RTMP packets to Puller nodes via subscription
@@ -111,7 +178,9 @@ impl StreamRelayServiceImpl {
     #[allow(clippy::result_large_err)]
     pub fn authenticate<T>(&self, request: &Request<T>) -> Result<(), Status> {
         let Some(expected) = &self.cluster_secret else {
-            return Ok(()); // No secret configured, skip auth
+            return Err(Status::unauthenticated(
+                "cluster authentication secret is not configured",
+            ));
         };
 
         let provided = request
@@ -201,15 +270,24 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             .map_err(|_| Status::internal("Failed to send subscribe event"))?;
 
         // Wait for subscription result
-        let subscribe_result = event_result_receiver
-            .await
+        let subscribe_result = tokio::time::timeout(
+            STREAM_HUB_SUBSCRIBE_TIMEOUT,
+            event_result_receiver,
+        )
+        .await
+        .map_err(|_| {
+            Status::deadline_exceeded(format!(
+                "Timed out waiting {}s for StreamHub subscription",
+                STREAM_HUB_SUBSCRIBE_TIMEOUT.as_secs()
+            ))
+        })?
             .map_err(|_| Status::internal("Subscribe result channel closed"))?
             .map_err(|e| {
                 tracing::error!("Subscribe failed: {e}");
                 Status::internal("Stream subscription failed")
             })?;
 
-        let mut frame_receiver = subscribe_result
+        let frame_receiver = subscribe_result
             .0
             .frame_receiver
             .ok_or_else(|| Status::internal("No frame receiver from subscription"))?;
@@ -224,61 +302,15 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         let child_token = self.cancel_token.child_token();
         let activity_cb = self.activity_callback.clone();
         tokio::spawn(async move {
-            // Stream live data from StreamHub subscription
-            // (GOP frames are automatically sent first by StreamHub's send_prior_data)
-            info!("Streaming live data to puller");
-            // Frame counter for periodic activity recording (avoid calling on every frame)
-            let mut frame_count: u64 = 0;
-            loop {
-                let frame_data = tokio::select! {
-                    () = child_token.cancelled() => {
-                        info!("Relay forwarding task cancelled (shutdown)");
-                        break;
-                    }
-                    result = frame_receiver.recv() => {
-                        match result {
-                            Some(data) => data,
-                            None => break, // Channel closed, stream ended
-                        }
-                    }
-                };
-
-                // Extract data, timestamp, and frame_type from FrameData enum
-                let (data, timestamp, frame_type) = match frame_data {
-                    synctv_xiu::streamhub::define::FrameData::Video { data, timestamp } => {
-                        (data, timestamp, FrameType::Video as i32)
-                    }
-                    synctv_xiu::streamhub::define::FrameData::Audio { data, timestamp } => {
-                        (data, timestamp, FrameType::Audio as i32)
-                    }
-                    synctv_xiu::streamhub::define::FrameData::MetaData { data, timestamp } => {
-                        (data, timestamp, FrameType::Metadata as i32)
-                    }
-                    _ => continue,
-                };
-
-                let packet = RtmpPacket {
-                    data, // Zero-copy: FrameData's Bytes passed directly to proto Bytes field
-                    timestamp,
-                    frame_type,
-                };
-
-                if tx.send(Ok(packet)).await.is_err() {
-                    warn!("Client disconnected during live streaming");
-                    break;
-                }
-
-                // LS-5 fix: Record publisher activity periodically when forwarding
-                // frames via gRPC relay. This prevents silent publisher timeout from
-                // incorrectly cleaning up publishers that have remote FLV/gRPC viewers
-                // but no local HLS consumers. Record every 100 frames to avoid overhead.
-                frame_count += 1;
-                if frame_count % 100 == 1 {
-                    if let Some(ref cb) = activity_cb {
-                        cb(&room_id_clone, &media_id_clone);
-                    }
-                }
-            }
+            forward_rtmp_packets(
+                frame_receiver,
+                tx,
+                child_token,
+                &room_id_clone,
+                &media_id_clone,
+                activity_cb,
+            )
+            .await;
 
             info!("Stream ended, unsubscribing");
             Self::unsubscribe_from_hub(
@@ -419,6 +451,10 @@ impl StreamRelayServiceImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use crate::grpc::proto::stream_relay_service_server::StreamRelayService;
+    use synctv_xiu::streamhub::define::StreamHubEvent;
+    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
     async fn test_service_creation() {
@@ -437,5 +473,178 @@ mod tests {
         // Just verify the ResponseStream type alias compiles
         let (_tx, rx) = tokio::sync::mpsc::channel(128);
         let _: ResponseStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
+    }
+
+    #[tokio::test]
+    async fn test_forward_rtmp_packets_cancels_while_backpressured() {
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(1);
+        let (packet_tx, mut packet_rx) = mpsc::channel(1);
+        let cancel = CancellationToken::new();
+
+        packet_tx
+            .send(Ok(RtmpPacket {
+                data: Bytes::from_static(b"prefill"),
+                timestamp: 0,
+                frame_type: FrameType::Video as i32,
+            }))
+            .await
+            .expect("prefill output channel");
+        frame_tx
+            .send(synctv_xiu::streamhub::define::FrameData::Video {
+                timestamp: 1,
+                data: Bytes::from_static(b"video"),
+            })
+            .await
+            .expect("send frame");
+        drop(frame_tx);
+
+        let handle = tokio::spawn(forward_rtmp_packets(
+            frame_rx,
+            packet_tx,
+            cancel.clone(),
+            "room1",
+            "media1",
+            None,
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("forwarder should exit after cancellation")
+            .expect("forwarder task should not panic");
+
+        let retained = packet_rx
+            .recv()
+            .await
+            .expect("prefilled packet still present");
+        assert_eq!(retained.unwrap().data, Bytes::from_static(b"prefill"));
+        assert!(
+            packet_rx.try_recv().is_err(),
+            "cancelled forwarder must not enqueue extra packets after backpressure cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_sent_after_backpressure_cancellation() {
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(1);
+        let (packet_tx, _packet_rx) = mpsc::channel(1);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+        let cancel = CancellationToken::new();
+        let subscriber_id = Uuid::new();
+
+        packet_tx
+            .send(Ok(RtmpPacket {
+                data: Bytes::from_static(b"prefill"),
+                timestamp: 0,
+                frame_type: FrameType::Video as i32,
+            }))
+            .await
+            .expect("prefill output channel");
+        frame_tx
+            .send(synctv_xiu::streamhub::define::FrameData::Video {
+                timestamp: 1,
+                data: Bytes::from_static(b"video"),
+            })
+            .await
+            .expect("send frame");
+        drop(frame_tx);
+
+        let cancel_for_task = cancel.clone();
+        let handle = tokio::spawn(async move {
+            forward_rtmp_packets(
+                frame_rx,
+                packet_tx,
+                cancel_for_task,
+                "room1",
+                "media1",
+                None,
+            )
+            .await;
+            StreamRelayServiceImpl::unsubscribe_from_hub(
+                event_tx,
+                subscriber_id,
+                "room1".to_string(),
+                "media1".to_string(),
+            )
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("wrapper should exit after cancellation")
+            .expect("wrapper task should not panic");
+
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("unsubscribe should be emitted")
+            .expect("event channel should receive unsubscribe");
+
+        match event {
+            StreamHubEvent::UnSubscribe { identifier, .. } => {
+                assert_eq!(
+                    identifier,
+                    StreamIdentifier::Rtmp {
+                        app_name: "room1".to_string(),
+                        stream_name: "media1".to_string(),
+                    }
+                );
+            }
+            other => panic!("expected unsubscribe event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pull_rtmp_stream_times_out_when_streamhub_subscription_never_completes() {
+        let registry = Arc::new(crate::relay::InMemoryStreamRegistry::new());
+        registry
+            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
+            .await
+            .expect("register publisher");
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret");
+
+        let service_task = tokio::spawn(async move {
+            let mut request = Request::new(PullRtmpStreamRequest {
+                room_id: "room1".to_string(),
+                media_id: "media1".to_string(),
+                is_reconnect: false,
+            });
+            request
+                .metadata_mut()
+                .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+            service.pull_rtmp_stream(request).await
+        });
+
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("subscribe event should be emitted")
+            .expect("event channel should receive subscribe request");
+        let StreamHubEvent::Subscribe { .. } = event else {
+            panic!("expected subscribe event");
+        };
+
+        let result = timeout(STREAM_HUB_SUBSCRIBE_TIMEOUT + Duration::from_secs(1), service_task)
+            .await
+            .expect("service call should time out instead of hanging forever")
+            .expect("service task should complete");
+        let status = match result {
+            Ok(_) => panic!("streamhub subscription stall must fail"),
+            Err(status) => status,
+        };
+
+        assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+        assert!(status.message().contains("Timed out"));
     }
 }

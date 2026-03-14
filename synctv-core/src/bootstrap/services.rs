@@ -674,9 +674,13 @@ async fn init_oauth2_service(
             Arc::new(crate::service::InMemoryOAuthStateStore::new())
         }
     };
-    let oauth2_service =
-        OAuth2Service::new(oauth2_repo, state_store, provider_registry.clone(), cluster_mode)
-        .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?;
+    let oauth2_service = OAuth2Service::new(
+        oauth2_repo,
+        state_store,
+        provider_registry.clone(),
+        cluster_mode,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?;
     let oauth2_service = Arc::new(oauth2_service);
 
     // 3. Initialize each provider instance using factory pattern

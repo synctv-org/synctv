@@ -109,8 +109,8 @@ pub use turn_server::{resolve_external_ip, validate_external_addr, StunServer, S
 pub use user::UserService;
 pub use user_notification::UserNotificationService;
 pub use ws_ticket::{
-    InMemoryTicketStore, RedisTicketStore, TicketStore, UserValidationResult, UserValidator,
-    WsTicketData, WsTicketService,
+    InMemoryTicketStore, PendingValidatedTicket, RedisTicketStore, TicketStore,
+    UserValidationResult, UserValidator, WsTicketData, WsTicketService,
 };
 
 /// Trait for checking if the current node is the cluster leader.

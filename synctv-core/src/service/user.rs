@@ -187,7 +187,11 @@ impl UserService {
         self.refresh_rate_limiter = limiter;
     }
 
-    pub const fn set_refresh_rate_limit_config_for_tests(&mut self, requests: u32, window_secs: u64) {
+    pub const fn set_refresh_rate_limit_config_for_tests(
+        &mut self,
+        requests: u32,
+        window_secs: u64,
+    ) {
         self.refresh_rate_limit_config = RefreshRateLimitConfig {
             requests,
             window_secs,

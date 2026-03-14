@@ -535,7 +535,14 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         );
 
     if state.ws_ticket_service.is_some() {
-        router = router.route("/api/tickets", post(ticket::create_ticket));
+        router = router.merge(
+            Router::new()
+                .route("/api/tickets", post(ticket::create_ticket))
+                .route_layer(axum_middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::websocket_runtime_required,
+                )),
+        );
     }
 
     if state.oauth2_api.is_some() {
@@ -604,15 +611,15 @@ fn register_read_routes(state: &AppState) -> Router<AppState> {
 
 /// Assemble all route groups into a single router.
 fn register_websocket_routes(state: &AppState) -> Router<AppState> {
-    if !websocket::websocket_runtime_dependencies_available(state) {
-        return Router::new();
-    }
-
     Router::new()
         .route(
             "/ws/rooms/{room_id}",
             axum::routing::get(websocket::websocket_handler),
         )
+        .route_layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            middleware::websocket_runtime_required,
+        ))
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
             middleware::websocket_rate_limit,
@@ -1008,14 +1015,16 @@ mod tests {
         config.grpc_rate_limits = grpc_rate_limits;
         let router_config = RouterConfig {
             config: Arc::new(config),
-            user_cache: Arc::new(synctv_core::cache::UserCache::new(
-                Arc::new(NoopCacheL2),
-                128,
-                60,
-                300,
-                "test:user:".to_string(),
-            )
-            .expect("user cache")),
+            user_cache: Arc::new(
+                synctv_core::cache::UserCache::new(
+                    Arc::new(NoopCacheL2),
+                    128,
+                    60,
+                    300,
+                    "test:user:".to_string(),
+                )
+                .expect("user cache"),
+            ),
             user_service,
             room_service,
             content_filter: ContentFilter::new(),
@@ -1055,6 +1064,60 @@ mod tests {
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: None,
         };
+        build_app_state(router_config)
+    }
+
+    async fn test_app_state_with_websocket_runtime(
+        http_rate_limits: synctv_core::HttpRateLimitConfig,
+        grpc_rate_limits: synctv_core::GrpcRateLimitConfig,
+    ) -> super::AppState {
+        let state = test_app_state_with_rate_limits(http_rate_limits, grpc_rate_limits);
+        let mut router_config = state.router_config.as_ref().clone();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+
+        let room_settings_service = synctv_core::service::RoomSettingsService::new(
+            synctv_core::repository::RoomSettingsRepository::new(pool.clone()),
+            None,
+            Arc::new(synctv_core::service::NotificationService::default()),
+            None,
+            None,
+            None,
+        );
+        let chat_service = synctv_core::service::ChatService::new(
+            Arc::new(synctv_core::repository::ChatRepository::new(pool)),
+            router_config.rate_limiter.clone(),
+            state.messaging_rate_limit_config.as_ref().clone(),
+            state.content_filter.as_ref().clone(),
+            router_config.user_service.username_cache().clone(),
+            router_config.room_service.permission_service().clone(),
+            room_settings_service,
+        );
+        router_config.chat_service = Some(Arc::new(chat_service));
+        router_config.cluster_manager = Some(Arc::new(
+            synctv_cluster::sync::ClusterManager::new(
+                synctv_cluster::sync::ClusterConfig {
+                    redis_client: None,
+                    redis_conn: None,
+                    cluster_enabled: false,
+                    node_id: "test-node".to_string(),
+                    dedup_window: Duration::from_secs(30),
+                    cleanup_interval: Duration::from_secs(30),
+                    critical_channel_capacity: 8,
+                    publish_channel_capacity: 8,
+                    key_prefix: "test:".to_string(),
+                    catchup_window_secs: 60,
+                    stream_max_length: 100,
+                    shared_redis_conn: None,
+                    parent_cancel_token: None,
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("cluster manager"),
+        ));
         build_app_state(router_config)
     }
 
@@ -1169,14 +1232,16 @@ mod tests {
         let state = build_app_state(RouterConfig {
             config: Arc::new(synctv_core::Config::default()),
             user_service,
-            user_cache: Arc::new(synctv_core::cache::UserCache::new(
-                Arc::new(NoopCacheL2),
-                128,
-                60,
-                300,
-                "test:user:".to_string(),
-            )
-            .expect("user cache")),
+            user_cache: Arc::new(
+                synctv_core::cache::UserCache::new(
+                    Arc::new(NoopCacheL2),
+                    128,
+                    60,
+                    300,
+                    "test:user:".to_string(),
+                )
+                .expect("user cache"),
+            ),
             room_service,
             content_filter: ContentFilter::new(),
             provider_instance_manager,
@@ -1286,8 +1351,8 @@ mod tests {
         );
         assert_eq!(
             response.status(),
-            StatusCode::UNAUTHORIZED,
-            "request should reach the auth extractor once the route is registered"
+            StatusCode::SERVICE_UNAVAILABLE,
+            "request should reach the registered route and fail closed when websocket runtime dependencies are unavailable in the test fixture"
         );
     }
 
@@ -1339,7 +1404,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ticket_route_uses_write_rate_limit_tier() {
-        let state = test_app_state_with_rate_limits(
+        let state = test_app_state_with_websocket_runtime(
             synctv_core::HttpRateLimitConfig {
                 write_max_requests: 1,
                 write_window_seconds: 60,
@@ -1348,7 +1413,8 @@ mod tests {
                 ..synctv_core::HttpRateLimitConfig::default()
             },
             synctv_core::GrpcRateLimitConfig::default(),
-        );
+        )
+        .await;
         let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let first = app
@@ -1483,7 +1549,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ticket_routes_use_write_rate_limit_tier() {
-        let state = test_app_state_with_rate_limits(
+        let state = test_app_state_with_websocket_runtime(
             synctv_core::HttpRateLimitConfig {
                 write_max_requests: 1,
                 write_window_seconds: 60,
@@ -1492,7 +1558,8 @@ mod tests {
                 ..synctv_core::HttpRateLimitConfig::default()
             },
             synctv_core::GrpcRateLimitConfig::default(),
-        );
+        )
+        .await;
         let app = register_all_routes_for_test(state.clone()).with_state(state);
 
         let first = app
@@ -1524,6 +1591,54 @@ mod tests {
             second.status(),
             StatusCode::TOO_MANY_REQUESTS,
             "ticket creation must use the write rate-limit bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ticket_route_fails_closed_when_websocket_runtime_is_unavailable() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tickets")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"room_id":"room1234_abx"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ticket issuance must fail closed with service unavailable when websocket runtime dependencies are unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_websocket_ticket_runtime_middleware_does_not_leak_to_other_write_routes() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/user")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"username":"patched-name"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "write routes unrelated to ticket issuance must keep their normal auth path when websocket runtime dependencies are unavailable"
         );
     }
 
@@ -1648,7 +1763,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_websocket_routes_are_not_registered_when_dependencies_missing() {
+    async fn test_websocket_routes_fail_closed_when_dependencies_missing() {
         let state = test_app_state();
         let app = register_all_routes_for_test(state.clone()).with_state(state);
 
@@ -1663,6 +1778,10 @@ mod tests {
             .await
             .expect("response");
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "websocket route must fail closed before auth/query validation when runtime dependencies are unavailable"
+        );
     }
 }

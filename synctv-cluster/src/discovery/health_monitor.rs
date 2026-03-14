@@ -430,7 +430,9 @@ impl HealthMonitor {
                 Ok(Ok(())) => tracing::info!("Health monitor task completed"),
                 Ok(Err(e)) => tracing::warn!("Health monitor task panicked: {}", e),
                 Err(_) => {
-                    tracing::warn!("Health monitor task did not finish within 5s timeout, aborting");
+                    tracing::warn!(
+                        "Health monitor task did not finish within 5s timeout, aborting"
+                    );
                     handle.abort();
                     match handle.await {
                         Ok(()) => tracing::info!("Health monitor task aborted cleanly"),

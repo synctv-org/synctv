@@ -11,6 +11,7 @@ pub mod interceptors;
 pub mod notification_service;
 pub mod oauth2_service;
 pub mod rate_limit_layer;
+pub mod timeout_layer;
 
 // Provider gRPC services (local implementations)
 // Provider-specific gRPC services are registered from provider instances
@@ -266,6 +267,10 @@ const fn effective_grpc_request_timeout() -> Option<std::time::Duration> {
     None
 }
 
+const fn grpc_unary_request_timeout() -> std::time::Duration {
+    synctv_core::resilience::timeout::GRPC_CALL_TIMEOUT
+}
+
 async fn set_registered_grpc_services_serving(
     health_reporter: &tonic_health::server::HealthReporter,
     state: GrpcHealthRegistrationState,
@@ -397,9 +402,8 @@ async fn set_registered_grpc_services_not_serving(
             >>()
             .await;
         health_reporter
-            .set_not_serving::<EmbyProviderServiceServer<
-                providers::emby::EmbyProviderGrpcService,
-            >>()
+            .set_not_serving::<EmbyProviderServiceServer<providers::emby::EmbyProviderGrpcService>>(
+            )
             .await;
     }
     if state.cluster_service_registered {
@@ -713,7 +717,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         jwt_validator_for_rate_limit,
     );
     let grpc_request_timeout = effective_grpc_request_timeout();
+    let grpc_unary_request_timeout = grpc_unary_request_timeout();
+    let unary_timeout_layer =
+        timeout_layer::GrpcRequestTimeoutLayer::new(grpc_unary_request_timeout);
     let mut server_builder = Server::builder()
+        .layer(unary_timeout_layer)
         .layer(distributed_rate_limit_layer)
         .layer(blacklist_layer);
     if let Some(timeout) = grpc_request_timeout {
@@ -725,6 +733,10 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     } else {
         tracing::info!("gRPC server-wide request timeout disabled");
     }
+    tracing::info!(
+        grpc_unary_request_timeout_secs = grpc_unary_request_timeout.as_secs(),
+        "gRPC unary request timeout configured"
+    );
 
     // Get the configured max message size (prevents OOM from oversized messages)
     let max_message_size = config.server.grpc_max_message_size_bytes;
@@ -804,7 +816,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
     if email_service_registered {
         router = router.add_service(
-            EmailServiceServer::new(client_service_clone5).with_message_size_limit(max_message_size),
+            EmailServiceServer::new(client_service_clone5)
+                .with_message_size_limit(max_message_size),
         );
     }
 
@@ -1210,20 +1223,21 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_grpc_request_timeout, extract_client_ip, set_registered_grpc_services_not_serving,
-        set_registered_grpc_services_serving, should_mark_cluster_service_serving,
-        should_mark_email_service_serving, should_mark_livestream_relay_serving,
-        should_mark_notification_service_serving, should_mark_oauth2_service_serving,
-        should_mark_provider_services_serving, should_register_cluster_grpc_service,
-        should_register_email_service, should_register_livestream_relay_service,
-        validate_cluster_grpc_runtime_requirements, GrpcHealthRegistrationState,
+        effective_grpc_request_timeout, extract_client_ip, grpc_unary_request_timeout,
+        set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
+        should_mark_cluster_service_serving, should_mark_email_service_serving,
+        should_mark_livestream_relay_serving, should_mark_notification_service_serving,
+        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
+        should_register_cluster_grpc_service, should_register_email_service,
+        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
+        GrpcHealthRegistrationState,
     };
     use std::net::SocketAddr;
     use tonic::metadata::{MetadataKey, MetadataValue};
-    use tonic_health::server::HealthService;
     use tonic_health::pb::health_check_response::ServingStatus;
     use tonic_health::pb::health_server::Health;
     use tonic_health::pb::HealthCheckRequest;
+    use tonic_health::server::HealthService;
 
     async fn health_status_for_service(
         health_service: &impl Health,
@@ -1236,7 +1250,8 @@ mod tests {
             .await
         {
             Ok(response) => {
-                Ok(ServingStatus::try_from(response.into_inner().status).expect("valid health status"))
+                Ok(ServingStatus::try_from(response.into_inner().status)
+                    .expect("valid health status"))
             }
             Err(status) => Err(status.code()),
         }
@@ -1460,6 +1475,14 @@ mod tests {
             effective_grpc_request_timeout(),
             None,
             "server-wide tonic timeout must stay disabled because it aborts long-lived streaming RPCs"
+        );
+    }
+
+    #[test]
+    fn test_grpc_unary_request_timeout_matches_resilience_budget() {
+        assert_eq!(
+            grpc_unary_request_timeout(),
+            synctv_core::resilience::timeout::GRPC_CALL_TIMEOUT
         );
     }
 

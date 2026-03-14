@@ -401,13 +401,13 @@ impl GrpcStreamPuller {
 
 #[cfg(test)]
 mod tests {
+    use super::super::proto::stream_relay_service_server::StreamRelayServiceServer;
     use super::*;
     use futures::stream;
     use futures::StreamExt as _;
     use std::time::Duration;
     use tokio::sync::mpsc;
     use tonic::Response;
-    use super::super::proto::stream_relay_service_server::StreamRelayServiceServer;
 
     const TEST_STREAM_MESSAGE_TIMEOUT: Duration = Duration::from_millis(50);
     #[tokio::test]
@@ -708,7 +708,10 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        let first = data_receiver.recv().await.expect("first frame remains queued");
+        let first = data_receiver
+            .recv()
+            .await
+            .expect("first frame remains queued");
         assert!(matches!(first, FrameData::MetaData { .. }));
         assert!(
             data_receiver.try_recv().is_err(),
@@ -717,7 +720,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_publish_to_local_stream_hub_waits_for_backpressure_instead_of_failing_immediately() {
+    async fn test_publish_to_local_stream_hub_waits_for_backpressure_instead_of_failing_immediately(
+    ) {
         let (stream_hub_event_sender, mut stream_hub_event_receiver) = mpsc::channel(1);
         stream_hub_event_sender
             .send(StreamHubEvent::UnPublish {
@@ -760,7 +764,10 @@ mod tests {
         .await
         .expect("publish should complete once backpressure clears");
 
-        assert!(result.is_ok(), "publish should succeed after brief backpressure");
+        assert!(
+            result.is_ok(),
+            "publish should succeed after brief backpressure"
+        );
         release_handle.await.expect("release task should complete");
     }
 
@@ -773,9 +780,8 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-            let svc = tonic::transport::Server::builder().add_service(
-                StreamRelayServiceServer::new(TestStalledStreamRelayService),
-            );
+            let svc = tonic::transport::Server::builder()
+                .add_service(StreamRelayServiceServer::new(TestStalledStreamRelayService));
             svc.serve_with_incoming(incoming)
                 .await
                 .expect("test grpc server should run");
@@ -797,17 +803,20 @@ mod tests {
             .expect("stream should open");
 
         let mut stream = response.into_inner();
-        let err = tokio::time::timeout(TEST_STREAM_MESSAGE_TIMEOUT + Duration::from_secs(1), async {
-            tokio::time::timeout(TEST_STREAM_MESSAGE_TIMEOUT, stream.message())
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "No gRPC relay frame received for {}ms, stream appears dead",
-                        TEST_STREAM_MESSAGE_TIMEOUT.as_millis()
-                    )
-                })?
-                .map_err(|e| anyhow::anyhow!("Stream error: {e}"))
-        })
+        let err = tokio::time::timeout(
+            TEST_STREAM_MESSAGE_TIMEOUT + Duration::from_secs(1),
+            async {
+                tokio::time::timeout(TEST_STREAM_MESSAGE_TIMEOUT, stream.message())
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "No gRPC relay frame received for {}ms, stream appears dead",
+                            TEST_STREAM_MESSAGE_TIMEOUT.as_millis()
+                        )
+                    })?
+                    .map_err(|e| anyhow::anyhow!("Stream error: {e}"))
+            },
+        )
         .await
         .expect("helper should return timeout error")
         .expect_err("stalled stream must be reported as dead");
@@ -828,8 +837,9 @@ mod tests {
     {
         type PullRtmpStreamStream = std::pin::Pin<
             Box<
-                dyn tokio_stream::Stream<Item = Result<super::super::proto::RtmpPacket, tonic::Status>>
-                    + Send,
+                dyn tokio_stream::Stream<
+                        Item = Result<super::super::proto::RtmpPacket, tonic::Status>,
+                    > + Send,
             >,
         >;
 
@@ -852,16 +862,14 @@ mod tests {
         async fn get_hls_playlist(
             &self,
             _request: Request<super::super::proto::GetHlsPlaylistRequest>,
-        ) -> Result<Response<super::super::proto::GetHlsPlaylistResponse>, tonic::Status>
-        {
+        ) -> Result<Response<super::super::proto::GetHlsPlaylistResponse>, tonic::Status> {
             Err(tonic::Status::unimplemented("not used in test"))
         }
 
         async fn get_hls_segment(
             &self,
             _request: Request<super::super::proto::GetHlsSegmentRequest>,
-        ) -> Result<Response<super::super::proto::GetHlsSegmentResponse>, tonic::Status>
-        {
+        ) -> Result<Response<super::super::proto::GetHlsSegmentResponse>, tonic::Status> {
             Err(tonic::Status::unimplemented("not used in test"))
         }
     }

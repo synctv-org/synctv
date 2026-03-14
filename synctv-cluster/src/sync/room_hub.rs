@@ -89,7 +89,12 @@ fn block_on_reliable_delivery(
 ) -> bool {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         tokio::task::block_in_place(|| {
-            handle.block_on(deliver_reliable_event(sender, event, room_id, connection_id))
+            handle.block_on(deliver_reliable_event(
+                sender,
+                event,
+                room_id,
+                connection_id,
+            ))
         })
     } else {
         false
@@ -347,7 +352,8 @@ impl RoomMessageHub {
         if let Some(handle) = stale_cleanup_handle {
             let _ = handle.await;
         }
-        self.background_tasks_started.store(false, Ordering::Release);
+        self.background_tasks_started
+            .store(false, Ordering::Release);
     }
 
     #[cfg(test)]
@@ -487,7 +493,8 @@ impl RoomMessageHub {
             subscribers.remove(connection_id);
             drop(subscribers);
         }
-        self.rooms.remove_if(room_id, |_, subscribers| subscribers.is_empty());
+        self.rooms
+            .remove_if(room_id, |_, subscribers| subscribers.is_empty());
     }
 
     /// Unsubscribe a client from room events
@@ -1704,7 +1711,8 @@ mod tests {
 
         let hub_for_task = hub.clone();
         let room_for_task = room_id.clone();
-        let broadcast_task = tokio::spawn(async move { hub_for_task.broadcast(&room_for_task, critical) });
+        let broadcast_task =
+            tokio::spawn(async move { hub_for_task.broadcast(&room_for_task, critical) });
 
         tokio::task::yield_now().await;
         assert!(

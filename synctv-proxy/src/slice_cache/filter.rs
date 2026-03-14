@@ -34,7 +34,9 @@ fn parse_content_length_header(resp: &reqwest::Response) -> Option<u64> {
         .and_then(|v| v.parse::<u64>().ok())
 }
 
-fn parse_total_size_from_content_range(resp: &reqwest::Response) -> Result<Option<u64>, anyhow::Error> {
+fn parse_total_size_from_content_range(
+    resp: &reqwest::Response,
+) -> Result<Option<u64>, anyhow::Error> {
     let Some(value) = resp.headers().get("content-range") else {
         return Ok(None);
     };
@@ -59,10 +61,14 @@ async fn discover_content_length_via_range_get(
         .response;
 
     match resp.status() {
-        StatusCode::PARTIAL_CONTENT => parse_total_size_from_content_range(&resp)?
-            .ok_or_else(|| anyhow::anyhow!("Missing complete length in Content-Range fallback response")),
-        StatusCode::OK => parse_content_length_header(&resp)
-            .ok_or_else(|| anyhow::anyhow!("Missing or invalid Content-Length in fallback GET response")),
+        StatusCode::PARTIAL_CONTENT => {
+            parse_total_size_from_content_range(&resp)?.ok_or_else(|| {
+                anyhow::anyhow!("Missing complete length in Content-Range fallback response")
+            })
+        }
+        StatusCode::OK => parse_content_length_header(&resp).ok_or_else(|| {
+            anyhow::anyhow!("Missing or invalid Content-Length in fallback GET response")
+        }),
         status => Err(anyhow::anyhow!(
             "Range GET fallback returned status {}",
             status
@@ -327,14 +333,16 @@ pub(super) async fn full_body_cache_path(
                 }
                 match send_with_redirect_validation(bg_cache.client(), req).await {
                     Ok(proxy_response)
-                        if proxy_response.response.status() == reqwest::StatusCode::NOT_MODIFIED =>
+                        if proxy_response.response.status()
+                            == reqwest::StatusCode::NOT_MODIFIED =>
                     {
                         let resp = proxy_response.response;
                         // Still valid -- refresh TTL so the next request is a HIT instead of
                         // repeatedly re-entering the stale path.
                         let _ = resp.bytes().await;
-                        if let Some((data, content_type)) =
-                            bg_cache.get_full_body_cached_entry(&bg_url, &bg_headers).await
+                        if let Some((data, content_type)) = bg_cache
+                            .get_full_body_cached_entry(&bg_url, &bg_headers)
+                            .await
                         {
                             let (etag, last_modified) = bg_meta
                                 .as_ref()
@@ -426,8 +434,9 @@ pub(super) async fn full_body_cache_path(
         let _ = resp.bytes().await;
 
         // Re-fetch from our cache (it may have been evicted in the meantime).
-        if let Some((data, content_type)) =
-            cache.get_full_body_cached_entry(url, provider_headers).await
+        if let Some((data, content_type)) = cache
+            .get_full_body_cached_entry(url, provider_headers)
+            .await
         {
             // Refresh the TTL by re-inserting.
             let (etag, last_modified) = existing_meta
@@ -679,10 +688,10 @@ pub(super) async fn stream_through_with_status(
         request = request.header("Range", range);
     }
 
-    let resp = request
-        .send()
+    let resp = send_with_redirect_validation(client, request)
         .await
-        .map_err(|e| anyhow::anyhow!("Upstream request failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Upstream request failed: {e}"))?
+        .response;
 
     let status = if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
         StatusCode::PARTIAL_CONTENT

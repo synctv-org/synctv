@@ -37,7 +37,9 @@ impl MockStreamRegistry {
             )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             refresh_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            list_active_streams_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            list_active_streams_call_count: std::sync::Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
             fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -53,7 +55,9 @@ impl MockStreamRegistry {
             )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             refresh_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            list_active_streams_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            list_active_streams_call_count: std::sync::Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
             fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }

@@ -3677,7 +3677,8 @@ mod tests {
 
         let room = handler.room_id.clone();
         let user = handler.user_id.clone();
-        let (mut rx, conn_id) = cluster_manager.subscribe(room, user)
+        let (mut rx, conn_id) = cluster_manager
+            .subscribe(room, user)
             .await
             .expect("subscribe should succeed");
         let (_tx, cancel_token) = handler.start().await.expect("start should return");

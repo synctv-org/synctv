@@ -689,12 +689,8 @@ impl ClusterManager {
                 }
             }
             if let Some(handle) = state.handle.take() {
-                await_shutdown_handle(
-                    "Heartbeat task",
-                    handle,
-                    self.heartbeat_shutdown_timeout(),
-                )
-                .await;
+                await_shutdown_handle("Heartbeat task", handle, self.heartbeat_shutdown_timeout())
+                    .await;
             }
         }
 
@@ -903,7 +899,8 @@ impl ClusterManager {
         user_id: UserId,
     ) -> crate::Result<(tokio::sync::mpsc::Receiver<ClusterEvent>, ConnectionId)> {
         let connection_id = format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8));
-        self.subscribe_with_id(room_id, user_id, connection_id).await
+        self.subscribe_with_id(room_id, user_id, connection_id)
+            .await
     }
 
     /// Subscribe a client to room events using an existing connection ID.
@@ -1051,7 +1048,8 @@ mod tests {
         // Subscribe a client
         let room_id = RoomId::from_string("room1".to_string());
         let user_id = UserId::from_string("user1".to_string());
-        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone())
+        let (mut rx, conn_id) = manager
+            .subscribe(room_id.clone(), user_id.clone())
             .await
             .expect("subscribe should succeed");
 
@@ -1229,7 +1227,8 @@ mod tests {
         // Verify the manager operates normally in single-node mode
         let room_id = RoomId::from_string("room1".to_string());
         let user_id = UserId::from_string("user1".to_string());
-        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone())
+        let (mut rx, conn_id) = manager
+            .subscribe(room_id.clone(), user_id.clone())
             .await
             .expect("subscribe should succeed");
 
@@ -1298,7 +1297,8 @@ mod tests {
         // Verify normal operation
         let room_id = RoomId::from_string("room2".to_string());
         let user_id = UserId::from_string("user2".to_string());
-        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone())
+        let (mut rx, conn_id) = manager
+            .subscribe(room_id.clone(), user_id.clone())
             .await
             .expect("subscribe should succeed");
 
@@ -1514,7 +1514,8 @@ mod tests {
         let mut manager = ClusterManager::new(config, None, None).await.unwrap();
         let room_id = RoomId::from_string("shutdown-room".to_string());
         let user_id = UserId::from_string("shutdown-user".to_string());
-        let (mut room_rx, _conn_id) = manager.subscribe(room_id.clone(), user_id.clone())
+        let (mut room_rx, _conn_id) = manager
+            .subscribe(room_id.clone(), user_id.clone())
             .await
             .expect("subscribe should succeed");
         let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
@@ -1603,7 +1604,8 @@ mod tests {
         // the manager is still functional)
         let room_id = RoomId::from_string("room_epoch".to_string());
         let user_id = UserId::from_string("user_epoch".to_string());
-        let (_rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone())
+        let (_rx, conn_id) = manager
+            .subscribe(room_id.clone(), user_id.clone())
             .await
             .expect("subscribe should succeed");
 

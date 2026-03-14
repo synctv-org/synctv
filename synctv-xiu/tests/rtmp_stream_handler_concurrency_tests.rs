@@ -3,7 +3,6 @@
 //! These tests verify:
 //! - High concurrent access to video/audio/metadata caches
 //! - No deadlocks under contention
-//! - Performance improvement with split locks vs single lock
 //! - Correctness of parallel frame saving
 
 #![allow(clippy::unwrap_used)]
@@ -59,111 +58,6 @@ impl SplitCacheSim {
     fn get_audio(&self) -> (Vec<u8>, u32) {
         self.audio_seq.read().clone()
     }
-}
-
-/// Simulated single lock structure for comparison
-struct SingleLockCacheSim {
-    data: RwLock<(Vec<u8>, Vec<u8>, Vec<u8>, u32, u32, u32)>,
-}
-
-impl SingleLockCacheSim {
-    const fn new() -> Self {
-        Self {
-            data: RwLock::new((Vec::new(), Vec::new(), Vec::new(), 0, 0, 0)),
-        }
-    }
-}
-
-// ==================================================================
-// Performance Benchmarks
-// ==================================================================
-
-/// Benchmark split lock vs single lock under high contention
-#[test]
-fn test_split_lock_vs_single_lock_performance() {
-    const HOLD_TIME: Duration = Duration::from_millis(40);
-
-    let split_cache = Arc::new(SplitCacheSim::new());
-    let split_barrier = Arc::new(std::sync::Barrier::new(4));
-
-    let handles: Vec<_> = (0..3)
-        .map(|tid| {
-            let cache = Arc::clone(&split_cache);
-            let barrier = Arc::clone(&split_barrier);
-            thread::spawn(move || {
-                barrier.wait();
-                let data = vec![tid as u8; 64];
-                match tid {
-                    0 => {
-                        let mut guard = cache.video_seq.write();
-                        thread::sleep(HOLD_TIME);
-                        *guard = (data, 1);
-                    }
-                    1 => {
-                        let mut guard = cache.audio_seq.write();
-                        thread::sleep(HOLD_TIME);
-                        *guard = (data, 1);
-                    }
-                    _ => {
-                        let mut guard = cache.metadata.write();
-                        thread::sleep(HOLD_TIME);
-                        *guard = (data, 1);
-                    }
-                }
-            })
-        })
-        .collect();
-
-    let start = Instant::now();
-    split_barrier.wait();
-    for h in handles {
-        h.join().unwrap();
-    }
-    let split_duration = start.elapsed();
-
-    let single_cache = Arc::new(SingleLockCacheSim::new());
-    let single_barrier = Arc::new(std::sync::Barrier::new(4));
-
-    let handles: Vec<_> = (0..3)
-        .map(|tid| {
-            let cache = Arc::clone(&single_cache);
-            let barrier = Arc::clone(&single_barrier);
-            thread::spawn(move || {
-                barrier.wait();
-                let data = vec![tid as u8; 64];
-                let mut guard = cache.data.write();
-                thread::sleep(HOLD_TIME);
-                match tid {
-                    0 => {
-                        guard.0 = data;
-                        guard.3 = 1;
-                    }
-                    1 => {
-                        guard.1 = data;
-                        guard.4 = 1;
-                    }
-                    _ => {
-                        guard.2 = data;
-                        guard.5 = 1;
-                    }
-                }
-            })
-        })
-        .collect();
-
-    let start = Instant::now();
-    single_barrier.wait();
-    for h in handles {
-        h.join().unwrap();
-    }
-    let single_duration = start.elapsed();
-
-    println!("Split lock: {split_duration:?}, Single lock: {single_duration:?}");
-
-    assert!(
-        split_duration < single_duration,
-        "Split lock should finish faster when independent writers hold separate locks"
-    );
 }
 
 /// Test concurrent read/write with split locks

@@ -11,8 +11,8 @@ use std::time::Duration;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::Connection as _;
 use sqlx::PgPool;
-use testcontainers::core::ImageExt;
 use testcontainers::core::wait::LogWaitStrategy;
+use testcontainers::core::ImageExt;
 use testcontainers::core::WaitFor;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
@@ -68,7 +68,11 @@ fn docker_startup_timeout() -> Duration {
         .ok()
         .as_deref()
         .and_then(|value| value.parse::<u64>().ok())
-        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS)).map_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS), Duration::from_secs)
+        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
+        .map_or_else(
+            || Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS),
+            Duration::from_secs,
+        )
 }
 
 fn docker_startup_parallelism() -> usize {
@@ -76,7 +80,9 @@ fn docker_startup_parallelism() -> usize {
         .ok()
         .as_deref()
         .and_then(|value| value.parse::<usize>().ok())
-        .map_or(DEFAULT_DOCKER_STARTUP_PARALLELISM, |slots| slots.max(MIN_DOCKER_STARTUP_PARALLELISM))
+        .map_or(DEFAULT_DOCKER_STARTUP_PARALLELISM, |slots| {
+            slots.max(MIN_DOCKER_STARTUP_PARALLELISM)
+        })
 }
 
 async fn acquire_docker_start_slot(
@@ -128,7 +134,11 @@ fn current_test_label() -> String {
     std::env::var("NEXTEST_TEST_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::thread::current().name().map(str::to_owned)).map_or_else(|| "unknown-test".to_string(), |value| sanitize_container_name(&value))
+        .or_else(|| std::thread::current().name().map(str::to_owned))
+        .map_or_else(
+            || "unknown-test".to_string(),
+            |value| sanitize_container_name(&value),
+        )
 }
 
 fn postgres_container_name(label: &str) -> String {
@@ -248,6 +258,7 @@ async fn connect_postgres_pool(
 struct ManagedPostgres {
     inner: Option<ContainerAsync<Postgres>>,
     name: String,
+    cleaned_up: bool,
 }
 
 impl ManagedPostgres {
@@ -255,7 +266,15 @@ impl ManagedPostgres {
         Self {
             inner: Some(inner),
             name,
+            cleaned_up: false,
         }
+    }
+
+    async fn cleanup(&mut self) {
+        if let Some(container) = self.inner.take() {
+            let _ = container.rm().await;
+        }
+        self.cleaned_up = true;
     }
 
     async fn host_port(&self) -> (String, u16) {
@@ -277,13 +296,16 @@ impl Drop for ManagedPostgres {
         if let Some(container) = self.inner.take() {
             drop(container);
         }
-        force_remove_container(&self.name);
+        if !self.cleaned_up {
+            force_remove_container(&self.name);
+        }
     }
 }
 
 struct ManagedRedis {
     inner: Option<ContainerAsync<Redis>>,
     name: String,
+    cleaned_up: bool,
 }
 
 impl ManagedRedis {
@@ -291,7 +313,15 @@ impl ManagedRedis {
         Self {
             inner: Some(inner),
             name,
+            cleaned_up: false,
         }
+    }
+
+    async fn cleanup(&mut self) {
+        if let Some(container) = self.inner.take() {
+            let _ = container.rm().await;
+        }
+        self.cleaned_up = true;
     }
 
     async fn host_port(&self) -> (String, u16) {
@@ -313,7 +343,9 @@ impl Drop for ManagedRedis {
         if let Some(container) = self.inner.take() {
             drop(container);
         }
-        force_remove_container(&self.name);
+        if !self.cleaned_up {
+            force_remove_container(&self.name);
+        }
     }
 }
 
@@ -402,6 +434,12 @@ impl TestInfra {
             .expect("Failed to create Redis ConnectionManager")
     }
 
+    pub async fn cleanup(mut self) {
+        self.pool.close().await;
+        self.postgres.cleanup().await;
+        self.redis.cleanup().await;
+    }
+
     /// Start only Postgres (no Redis). Useful for DB-only tests.
     pub async fn postgres_only() -> TestPostgres {
         let postgres_name = postgres_container_name("postgres-only");
@@ -467,6 +505,13 @@ pub struct TestPostgres {
     postgres: ManagedPostgres,
 }
 
+impl TestPostgres {
+    pub async fn cleanup(mut self) {
+        self.pool.close().await;
+        self.postgres.cleanup().await;
+    }
+}
+
 /// Redis-only test infrastructure.
 pub struct TestRedis {
     pub redis_client: redis::Client,
@@ -486,6 +531,10 @@ impl TestRedis {
         redis::aio::ConnectionManager::new(self.redis_client.clone())
             .await
             .expect("Failed to create Redis ConnectionManager")
+    }
+
+    pub async fn cleanup(mut self) {
+        self.redis.cleanup().await;
     }
 }
 
@@ -507,5 +556,24 @@ mod tests {
             matches!(ready_conditions.as_slice(), [WaitFor::Log(_)]),
             "postgres test container should wait for the second ready log instead of racing the init server"
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_cleanup_marks_managed_containers_as_cleaned_up() {
+        let mut postgres = ManagedPostgres {
+            inner: None,
+            name: "synctv-core-pg-test".to_string(),
+            cleaned_up: false,
+        };
+        postgres.cleanup().await;
+        assert!(postgres.cleaned_up);
+
+        let mut redis = ManagedRedis {
+            inner: None,
+            name: "synctv-core-redis-test".to_string(),
+            cleaned_up: false,
+        };
+        redis.cleanup().await;
+        assert!(redis.cleaned_up);
     }
 }

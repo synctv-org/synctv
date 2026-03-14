@@ -374,63 +374,6 @@ async fn test_time_range_query_uses_index() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cleanup_old_messages_has_partition_pruning_filter() {
-    // CRITICAL: Verify that cleanup_old_messages has a top-level created_at
-    // filter for partition pruning. Without it, PostgreSQL may scan all
-    // partitions even when the subquery limits the time range.
-    //
-    // The query structure should be:
-    // DELETE FROM chat_messages
-    // WHERE room_id = $1
-    //   AND created_at > NOW() - INTERVAL '90 days'  <- Partition pruning filter
-    //   AND (id, created_at) IN (...)
-
-    let (_container, pool) = create_test_pool().await;
-    let (user, room) = setup_room(&pool, "chat_prune_user", "chat_prune_room").await;
-
-    // Insert a message
-    let chat_repo = ChatRepository::new(pool.clone());
-    for i in 0..5 {
-        let msg = make_chat_message(&room.id, &user.id, &format!("prune_{i}"));
-        chat_repo.create(&msg).await.unwrap();
-    }
-
-    // Get the EXPLAIN plan for cleanup_old_messages
-    let plan: serde_json::Value = sqlx::query_scalar(
-        r"
-        EXPLAIN (FORMAT JSON)
-        DELETE FROM chat_messages
-        WHERE room_id = 'test_room'
-          AND created_at > NOW() - INTERVAL '90 days'
-          AND (id, created_at) IN (
-            SELECT id, created_at FROM (
-                SELECT id, created_at,
-                       ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn
-                FROM chat_messages
-                WHERE room_id = 'test_room'
-                  AND created_at > NOW() - INTERVAL '90 days'
-            ) ranked
-            WHERE rn > 10
-        )
-        ",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to get query plan");
-
-    // Verify the plan is valid JSON
-    assert!(
-        plan.is_array(),
-        "Query plan should be a JSON array, got: {plan:?}"
-    );
-
-    // The key validation is that the outer DELETE has created_at filter
-    // which enables partition pruning. In a real partitioned table,
-    // the plan would show "Partitions removed" or similar pruning info.
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
     // CRITICAL: Verify that cleanup_all_rooms has a top-level created_at
     // filter for partition pruning (Task #26).

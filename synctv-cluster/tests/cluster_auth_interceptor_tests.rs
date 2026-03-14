@@ -136,9 +136,14 @@ fn test_constant_time_eq_longer_expected() {
 fn test_constant_time_eq_empty_secret() {
     let interceptor = ClusterAuthInterceptor::new(String::new());
     let request = make_request_with_secret("");
+    let status = interceptor
+        .validate(request)
+        .expect_err("empty configured secret must fail closed");
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
     assert!(
-        interceptor.validate(request).is_ok(),
-        "Both empty should pass"
+        status.message().contains("not configured"),
+        "misconfiguration error should be explicit, got: {}",
+        status.message()
     );
 }
 

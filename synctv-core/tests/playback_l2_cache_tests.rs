@@ -272,15 +272,18 @@ async fn test_playback_state_get_state_persists_missing_row() {
         .await
         .unwrap();
 
-    let state = room_service.playback_service().get_state(&room.id).await.unwrap();
+    let state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
 
-    let persisted: Option<(String,)> = sqlx::query_as(
-        "SELECT room_id FROM room_playback_state WHERE room_id = $1",
-    )
-    .bind(room.id.as_str())
-    .fetch_optional(&pool)
-    .await
-    .unwrap();
+    let persisted: Option<(String,)> =
+        sqlx::query_as("SELECT room_id FROM room_playback_state WHERE room_id = $1")
+            .bind(room.id.as_str())
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(state.room_id, room.id);
     assert!(

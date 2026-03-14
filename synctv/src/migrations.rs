@@ -858,6 +858,8 @@ mod tests {
 
         run_migrations_with_mode(&pool, lock, "test:", false)
             .await
-            .expect("PG advisory fallback should not deadlock when the pool has a single connection");
+            .expect(
+                "PG advisory fallback should not deadlock when the pool has a single connection",
+            );
     }
 }

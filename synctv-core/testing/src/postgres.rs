@@ -26,6 +26,7 @@ const MIN_DOCKER_STARTUP_PARALLELISM: usize = 1;
 const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLELISM";
 static POSTGRES_START_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
+const TEST_CONTAINER_OWNER_LABEL: &str = "synctv.test.owner_pid";
 
 struct ProcessLock(File);
 
@@ -67,6 +68,7 @@ impl Drop for ProcessLock {
 pub struct TestContainer {
     inner: Option<ContainerAsync<Postgres>>,
     name: String,
+    cleaned_up: bool,
 }
 
 impl TestContainer {
@@ -74,6 +76,7 @@ impl TestContainer {
         Self {
             inner: Some(inner),
             name,
+            cleaned_up: false,
         }
     }
 
@@ -81,12 +84,18 @@ impl TestContainer {
         if let Some(container) = self.inner.take() {
             let _ = container.rm().await;
         }
+        self.cleaned_up = true;
     }
 
     pub const fn raw(&self) -> &ContainerAsync<Postgres> {
         self.inner
             .as_ref()
             .expect("postgres test container should still be present")
+    }
+
+    #[cfg(test)]
+    const fn is_cleaned_up(&self) -> bool {
+        self.cleaned_up
     }
 }
 
@@ -103,11 +112,13 @@ impl Drop for TestContainer {
         if let Some(container) = self.inner.take() {
             drop(container);
         }
-        let _ = Command::new("docker")
-            .args(["rm", "-f", self.name.as_str()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        if !self.cleaned_up {
+            let _ = Command::new("docker")
+                .args(["rm", "-f", self.name.as_str()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
     }
 }
 
@@ -134,14 +145,20 @@ pub fn docker_startup_parallelism() -> usize {
 fn docker_startup_timeout_from(value: Option<&str>) -> Duration {
     value
         .and_then(|value| value.parse::<u64>().ok())
-        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS)).map_or_else(|| Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS), Duration::from_secs)
+        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
+        .map_or_else(
+            || Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS),
+            Duration::from_secs,
+        )
 }
 
 #[must_use]
 fn docker_startup_parallelism_from(value: Option<&str>) -> usize {
     value
         .and_then(|value| value.parse::<usize>().ok())
-        .map_or(DEFAULT_DOCKER_STARTUP_PARALLELISM, |slots| slots.max(MIN_DOCKER_STARTUP_PARALLELISM))
+        .map_or(DEFAULT_DOCKER_STARTUP_PARALLELISM, |slots| {
+            slots.max(MIN_DOCKER_STARTUP_PARALLELISM)
+        })
 }
 
 async fn acquire_docker_start_slot(name: &str) -> ProcessLock {
@@ -191,7 +208,11 @@ fn current_test_label() -> String {
     std::env::var("NEXTEST_TEST_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::thread::current().name().map(str::to_owned)).map_or_else(|| "unknown-test".to_string(), |value| sanitize_container_name(&value))
+        .or_else(|| std::thread::current().name().map(str::to_owned))
+        .map_or_else(
+            || "unknown-test".to_string(),
+            |value| sanitize_container_name(&value),
+        )
 }
 
 fn postgres_container_name(label: &str) -> String {
@@ -201,6 +222,69 @@ fn postgres_container_name(label: &str) -> String {
         sanitize_container_name(label),
         nanoid::nanoid!(6).to_lowercase()
     )
+}
+
+fn current_process_id() -> u32 {
+    std::process::id()
+}
+
+fn process_is_alive(pid: &str) -> bool {
+    Command::new("kill")
+        .args(["-0", pid])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn cleanup_orphaned_testcontainers(prefix: &str) {
+    let output = Command::new("docker")
+        .args([
+            "ps",
+            "-aq",
+            "--filter",
+            &format!("name=^{prefix}"),
+            "--filter",
+            "label=org.testcontainers.managed-by=testcontainers",
+        ])
+        .output();
+
+    let Ok(output) = output else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+
+    let ids = String::from_utf8_lossy(&output.stdout);
+    for container_id in ids.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let inspect = Command::new("docker")
+            .args([
+                "inspect",
+                container_id,
+                "--format",
+                &format!("{{{{index .Config.Labels \"{TEST_CONTAINER_OWNER_LABEL}\"}}}}"),
+            ])
+            .output();
+
+        let Ok(inspect) = inspect else {
+            continue;
+        };
+        if !inspect.status.success() {
+            continue;
+        }
+
+        let owner_pid = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
+        if owner_pid.is_empty() || process_is_alive(&owner_pid) {
+            continue;
+        }
+
+        let _ = Command::new("docker")
+            .args(["rm", "-f", container_id])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 fn postgres_ready_conditions() -> Vec<WaitFor> {
@@ -219,12 +303,14 @@ fn named_postgres_request(
     db_name: &str,
     container_name: &str,
 ) -> testcontainers::ContainerRequest<Postgres> {
+    let owner_pid = current_process_id().to_string();
     Postgres::default()
         .with_db_name(db_name)
         .with_user("synctv")
         .with_password("synctv_test")
         .with_tag(POSTGRES_VERSION)
         .with_container_name(container_name.to_string())
+        .with_label(TEST_CONTAINER_OWNER_LABEL, owner_pid)
         .with_ready_conditions(postgres_ready_conditions())
 }
 
@@ -263,6 +349,7 @@ pub async fn create_test_pool_with_options_and_label(
 ) -> (TestContainer, PgPool) {
     let container_name = postgres_container_name(label);
     let _postgres_process_lock = acquire_docker_start_slot("postgres-start").await;
+    cleanup_orphaned_testcontainers("synctv-pg-");
     let postgres = {
         tokio::time::timeout(
             docker_startup_timeout(),
@@ -344,6 +431,72 @@ pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) 
     create_test_pool_with_db_and_label(db_name, db_name).await
 }
 
+/// Starts a `PostgreSQL` test container and returns a connection URL without
+/// creating a pool. Useful for tests that need to exercise production pool
+/// initialization paths directly.
+pub async fn create_test_database_url_with_label(
+    db_name: &str,
+    label: &str,
+) -> (TestContainer, String) {
+    let container_name = postgres_container_name(label);
+    let _postgres_process_lock = acquire_docker_start_slot("postgres-start").await;
+    cleanup_orphaned_testcontainers("synctv-pg-");
+    let postgres = {
+        tokio::time::timeout(
+            docker_startup_timeout(),
+            named_postgres_request(db_name, &container_name).start(),
+        )
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Postgres container")
+    };
+
+    let port = postgres
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("Failed to get port");
+    let database_url = format!("postgresql://synctv:synctv_test@127.0.0.1:{port}/{db_name}");
+
+    let connect_options = PgConnectOptions::new()
+        .host("127.0.0.1")
+        .port(port)
+        .username("synctv")
+        .password("synctv_test")
+        .database(db_name)
+        .ssl_mode(PgSslMode::Disable);
+
+    let deadline = std::time::Instant::now() + docker_startup_timeout();
+    let mut retries = 0u32;
+    let mut last_error = None;
+
+    loop {
+        match sqlx::postgres::PgConnection::connect_with(&connect_options).await {
+            Ok(mut conn) => {
+                sqlx::query_scalar::<_, i32>("SELECT 1")
+                    .fetch_one(&mut conn)
+                    .await
+                    .expect("PostgreSQL readiness probe should succeed once connected");
+                drop(conn);
+                break;
+            }
+            Err(err) if std::time::Instant::now() < deadline => {
+                retries += 1;
+                last_error = Some(err);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(err) => panic!(
+                "PostgreSQL not ready within {:?} after {retries} retries: {}",
+                docker_startup_timeout(),
+                last_error
+                    .as_ref()
+                    .map_or_else(|| err.to_string(), std::string::ToString::to_string)
+            ),
+        }
+    }
+
+    (TestContainer::new(postgres, container_name), database_url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +568,30 @@ mod tests {
         assert_eq!(
             docker_startup_timeout_from(Some("not-a-number")),
             Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn cleanup_marks_container_as_cleaned_up() {
+        let container = TestContainer {
+            inner: None,
+            name: "synctv-pg-test".to_string(),
+            cleaned_up: false,
+        };
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let container = runtime.block_on(async move {
+            let mut container = container;
+            if let Some(inner) = container.inner.take() {
+                let _ = inner.rm().await;
+            }
+            container.cleaned_up = true;
+            container
+        });
+
+        assert!(
+            container.is_cleaned_up(),
+            "explicit cleanup must suppress the Drop-time docker rm fallback"
         );
     }
 }

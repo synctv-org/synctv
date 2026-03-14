@@ -46,6 +46,13 @@ pub async fn init_database_with_cancel(
                 Ok(())
             })
         })
+        .after_release(move |conn, _meta| {
+            Box::pin(async move {
+                conn.execute(format!("SET statement_timeout = {statement_timeout_ms}").as_str())
+                    .await?;
+                Ok(true)
+            })
+        })
         .connect(database_url)
         .await
         .map_err(|e| {
@@ -173,6 +180,56 @@ mod tests {
         assert_eq!(
             timeout, "0",
             "DDL connection must not inherit the main pool statement_timeout"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn ddl_connection_statement_timeout_is_reset_when_returned_to_pool() {
+        let (_postgres, database_url) =
+            synctv_core_testing::create_test_database_url_with_label("synctv_test", "ddl-reset")
+                .await;
+
+        let config = crate::Config {
+            database: crate::config::DatabaseConfig {
+                url: database_url,
+                max_connections: 5,
+                min_connections: 1,
+                connect_timeout_seconds: 5,
+                idle_timeout_seconds: 600,
+                max_lifetime_seconds: 1800,
+            },
+            ..crate::Config::default()
+        };
+        let pool = init_database_with_cancel(&config, None)
+            .await
+            .expect("production pool initialization should succeed");
+
+        {
+            let mut conn = acquire_unbounded_ddl_connection(&pool)
+                .await
+                .expect("should acquire dedicated ddl connection");
+            sqlx::query("SELECT 1")
+                .execute(&mut *conn)
+                .await
+                .expect("ddl connection should stay usable");
+        }
+
+        let mut conn = pool
+            .acquire()
+            .await
+            .expect("should reacquire pooled connection");
+        let row: PgRow = sqlx::query("SHOW statement_timeout")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("should query reset statement timeout");
+        let timeout: String = row
+            .try_get(0)
+            .expect("SHOW statement_timeout should return a string");
+
+        assert_ne!(
+            timeout, "0",
+            "connections returned to the OLTP pool must not retain unlimited statement_timeout"
         );
     }
 }

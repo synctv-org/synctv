@@ -156,10 +156,7 @@ async fn test_routable_nodes_fail_closed_when_degraded_cache_is_stale() {
         .get_routable_nodes()
         .await
         .expect_err("stale degraded cache must be rejected for routing");
-    assert!(
-        err.to_string().contains("stale"),
-        "unexpected error: {err}"
-    );
+    assert!(err.to_string().contains("stale"), "unexpected error: {err}");
 }
 
 /// Degraded cache is still usable for routing while the last refresh is within budget.
@@ -186,7 +183,10 @@ async fn test_routable_nodes_allow_recent_degraded_cache() {
         .get_routable_nodes()
         .await
         .expect("recent degraded cache should still be routable");
-    assert_eq!(mode, synctv_cluster::discovery::node_registry::NodeViewMode::DegradedCache);
+    assert_eq!(
+        mode,
+        synctv_cluster::discovery::node_registry::NodeViewMode::DegradedCache
+    );
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].node_id, "self");
 }

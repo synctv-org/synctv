@@ -17,6 +17,7 @@ pub type RedisConnectionManager = redis::aio::ConnectionManager;
 pub type RedisConnectionHandle = Arc<RwLock<redis::aio::ConnectionManager>>;
 static REDIS_START_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
+const TEST_CONTAINER_OWNER_LABEL: &str = "synctv.test.owner_pid";
 
 struct ProcessLock(File);
 
@@ -80,7 +81,11 @@ fn current_test_label() -> String {
     std::env::var("NEXTEST_TEST_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::thread::current().name().map(str::to_owned)).map_or_else(|| "unknown-test".to_string(), |value| sanitize_container_name(&value))
+        .or_else(|| std::thread::current().name().map(str::to_owned))
+        .map_or_else(
+            || "unknown-test".to_string(),
+            |value| sanitize_container_name(&value),
+        )
 }
 
 fn redis_container_name(label: &str) -> String {
@@ -93,12 +98,74 @@ fn redis_container_name(label: &str) -> String {
 }
 
 fn named_redis_request(container_name: &str) -> testcontainers::ContainerRequest<Redis> {
-    Redis::default().with_container_name(container_name.to_string())
+    Redis::default()
+        .with_container_name(container_name.to_string())
+        .with_label(TEST_CONTAINER_OWNER_LABEL, std::process::id().to_string())
+}
+
+fn process_is_alive(pid: &str) -> bool {
+    Command::new("kill")
+        .args(["-0", pid])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn cleanup_orphaned_testcontainers(prefix: &str) {
+    let output = Command::new("docker")
+        .args([
+            "ps",
+            "-aq",
+            "--filter",
+            &format!("name=^{prefix}"),
+            "--filter",
+            "label=org.testcontainers.managed-by=testcontainers",
+        ])
+        .output();
+
+    let Ok(output) = output else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+
+    let ids = String::from_utf8_lossy(&output.stdout);
+    for container_id in ids.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let inspect = Command::new("docker")
+            .args([
+                "inspect",
+                container_id,
+                "--format",
+                &format!("{{{{index .Config.Labels \"{TEST_CONTAINER_OWNER_LABEL}\"}}}}"),
+            ])
+            .output();
+
+        let Ok(inspect) = inspect else {
+            continue;
+        };
+        if !inspect.status.success() {
+            continue;
+        }
+
+        let owner_pid = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
+        if owner_pid.is_empty() || process_is_alive(&owner_pid) {
+            continue;
+        }
+
+        let _ = Command::new("docker")
+            .args(["rm", "-f", container_id])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 pub struct RedisContainer {
     inner: Option<ContainerAsync<Redis>>,
     name: String,
+    cleaned_up: bool,
 }
 
 impl RedisContainer {
@@ -106,6 +173,7 @@ impl RedisContainer {
         Self {
             inner: Some(inner),
             name,
+            cleaned_up: false,
         }
     }
 
@@ -113,12 +181,18 @@ impl RedisContainer {
         if let Some(container) = self.inner.take() {
             let _ = container.rm().await;
         }
+        self.cleaned_up = true;
     }
 
     pub const fn raw(&self) -> &ContainerAsync<Redis> {
         self.inner
             .as_ref()
             .expect("redis container should still be present")
+    }
+
+    #[cfg(test)]
+    const fn is_cleaned_up(&self) -> bool {
+        self.cleaned_up
     }
 }
 
@@ -135,16 +209,19 @@ impl Drop for RedisContainer {
         if let Some(container) = self.inner.take() {
             drop(container);
         }
-        let _ = Command::new("docker")
-            .args(["rm", "-f", self.name.as_str()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        if !self.cleaned_up {
+            let _ = Command::new("docker")
+                .args(["rm", "-f", self.name.as_str()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
     }
 }
 
 async fn start_redis_inner(label: &str) -> (RedisContainer, String, redis::Client) {
     let container_name = redis_container_name(label);
+    cleanup_orphaned_testcontainers("synctv-redis-");
     let container = {
         let _redis_process_lock = acquire_docker_start_slot("redis-start").await;
         tokio::time::timeout(
@@ -234,4 +311,33 @@ pub async fn wait_for_redis_ready(client: &redis::Client) {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     panic!("Redis container did not become ready in time");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_marks_container_as_cleaned_up() {
+        let container = RedisContainer {
+            inner: None,
+            name: "synctv-redis-test".to_string(),
+            cleaned_up: false,
+        };
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let container = runtime.block_on(async move {
+            let mut container = container;
+            if let Some(inner) = container.inner.take() {
+                let _ = inner.rm().await;
+            }
+            container.cleaned_up = true;
+            container
+        });
+
+        assert!(
+            container.is_cleaned_up(),
+            "explicit cleanup must suppress the Drop-time docker rm fallback"
+        );
+    }
 }

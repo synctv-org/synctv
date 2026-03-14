@@ -701,6 +701,7 @@ mod websocket_e2e {
         user_service: Arc<UserService>,
         connection_manager: Arc<ConnectionManager>,
         cluster_manager: Arc<ClusterManager>,
+        ws_ticket_service: Arc<synctv_core::service::WsTicketService>,
     }
 
     /// Create a minimal `ChatService` for tests.
@@ -944,6 +945,8 @@ mod websocket_e2e {
             user_provider_credential_repo.clone(),
         ));
 
+        let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::with_memory(None));
+
         let router_config = synctv_api::http::RouterConfig {
             turn_health_checker: Default::default(),
             config,
@@ -986,9 +989,7 @@ mod websocket_e2e {
             },
             live_streaming_infrastructure: None,
             rate_limiter,
-            ws_ticket_service: Some(Arc::new(
-                synctv_core::service::WsTicketService::with_memory(None),
-            )),
+            ws_ticket_service: Some(ws_ticket_service.clone()),
             redis_conn: None,
             builtin_stun_url: None,
             credential_encryption: None,
@@ -1088,6 +1089,7 @@ mod websocket_e2e {
             user_service,
             connection_manager: connection_manager_ret,
             cluster_manager,
+            ws_ticket_service,
         }
     }
 
@@ -3563,6 +3565,50 @@ mod websocket_e2e {
             }
             other => panic!("Expected HTTP 400 for malformed room_id, got: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_ws_ticket_rejected_by_membership_does_not_consume_ticket() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (owner_id, _owner_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "ticket_owner").await;
+        let (outsider_id, _outsider_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "ticket_outsider").await;
+        let room_id = create_test_room(&server.room_service, &owner_id, "Ticket Membership").await;
+
+        let ticket = server
+            .ws_ticket_service
+            .create_ticket(
+                &outsider_id,
+                &synctv_core::models::RoomId::from_string(room_id.clone()),
+                0,
+            )
+            .await
+            .expect("create websocket ticket");
+
+        let url = format!("ws://{}/ws/rooms/{}?ticket={ticket}", server.addr, room_id);
+        let result = tokio_tungstenite::connect_async(&url).await;
+
+        match result {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(
+                    response.status(),
+                    tungstenite::http::StatusCode::FORBIDDEN,
+                    "non-member ticket must be rejected before websocket upgrade"
+                );
+            }
+            other => panic!("Expected HTTP 403 for non-member ticket, got: {other:?}"),
+        }
+
+        let validated = server
+            .ws_ticket_service
+            .validate_and_consume(&ticket, &synctv_core::models::RoomId::from_string(room_id))
+            .await
+            .expect("membership rejection must not consume the ticket");
+        assert_eq!(validated.user_id, outsider_id);
     }
 
     // ========================================================================

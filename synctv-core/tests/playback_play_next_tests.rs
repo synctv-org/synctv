@@ -451,15 +451,18 @@ async fn test_repeat_all_middle_advances_to_next() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_shuffle_returns_different_item() {
+async fn test_shuffle_with_single_item_keeps_current_media() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("shuf_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("shuf_single_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
         .create_room(
-            "Shuffle".to_string(),
+            "Shuffle Single".to_string(),
             String::new(),
             owner.id.clone(),
             None,
@@ -469,11 +472,7 @@ async fn test_shuffle_returns_different_item() {
         .unwrap();
 
     let playlist = get_root_playlist(&pool, &room.id).await;
-    let media1 = insert_media(&pool, &playlist.id, &room.id, "shuf1", 0).await;
-    // Add enough items to make collision very unlikely
-    for i in 2..=10 {
-        insert_media(&pool, &playlist.id, &room.id, &format!("shuf{i}"), i - 1).await;
-    }
+    let media1 = insert_media(&pool, &playlist.id, &room.id, "single", 0).await;
 
     let playback = room_service.playback_service();
     playback
@@ -482,27 +481,58 @@ async fn test_shuffle_returns_different_item() {
         .unwrap();
 
     let settings = make_settings_with_mode(PlayMode::Shuffle);
+    let result = playback.play_next(&room.id, &settings).await.unwrap();
 
-    // Run shuffle multiple times; at least once should return a different item
-    let mut got_different = false;
-    for _ in 0..10 {
-        // Re-set the current to media1 before each try
-        playback
-            .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
-            .await
-            .unwrap();
+    assert!(result.is_some(), "Shuffle should keep playback active");
+    let state = result.unwrap();
+    assert_eq!(
+        state.playing_media_id,
+        Some(media1.id),
+        "Single-item shuffle must keep the only available media selected"
+    );
+}
 
-        let result = playback.play_next(&room.id, &settings).await.unwrap();
-        assert!(result.is_some(), "Shuffle should always return some item");
-        let state = result.unwrap();
-        if state.playing_media_id != Some(media1.id.clone()) {
-            got_different = true;
-            break;
-        }
-    }
-    assert!(
-        got_different,
-        "Shuffle should eventually return a different item"
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_shuffle_with_multiple_items_excludes_current_media() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("shuf_multi_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Shuffle Multi".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let playlist = get_root_playlist(&pool, &room.id).await;
+    let media1 = insert_media(&pool, &playlist.id, &room.id, "multi1", 0).await;
+    let media2 = insert_media(&pool, &playlist.id, &room.id, "multi2", 1).await;
+
+    let playback = room_service.playback_service();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
+
+    let settings = make_settings_with_mode(PlayMode::Shuffle);
+    let result = playback.play_next(&room.id, &settings).await.unwrap();
+
+    assert!(result.is_some(), "Shuffle should choose an available media");
+    let state = result.unwrap();
+    assert_eq!(
+        state.playing_media_id,
+        Some(media2.id),
+        "With one alternative media, shuffle must select that alternative instead of repeating current"
     );
 }
 

@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
+        .file_descriptor_set_path("src/descriptor.bin")
         .bytes(".")
         .compile_with_config(prost_config, &["proto/stream.proto"], &["proto"])?;
 

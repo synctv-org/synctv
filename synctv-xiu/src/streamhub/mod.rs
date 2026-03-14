@@ -1350,7 +1350,10 @@ mod tests {
             "send helper should wait for temporary backpressure"
         );
 
-        let first = receiver.recv().await.expect("blocked event should remain queued");
+        let first = receiver
+            .recv()
+            .await
+            .expect("blocked event should remain queued");
         assert!(matches!(first, StreamHubEvent::UnPublish { .. }));
 
         let second = tokio::time::timeout(Duration::from_secs(1), receiver.recv())

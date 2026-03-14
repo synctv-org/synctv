@@ -240,7 +240,8 @@ impl LiveStreamingInfrastructure {
             .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
 
         if let Some(publisher_info) = publisher {
-            let is_local = !self.local_node_id.is_empty() && publisher_info.node_id == self.local_node_id;
+            let is_local =
+                !self.local_node_id.is_empty() && publisher_info.node_id == self.local_node_id;
             if is_local {
                 return Ok(StreamSubscriberGuard::new(|| {}));
             }
@@ -310,17 +311,19 @@ mod tests {
         publisher_node_id: &str,
         grpc_address: &str,
     ) -> LiveStreamingInfrastructure {
-        let registry = Arc::new(MockStreamRegistry::with_publishers(std::collections::HashMap::from([(
-            ("room1".to_string(), "media1".to_string()),
-            PublisherInfo {
-                node_id: publisher_node_id.to_string(),
-                grpc_address: grpc_address.to_string(),
-                app_name: "live".to_string(),
-                user_id: String::new(),
-                started_at: Utc::now(),
-                epoch: 1,
-            },
-        )])));
+        let registry = Arc::new(MockStreamRegistry::with_publishers(
+            std::collections::HashMap::from([(
+                ("room1".to_string(), "media1".to_string()),
+                PublisherInfo {
+                    node_id: publisher_node_id.to_string(),
+                    grpc_address: grpc_address.to_string(),
+                    app_name: "live".to_string(),
+                    user_id: String::new(),
+                    started_at: Utc::now(),
+                    epoch: 1,
+                },
+            )]),
+        ));
         let (event_sender, _event_receiver) = mpsc::channel(64);
         let pull_manager = Arc::new(PullStreamManager::new(
             registry.clone(),

@@ -134,9 +134,7 @@ impl HttpFlvSession {
                         // Write FLV header
                         self.muxer
                             .write_flv_header(self.has_audio, self.has_video)
-                            .map_err(|e| {
-                                anyhow::anyhow!("Failed to write FLV header: {e:?}")
-                            })?;
+                            .map_err(|e| anyhow::anyhow!("Failed to write FLV header: {e:?}"))?;
                         self.muxer
                             .write_previous_tag_size(0)
                             .map_err(|e| anyhow::anyhow!("Failed to write tag size: {e:?}"))?;
@@ -688,7 +686,8 @@ mod tests {
             })
             .expect("prefill event channel");
 
-        let unsubscribe_task = tokio::spawn(async move { session.unsubscribe_from_stream_hub().await });
+        let unsubscribe_task =
+            tokio::spawn(async move { session.unsubscribe_from_stream_hub().await });
 
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         assert!(
@@ -696,7 +695,10 @@ mod tests {
             "unsubscribe should wait for temporary backpressure instead of succeeding early"
         );
 
-        let first = event_rx.recv().await.expect("blocked event should still be readable");
+        let first = event_rx
+            .recv()
+            .await
+            .expect("blocked event should still be readable");
         assert!(matches!(first, StreamHubEvent::UnPublish { .. }));
 
         let unsubscribe = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
@@ -707,7 +709,10 @@ mod tests {
         let result = unsubscribe_task
             .await
             .expect("unsubscribe task should join");
-        assert!(result.is_ok(), "unsubscribe should succeed after capacity frees");
+        assert!(
+            result.is_ok(),
+            "unsubscribe should succeed after capacity frees"
+        );
 
         match unsubscribe {
             StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
@@ -745,6 +750,9 @@ mod tests {
         let streamhub_err = err
             .downcast_ref::<StreamHubError>()
             .expect("error should preserve streamhub context");
-        assert!(matches!(streamhub_err.value, StreamHubErrorValue::SendError));
+        assert!(matches!(
+            streamhub_err.value,
+            StreamHubErrorValue::SendError
+        ));
     }
 }

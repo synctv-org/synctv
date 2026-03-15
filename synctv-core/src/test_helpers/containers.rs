@@ -18,24 +18,39 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 /// Default `PostgreSQL` version for test containers
 const POSTGRES_VERSION: &str = "16-alpine";
 /// Default Redis version for test containers
 const REDIS_VERSION: &str = "7-alpine";
-const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 300;
 const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
 const DEFAULT_DOCKER_STARTUP_PARALLELISM: usize = 4;
 const MIN_DOCKER_STARTUP_PARALLELISM: usize = 1;
 const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLELISM";
+const DEFAULT_POSTGRES_ACTIVE_PARALLELISM: usize = 4;
+const MIN_POSTGRES_ACTIVE_PARALLELISM: usize = 1;
+const POSTGRES_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_POSTGRES_ACTIVE_PARALLELISM";
+const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 12;
+const MIN_REDIS_ACTIVE_PARALLELISM: usize = 1;
+const REDIS_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_REDIS_ACTIVE_PARALLELISM";
 static POSTGRES_START_SERIALIZER: std::sync::LazyLock<Semaphore> =
     std::sync::LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
 static REDIS_START_SERIALIZER: std::sync::LazyLock<Semaphore> =
     std::sync::LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
+static POSTGRES_ACTIVE_SERIALIZER: std::sync::LazyLock<Semaphore> =
+    std::sync::LazyLock::new(|| Semaphore::new(postgres_active_parallelism()));
+static REDIS_ACTIVE_SERIALIZER: std::sync::LazyLock<Semaphore> =
+    std::sync::LazyLock::new(|| Semaphore::new(redis_active_parallelism()));
+const TEST_CONTAINER_OWNER_LABEL: &str = "synctv.test.owner_pid";
 
 struct ProcessLock(File);
+struct DockerSlotGuard {
+    _local_permit: SemaphorePermit<'static>,
+    _process_lock: ProcessLock,
+}
 
 impl ProcessLock {
     fn try_acquire(name: &str) -> Option<Self> {
@@ -85,17 +100,100 @@ fn docker_startup_parallelism() -> usize {
         })
 }
 
+fn postgres_active_parallelism() -> usize {
+    std::env::var(POSTGRES_ACTIVE_PARALLELISM_ENV)
+        .ok()
+        .as_deref()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map_or(DEFAULT_POSTGRES_ACTIVE_PARALLELISM, |slots| {
+            slots.max(MIN_POSTGRES_ACTIVE_PARALLELISM)
+        })
+}
+
+fn redis_active_parallelism() -> usize {
+    std::env::var(REDIS_ACTIVE_PARALLELISM_ENV)
+        .ok()
+        .as_deref()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map_or(DEFAULT_REDIS_ACTIVE_PARALLELISM, |slots| {
+            slots.max(MIN_REDIS_ACTIVE_PARALLELISM)
+        })
+}
+
+fn current_process_id() -> u32 {
+    std::process::id()
+}
+
+fn process_is_alive(pid: &str) -> bool {
+    Command::new("kill")
+        .args(["-0", pid])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn cleanup_orphaned_testcontainers(prefix: &str) {
+    let output = Command::new("docker")
+        .args([
+            "ps",
+            "-aq",
+            "--filter",
+            &format!("name=^{prefix}"),
+            "--filter",
+            "label=org.testcontainers.managed-by=testcontainers",
+        ])
+        .output();
+
+    let Ok(output) = output else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+
+    let ids = String::from_utf8_lossy(&output.stdout);
+    for container_id in ids.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let inspect = Command::new("docker")
+            .args([
+                "inspect",
+                container_id,
+                "--format",
+                &format!("{{{{index .Config.Labels \"{TEST_CONTAINER_OWNER_LABEL}\"}}}}"),
+            ])
+            .output();
+
+        let Ok(inspect) = inspect else {
+            continue;
+        };
+        if !inspect.status.success() {
+            continue;
+        }
+
+        let owner_pid = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
+        if owner_pid.is_empty() || process_is_alive(&owner_pid) {
+            continue;
+        }
+
+        let _ = Command::new("docker")
+            .args(["rm", "-f", container_id])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 async fn acquire_docker_start_slot(
     serializer: &'static std::sync::LazyLock<Semaphore>,
+    slots: usize,
     prefix: &'static str,
-) -> ProcessLock {
-    let slots = docker_startup_parallelism();
-    let _local_permit = serializer
+) -> DockerSlotGuard {
+    let local_permit = serializer
         .acquire()
         .await
         .expect("docker startup guard should not be closed");
 
-    tokio::task::spawn_blocking(move || loop {
+    let process_lock = tokio::task::spawn_blocking(move || loop {
         for slot in 0..slots {
             let slot_name = format!("{prefix}-slot-{slot}");
             if let Some(lock) = ProcessLock::try_acquire(&slot_name) {
@@ -105,7 +203,12 @@ async fn acquire_docker_start_slot(
         std::thread::sleep(Duration::from_millis(100));
     })
     .await
-    .expect("docker process slot task should not panic")
+    .expect("docker process slot task should not panic");
+
+    DockerSlotGuard {
+        _local_permit: local_permit,
+        _process_lock: process_lock,
+    }
 }
 
 fn sanitize_container_name(raw: &str) -> String {
@@ -170,13 +273,22 @@ fn named_postgres_request(
     db_name: &str,
     container_name: &str,
 ) -> testcontainers::ContainerRequest<Postgres> {
+    let owner_pid = current_process_id().to_string();
     Postgres::default()
         .with_db_name(db_name)
         .with_user("synctv")
         .with_password("synctv_test")
         .with_tag(POSTGRES_VERSION)
         .with_container_name(container_name.to_string())
+        .with_label(TEST_CONTAINER_OWNER_LABEL, owner_pid)
         .with_ready_conditions(postgres_ready_conditions())
+}
+
+fn named_redis_request(container_name: &str) -> testcontainers::ContainerRequest<Redis> {
+    Redis::default()
+        .with_tag(REDIS_VERSION)
+        .with_container_name(container_name.to_string())
+        .with_label(TEST_CONTAINER_OWNER_LABEL, current_process_id().to_string())
 }
 
 fn force_remove_container(name: &str) {
@@ -189,21 +301,56 @@ fn force_remove_container(name: &str) {
 
 async fn wait_for_redis_ready(client: &redis::Client) {
     let deadline = std::time::Instant::now() + docker_startup_timeout();
+    let mut last_error = String::from("redis readiness probe has not run yet");
     while std::time::Instant::now() < deadline {
-        if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
-            let ping_result: redis::RedisResult<String> =
-                redis::cmd("PING").query_async(&mut conn).await;
-            let set_result: redis::RedisResult<()> =
-                redis::AsyncCommands::set_ex(&mut conn, "synctv:test:ping", "pong", 5).await;
-            let get_result: redis::RedisResult<String> =
-                redis::AsyncCommands::get(&mut conn, "synctv:test:ping").await;
-            if ping_result.is_ok() && set_result.is_ok() && get_result.as_deref() == Ok("pong") {
-                return;
+        let manager_ready = match redis::aio::ConnectionManager::new(client.clone()).await {
+            Ok(mut conn) => match redis::cmd("PING").query_async::<String>(&mut conn).await {
+                Ok(_) => true,
+                Err(err) => {
+                    last_error = format!("connection manager ping failed: {err}");
+                    false
+                }
+            },
+            Err(err) => {
+                last_error = format!("connection manager init failed: {err}");
+                false
             }
+        };
+
+        let multiplexed_ready = match client.get_multiplexed_async_connection().await {
+            Ok(mut conn) => {
+                let ping_result: redis::RedisResult<String> =
+                    redis::cmd("PING").query_async(&mut conn).await;
+                let set_result: redis::RedisResult<()> =
+                    redis::AsyncCommands::set_ex(&mut conn, "synctv:test:ping", "pong", 5).await;
+                let get_result: redis::RedisResult<String> =
+                    redis::AsyncCommands::get(&mut conn, "synctv:test:ping").await;
+                match (ping_result, set_result, get_result) {
+                    (Ok(_), Ok(()), Ok(value)) if value == "pong" => true,
+                    (ping_result, set_result, get_result) => {
+                        last_error = format!(
+                            "multiplexed probe failed: ping={ping_result:?} set={set_result:?} get={get_result:?}"
+                        );
+                        false
+                    }
+                }
+            }
+            Err(err) => {
+                last_error = format!("multiplexed init failed: {err}");
+                false
+            }
+        };
+
+        if manager_ready && multiplexed_ready {
+            return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
-    panic!("Redis container did not become ready in time");
+    panic!(
+        "Redis container did not become ready within {:?}: {}",
+        docker_startup_timeout(),
+        last_error
+    );
 }
 
 async fn connect_postgres_pool(
@@ -259,14 +406,16 @@ struct ManagedPostgres {
     inner: Option<ContainerAsync<Postgres>>,
     name: String,
     cleaned_up: bool,
+    _slot_guard: Option<DockerSlotGuard>,
 }
 
 impl ManagedPostgres {
-    fn new(inner: ContainerAsync<Postgres>, name: String) -> Self {
+    fn new(inner: ContainerAsync<Postgres>, name: String, slot_guard: DockerSlotGuard) -> Self {
         Self {
             inner: Some(inner),
             name,
             cleaned_up: false,
+            _slot_guard: Some(slot_guard),
         }
     }
 
@@ -306,14 +455,16 @@ struct ManagedRedis {
     inner: Option<ContainerAsync<Redis>>,
     name: String,
     cleaned_up: bool,
+    _slot_guard: Option<DockerSlotGuard>,
 }
 
 impl ManagedRedis {
-    fn new(inner: ContainerAsync<Redis>, name: String) -> Self {
+    fn new(inner: ContainerAsync<Redis>, name: String, slot_guard: DockerSlotGuard) -> Self {
         Self {
             inner: Some(inner),
             name,
             cleaned_up: false,
+            _slot_guard: Some(slot_guard),
         }
     }
 
@@ -375,27 +526,58 @@ impl TestInfra {
     pub async fn new() -> Self {
         let postgres_name = postgres_container_name("infra");
         let redis_name = redis_container_name("infra");
+        let postgres_container_slot = acquire_docker_start_slot(
+            &POSTGRES_ACTIVE_SERIALIZER,
+            postgres_active_parallelism(),
+            "postgres-active",
+        )
+        .await;
+        let redis_container_slot = acquire_docker_start_slot(
+            &REDIS_ACTIVE_SERIALIZER,
+            redis_active_parallelism(),
+            "redis-active",
+        )
+        .await;
+        cleanup_orphaned_testcontainers("synctv-core-pg-");
+        cleanup_orphaned_testcontainers("synctv-core-redis-");
         let (pg_container, redis_container) = {
-            let _postgres_start_slot =
-                acquire_docker_start_slot(&POSTGRES_START_SERIALIZER, "postgres-start").await;
-            let _redis_start_slot =
-                acquire_docker_start_slot(&REDIS_START_SERIALIZER, "redis-start").await;
+            let _postgres_start_slot = acquire_docker_start_slot(
+                &POSTGRES_START_SERIALIZER,
+                docker_startup_parallelism(),
+                "postgres-start",
+            )
+            .await;
+            let _redis_start_slot = acquire_docker_start_slot(
+                &REDIS_START_SERIALIZER,
+                docker_startup_parallelism(),
+                "redis-start",
+            )
+            .await;
             tokio::join!(
-                named_postgres_request("synctv_test", &postgres_name).start(),
-                Redis::default()
-                    .with_tag(REDIS_VERSION)
-                    .with_container_name(redis_name.clone())
-                    .start(),
+                tokio::time::timeout(
+                    docker_startup_timeout(),
+                    named_postgres_request("synctv_test", &postgres_name).start()
+                ),
+                tokio::time::timeout(
+                    docker_startup_timeout(),
+                    named_redis_request(&redis_name).start()
+                ),
             )
         };
 
         let pg_container = ManagedPostgres::new(
-            pg_container.expect("Failed to start Postgres container"),
+            pg_container
+                .expect("Docker container startup timed out (is Docker running?)")
+                .expect("Failed to start Postgres container"),
             postgres_name,
+            postgres_container_slot,
         );
         let redis_container = ManagedRedis::new(
-            redis_container.expect("Failed to start Redis container"),
+            redis_container
+                .expect("Docker container startup timed out (is Docker running?)")
+                .expect("Failed to start Redis container"),
             redis_name,
+            redis_container_slot,
         );
         let (pg_host, pg_port) = pg_container.host_port().await;
         let (redis_host, redis_port) = redis_container.host_port().await;
@@ -443,15 +625,30 @@ impl TestInfra {
     /// Start only Postgres (no Redis). Useful for DB-only tests.
     pub async fn postgres_only() -> TestPostgres {
         let postgres_name = postgres_container_name("postgres-only");
+        let postgres_container_slot = acquire_docker_start_slot(
+            &POSTGRES_ACTIVE_SERIALIZER,
+            postgres_active_parallelism(),
+            "postgres-active",
+        )
+        .await;
+        cleanup_orphaned_testcontainers("synctv-core-pg-");
         let pg_container = {
-            let _postgres_start_slot =
-                acquire_docker_start_slot(&POSTGRES_START_SERIALIZER, "postgres-start").await;
-            named_postgres_request("synctv_test", &postgres_name)
-                .start()
-                .await
-                .expect("Failed to start Postgres container")
+            let _postgres_start_slot = acquire_docker_start_slot(
+                &POSTGRES_START_SERIALIZER,
+                docker_startup_parallelism(),
+                "postgres-start",
+            )
+            .await;
+            tokio::time::timeout(
+                docker_startup_timeout(),
+                named_postgres_request("synctv_test", &postgres_name).start(),
+            )
+            .await
+            .expect("Docker container startup timed out (is Docker running?)")
+            .expect("Failed to start Postgres container")
         };
-        let pg_container = ManagedPostgres::new(pg_container, postgres_name);
+        let pg_container =
+            ManagedPostgres::new(pg_container, postgres_name, postgres_container_slot);
         let (pg_host, pg_port) = pg_container.host_port().await;
         let pool =
             connect_postgres_pool(&pg_host, pg_port, "synctv_test", 5, Duration::from_secs(2))
@@ -471,17 +668,29 @@ impl TestInfra {
     /// Start only Redis (no Postgres). Useful for Redis-only tests.
     pub async fn redis_only() -> TestRedis {
         let redis_name = redis_container_name("redis-only");
+        let redis_container_slot = acquire_docker_start_slot(
+            &REDIS_ACTIVE_SERIALIZER,
+            redis_active_parallelism(),
+            "redis-active",
+        )
+        .await;
+        cleanup_orphaned_testcontainers("synctv-core-redis-");
         let redis_container = {
-            let _redis_start_slot =
-                acquire_docker_start_slot(&REDIS_START_SERIALIZER, "redis-start").await;
-            Redis::default()
-                .with_tag(REDIS_VERSION)
-                .with_container_name(redis_name.clone())
-                .start()
-                .await
-                .expect("Failed to start Redis container")
+            let _redis_start_slot = acquire_docker_start_slot(
+                &REDIS_START_SERIALIZER,
+                docker_startup_parallelism(),
+                "redis-start",
+            )
+            .await;
+            tokio::time::timeout(
+                docker_startup_timeout(),
+                named_redis_request(&redis_name).start(),
+            )
+            .await
+            .expect("Docker container startup timed out (is Docker running?)")
+            .expect("Failed to start Redis container")
         };
-        let redis_container = ManagedRedis::new(redis_container, redis_name);
+        let redis_container = ManagedRedis::new(redis_container, redis_name, redis_container_slot);
         let (redis_host, redis_port) = redis_container.host_port().await;
 
         let redis_url = format!("redis://{redis_host}:{redis_port}");
@@ -564,6 +773,7 @@ mod tests {
             inner: None,
             name: "synctv-core-pg-test".to_string(),
             cleaned_up: false,
+            _slot_guard: None,
         };
         postgres.cleanup().await;
         assert!(postgres.cleaned_up);
@@ -572,8 +782,42 @@ mod tests {
             inner: None,
             name: "synctv-core-redis-test".to_string(),
             cleaned_up: false,
+            _slot_guard: None,
         };
         redis.cleanup().await;
         assert!(redis.cleaned_up);
+    }
+
+    #[test]
+    fn docker_startup_parallelism_defaults_to_workspace_throughput() {
+        assert_eq!(
+            docker_startup_parallelism(),
+            DEFAULT_DOCKER_STARTUP_PARALLELISM
+        );
+        assert_eq!(DEFAULT_DOCKER_STARTUP_PARALLELISM, 4);
+    }
+
+    #[test]
+    fn docker_startup_timeout_defaults_to_extended_budget() {
+        assert_eq!(
+            docker_startup_timeout(),
+            Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS)
+        );
+        assert_eq!(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS, 300);
+    }
+
+    #[test]
+    fn postgres_active_parallelism_defaults_to_conservative_live_limit() {
+        assert_eq!(
+            postgres_active_parallelism(),
+            DEFAULT_POSTGRES_ACTIVE_PARALLELISM
+        );
+        assert_eq!(DEFAULT_POSTGRES_ACTIVE_PARALLELISM, 4);
+    }
+
+    #[test]
+    fn redis_active_parallelism_defaults_to_redlock_friendly_limit() {
+        assert_eq!(redis_active_parallelism(), DEFAULT_REDIS_ACTIVE_PARALLELISM);
+        assert_eq!(DEFAULT_REDIS_ACTIVE_PARALLELISM, 12);
     }
 }

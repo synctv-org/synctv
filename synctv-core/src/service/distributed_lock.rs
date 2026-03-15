@@ -1723,10 +1723,16 @@ mod tests {
         )
     }
 
+    async fn cleanup_redlock_containers(containers: Vec<RedisContainer>) {
+        for container in containers {
+            container.cleanup().await;
+        }
+    }
+
     #[tokio::test]
     #[ignore = "Requires 3 Docker Redis instances - run manually"]
     async fn test_redlock_acquire_and_release() {
-        let (config, _containers) = redlock_test_config().await;
+        let (config, containers) = redlock_test_config().await;
 
         let redlock = Redlock::new(config).await.unwrap();
 
@@ -1747,6 +1753,7 @@ mod tests {
         let guard3 = redlock.acquire("test:redlock1").await.unwrap();
         assert!(guard3.is_some());
         guard3.unwrap().release().await;
+        cleanup_redlock_containers(containers).await;
     }
 
     #[tokio::test]
@@ -1762,6 +1769,7 @@ mod tests {
         let guard = redlock.acquire("test:redlock2").await.unwrap();
         assert!(guard.is_some());
         guard.unwrap().release().await;
+        cleanup_redlock_containers(containers).await;
     }
 
     #[tokio::test]
@@ -1769,7 +1777,7 @@ mod tests {
     async fn test_redlock_split_brain_prevention() {
         // This test verifies that Redlock prevents split-brain during failover
         // Simulate by having two clients compete for the same lock
-        let (config, _containers) = redlock_test_config().await;
+        let (config, containers) = redlock_test_config().await;
         let config2 = RedlockConfig {
             retry_interval_ms: 10,
             ttl_ms: 5_000,
@@ -1793,12 +1801,13 @@ mod tests {
         let guard2 = redlock2.acquire("test:redlock3").await.unwrap();
         assert!(guard2.is_some());
         guard2.unwrap().release().await;
+        cleanup_redlock_containers(containers).await;
     }
 
     #[tokio::test]
     #[ignore = "Requires 3 Docker Redis instances - run manually"]
     async fn test_redlock_guard_drop_releases_lock() {
-        let (config, _containers) = redlock_test_config().await;
+        let (config, containers) = redlock_test_config().await;
 
         let redlock = Redlock::new(config).await.unwrap();
 
@@ -1819,6 +1828,7 @@ mod tests {
         let guard3 = redlock.acquire("test:redlock4").await.unwrap();
         assert!(guard3.is_some());
         guard3.unwrap().release().await;
+        cleanup_redlock_containers(containers).await;
     }
 
     #[tokio::test]

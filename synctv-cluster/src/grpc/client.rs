@@ -256,7 +256,7 @@ impl ClusterClient {
         QueryFut: std::future::Future<Output = Result<T>> + Send,
         ExtractFn: Fn(T) -> Vec<Item>,
     {
-        let nodes = self.node_registry.get_all_nodes().await?;
+        let (nodes, _view_mode) = self.node_registry.get_routable_nodes().await?;
 
         // Opportunistically prune circuit breakers for nodes no longer in the registry
         let active_addresses: HashSet<String> =
@@ -282,11 +282,19 @@ impl ClusterClient {
         // to return partial results quickly instead of waiting for timeouts.
         let mut skipped_nodes = 0usize;
         let query_nodes: Vec<_> = if self.circuit_breakers.is_cluster_degraded().await {
-            let healthy = self.circuit_breakers.healthy_endpoints().await;
-            let (queryable, skipped): (Vec<_>, Vec<_>) = remote_nodes
-                .iter()
-                .partition(|n| healthy.contains(&n.grpc_address));
-            skipped_nodes = skipped.len();
+            let mut known_open_addresses = HashSet::new();
+            for node in &remote_nodes {
+                if self
+                    .circuit_breakers
+                    .is_endpoint_open_known(&node.grpc_address)
+                    .await
+                {
+                    known_open_addresses.insert(node.grpc_address.clone());
+                }
+            }
+            let (queryable, skipped) =
+                partition_degraded_query_nodes(&remote_nodes, &known_open_addresses);
+            skipped_nodes = skipped;
             if skipped_nodes > 0 {
                 warn!(
                     skipped = skipped_nodes,
@@ -295,7 +303,7 @@ impl ClusterClient {
                     "Cluster degraded: skipping unhealthy nodes for fan-out"
                 );
             }
-            queryable.into_iter().cloned().collect()
+            queryable
         } else {
             remote_nodes.clone()
         };
@@ -319,6 +327,10 @@ impl ClusterClient {
         let mut nodes_succeeded = 0usize;
         let mut nodes_failed = skipped_nodes;
         let mut failures = Vec::new();
+        let mut pending_nodes: HashMap<String, String> = query_nodes
+            .iter()
+            .map(|node| (node.node_id.clone(), node.grpc_address.clone()))
+            .collect();
 
         let deadline = tokio::time::Instant::now() + FAN_OUT_AGGREGATE_TIMEOUT;
         let mut timed_out = false;
@@ -328,6 +340,7 @@ impl ClusterClient {
                 biased;
                 maybe_result = futs.next() => {
                     if let Some((node_id, address, result)) = maybe_result {
+                        pending_nodes.remove(&node_id);
                         match result {
                             Ok(response) => {
                                 nodes_succeeded += 1;
@@ -358,6 +371,15 @@ impl ClusterClient {
         if timed_out {
             let remaining = futs.len();
             nodes_failed += remaining;
+            failures.extend(pending_nodes.into_iter().map(|(node_id, address)| {
+                (
+                    node_id,
+                    format!(
+                        "aggregate timeout after {:?} while waiting for {address}",
+                        FAN_OUT_AGGREGATE_TIMEOUT
+                    ),
+                )
+            }));
             warn!(
                 remaining_nodes = remaining,
                 collected_succeeded = nodes_succeeded,
@@ -531,6 +553,24 @@ impl ClusterClient {
     }
 }
 
+fn partition_degraded_query_nodes(
+    remote_nodes: &[crate::discovery::NodeInfo],
+    known_open_addresses: &HashSet<String>,
+) -> (Vec<crate::discovery::NodeInfo>, usize) {
+    let mut queryable = Vec::new();
+    let mut skipped_nodes = 0usize;
+
+    for node in remote_nodes {
+        if known_open_addresses.contains(&node.grpc_address) {
+            skipped_nodes += 1;
+        } else {
+            queryable.push(node.clone());
+        }
+    }
+
+    (queryable, skipped_nodes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,6 +597,21 @@ mod tests {
         };
         assert!(!result.is_complete());
         assert_eq!(result.total_nodes(), 3);
+    }
+
+    #[test]
+    fn test_fan_out_result_failure_details_cover_timeout_nodes() {
+        let result: FanOutResult<Vec<()>> = FanOutResult {
+            data: Vec::new(),
+            nodes_succeeded: 1,
+            nodes_failed: 2,
+            failures: vec![
+                ("node-b".to_string(), "aggregate timeout".to_string()),
+                ("node-c".to_string(), "aggregate timeout".to_string()),
+            ],
+        };
+
+        assert_eq!(result.failures.len(), result.nodes_failed);
     }
 
     #[test]
@@ -665,6 +720,30 @@ mod tests {
     fn test_merge_user_statuses_empty() {
         let merged = ClusterClient::merge_user_statuses(Vec::new());
         assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn test_partition_degraded_query_nodes_keeps_unknown_endpoints_queryable() {
+        let remote_nodes = vec![
+            crate::discovery::NodeInfo::new(
+                "node-open".to_string(),
+                "10.0.0.1:50051".to_string(),
+                "10.0.0.1:8080".to_string(),
+            ),
+            crate::discovery::NodeInfo::new(
+                "node-unknown".to_string(),
+                "10.0.0.2:50051".to_string(),
+                "10.0.0.2:8080".to_string(),
+            ),
+        ];
+        let known_open_addresses = HashSet::from(["10.0.0.1:50051".to_string()]);
+
+        let (queryable, skipped) =
+            partition_degraded_query_nodes(&remote_nodes, &known_open_addresses);
+
+        assert_eq!(skipped, 1);
+        assert_eq!(queryable.len(), 1);
+        assert_eq!(queryable[0].node_id, "node-unknown");
     }
 
     #[tokio::test]

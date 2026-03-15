@@ -465,6 +465,167 @@ impl ClusterManager {
         &self.admin_event_tx
     }
 
+    fn enqueue_redis_publish(&self, event: ClusterEvent, is_critical: bool) -> bool {
+        let mut redis_sent = 0;
+
+        if is_critical {
+            if let Some(tx) = &self.redis_critical_tx {
+                match tx.try_send(PublishRequest { event }) {
+                    Ok(()) => {
+                        redis_sent = 1;
+                    }
+                    Err(mpsc::error::TrySendError::Full(req)) => {
+                        let tx = tx.clone();
+                        warn!(
+                            "Critical event publish channel full (capacity {}), spawning tracked retry task",
+                            self.critical_channel_capacity
+                        );
+                        self.critical_retry_tasks.spawn(async move {
+                            if let Err(e) = tx.send(req).await {
+                                error!("Failed to send critical event after retry: {e}");
+                            }
+                        });
+                        redis_sent = 1;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        error!("Critical event publish channel closed");
+                    }
+                }
+            } else if let Some(tx) = &self.redis_publish_tx {
+                match tx.try_send(PublishRequest { event }) {
+                    Ok(()) => {
+                        redis_sent = 1;
+                    }
+                    Err(mpsc::error::TrySendError::Full(req)) => {
+                        let tx = tx.clone();
+                        warn!(
+                            "Dedicated critical publish channel unavailable; normal Redis publish channel is full (capacity {}), spawning tracked retry for critical event",
+                            self.publish_channel_capacity
+                        );
+                        self.critical_retry_tasks.spawn(async move {
+                            if let Err(e) = tx.send(req).await {
+                                error!(
+                                    "Failed to send critical event through fallback Redis channel: {e}"
+                                );
+                            }
+                        });
+                        redis_sent = 1;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        error!(
+                            "Dedicated critical publish channel unavailable and fallback Redis publish channel is closed"
+                        );
+                    }
+                }
+            }
+        } else if let Some(tx) = &self.redis_publish_tx {
+            match tx.try_send(PublishRequest { event }) {
+                Ok(()) => {
+                    redis_sent = 1;
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                        .with_label_values(&["channel_full"])
+                        .inc();
+                    warn!(
+                        "Redis publish channel full (capacity {}), dropping event",
+                        self.publish_channel_capacity
+                    );
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    error!("Redis publish channel closed, cannot queue event");
+                }
+            }
+        }
+
+        redis_sent > 0
+    }
+
+    /// Broadcast an event to local subscribers only.
+    ///
+    /// This preserves deduplication semantics for the event without publishing it
+    /// to Redis. It is used when callers need to preserve local correctness first
+    /// and handle cross-node retries separately.
+    pub fn broadcast_local(&self, event: ClusterEvent) -> usize {
+        let event_type = event.event_type();
+
+        if self.is_quarantined() {
+            warn!(
+                event_type = %event_type,
+                room_id = %event.room_id()
+                    .map_or("n/a", synctv_core::models::RoomId::as_str),
+                "Rejecting local broadcast because node is quarantined"
+            );
+            return 0;
+        }
+
+        if self.shutdown_started.load(Ordering::Acquire) && !event.is_critical() {
+            debug!(
+                event_type = %event_type,
+                "Skipping local event because ClusterManager shutdown is in progress"
+            );
+            return 0;
+        }
+
+        let dedup_key = DedupKey::from_event(&event);
+        if !self.deduplicator.should_process(&dedup_key) {
+            debug!(
+                event_type = %event_type,
+                room_id = %event.room_id()
+                    .map_or("n/a", synctv_core::models::RoomId::as_str),
+                "Duplicate event detected, skipping local broadcast"
+            );
+            return 0;
+        }
+
+        if let Some(room_id) = event.room_id().cloned() {
+            return self.message_hub.broadcast(&room_id, event);
+        }
+
+        if matches!(&event, ClusterEvent::UserNotification { .. }) {
+            let _ = self.admin_event_tx.send(event);
+        }
+
+        0
+    }
+
+    /// Publish an event to Redis without re-broadcasting it locally.
+    ///
+    /// This is primarily used by retry paths that have already delivered the
+    /// event locally and only need cross-node fan-out.
+    pub fn publish_only(&self, event: ClusterEvent) -> bool {
+        let event_type = event.event_type();
+        let is_critical = event.is_critical();
+
+        if self.is_quarantined() {
+            warn!(
+                event_type = %event_type,
+                room_id = %event.room_id()
+                    .map_or("n/a", synctv_core::models::RoomId::as_str),
+                "Rejecting Redis publish because node is quarantined"
+            );
+            return false;
+        }
+
+        if self.shutdown_started.load(Ordering::Acquire) && !is_critical {
+            debug!(
+                event_type = %event_type,
+                "Skipping Redis publish because ClusterManager shutdown is in progress"
+            );
+            return false;
+        }
+
+        let redis_sent = self.enqueue_redis_publish(event, is_critical);
+
+        debug!(
+            event_type = %event_type,
+            redis_published = redis_sent,
+            "Redis-only publish complete"
+        );
+
+        redis_sent
+    }
+
     /// Start a background heartbeat loop that keeps this node alive in Redis.
     ///
     /// Calls `NodeRegistry::heartbeat()` every `heartbeat_timeout / 3` seconds.
@@ -718,7 +879,7 @@ impl ClusterManager {
 
         // Shut down ConnectionManager's TTL refresh task
         if let Some(ref cm) = self.connection_manager {
-            cm.shutdown();
+            cm.shutdown().await;
         }
 
         // Shut down RoomMessageHub background tasks (Redis TTL refresh and stale cleanup)
@@ -746,28 +907,21 @@ impl ClusterManager {
     /// 2. Broadcast to local subscribers
     /// 3. Publish to Redis for cross-node sync
     pub fn broadcast(&self, event: ClusterEvent) -> BroadcastResult {
-        let dedup_key = DedupKey::from_event(&event);
+        let event_type = event.event_type();
+        let is_critical = event.is_critical();
 
-        // Check if this is a duplicate
-        if !self.deduplicator.should_process(&dedup_key) {
-            debug!(
-                event_type = %event.event_type(),
+        if self.is_quarantined() {
+            warn!(
+                event_type = %event_type,
                 room_id = %event.room_id()
                     .map_or("n/a", synctv_core::models::RoomId::as_str),
-                "Duplicate event detected, skipping"
+                "Rejecting broadcast because node is quarantined"
             );
             return BroadcastResult {
                 local_sent: 0,
                 redis_sent: false,
             };
         }
-
-        let mut local_sent = 0;
-        let mut redis_sent = 0;
-
-        // Get event_type for logging before moving event
-        let event_type = event.event_type();
-        let is_critical = event.is_critical();
 
         if self.shutdown_started.load(Ordering::Acquire) && !is_critical {
             debug!(
@@ -779,6 +933,24 @@ impl ClusterManager {
                 redis_sent: false,
             };
         }
+
+        let dedup_key = DedupKey::from_event(&event);
+
+        // Check if this is a duplicate
+        if !self.deduplicator.should_process(&dedup_key) {
+            debug!(
+                event_type = %event_type,
+                room_id = %event.room_id()
+                    .map_or("n/a", synctv_core::models::RoomId::as_str),
+                "Duplicate event detected, skipping"
+            );
+            return BroadcastResult {
+                local_sent: 0,
+                redis_sent: false,
+            };
+        }
+
+        let mut local_sent = 0;
 
         // Get room_id for broadcasting
         if let Some(room_id) = event.room_id() {
@@ -792,83 +964,7 @@ impl ClusterManager {
             let _ = self.admin_event_tx.send(event.clone());
         }
 
-        // Publish to Redis for cross-node sync.
-        // Critical events (KickPublisher, KickUser, PermissionChanged) use a
-        // separate high-priority channel that never drops events.
-        if is_critical {
-            if let Some(tx) = &self.redis_critical_tx {
-                match tx.try_send(PublishRequest { event }) {
-                    Ok(()) => {
-                        redis_sent = 1;
-                    }
-                    Err(mpsc::error::TrySendError::Full(req)) => {
-                        // Critical channel is full -- spawn a task that uses
-                        // send().await so the event is never dropped.
-                        let tx = tx.clone();
-                        warn!(
-                            "Critical event publish channel full (capacity {}), spawning tracked retry task",
-                            self.critical_channel_capacity
-                        );
-                        self.critical_retry_tasks.spawn(async move {
-                            if let Err(e) = tx.send(req).await {
-                                error!("Failed to send critical event after retry: {e}");
-                            }
-                        });
-                        redis_sent = 1; // Will be sent asynchronously
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        error!("Critical event publish channel closed");
-                    }
-                }
-            } else if let Some(tx) = &self.redis_publish_tx {
-                // Fallback to the normal channel only when a dedicated critical
-                // channel is unavailable. Critical events still must not be
-                // dropped when the normal channel is temporarily full.
-                match tx.try_send(PublishRequest { event }) {
-                    Ok(()) => {
-                        redis_sent = 1;
-                    }
-                    Err(mpsc::error::TrySendError::Full(req)) => {
-                        let tx = tx.clone();
-                        warn!(
-                            "Dedicated critical publish channel unavailable; normal Redis publish channel is full (capacity {}), spawning tracked retry for critical event",
-                            self.publish_channel_capacity
-                        );
-                        self.critical_retry_tasks.spawn(async move {
-                            if let Err(e) = tx.send(req).await {
-                                error!(
-                                    "Failed to send critical event through fallback Redis channel: {e}"
-                                );
-                            }
-                        });
-                        redis_sent = 1;
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        error!(
-                            "Dedicated critical publish channel unavailable and fallback Redis publish channel is closed"
-                        );
-                    }
-                }
-            }
-        } else if let Some(tx) = &self.redis_publish_tx {
-            match tx.try_send(PublishRequest { event }) {
-                Ok(()) => {
-                    redis_sent = 1;
-                }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
-                        .with_label_values(&["channel_full"])
-                        .inc();
-                    warn!(
-                        "Redis publish channel full (capacity {}), dropping event",
-                        self.publish_channel_capacity
-                    );
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    error!("Redis publish channel closed, cannot queue event");
-                }
-            }
-        }
+        let redis_sent = self.enqueue_redis_publish(event, is_critical);
 
         // Record cluster metrics
         synctv_core::metrics::cluster::CLUSTER_EVENTS_PUBLISHED
@@ -878,13 +974,13 @@ impl ClusterManager {
         debug!(
             event_type = %event_type,
             local_subscribers = local_sent,
-            redis_published = redis_sent > 0,
+            redis_published = redis_sent,
             "Event broadcast complete"
         );
 
         BroadcastResult {
             local_sent,
-            redis_sent: redis_sent > 0,
+            redis_sent,
         }
     }
 
@@ -988,8 +1084,18 @@ impl Drop for ClusterManager {
         // and will notify all tasks holding a clone of this token to stop.
         // For graceful shutdown with awaiting, use the async shutdown() method instead.
         self.cancel_token.cancel();
-        if let Some(ref cm) = self.connection_manager {
-            cm.shutdown();
+        self.critical_retry_tasks.close();
+
+        if let Some(handle) = self.publisher_task.get_mut().take() {
+            handle.abort();
+        }
+
+        if let Some(handle) = self.critical_forwarder_task.get_mut().take() {
+            handle.abort();
+        }
+
+        if let Some(connection_manager) = &self.connection_manager {
+            connection_manager.abort_background_tasks();
         }
     }
 }
@@ -1631,6 +1737,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_quarantined_broadcast_is_rejected_without_poisoning_dedup() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "test_node_quarantine".to_string(),
+            dedup_window: Duration::from_secs(60),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            shared_redis_conn: None,
+            parent_cancel_token: None,
+        };
+
+        let manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("ClusterManager::new should succeed");
+        let room_id = RoomId::from_string("room_quarantine".to_string());
+        let user_id = UserId::from_string("user_quarantine".to_string());
+        let mut rx = manager
+            .message_hub()
+            .subscribe(
+                room_id.clone(),
+                user_id.clone(),
+                "conn-quarantine".to_string(),
+            )
+            .await
+            .expect("subscribe should succeed");
+
+        manager.is_quarantined.store(true, Ordering::Release);
+
+        let event = ClusterEvent::ChatMessage {
+            event_id: "dedup-preserved".to_string(),
+            room_id: room_id.clone(),
+            user_id: user_id.clone(),
+            username: "quarantined-user".to_string(),
+            message: "blocked while quarantined".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        };
+
+        let blocked = manager.broadcast(event.clone());
+        assert_eq!(blocked.local_sent, 0);
+        assert!(!blocked.redis_sent);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), rx.recv())
+                .await
+                .is_err(),
+            "quarantined manager must not deliver locally"
+        );
+
+        manager.is_quarantined.store(false, Ordering::Release);
+
+        let delivered = manager.broadcast(event);
+        assert_eq!(
+            delivered.local_sent, 1,
+            "retry after quarantine should still be deliverable with the same event id"
+        );
+        assert!(!delivered.redis_sent);
+        assert!(
+            matches!(
+                tokio::time::timeout(Duration::from_secs(1), rx.recv()).await,
+                Ok(Some(ClusterEvent::ChatMessage { .. }))
+            ),
+            "event should be delivered after quarantine is lifted"
+        );
+    }
+
+    #[tokio::test]
     async fn test_cluster_metrics_reports_dependency_injection_state() {
         let config = ClusterConfig {
             redis_client: None,
@@ -1743,6 +1922,102 @@ mod tests {
             .expect("critical event should be queued instead of dropped")
             .expect("critical event should arrive on fallback channel");
         assert_eq!(delivered.event.event_type(), critical_event.event_type());
+    }
+
+    #[tokio::test]
+    async fn test_publish_only_enqueues_redis_without_rebroadcasting_locally() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "test_publish_only".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 4,
+            publish_channel_capacity: 4,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            shared_redis_conn: None,
+            parent_cancel_token: None,
+        };
+
+        let mut manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("ClusterManager::new should succeed");
+        let room_id = RoomId::from_string("publish-only-room".to_string());
+        let user_id = UserId::from_string("publish-only-user".to_string());
+        let mut room_rx = manager
+            .message_hub()
+            .subscribe(
+                room_id.clone(),
+                user_id.clone(),
+                "publish-only-conn".to_string(),
+            )
+            .await
+            .expect("subscribe should succeed");
+        let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(4);
+        manager.redis_critical_tx = Some(critical_tx);
+
+        let event = ClusterEvent::UserLeft {
+            event_id: nanoid::nanoid!(16),
+            room_id,
+            user_id,
+            username: "publish-only".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        assert!(
+            manager.publish_only(event.clone()),
+            "publish_only should enqueue the Redis publish path"
+        );
+
+        let published = tokio::time::timeout(Duration::from_millis(100), critical_rx.recv())
+            .await
+            .expect("event should reach Redis queue")
+            .expect("critical queue should stay open");
+        assert_eq!(published.event.event_type(), event.event_type());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), room_rx.recv())
+                .await
+                .is_err(),
+            "publish_only must not duplicate local delivery"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_drop_aborts_injected_connection_manager_background_tasks() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "test_drop_connection_manager_cleanup".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 4,
+            publish_channel_capacity: 4,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            shared_redis_conn: None,
+            parent_cancel_token: None,
+        };
+
+        let mut manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("ClusterManager::new should succeed");
+        let connection_manager = ConnectionManager::new(ConnectionLimits::default());
+        connection_manager.start();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        manager.set_connection_manager(connection_manager.clone());
+
+        drop(manager);
+        tokio::task::yield_now().await;
+
+        assert!(
+            !connection_manager.background_tasks_running(),
+            "drop fallback must clear ConnectionManager background tasks when graceful shutdown was never awaited"
+        );
     }
 
     /// Test that ClusterManager metrics include quarantine state.

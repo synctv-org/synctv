@@ -50,37 +50,6 @@ const fn requires_reliable_target_delivery(event: &ClusterEvent) -> bool {
     event.is_critical() || matches!(event, ClusterEvent::WebRTCSignaling { .. })
 }
 
-fn spawn_reliable_target_delivery(
-    sender: MessageSender,
-    event: ClusterEvent,
-    room_id: RoomId,
-    connection_id: ConnectionId,
-) {
-    let event_type = event.event_type().to_string();
-    tokio::spawn(async move {
-        match tokio::time::timeout(CRITICAL_EVENT_SEND_TIMEOUT, sender.send(event)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                warn!(
-                    room_id = %room_id.as_str(),
-                    connection_id = %connection_id,
-                    event_type = %event_type,
-                    "Failed to deliver targeted reliable event (channel closed): {e}"
-                );
-            }
-            Err(_) => {
-                warn!(
-                    room_id = %room_id.as_str(),
-                    connection_id = %connection_id,
-                    event_type = %event_type,
-                    timeout_secs = CRITICAL_EVENT_SEND_TIMEOUT.as_secs(),
-                    "Targeted reliable event delivery timed out"
-                );
-            }
-        }
-    });
-}
-
 fn block_on_reliable_delivery(
     sender: MessageSender,
     event: ClusterEvent,
@@ -88,14 +57,32 @@ fn block_on_reliable_delivery(
     connection_id: ConnectionId,
 ) -> bool {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(|| {
-            handle.block_on(deliver_reliable_event(
+        if matches!(
+            handle.runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::MultiThread
+        ) {
+            tokio::task::block_in_place(|| {
+                handle.block_on(deliver_reliable_event(
+                    sender,
+                    event,
+                    room_id,
+                    connection_id,
+                ))
+            })
+        } else {
+            warn!(
+                room_id = %room_id.as_str(),
+                connection_id = %connection_id,
+                "Reliable targeted delivery cannot block on a current-thread Tokio runtime; falling back to async retry"
+            );
+            try_spawn(deliver_reliable_event(
                 sender,
                 event,
                 room_id,
                 connection_id,
             ))
-        })
+            .is_some()
+        }
     } else {
         false
     }
@@ -899,14 +886,17 @@ impl RoomMessageHub {
                     }
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         if reliable_target_delivery {
-                            let retry_event = event;
-                            spawn_reliable_target_delivery(
+                            let delivered = block_on_reliable_delivery(
                                 subscriber.sender.clone(),
-                                retry_event,
+                                event,
                                 room_id.clone(),
                                 subscriber.connection_id.clone(),
                             );
-                            result = 1;
+                            if delivered {
+                                result = 1;
+                            } else {
+                                failed_connection = Some(subscriber.connection_id.clone());
+                            }
                         } else {
                             warn!(
                                 room_id = %room_id.as_str(),

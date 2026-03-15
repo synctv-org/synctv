@@ -80,7 +80,7 @@ async fn test_broadcast_to_connection_targeted() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full() {
     let hub = RoomMessageHub::new();
     let room = rid("r1");
@@ -99,13 +99,23 @@ async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full
         );
     }
 
-    let sent = hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room));
+    let room_for_task = room.clone();
+    let hub_for_task = hub.clone();
+    let notify = tokio::spawn(async move {
+        hub_for_task.broadcast_to_connection(&room_for_task, "conn-target", webrtc_event(&room))
+    });
+
+    tokio::task::yield_now().await;
+    let _drained = rx.recv().await.expect("prefill message should exist");
+
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(1), notify)
+        .await
+        .expect("reliable broadcast task should complete after capacity is freed")
+        .expect("broadcast task should not panic");
     assert_eq!(
         sent, 1,
-        "WebRTC signaling should be accepted for reliable delivery even when the channel is full"
+        "WebRTC signaling should be reported as delivered once it is actually queued"
     );
-
-    let _drained = rx.recv().await.expect("prefill message should exist");
 
     let mut delivered_webrtc = false;
     for _ in 0..512 {
@@ -122,6 +132,86 @@ async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full
     assert!(
         delivered_webrtc,
         "reliable targeted delivery must eventually enqueue the WebRTC signaling event"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broadcast_to_connection_does_not_report_success_when_reliable_delivery_times_out() {
+    let hub = RoomMessageHub::new();
+    let room = rid("r1");
+    let user = uid("u1");
+
+    let _rx = hub
+        .subscribe(room.clone(), user, "conn-target".to_string())
+        .await
+        .expect("subscribe should succeed");
+
+    for _ in 0..512 {
+        let sent = hub.broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")));
+        assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
+    }
+
+    let notify = tokio::spawn({
+        let hub = hub.clone();
+        let room = room.clone();
+        async move { hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room)) }
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+
+    let sent = notify.await.expect("notification task should complete");
+    assert_eq!(
+        sent, 0,
+        "targeted reliable delivery must not report success before the message is actually queued"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_broadcast_to_connection_keeps_current_thread_target_registered_when_channel_full() {
+    let hub = RoomMessageHub::new();
+    let room = rid("r1-current-thread");
+    let user = uid("u1");
+
+    let mut rx = hub
+        .subscribe(room.clone(), user.clone(), "conn-target".to_string())
+        .await
+        .expect("subscribe should succeed");
+
+    for _ in 0..512 {
+        let sent = hub.broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")));
+        assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
+    }
+
+    let sent = hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room));
+    assert_eq!(
+        sent, 1,
+        "current-thread runtimes should accept reliable targeted delivery via async retry"
+    );
+    assert_eq!(
+        hub.connection_count(),
+        1,
+        "targeted reliable fallback must not unsubscribe the connection"
+    );
+
+    let drained = rx.recv().await.expect("prefill message should exist");
+    assert!(matches!(drained, ClusterEvent::ChatMessage { .. }));
+
+    let mut delivered_webrtc = false;
+    for _ in 0..512 {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("reliable targeted retry should eventually enqueue once capacity is available")
+            .expect("channel should remain open");
+        if matches!(msg, ClusterEvent::WebRTCSignaling { .. }) {
+            delivered_webrtc = true;
+            break;
+        }
+    }
+
+    assert!(
+        delivered_webrtc,
+        "expected queued WebRTC signaling after draining capacity"
     );
 }
 

@@ -93,6 +93,58 @@ impl SeekResponse {
     }
 }
 
+const MAX_PLAYBACK_POSITION_SECONDS: f64 = 86_400.0;
+const MIN_PLAYBACK_SPEED: f64 = 0.25;
+const MAX_PLAYBACK_SPEED: f64 = 4.0;
+const MAX_PATCH_PLAYBACK_SPEED: f64 = 16.0;
+
+fn validate_seek_position(current_time: f64) -> Result<()> {
+    if !current_time.is_finite() {
+        return Err(Error::InvalidInput(
+            "Seek position must be a finite number".to_string(),
+        ));
+    }
+    if current_time < 0.0 {
+        return Err(Error::InvalidInput(
+            "Seek position must be non-negative".to_string(),
+        ));
+    }
+    if current_time > MAX_PLAYBACK_POSITION_SECONDS {
+        return Err(Error::InvalidInput(
+            "Seek position exceeds maximum (24 hours)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_playback_speed_value(speed: f64) -> Result<()> {
+    if !speed.is_finite() {
+        return Err(Error::InvalidInput(
+            "Speed must be a finite number".to_string(),
+        ));
+    }
+    if !(MIN_PLAYBACK_SPEED..=MAX_PLAYBACK_SPEED).contains(&speed) {
+        return Err(Error::InvalidInput(format!(
+            "Speed must be between {MIN_PLAYBACK_SPEED} and {MAX_PLAYBACK_SPEED}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_patch_playback_speed_value(speed: f64) -> Result<()> {
+    if !speed.is_finite() {
+        return Err(Error::InvalidInput(
+            "Speed must be a finite number".to_string(),
+        ));
+    }
+    if speed <= 0.0 || speed > MAX_PATCH_PLAYBACK_SPEED {
+        return Err(Error::InvalidInput(format!(
+            "Speed must be greater than 0 and at most {MAX_PATCH_PLAYBACK_SPEED}"
+        )));
+    }
+    Ok(())
+}
+
 /// Trait for broadcasting playback state changes to cluster replicas.
 ///
 /// This abstracts over the cluster manager so that `synctv-core` does not
@@ -619,11 +671,7 @@ impl PlaybackService {
         user_id: UserId,
         current_time: f64,
     ) -> Result<SeekResponse> {
-        if current_time < 0.0 {
-            return Err(Error::InvalidInput(
-                "Seek position must be non-negative".to_string(),
-            ));
-        }
+        validate_seek_position(current_time)?;
 
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::SEEK)
@@ -672,13 +720,7 @@ impl PlaybackService {
             .check_permission(&room_id, &user_id, PermissionBits::CHANGE_SPEED)
             .await?;
 
-        // Validate speed range (UI bounds: 0.25 to 4.0)
-        // Note: DB allows wider range (0 < speed <= 16.0) but UI restricts to practical values
-        if !(0.25..=4.0).contains(&speed) {
-            return Err(Error::InvalidInput(
-                "Speed must be between 0.25 and 4.0".to_string(),
-            ));
-        }
+        validate_playback_speed_value(speed)?;
 
         let state = self
             .update_state(room_id.clone(), |state| {
@@ -1225,13 +1267,15 @@ impl PlaybackService {
                 .await?;
         }
 
-        // Validate speed range if provided (must match DB CHECK constraint: speed > 0 AND speed <= 16.0)
+        if let Some(ct) = current_time {
+            validate_seek_position(ct)?;
+        }
+
+        // Preserve the legacy PATCH contract used by clients performing
+        // atomic multi-field updates, even though interactive speed changes
+        // remain limited to the UI/websocket bounds.
         if let Some(s) = speed {
-            if s <= 0.0 || s > 16.0 {
-                return Err(Error::InvalidInput(
-                    "Speed must be between 0 (exclusive) and 16.0".to_string(),
-                ));
-            }
+            validate_patch_playback_speed_value(s)?;
         }
 
         // If media_id is provided, verify it exists
@@ -1304,38 +1348,51 @@ mod tests {
 
     #[test]
     fn test_speed_validation_bounds() {
-        // UI bounds: 0.25 <= speed <= 4.0
-        let valid = |s: f64| (0.25..=4.0).contains(&s);
-
         // Valid boundary values
-        assert!(valid(0.25));
-        assert!(valid(0.5));
-        assert!(valid(1.0));
-        assert!(valid(2.0));
-        assert!(valid(4.0));
+        assert!(validate_playback_speed_value(0.25).is_ok());
+        assert!(validate_playback_speed_value(0.5).is_ok());
+        assert!(validate_playback_speed_value(1.0).is_ok());
+        assert!(validate_playback_speed_value(2.0).is_ok());
+        assert!(validate_playback_speed_value(4.0).is_ok());
 
         // Invalid boundary values (below minimum)
-        assert!(!valid(0.0));
-        assert!(!valid(0.1));
-        assert!(!valid(0.24));
-        assert!(!valid(-1.0));
+        assert!(validate_playback_speed_value(0.0).is_err());
+        assert!(validate_playback_speed_value(0.1).is_err());
+        assert!(validate_playback_speed_value(0.24).is_err());
+        assert!(validate_playback_speed_value(-1.0).is_err());
 
         // Invalid boundary values (above maximum)
-        assert!(!valid(4.1));
-        assert!(!valid(8.0));
-        assert!(!valid(16.0));
+        assert!(validate_playback_speed_value(4.1).is_err());
+        assert!(validate_playback_speed_value(8.0).is_err());
+        assert!(validate_playback_speed_value(16.0).is_err());
+        assert!(validate_playback_speed_value(f64::NAN).is_err());
+        assert!(validate_playback_speed_value(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn test_patch_speed_validation_bounds() {
+        assert!(validate_patch_playback_speed_value(0.25).is_ok());
+        assert!(validate_patch_playback_speed_value(1.0).is_ok());
+        assert!(validate_patch_playback_speed_value(4.0).is_ok());
+        assert!(validate_patch_playback_speed_value(8.0).is_ok());
+        assert!(validate_patch_playback_speed_value(16.0).is_ok());
+
+        assert!(validate_patch_playback_speed_value(0.0).is_err());
+        assert!(validate_patch_playback_speed_value(-1.0).is_err());
+        assert!(validate_patch_playback_speed_value(16.1).is_err());
+        assert!(validate_patch_playback_speed_value(f64::NAN).is_err());
+        assert!(validate_patch_playback_speed_value(f64::INFINITY).is_err());
     }
 
     #[test]
     fn test_seek_negative_position() {
-        let position = -1.0_f64;
-        assert!(position < 0.0, "Negative seek positions should be rejected");
-
-        let position = 0.0_f64;
-        assert!(position >= 0.0, "Zero seek position should be accepted");
-
-        let position = 42.5_f64;
-        assert!(position >= 0.0, "Positive seek position should be accepted");
+        assert!(validate_seek_position(-1.0).is_err());
+        assert!(validate_seek_position(0.0).is_ok());
+        assert!(validate_seek_position(42.5).is_ok());
+        assert!(validate_seek_position(MAX_PLAYBACK_POSITION_SECONDS).is_ok());
+        assert!(validate_seek_position(MAX_PLAYBACK_POSITION_SECONDS + 0.1).is_err());
+        assert!(validate_seek_position(f64::NAN).is_err());
+        assert!(validate_seek_position(f64::INFINITY).is_err());
     }
 
     #[test]

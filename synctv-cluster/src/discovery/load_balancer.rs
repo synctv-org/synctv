@@ -159,13 +159,12 @@ impl LoadBalancer {
 
     /// Select a specific node by ID (returns error if node not available)
     pub async fn select_node_by_id(&self, node_id: &str) -> Result<String> {
-        let node = self
-            .node_registry
-            .get_node_local(node_id)
-            .await
-            .ok_or_else(|| Error::NotFound(format!("Node {node_id} not found")))?;
-
-        Ok(node.node_id)
+        self.get_healthy_nodes()
+            .await?
+            .into_iter()
+            .find(|node| node.node_id == node_id)
+            .map(|node| node.node_id)
+            .ok_or_else(|| Error::NotFound(format!("Node {node_id} not available")))
     }
 
     /// Get all available healthy nodes
@@ -416,6 +415,56 @@ mod tests {
 
         let result = lb.select_node_by_id("nonexistent").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_select_node_by_id_filters_unhealthy_nodes() {
+        let registry = make_registry();
+        register_nodes(&registry, 3).await;
+
+        let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
+        {
+            let mut status = monitor.health_status.write().await;
+            status.insert("node-1".to_string(), NodeHealth::Unhealthy);
+        }
+
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
+            .with_health_monitor(monitor);
+
+        let err = lb
+            .select_node_by_id("node-1")
+            .await
+            .expect_err("explicit node selection must fail closed for unhealthy nodes");
+        assert!(
+            err.to_string().contains("not available"),
+            "error should explain that unhealthy nodes are not routable: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_select_node_by_id_fails_closed_when_degraded_cache_is_stale() {
+        let registry = Arc::new(
+            NodeRegistry::new(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+                "self".to_string(),
+                30,
+                "test-stale-select:",
+            )
+            .unwrap(),
+        );
+        register_nodes(&registry, 2).await;
+        registry.test_set_cluster_mode(super::super::node_registry::ClusterMode::Degraded);
+        registry.test_set_last_refreshed_at(1);
+
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
+        let err = lb
+            .select_node_by_id("node-1")
+            .await
+            .expect_err("stale degraded cache must not be used for explicit routing either");
+        assert!(
+            err.to_string().contains("stale"),
+            "error should preserve the stale-topology fail-closed reason: {err}"
+        );
     }
 
     // --- get_available_nodes ---

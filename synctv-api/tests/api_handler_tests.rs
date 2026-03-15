@@ -215,6 +215,61 @@ mod update_playback_validation {
 
         assert_eq!(resp.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn test_invalid_speed_above_ui_max_returns_400() {
+        let app = Router::new().route(
+            "/api/rooms/{room_id}/playback",
+            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
+                if let Some(speed) = req.speed {
+                    synctv_api::http::validation::validate_playback_speed(speed)
+                        .map_err(|e| AppError::bad_request(e.to_string()))?;
+                }
+                Ok::<Json<Value>, AppError>(Json(serde_json::json!({"status": "ok"})))
+            }),
+        );
+
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/api/rooms/room123/playback")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"speed": 5.0}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains("Speed must be between"));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_negative_position_returns_400() {
+        let app = Router::new().route(
+            "/api/rooms/{room_id}/playback",
+            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
+                if let Some(position) = req.position {
+                    synctv_api::http::validation::validate_playback_position(position)
+                        .map_err(|e| AppError::bad_request(e.to_string()))?;
+                }
+                Ok::<Json<Value>, AppError>(Json(serde_json::json!({"status": "ok"})))
+            }),
+        );
+
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/api/rooms/room123/playback")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"position": -1.0}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert!(json["error"].as_str().unwrap().contains("negative"));
+    }
 }
 
 // ============================================================================

@@ -28,6 +28,7 @@ pub const FLV_RESPONSE_CHANNEL_CAPACITY: usize = 512;
 /// At 30fps video, 150 consecutive drops ≈ 5 seconds of missed content.
 /// The subscriber's playback is unrecoverable at this point.
 pub const MAX_CONSECUTIVE_DROPPED_FRAMES: u32 = 150;
+const STREAM_SUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// HTTP-FLV session (per-client connection)
 pub struct HttpFlvSession {
@@ -265,8 +266,14 @@ impl HttpFlvSession {
             .try_send(subscribe_event)
             .map_err(|_| anyhow::anyhow!("Failed to send subscribe event"))?;
 
-        let result = event_result_receiver
+        let result = tokio::time::timeout(STREAM_SUBSCRIBE_TIMEOUT, event_result_receiver)
             .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Subscribe timed out after {}s",
+                    STREAM_SUBSCRIBE_TIMEOUT.as_secs()
+                )
+            })?
             .map_err(|e| anyhow::anyhow!("Event result channel error: {e}"))?
             .map_err(|e| anyhow::anyhow!("Subscribe failed: {e:?}"))?;
         self.data_receiver = Some(
@@ -754,5 +761,37 @@ mod tests {
             streamhub_err.value,
             StreamHubErrorValue::SendError
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_subscribe_from_stream_hub_times_out_when_result_never_arrives() {
+        let (event_sender, mut event_rx) = tokio::sync::mpsc::channel(8);
+        let (response_tx, _response_rx) = mpsc::channel(FLV_RESPONSE_CHANNEL_CAPACITY);
+
+        let mut session = HttpFlvSession::new(
+            "live".to_string(),
+            "room/stream".to_string(),
+            event_sender,
+            response_tx,
+        );
+
+        let subscribe_task = tokio::spawn(async move { session.subscribe_from_stream_hub().await });
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("subscribe event should be emitted");
+        assert!(matches!(event, StreamHubEvent::Subscribe { .. }));
+
+        tokio::time::advance(STREAM_SUBSCRIBE_TIMEOUT + std::time::Duration::from_secs(1)).await;
+
+        let err = subscribe_task
+            .await
+            .expect("task should join")
+            .expect_err("subscribe should time out when no result arrives");
+        assert!(
+            err.to_string().contains("Subscribe timed out"),
+            "unexpected error: {err}"
+        );
     }
 }

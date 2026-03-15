@@ -49,13 +49,21 @@ pub struct SegmentManager {
     config: CleanupConfig,
 }
 
+/// A stream that has ended and exposed an explicit set of segment names safe to delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkedStreamCleanup {
+    pub app_name: String,
+    pub stream_name: String,
+    pub segment_names: Vec<String>,
+}
+
 /// Trait for checking which streams are marked for cleanup.
 /// Implemented by the stream registry to allow `SegmentManager`
 /// to query cleanup eligibility without tight coupling.
 pub trait StreamCleanupChecker: Send + Sync {
-    /// Returns list of (`app_name`, `stream_name`) tuples for streams
-    /// that are marked for cleanup (handler ended, grace period started).
-    fn get_streams_marked_for_cleanup(&self) -> Vec<(String, String)>;
+    /// Returns streams marked for cleanup (handler ended, grace period started)
+    /// together with the exact segment names captured when cleanup was marked.
+    fn get_streams_marked_for_cleanup(&self) -> Vec<MarkedStreamCleanup>;
 }
 
 impl SegmentManager {
@@ -135,23 +143,30 @@ impl SegmentManager {
             // in the 60-second grace period
             if let Some(ref registry) = registry {
                 let marked_streams = registry.get_streams_marked_for_cleanup();
-                for (app_name, stream_name) in marked_streams {
-                    match self.cleanup_stream(&app_name, &stream_name).await {
+                for marked in marked_streams {
+                    match self
+                        .cleanup_marked_stream_segments(
+                            &marked.app_name,
+                            &marked.stream_name,
+                            &marked.segment_names,
+                        )
+                        .await
+                    {
                         Ok(deleted) => {
                             if deleted > 0 {
                                 tracing::info!(
                                     "Priority cleanup: deleted {} segments for marked stream {}/{}",
                                     deleted,
-                                    app_name,
-                                    stream_name
+                                    marked.app_name,
+                                    marked.stream_name
                                 );
                             }
                         }
                         Err(e) => {
                             tracing::warn!(
                                 "Priority cleanup failed for {}/{}: {}",
-                                app_name,
-                                stream_name,
+                                marked.app_name,
+                                marked.stream_name,
                                 e
                             );
                         }
@@ -263,6 +278,26 @@ impl SegmentManager {
         }
         Ok(deleted)
     }
+
+    /// Cleanup only the explicitly captured segments for a stream.
+    ///
+    /// This is used during the post-end grace period so an old handler cannot
+    /// delete segments created by a newer handler reusing the same app/stream key.
+    pub async fn cleanup_marked_stream_segments(
+        &self,
+        app_name: &str,
+        stream_name: &str,
+        segment_names: &[String],
+    ) -> std::io::Result<usize> {
+        let mut deleted = 0;
+        for segment_name in segment_names {
+            self.storage
+                .delete(app_name, stream_name, segment_name)
+                .await?;
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +306,16 @@ mod tests {
     use crate::storage::MemoryStorage;
     use bytes::Bytes;
     use std::time::Duration;
+
+    struct StaticCleanupChecker {
+        marked: Vec<MarkedStreamCleanup>,
+    }
+
+    impl StreamCleanupChecker for StaticCleanupChecker {
+        fn get_streams_marked_for_cleanup(&self) -> Vec<MarkedStreamCleanup> {
+            self.marked.clone()
+        }
+    }
 
     #[tokio::test]
     async fn test_segment_manager_cleanup() {
@@ -357,6 +402,60 @@ mod tests {
             .unwrap());
         assert!(!storage
             .exists("live", "room_456", "segment_0")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_priority_cleanup_only_deletes_captured_segments() {
+        let storage = Arc::new(MemoryStorage::new());
+        storage
+            .write("live", "room_123", "old_seg_0", Bytes::from_static(b"old0"))
+            .await
+            .unwrap();
+        storage
+            .write("live", "room_123", "old_seg_1", Bytes::from_static(b"old1"))
+            .await
+            .unwrap();
+        storage
+            .write("live", "room_123", "new_seg_0", Bytes::from_static(b"new0"))
+            .await
+            .unwrap();
+
+        let manager = Arc::new(SegmentManager::new(
+            storage.clone(),
+            CleanupConfig {
+                interval: Duration::from_millis(10),
+                retention: Duration::from_hours(1),
+                max_segments_per_stream: 0,
+            },
+        ));
+        let checker = Arc::new(StaticCleanupChecker {
+            marked: vec![MarkedStreamCleanup {
+                app_name: "live".to_string(),
+                stream_name: "room_123".to_string(),
+                segment_names: vec!["old_seg_0".to_string(), "old_seg_1".to_string()],
+            }],
+        });
+        let shutdown = CancellationToken::new();
+        let join = manager
+            .clone()
+            .start_cleanup_task_with_registry(shutdown.clone(), checker);
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        shutdown.cancel();
+        join.await.unwrap();
+
+        assert!(!storage
+            .exists("live", "room_123", "old_seg_0")
+            .await
+            .unwrap());
+        assert!(!storage
+            .exists("live", "room_123", "old_seg_1")
+            .await
+            .unwrap());
+        assert!(storage
+            .exists("live", "room_123", "new_seg_0")
             .await
             .unwrap());
     }

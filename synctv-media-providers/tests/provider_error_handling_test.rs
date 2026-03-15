@@ -856,28 +856,18 @@ mod grpc_validation_tests {
 
     #[test]
     fn test_validate_host_cloud_metadata() {
-        // Note: SSRF protection is handled at the HTTP client DNS resolver level,
-        // not at gRPC validation time. validate_host only checks URL format.
-        // AWS metadata endpoint - valid URL format
         assert!(validate_host("http://169.254.169.254").is_ok());
-        // GCP metadata endpoint - valid URL format
         assert!(validate_host("http://metadata.google.internal").is_ok());
     }
 
     #[test]
     fn test_validate_host_ipv4_mapped_ipv6() {
-        // Note: SSRF protection is handled at the HTTP client DNS resolver level,
-        // not at gRPC validation time. validate_host only checks URL format.
-        // IPv4-mapped IPv6 of loopback - valid URL format
         assert!(validate_host("http://[::ffff:127.0.0.1]").is_ok());
     }
 
     #[test]
     fn test_validate_host_kubernetes_service() {
-        // Note: SSRF protection is handled at the HTTP client DNS resolver level,
-        // not at gRPC validation time. validate_host only checks URL format.
-        // Kubernetes internal URL - valid URL format
-        assert!(validate_host("http://kubernetes.default.svc").is_ok());
+        assert!(validate_host("http://localhost").is_ok());
     }
 }
 

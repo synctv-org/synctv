@@ -6,7 +6,8 @@
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 
-use synctv_cluster::discovery::node_registry::NodeRegistry;
+use synctv_cluster::discovery::node_registry::{ClusterMode, NodeRegistry};
+use synctv_cluster::discovery::NodeInfo;
 use synctv_cluster::grpc::client::{ClusterClient, ClusterClientConfig, FanOutResult};
 use synctv_cluster::grpc::synctv::cluster::UserOnlineStatus;
 
@@ -93,6 +94,25 @@ fn test_fan_out_result_all_failed() {
     assert_eq!(result.nodes_failed, 3);
     assert_eq!(result.failures.len(), 3);
     assert_eq!(result.total_nodes(), 3);
+}
+
+#[test]
+fn test_fan_out_result_timeout_failures_include_node_details() {
+    let result: FanOutResult<Vec<UserOnlineStatus>> = FanOutResult {
+        data: vec![],
+        nodes_succeeded: 1,
+        nodes_failed: 2,
+        failures: vec![
+            ("node-b".to_string(), "aggregate timeout".to_string()),
+            ("node-c".to_string(), "aggregate timeout".to_string()),
+        ],
+    };
+
+    assert_eq!(
+        result.failures.len(),
+        result.nodes_failed,
+        "failure details must cover every failed node so operators can identify timed-out peers"
+    );
 }
 
 // ============================================================================
@@ -282,4 +302,50 @@ async fn test_cluster_client_no_remote_nodes_fan_out() {
         assert_eq!(fan_out.nodes_succeeded, 0);
         assert!(fan_out.data.is_empty());
     }
+}
+
+/// Fan-out is a routing-sensitive path and must fail closed when the node view
+/// is degraded and stale, instead of silently querying with stale topology.
+#[tokio::test]
+async fn test_cluster_client_fan_out_fails_closed_when_degraded_cache_is_stale() {
+    let registry = Arc::new(
+        NodeRegistry::new(
+            redis::Client::open("redis://localhost:6379").unwrap(),
+            "self-node".to_string(),
+            30,
+            "fanout-stale:",
+        )
+        .unwrap(),
+    );
+
+    registry
+        .test_insert_local(NodeInfo::new(
+            "self-node".to_string(),
+            "127.0.0.1:50051".to_string(),
+            "http://127.0.0.1:8080".to_string(),
+        ))
+        .await;
+    registry
+        .test_insert_local(NodeInfo::new(
+            "peer-node".to_string(),
+            "127.0.0.1:50052".to_string(),
+            "http://127.0.0.1:8081".to_string(),
+        ))
+        .await;
+    registry.test_set_cluster_mode(ClusterMode::Degraded);
+    registry.test_set_last_refreshed_at(1);
+
+    let client = ClusterClient::new(
+        registry,
+        ClusterClientConfig {
+            self_node_id: "self-node".to_string(),
+            ..Default::default()
+        },
+    );
+
+    let err = client
+        .fan_out_user_online_status(vec!["user1".to_string()])
+        .await
+        .expect_err("stale degraded topology must not be used for fan-out routing");
+    assert!(err.to_string().contains("stale"), "unexpected error: {err}");
 }

@@ -386,7 +386,8 @@ impl StreamMessage for WebSocketStream {
 
 /// WebSocket message sender implementation
 struct WebSocketMessageSender {
-    sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+    normal_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+    critical_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
     /// Count of consecutive message drops (channel full). When this exceeds
     /// `SLOW_CLIENT_DROP_THRESHOLD` the `send()` method returns an error to trigger
     /// a graceful disconnect for the slow client.
@@ -394,9 +395,13 @@ struct WebSocketMessageSender {
 }
 
 impl WebSocketMessageSender {
-    fn new(sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>) -> Self {
+    fn new(
+        normal_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+        critical_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+    ) -> Self {
         Self {
-            sender,
+            normal_sender,
+            critical_sender,
             consecutive_drops: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -405,13 +410,15 @@ impl WebSocketMessageSender {
     /// channel different senders that still track slowness jointly).
     fn clone_sender(&self) -> Self {
         Self {
-            sender: self.sender.clone(),
+            normal_sender: self.normal_sender.clone(),
+            critical_sender: self.critical_sender.clone(),
             consecutive_drops: Arc::clone(&self.consecutive_drops),
         }
     }
 }
 
 async fn forward_websocket_messages<S>(
+    mut critical_messages: tokio::sync::mpsc::Receiver<axum::extract::ws::Message>,
     mut outbound_messages: tokio::sync::mpsc::Receiver<axum::extract::ws::Message>,
     mut ws_sender_sink: S,
     is_alive: Arc<std::sync::atomic::AtomicBool>,
@@ -420,7 +427,140 @@ async fn forward_websocket_messages<S>(
 ) where
     S: futures::Sink<axum::extract::ws::Message, Error = axum::Error> + Unpin,
 {
-    while let Some(msg) = outbound_messages.recv().await {
+    let mut critical_closed = false;
+    let mut outbound_closed = false;
+    let mut prioritize_critical = true;
+
+    loop {
+        let msg = if prioritize_critical {
+            if critical_closed {
+                tokio::select! {
+                    outbound = outbound_messages.recv(), if !outbound_closed => {
+                        match outbound {
+                            Some(msg) => {
+                                prioritize_critical = true;
+                                Some(msg)
+                            }
+                            None => {
+                                outbound_closed = true;
+                                None
+                            }
+                        }
+                    }
+                    else => break,
+                }
+            } else {
+                match critical_messages.try_recv() {
+                    Ok(msg) => {
+                        prioritize_critical = false;
+                        Some(msg)
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        critical_closed = true;
+                        prioritize_critical = false;
+                        None
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        tokio::select! {
+                            critical = critical_messages.recv(), if !critical_closed => {
+                                match critical {
+                                    Some(msg) => {
+                                        prioritize_critical = false;
+                                        Some(msg)
+                                    }
+                                    None => {
+                                        critical_closed = true;
+                                        prioritize_critical = false;
+                                        None
+                                    }
+                                }
+                            }
+                            outbound = outbound_messages.recv(), if !outbound_closed => {
+                                match outbound {
+                                    Some(msg) => {
+                                        prioritize_critical = true;
+                                        Some(msg)
+                                    }
+                                    None => {
+                                        outbound_closed = true;
+                                        None
+                                    }
+                                }
+                            }
+                            else => break,
+                        }
+                    }
+                }
+            }
+        } else {
+            if outbound_closed {
+                tokio::select! {
+                    critical = critical_messages.recv(), if !critical_closed => {
+                        match critical {
+                            Some(msg) => {
+                                prioritize_critical = false;
+                                Some(msg)
+                            }
+                            None => {
+                                critical_closed = true;
+                                None
+                            }
+                        }
+                    }
+                    else => break,
+                }
+            } else {
+                match outbound_messages.try_recv() {
+                    Ok(msg) => {
+                        prioritize_critical = true;
+                        Some(msg)
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        outbound_closed = true;
+                        prioritize_critical = true;
+                        None
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        tokio::select! {
+                            outbound = outbound_messages.recv(), if !outbound_closed => {
+                                match outbound {
+                                    Some(msg) => {
+                                        prioritize_critical = true;
+                                        Some(msg)
+                                    }
+                                    None => {
+                                        outbound_closed = true;
+                                        prioritize_critical = true;
+                                        None
+                                    }
+                                }
+                            }
+                            critical = critical_messages.recv(), if !critical_closed => {
+                                match critical {
+                                    Some(msg) => {
+                                        prioritize_critical = false;
+                                        Some(msg)
+                                    }
+                                    None => {
+                                        critical_closed = true;
+                                        None
+                                    }
+                                }
+                            }
+                            else => break,
+                        }
+                    }
+                }
+            }
+        };
+
+        let Some(msg) = msg else {
+            if critical_closed && outbound_closed {
+                break;
+            }
+            continue;
+        };
+
         if let Err(e) = ws_sender_sink.send(msg).await {
             error!(
                 connection_id = %connection_id,
@@ -506,14 +646,8 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
         let critical = is_critical_message(&message);
 
         if critical {
-            // For critical messages attempt a blocking send with a short timeout so
-            // backpressure does not cause silent loss. If the channel is still full
-            // after the timeout we disconnect the slow client.
-            let sender = self.sender.clone();
-            // try_send first (fast path, no syscall)
-            match sender.try_send(ws_msg) {
+            match self.critical_sender.try_send(ws_msg) {
                 Ok(()) => {
-                    // Reset drop counter on success
                     self.consecutive_drops.store(0, Ordering::Relaxed);
                     return Ok(());
                 }
@@ -521,21 +655,18 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
                     return Err("Channel closed: WebSocket client disconnected".to_string());
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Critical: increment drop counter and return error to disconnect
                     let drops = self.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
                     let msg_type = message_type_name(&message);
                     warn!(
                         consecutive_drops = drops,
                         message_type = msg_type,
-                        "Critical WebSocket message dropped: channel full (slow client)"
+                        "Critical WebSocket message rejected: critical queue full (slow client)"
                     );
                     synctv_core::metrics::http::WEBSOCKET_ERRORS_TOTAL
                         .with_label_values(&["message_dropped_critical"])
                         .inc();
-                    // For critical messages, always signal an error so the caller can
-                    // decide to disconnect the client.
                     return Err(format!(
-                        "Critical message (type={msg_type}) dropped: channel full after {drops} consecutive drops (slow client)"
+                        "Critical message (type={msg_type}) rejected: critical queue full after {drops} consecutive drops (slow client)"
                     ));
                 }
             }
@@ -543,7 +674,7 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
 
         // Non-critical messages: use try_send; track drops but do not error unless
         // the client has been consistently slow for SLOW_CLIENT_DROP_THRESHOLD sends.
-        match self.sender.try_send(ws_msg) {
+        match self.normal_sender.try_send(ws_msg) {
             Ok(()) => {
                 self.consecutive_drops.store(0, Ordering::Relaxed);
                 Ok(())
@@ -683,7 +814,7 @@ async fn prepare_websocket_upgrade(
         .room_service
         .get_room(&rid)
         .await
-        .map_err(|e| AppError::internal_server_error(format!("Failed to fetch room: {e}")))?;
+        .map_err(AppError::from)?;
 
     if room.is_banned {
         return Err(AppError::forbidden("This room has been banned"));
@@ -819,14 +950,15 @@ async fn handle_socket(
     let rate_limit_config = state.messaging_rate_limit_config.clone();
     let content_filter = websocket_content_filter(&state.content_filter);
 
-    // Create channel for sending messages to WebSocket with bounded capacity.
-    // Buffer size of 1000 messages provides backpressure for slow clients.
+    // Separate outbound channels keep critical state/control messages from being
+    // starved behind a backlog of best-effort traffic.
+    let (critical_tx, critical_rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(64);
     let (tx, rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(1000);
     let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     // Create WebSocket sender - wrapped in Arc for sharing with handler.
     // All senders share the same consecutive-drop counter via clone_sender().
-    let ws_sender_primary = WebSocketMessageSender::new(tx.clone());
+    let ws_sender_primary = WebSocketMessageSender::new(tx.clone(), critical_tx.clone());
     let ws_sender_for_handler = Arc::new(ws_sender_primary.clone_sender());
     let raw_sender_for_ping = tx.clone();
     let ws_sender = ws_sender_primary;
@@ -877,6 +1009,7 @@ async fn handle_socket(
     let connection_manager = state.connection_manager.clone();
     tokio::spawn(async move {
         forward_websocket_messages(
+            critical_rx,
             rx,
             &mut ws_sender_sink,
             is_alive_clone,
@@ -1231,6 +1364,13 @@ mod tests {
         assert_eq!(err.message, "WebSocket handshake timed out");
     }
 
+    #[test]
+    fn test_room_not_found_maps_to_not_found_error_during_websocket_prepare() {
+        let err = AppError::from(synctv_core::Error::NotFound("Room not found".to_string()));
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+        assert_eq!(err.message, "Room not found");
+    }
+
     // ========== RateLimitConfig Tests ==========
     // These tests verify that the RateLimitConfig used for WebSocket message handling
     // has sensible defaults and can be customized.
@@ -1441,8 +1581,9 @@ mod tests {
         use crate::impls::messaging::MessageSender;
         use crate::proto::client::{server_message::Message, ServerMessage, UserJoinedRoom};
 
+        let (critical_tx, _critical_rx) = tokio::sync::mpsc::channel(1);
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let sender = WebSocketMessageSender::new(tx.clone());
+        let sender = WebSocketMessageSender::new(tx.clone(), critical_tx);
 
         tx.try_send(axum::extract::ws::Message::Text("occupied".into()))
             .expect("fill the channel");
@@ -1461,6 +1602,36 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.contains("stateful message"));
         assert!(err.contains("UserJoined"));
+    }
+
+    #[test]
+    fn test_critical_messages_bypass_full_normal_queue() {
+        use crate::impls::messaging::MessageSender;
+        use crate::proto::client::{server_message::Message, ErrorMessage, ServerMessage};
+
+        let (critical_tx, mut critical_rx) = tokio::sync::mpsc::channel(1);
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let sender = WebSocketMessageSender::new(tx.clone(), critical_tx);
+
+        tx.try_send(axum::extract::ws::Message::Text("occupied".into()))
+            .expect("fill normal queue");
+
+        let result = sender.send(ServerMessage {
+            message: Some(Message::Error(ErrorMessage {
+                message: "critical".to_string(),
+                code: synctv_proto::common::ErrorCode::Forbidden as i32,
+                detail: String::new(),
+            })),
+        });
+
+        assert!(
+            result.is_ok(),
+            "critical websocket messages must still enqueue when the normal queue is full"
+        );
+        assert!(
+            critical_rx.try_recv().is_ok(),
+            "critical message should be queued on the dedicated critical channel"
+        );
     }
 
     #[tokio::test]
@@ -1516,13 +1687,16 @@ mod tests {
 
         let mut disconnect_rx = manager.subscribe_disconnect();
         let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (critical_tx, critical_rx) = tokio::sync::mpsc::channel(1);
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         tx.send(axum::extract::ws::Message::Text("payload".into()))
             .await
             .expect("enqueue outbound message");
         drop(tx);
+        drop(critical_tx);
 
         forward_websocket_messages(
+            critical_rx,
             rx,
             FailingSink,
             is_alive.clone(),
@@ -1547,5 +1721,185 @@ mod tests {
             }
             other => panic!("expected connection disconnect signal, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_forward_websocket_messages_prioritizes_critical_queue() {
+        use axum::Error;
+        use futures::task::{Context, Poll};
+        use std::pin::Pin;
+
+        #[derive(Default)]
+        struct RecordingSink {
+            sent: Vec<String>,
+        }
+
+        impl futures::Sink<axum::extract::ws::Message> for RecordingSink {
+            type Error = Error;
+
+            fn poll_ready(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn start_send(
+                mut self: Pin<&mut Self>,
+                item: axum::extract::ws::Message,
+            ) -> Result<(), Self::Error> {
+                let label = match item {
+                    axum::extract::ws::Message::Text(text) => text.to_string(),
+                    other => format!("{other:?}"),
+                };
+                self.sent.push(label);
+                Ok(())
+            }
+
+            fn poll_flush(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_close(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+        let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (critical_tx, critical_rx) = tokio::sync::mpsc::channel(2);
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+
+        tx.send(axum::extract::ws::Message::Text("normal".into()))
+            .await
+            .expect("enqueue normal message");
+        critical_tx
+            .send(axum::extract::ws::Message::Text("critical".into()))
+            .await
+            .expect("enqueue critical message");
+        drop(tx);
+        drop(critical_tx);
+
+        let mut sink = RecordingSink::default();
+        forward_websocket_messages(
+            critical_rx,
+            rx,
+            &mut sink,
+            is_alive,
+            manager,
+            "conn-priority".to_string(),
+        )
+        .await;
+
+        assert_eq!(
+            sink.sent,
+            vec!["critical".to_string(), "normal".to_string()],
+            "critical websocket queue must be drained before best-effort backlog"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_forward_websocket_messages_prevents_normal_queue_starvation() {
+        use axum::Error;
+        use futures::task::{Context, Poll};
+        use std::pin::Pin;
+
+        #[derive(Default)]
+        struct RecordingSink {
+            sent: Vec<String>,
+        }
+
+        impl futures::Sink<axum::extract::ws::Message> for RecordingSink {
+            type Error = Error;
+
+            fn poll_ready(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn start_send(
+                mut self: Pin<&mut Self>,
+                item: axum::extract::ws::Message,
+            ) -> Result<(), Self::Error> {
+                let label = match item {
+                    axum::extract::ws::Message::Text(text) => text.to_string(),
+                    other => format!("{other:?}"),
+                };
+                self.sent.push(label);
+                Ok(())
+            }
+
+            fn poll_flush(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_close(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+        let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (critical_tx, critical_rx) = tokio::sync::mpsc::channel(8);
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+
+        for idx in 0..3 {
+            critical_tx
+                .send(axum::extract::ws::Message::Text(
+                    format!("critical-{idx}").into(),
+                ))
+                .await
+                .expect("enqueue critical message");
+        }
+        tx.send(axum::extract::ws::Message::Text("normal".into()))
+            .await
+            .expect("enqueue normal message");
+        for idx in 3..6 {
+            critical_tx
+                .send(axum::extract::ws::Message::Text(
+                    format!("critical-{idx}").into(),
+                ))
+                .await
+                .expect("enqueue later critical message");
+        }
+        drop(tx);
+        drop(critical_tx);
+
+        let mut sink = RecordingSink::default();
+        forward_websocket_messages(
+            critical_rx,
+            rx,
+            &mut sink,
+            is_alive,
+            manager,
+            "conn-fairness".to_string(),
+        )
+        .await;
+
+        let normal_index = sink
+            .sent
+            .iter()
+            .position(|message| message == "normal")
+            .expect("normal queue message must be forwarded");
+
+        assert!(
+            normal_index < 4,
+            "normal queue should not starve behind sustained critical traffic: {:?}",
+            sink.sent
+        );
     }
 }

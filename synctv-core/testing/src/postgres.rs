@@ -14,21 +14,30 @@ use testcontainers::core::{ImageExt, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 /// Default `PostgreSQL` version for test containers
 pub const POSTGRES_VERSION: &str = "16-alpine";
 const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 300;
 const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
-const DEFAULT_DOCKER_STARTUP_PARALLELISM: usize = 4;
+const DEFAULT_DOCKER_STARTUP_PARALLELISM: usize = 3;
 const MIN_DOCKER_STARTUP_PARALLELISM: usize = 1;
 const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLELISM";
+const DEFAULT_POSTGRES_ACTIVE_PARALLELISM: usize = 3;
+const MIN_POSTGRES_ACTIVE_PARALLELISM: usize = 1;
+const POSTGRES_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_POSTGRES_ACTIVE_PARALLELISM";
 static POSTGRES_START_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
+static POSTGRES_ACTIVE_SERIALIZER: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(postgres_active_parallelism()));
 const TEST_CONTAINER_OWNER_LABEL: &str = "synctv.test.owner_pid";
 
 struct ProcessLock(File);
+struct DockerSlotGuard {
+    _local_permit: SemaphorePermit<'static>,
+    _process_lock: ProcessLock,
+}
 
 impl ProcessLock {
     fn try_acquire(name: &str) -> Option<Self> {
@@ -69,14 +78,16 @@ pub struct TestContainer {
     inner: Option<ContainerAsync<Postgres>>,
     name: String,
     cleaned_up: bool,
+    _slot_guard: Option<DockerSlotGuard>,
 }
 
 impl TestContainer {
-    const fn new(inner: ContainerAsync<Postgres>, name: String) -> Self {
+    fn new(inner: ContainerAsync<Postgres>, name: String, slot_guard: DockerSlotGuard) -> Self {
         Self {
             inner: Some(inner),
             name,
             cleaned_up: false,
+            _slot_guard: Some(slot_guard),
         }
     }
 
@@ -142,6 +153,15 @@ pub fn docker_startup_parallelism() -> usize {
 }
 
 #[must_use]
+pub fn postgres_active_parallelism() -> usize {
+    postgres_active_parallelism_from(
+        std::env::var(POSTGRES_ACTIVE_PARALLELISM_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+#[must_use]
 fn docker_startup_timeout_from(value: Option<&str>) -> Duration {
     value
         .and_then(|value| value.parse::<u64>().ok())
@@ -161,15 +181,26 @@ fn docker_startup_parallelism_from(value: Option<&str>) -> usize {
         })
 }
 
-async fn acquire_docker_start_slot(name: &str) -> ProcessLock {
-    let slots = docker_startup_parallelism();
-    let _local_permit = POSTGRES_START_SERIALIZER
-        .acquire()
-        .await
-        .expect("Postgres startup guard should not be closed");
+#[must_use]
+fn postgres_active_parallelism_from(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.parse::<usize>().ok())
+        .map_or(DEFAULT_POSTGRES_ACTIVE_PARALLELISM, |slots| {
+            slots.max(MIN_POSTGRES_ACTIVE_PARALLELISM)
+        })
+}
+
+async fn acquire_docker_slot(
+    serializer: &'static LazyLock<Semaphore>,
+    slots: usize,
+    name: &str,
+    closed_message: &'static str,
+    panic_message: &'static str,
+) -> DockerSlotGuard {
+    let local_permit = serializer.acquire().await.expect(closed_message);
     let prefix = name.to_string();
 
-    tokio::task::spawn_blocking(move || loop {
+    let process_lock = tokio::task::spawn_blocking(move || loop {
         for slot in 0..slots {
             let slot_name = format!("{prefix}-slot-{slot}");
             if let Some(lock) = ProcessLock::try_acquire(&slot_name) {
@@ -179,7 +210,34 @@ async fn acquire_docker_start_slot(name: &str) -> ProcessLock {
         std::thread::sleep(Duration::from_millis(100));
     })
     .await
-    .expect("postgres process slot task should not panic")
+    .expect(panic_message);
+
+    DockerSlotGuard {
+        _local_permit: local_permit,
+        _process_lock: process_lock,
+    }
+}
+
+async fn acquire_docker_start_slot(name: &str) -> DockerSlotGuard {
+    acquire_docker_slot(
+        &POSTGRES_START_SERIALIZER,
+        docker_startup_parallelism(),
+        name,
+        "Postgres startup guard should not be closed",
+        "postgres process slot task should not panic",
+    )
+    .await
+}
+
+async fn acquire_docker_active_slot(name: &str) -> DockerSlotGuard {
+    acquire_docker_slot(
+        &POSTGRES_ACTIVE_SERIALIZER,
+        postgres_active_parallelism(),
+        name,
+        "Postgres active-container guard should not be closed",
+        "postgres active container slot task should not panic",
+    )
+    .await
 }
 
 fn sanitize_container_name(raw: &str) -> String {
@@ -348,6 +406,7 @@ pub async fn create_test_pool_with_options_and_label(
     acquire_timeout: Duration,
 ) -> (TestContainer, PgPool) {
     let container_name = postgres_container_name(label);
+    let container_slot = acquire_docker_active_slot("postgres-active").await;
     let _postgres_process_lock = acquire_docker_start_slot("postgres-start").await;
     cleanup_orphaned_testcontainers("synctv-pg-");
     let postgres = {
@@ -415,7 +474,10 @@ pub async fn create_test_pool_with_options_and_label(
         .await
         .expect("Failed to run migrations");
 
-    (TestContainer::new(postgres, container_name), pool)
+    (
+        TestContainer::new(postgres, container_name, container_slot),
+        pool,
+    )
 }
 
 pub async fn create_test_pool_with_db_and_label(
@@ -439,6 +501,7 @@ pub async fn create_test_database_url_with_label(
     label: &str,
 ) -> (TestContainer, String) {
     let container_name = postgres_container_name(label);
+    let container_slot = acquire_docker_active_slot("postgres-active").await;
     let _postgres_process_lock = acquire_docker_start_slot("postgres-start").await;
     cleanup_orphaned_testcontainers("synctv-pg-");
     let postgres = {
@@ -494,7 +557,10 @@ pub async fn create_test_database_url_with_label(
         }
     }
 
-    (TestContainer::new(postgres, container_name), database_url)
+    (
+        TestContainer::new(postgres, container_name, container_slot),
+        database_url,
+    )
 }
 
 #[cfg(test)]
@@ -542,12 +608,12 @@ mod tests {
     }
 
     #[test]
-    fn test_docker_startup_parallelism_defaults_to_multiple_slots() {
+    fn test_docker_startup_parallelism_defaults_to_workspace_throughput() {
         assert_eq!(
             docker_startup_parallelism_from(None),
             DEFAULT_DOCKER_STARTUP_PARALLELISM
         );
-        assert_eq!(DEFAULT_DOCKER_STARTUP_PARALLELISM, 4);
+        assert_eq!(DEFAULT_DOCKER_STARTUP_PARALLELISM, 3);
     }
 
     #[test]
@@ -560,6 +626,28 @@ mod tests {
         assert_eq!(
             docker_startup_parallelism_from(Some("0")),
             MIN_DOCKER_STARTUP_PARALLELISM
+        );
+    }
+
+    #[test]
+    fn test_postgres_active_parallelism_defaults_to_conservative_live_limit() {
+        assert_eq!(
+            postgres_active_parallelism_from(None),
+            DEFAULT_POSTGRES_ACTIVE_PARALLELISM
+        );
+        assert_eq!(DEFAULT_POSTGRES_ACTIVE_PARALLELISM, 3);
+    }
+
+    #[test]
+    fn test_postgres_active_parallelism_honors_valid_override() {
+        assert_eq!(postgres_active_parallelism_from(Some("3")), 3);
+    }
+
+    #[test]
+    fn test_postgres_active_parallelism_rejects_zero_override() {
+        assert_eq!(
+            postgres_active_parallelism_from(Some("0")),
+            MIN_POSTGRES_ACTIVE_PARALLELISM
         );
     }
 
@@ -577,6 +665,7 @@ mod tests {
             inner: None,
             name: "synctv-pg-test".to_string(),
             cleaned_up: false,
+            _slot_guard: None,
         };
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");

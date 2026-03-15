@@ -491,13 +491,13 @@ pub async fn proxy_m3u8_and_rewrite(
     provider_headers: &HashMap<String, String>,
     proxy_base: &str,
 ) -> Result<Response, anyhow::Error> {
-    // Validate URL scheme to prevent SSRF via non-HTTP protocols
-    if let Ok(parsed) = url::Url::parse(url) {
-        let scheme = parsed.scheme();
-        if scheme != "http" && scheme != "https" {
-            return Err(anyhow::anyhow!("M3U8 URL has disallowed scheme: {scheme}"));
-        }
+    let parsed = url::Url::parse(url).map_err(|e| anyhow::anyhow!("M3U8 URL is invalid: {e}"))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(anyhow::anyhow!("M3U8 URL has disallowed scheme: {scheme}"));
     }
+    validate_target_url_against_ssrf(&parsed)
+        .map_err(|e| anyhow::anyhow!("M3U8 SSRF validation failed: {e}"))?;
 
     let request = apply_provider_headers(client.get(url), url, provider_headers)?;
 
@@ -1635,6 +1635,28 @@ mod tests {
         assert!(
             proxy_err.to_string().contains("blocked by SSRF policy"),
             "unexpected error: {proxy_err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_m3u8_and_rewrite_rejects_initial_blocked_ip_before_io() {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client should build");
+
+        let err = proxy_m3u8_and_rewrite(
+            &client,
+            "http://127.0.0.1:12345/private.m3u8",
+            &HashMap::new(),
+            "/proxy",
+        )
+        .await
+        .expect_err("loopback manifest must fail before network IO");
+
+        assert!(
+            err.to_string().contains("blocked by SSRF policy"),
+            "unexpected error: {err}"
         );
     }
 }

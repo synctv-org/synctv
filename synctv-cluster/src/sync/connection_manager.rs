@@ -176,6 +176,10 @@ const CONNECTION_METADATA_TTL_SECONDS: i64 = 90_000; // 25 hours
 enum PendingRedisOp {
     /// Decrement a counter key
     Decr(String),
+    /// Delete a key
+    Del(String),
+    /// Remove a member from a Redis set
+    SRem { key: String, member: String },
 }
 
 struct ConnectionIdClaim<'a> {
@@ -291,6 +295,12 @@ pub struct ConnectionManager {
     /// Guards `start()` against spawning duplicate background tasks when
     /// startup wiring calls it more than once.
     disconnect_retry_started: Arc<std::sync::atomic::AtomicBool>,
+    /// JoinHandle for the disconnect retry task so shutdown can await termination.
+    disconnect_retry_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// JoinHandle for the TTL refresh task.
+    ttl_refresh_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// JoinHandle for the pending Redis retries task.
+    pending_retries_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 
     /// Channel for queuing failed Redis counter operations for background retry.
     /// When a Redis INCR/DECR fails during register/unregister, the operation is
@@ -366,6 +376,9 @@ impl ConnectionManager {
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             disconnect_retry_cancel: Arc::new(disconnect_retry_cancel),
             disconnect_retry_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            disconnect_retry_handle: Arc::new(std::sync::Mutex::new(None)),
+            ttl_refresh_handle: Arc::new(std::sync::Mutex::new(None)),
+            pending_retries_handle: Arc::new(std::sync::Mutex::new(None)),
             pending_retries_tx,
             pending_retries_rx: Arc::new(tokio::sync::Mutex::new(Some(pending_retries_rx))),
         }
@@ -381,12 +394,34 @@ impl ConnectionManager {
             debug!("Disconnect retry task already started; skipping duplicate start()");
             return;
         }
-        self.spawn_disconnect_retry_task((*self.disconnect_retry_cancel).clone());
+        let handle = self.spawn_disconnect_retry_task((*self.disconnect_retry_cancel).clone());
+        *self
+            .disconnect_retry_handle
+            .lock()
+            .expect("disconnect retry handle mutex poisoned") = Some(handle);
     }
 
     #[cfg(test)]
     fn disconnect_retry_task_started(&self) -> bool {
         self.disconnect_retry_started.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn background_tasks_running(&self) -> bool {
+        self.disconnect_retry_handle
+            .lock()
+            .expect("disconnect retry handle mutex poisoned")
+            .is_some()
+            || self
+                .ttl_refresh_handle
+                .lock()
+                .expect("ttl refresh handle mutex poisoned")
+                .is_some()
+            || self
+                .pending_retries_handle
+                .lock()
+                .expect("pending retries handle mutex poisoned")
+                .is_some()
     }
 
     const fn redis_enabled(&self) -> bool {
@@ -423,7 +458,11 @@ impl ConnectionManager {
         // to call spawn_ttl_refresh_task() manually.
         let cancel = tokio_util::sync::CancellationToken::new();
         self.ttl_refresh_cancel = Arc::new(cancel.clone());
-        let _handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
+        let handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
+        *self
+            .ttl_refresh_handle
+            .lock()
+            .expect("ttl refresh handle mutex poisoned") = Some(handle);
 
         // Spawn the pending-retries background task.
         // Take the receiver that was stored in new() so it is not dropped.
@@ -442,7 +481,11 @@ impl ConnectionManager {
             self.pending_retries_tx = tx;
             rx
         };
-        Self::spawn_pending_retries_task(RedisConnHandle::Direct(conn), rx, cancel);
+        let handle = Self::spawn_pending_retries_task(RedisConnHandle::Direct(conn), rx, cancel);
+        *self
+            .pending_retries_handle
+            .lock()
+            .expect("pending retries handle mutex poisoned") = Some(handle);
 
         self
     }
@@ -464,7 +507,11 @@ impl ConnectionManager {
 
         let cancel = tokio_util::sync::CancellationToken::new();
         self.ttl_refresh_cancel = Arc::new(cancel.clone());
-        let _handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
+        let handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
+        *self
+            .ttl_refresh_handle
+            .lock()
+            .expect("ttl refresh handle mutex poisoned") = Some(handle);
 
         let rx = self
             .pending_retries_rx
@@ -478,7 +525,11 @@ impl ConnectionManager {
             self.pending_retries_tx = tx;
             rx
         };
-        Self::spawn_pending_retries_task(RedisConnHandle::Shared(conn), rx, cancel);
+        let handle = Self::spawn_pending_retries_task(RedisConnHandle::Shared(conn), rx, cancel);
+        *self
+            .pending_retries_handle
+            .lock()
+            .expect("pending retries handle mutex poisoned") = Some(handle);
 
         self
     }
@@ -492,7 +543,7 @@ impl ConnectionManager {
         redis_conn: RedisConnHandle,
         mut rx: mpsc::Receiver<PendingRedisOp>,
         cancel: tokio_util::sync::CancellationToken,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             /// Maximum retry attempts for a single failed operation before dropping it.
             const MAX_OP_RETRIES: u32 = 3;
@@ -530,6 +581,10 @@ impl ConnectionManager {
                                     // this is a compensating retry, not a live operation.
                                     conn.decr::<_, _, i64>(key, 1i64).await
                                 }
+                                PendingRedisOp::Del(key) => conn.del::<_, i64>(key).await,
+                                PendingRedisOp::SRem { key, member } => {
+                                    conn.srem::<_, _, i64>(key, member).await
+                                }
                             };
 
                             match result {
@@ -564,7 +619,7 @@ impl ConnectionManager {
                     }
                 }
             }
-        });
+        })
     }
 
     /// Enqueue a failed Redis counter operation for background retry.
@@ -621,7 +676,10 @@ impl ConnectionManager {
     /// This task periodically checks for disconnect signals that failed to send
     /// (because the broadcast channel was full) and retries them. This ensures
     /// that kick/ban operations are not lost even under high load.
-    fn spawn_disconnect_retry_task(&self, cancel: tokio_util::sync::CancellationToken) {
+    fn spawn_disconnect_retry_task(
+        &self,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         let pending_disconnects = self.pending_disconnects.clone();
         let disconnect_tx = self.disconnect_tx.clone();
         let dropped_count = self.dropped_disconnect_signals.clone();
@@ -694,7 +752,7 @@ impl ConnectionManager {
                     }
                 }
             }
-        });
+        })
     }
 
     /// Send a disconnect signal, storing it for retry if the channel is full.
@@ -751,9 +809,68 @@ impl ConnectionManager {
     /// Cancel the auto-spawned background tasks.
     ///
     /// Should be called during graceful shutdown to stop the background tasks.
-    pub fn shutdown(&self) {
+    pub async fn shutdown(&self) {
         self.ttl_refresh_cancel.cancel();
         self.disconnect_retry_cancel.cancel();
+
+        let ttl_refresh_handle = self
+            .ttl_refresh_handle
+            .lock()
+            .expect("ttl refresh handle mutex poisoned")
+            .take();
+        if let Some(handle) = ttl_refresh_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        }
+
+        let pending_retries_handle = self
+            .pending_retries_handle
+            .lock()
+            .expect("pending retries handle mutex poisoned")
+            .take();
+        if let Some(handle) = pending_retries_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        }
+
+        let disconnect_retry_handle = self
+            .disconnect_retry_handle
+            .lock()
+            .expect("disconnect retry handle mutex poisoned")
+            .take();
+        if let Some(handle) = disconnect_retry_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        }
+    }
+
+    pub(crate) fn abort_background_tasks(&self) {
+        self.ttl_refresh_cancel.cancel();
+        self.disconnect_retry_cancel.cancel();
+
+        if let Some(handle) = self
+            .ttl_refresh_handle
+            .lock()
+            .expect("ttl refresh handle mutex poisoned")
+            .take()
+        {
+            handle.abort();
+        }
+
+        if let Some(handle) = self
+            .pending_retries_handle
+            .lock()
+            .expect("pending retries handle mutex poisoned")
+            .take()
+        {
+            handle.abort();
+        }
+
+        if let Some(handle) = self
+            .disconnect_retry_handle
+            .lock()
+            .expect("disconnect retry handle mutex poisoned")
+            .take()
+        {
+            handle.abort();
+        }
     }
 
     /// Subscribe to disconnect signals
@@ -1470,10 +1587,30 @@ impl ConnectionManager {
                         .map(|r| format!("{key_prefix}conn_mgr:room:{r}"));
 
                     let mut mc = conn_clone.clone();
-                    let _: Result<(), _> = mc.del(&conn_key).await;
-                    let _: Result<(), _> = mc.srem(&user_index_key, &connection_id_owned).await;
+                    if mc.del::<_, i64>(&conn_key).await.is_err() {
+                        let _ = retry_tx.try_send(PendingRedisOp::Del(conn_key));
+                    }
+                    if mc
+                        .srem::<_, _, i64>(&user_index_key, &connection_id_owned)
+                        .await
+                        .is_err()
+                    {
+                        let _ = retry_tx.try_send(PendingRedisOp::SRem {
+                            key: user_index_key,
+                            member: connection_id_owned.clone(),
+                        });
+                    }
                     if let Some(room_key) = room_index_key {
-                        let _: Result<(), _> = mc.srem(&room_key, &connection_id_owned).await;
+                        if mc
+                            .srem::<_, _, i64>(&room_key, &connection_id_owned)
+                            .await
+                            .is_err()
+                        {
+                            let _ = retry_tx.try_send(PendingRedisOp::SRem {
+                                key: room_key,
+                                member: connection_id_owned.clone(),
+                            });
+                        }
                     }
                 };
 
@@ -1495,7 +1632,22 @@ impl ConnectionManager {
                         let room_key =
                             format!("{}connections:room:{room_id}", self.redis_key_prefix);
                         self.enqueue_retry(PendingRedisOp::Decr(room_key));
+                        let room_index_key =
+                            format!("{}conn_mgr:room:{room_id}", self.redis_key_prefix);
+                        self.enqueue_retry(PendingRedisOp::SRem {
+                            key: room_index_key,
+                            member: connection_id.to_string(),
+                        });
                     }
+                    let conn_key =
+                        format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix);
+                    self.enqueue_retry(PendingRedisOp::Del(conn_key));
+                    let user_index_key =
+                        format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id_str);
+                    self.enqueue_retry(PendingRedisOp::SRem {
+                        key: user_index_key,
+                        member: connection_id.to_string(),
+                    });
                 }
             }
 
@@ -3031,6 +3183,12 @@ mod tests {
             }
             ops
         }
+
+        fn enqueue_pending_retry_for_test(&self, op: PendingRedisOp) {
+            self.pending_retries_tx
+                .try_send(op)
+                .expect("test should enqueue pending retry");
+        }
     }
 
     #[tokio::test]
@@ -3125,6 +3283,39 @@ mod tests {
             manager.drain_pending_retries_for_test(),
             vec![PendingRedisOp::Decr("rollback:test:key".to_string())],
             "failed rollback must enqueue a retry instead of silently dropping the counter repair"
+        );
+    }
+
+    #[test]
+    fn test_pending_retry_queue_preserves_metadata_cleanup_operations() {
+        let manager = ConnectionManager::default();
+
+        manager.enqueue_pending_retry_for_test(PendingRedisOp::Del(
+            "retry:test:conn_meta".to_string(),
+        ));
+        manager.enqueue_pending_retry_for_test(PendingRedisOp::SRem {
+            key: "retry:test:user_index".to_string(),
+            member: "conn-123".to_string(),
+        });
+        manager.enqueue_pending_retry_for_test(PendingRedisOp::SRem {
+            key: "retry:test:room_index".to_string(),
+            member: "conn-123".to_string(),
+        });
+
+        assert_eq!(
+            manager.drain_pending_retries_for_test(),
+            vec![
+                PendingRedisOp::Del("retry:test:conn_meta".to_string()),
+                PendingRedisOp::SRem {
+                    key: "retry:test:user_index".to_string(),
+                    member: "conn-123".to_string(),
+                },
+                PendingRedisOp::SRem {
+                    key: "retry:test:room_index".to_string(),
+                    member: "conn-123".to_string(),
+                },
+            ],
+            "metadata and index cleanup retries must be retained alongside counter repairs"
         );
     }
 
@@ -4127,6 +4318,83 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() {
+        use redis::AsyncCommands;
+
+        let (_container, client, conn, prefix) =
+            docker_redis_connection("shared-unregister:").await;
+        let shared_conn = Arc::new(tokio::sync::RwLock::new(conn));
+        let manager = ConnectionManager::new(ConnectionLimits::default())
+            .with_shared_redis(shared_conn.clone(), &prefix);
+
+        let conn_key = format!("{prefix}conn_mgr:conn:conn-recover");
+        let user_index_key = format!("{prefix}conn_mgr:user:user-recover");
+        let room_index_key = format!("{prefix}conn_mgr:room:room-recover");
+
+        let mut verify_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+        let metadata = ConnectionInfoPersistent {
+            connection_id: "conn-recover".to_string(),
+            user_id: "user-recover".to_string(),
+            room_id: Some("room-recover".to_string()),
+            connected_at_unix: 0,
+            last_activity_unix: 0,
+            message_count: 0,
+            rtc_joined: false,
+            rtc_joined_at_unix: None,
+        };
+        let _: () = verify_conn
+            .set(&conn_key, serde_json::to_string(&metadata).unwrap())
+            .await
+            .unwrap();
+        let _: () = verify_conn
+            .sadd(&user_index_key, "conn-recover")
+            .await
+            .unwrap();
+        let _: () = verify_conn
+            .sadd(&room_index_key, "conn-recover")
+            .await
+            .unwrap();
+
+        assert!(
+            verify_conn.exists::<_, bool>(&conn_key).await.unwrap(),
+            "metadata should exist before retry processing"
+        );
+        manager.enqueue_pending_retry_for_test(PendingRedisOp::Del(conn_key.clone()));
+        manager.enqueue_pending_retry_for_test(PendingRedisOp::SRem {
+            key: user_index_key.clone(),
+            member: "conn-recover".to_string(),
+        });
+        manager.enqueue_pending_retry_for_test(PendingRedisOp::SRem {
+            key: room_index_key.clone(),
+            member: "conn-recover".to_string(),
+        });
+
+        tokio::time::sleep(Duration::from_secs(6)).await;
+
+        let metadata_exists: bool = verify_conn.exists(&conn_key).await.unwrap();
+        let user_members: Vec<String> = verify_conn.smembers(&user_index_key).await.unwrap();
+        let room_members: Vec<String> = verify_conn.smembers(&room_index_key).await.unwrap();
+
+        assert!(
+            !metadata_exists,
+            "pending retry processing must delete stale connection metadata"
+        );
+        assert!(
+            user_members.is_empty(),
+            "pending retry processing must remove stale user index members"
+        );
+        assert!(
+            room_members.is_empty(),
+            "pending retry processing must remove stale room index members"
+        );
+
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_reconcile_without_redis_is_noop() {
         // Reconciliation should be a no-op when Redis is not configured
         let manager = ConnectionManager::default();
@@ -4352,7 +4620,7 @@ mod tests {
         // Give the spawned task a moment to initialize
         tokio::time::sleep(Duration::from_millis(10)).await;
         // Shutdown should cancel the retry task cleanly
-        manager.shutdown();
+        manager.shutdown().await;
     }
 
     #[tokio::test]
@@ -4378,7 +4646,26 @@ mod tests {
             "duplicate start() calls must be a no-op"
         );
 
-        manager.shutdown();
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_awaits_disconnect_retry_task_exit() {
+        let manager = ConnectionManager::new(ConnectionLimits::default());
+        manager.start();
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        manager.shutdown().await;
+
+        assert!(
+            manager
+                .disconnect_retry_handle
+                .lock()
+                .expect("disconnect retry handle mutex poisoned")
+                .is_none(),
+            "shutdown must drain the disconnect retry task handle"
+        );
     }
 
     async fn docker_redis_connection(

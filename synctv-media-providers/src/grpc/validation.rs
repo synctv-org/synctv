@@ -33,7 +33,7 @@ pub fn validate_host(host: &str) -> Result<(), Status> {
         }
     }
 
-    if parsed.host_str().is_none() {
+    if parsed.host().is_none() {
         return Err(Status::invalid_argument(
             "host URL must contain a valid host component",
         ));
@@ -122,6 +122,27 @@ mod tests {
         assert!(validate_host("https://example.com").is_ok());
         assert!(validate_host("http://my-alist.example.com:5244").is_ok());
         assert!(validate_host("https://emby.myserver.org/emby").is_ok());
+        assert!(validate_host("http://192.168.1.100:5244").is_ok());
+        assert!(validate_host("http://10.0.0.1:5244").is_ok());
+        assert!(validate_host("https://jellyfin.home.local:8096").is_ok());
+    }
+
+    #[test]
+    fn test_private_and_local_hosts_are_allowed_at_validation_layer() {
+        for host in [
+            "http://127.0.0.1:5244",
+            "http://192.168.1.100:5244",
+            "http://169.254.169.254",
+            "http://localhost:8096",
+            "http://metadata.google.internal",
+            "http://[::1]:5244",
+            "http://[::ffff:127.0.0.1]",
+        ] {
+            assert!(
+                validate_host(host).is_ok(),
+                "transport-level SSRF controls should handle host blocking: {host}"
+            );
+        }
     }
 
     #[test]

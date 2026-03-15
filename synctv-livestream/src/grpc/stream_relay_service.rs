@@ -270,22 +270,20 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             .map_err(|_| Status::internal("Failed to send subscribe event"))?;
 
         // Wait for subscription result
-        let subscribe_result = tokio::time::timeout(
-            STREAM_HUB_SUBSCRIBE_TIMEOUT,
-            event_result_receiver,
-        )
-        .await
-        .map_err(|_| {
-            Status::deadline_exceeded(format!(
-                "Timed out waiting {}s for StreamHub subscription",
-                STREAM_HUB_SUBSCRIBE_TIMEOUT.as_secs()
-            ))
-        })?
-            .map_err(|_| Status::internal("Subscribe result channel closed"))?
-            .map_err(|e| {
-                tracing::error!("Subscribe failed: {e}");
-                Status::internal("Stream subscription failed")
-            })?;
+        let subscribe_result =
+            tokio::time::timeout(STREAM_HUB_SUBSCRIBE_TIMEOUT, event_result_receiver)
+                .await
+                .map_err(|_| {
+                    Status::deadline_exceeded(format!(
+                        "Timed out waiting {}s for StreamHub subscription",
+                        STREAM_HUB_SUBSCRIBE_TIMEOUT.as_secs()
+                    ))
+                })?
+                .map_err(|_| Status::internal("Subscribe result channel closed"))?
+                .map_err(|e| {
+                    tracing::error!("Subscribe failed: {e}");
+                    Status::internal("Stream subscription failed")
+                })?;
 
         let frame_receiver = subscribe_result
             .0
@@ -451,8 +449,8 @@ impl StreamRelayServiceImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
     use crate::grpc::proto::stream_relay_service_server::StreamRelayService;
+    use bytes::Bytes;
     use synctv_xiu::streamhub::define::StreamHubEvent;
     use tokio::time::{timeout, Duration};
 
@@ -635,10 +633,13 @@ mod tests {
             panic!("expected subscribe event");
         };
 
-        let result = timeout(STREAM_HUB_SUBSCRIBE_TIMEOUT + Duration::from_secs(1), service_task)
-            .await
-            .expect("service call should time out instead of hanging forever")
-            .expect("service task should complete");
+        let result = timeout(
+            STREAM_HUB_SUBSCRIBE_TIMEOUT + Duration::from_secs(1),
+            service_task,
+        )
+        .await
+        .expect("service call should time out instead of hanging forever")
+        .expect("service task should complete");
         let status = match result {
             Ok(_) => panic!("streamhub subscription stall must fail"),
             Err(status) => status,

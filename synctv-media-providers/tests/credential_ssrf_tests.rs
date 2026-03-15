@@ -1,11 +1,7 @@
 //! Credential storage tests
 //!
-//! SSRF protection is now enforced at the DNS resolver level (synctv-common).
-//! Credential storage no longer validates host URLs for SSRF; instead, all
-//! HTTP clients use a SSRF-safe DNS resolver that blocks connections to
-//! private/internal IP addresses at connection time.
-//!
-//! These tests verify that credential storage works correctly for all hosts.
+//! URL-shape validation happens before credentials are persisted; SSRF blocking
+//! is enforced by the outbound HTTP transport.
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
@@ -103,15 +99,10 @@ async fn test_credential_storage_accepts_public_ip() {
     );
 }
 
-/// SSRF protection is now at the DNS resolver level, so credential storage
-/// accepts any host URL. The actual SSRF block happens when the HTTP client
-/// tries to connect.
 #[tokio::test]
-async fn test_credential_storage_accepts_any_host() {
+async fn test_credential_storage_accepts_private_and_local_hosts() {
     let storage = InMemoryCredentialStorage::new();
 
-    // These previously were rejected by credential storage SSRF validation,
-    // but are now accepted since SSRF is enforced at DNS level.
     let hosts = vec![
         "http://192.168.1.100:5244",
         "http://localhost:8096",
@@ -130,7 +121,7 @@ async fn test_credential_storage_accepts_any_host() {
 
         assert!(
             result.is_ok(),
-            "Credential storage should accept host {host}: {result:?}"
+            "Credential storage should accept routable/private hosts and rely on transport SSRF protection for {host}: {result:?}"
         );
     }
 }

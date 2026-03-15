@@ -1658,17 +1658,6 @@ impl Config {
                         .to_string(),
                 );
             }
-
-            if self.cluster_runtime_enabled() {
-                errors.push(
-                    "Redis Sentinel is not supported when cluster mode is enabled. \
-                     SyncTV relies on distributed migration/coordination locks whose correctness \
-                     requires a single authoritative Redis master or a quorum-based locking design. \
-                     Sentinel failover can lose locks during asynchronous replication, so startup \
-                     must refuse this configuration. Use standalone Redis for now."
-                        .to_string(),
-                );
-            }
         }
 
         // Log info when Redis is not configured in standalone mode.
@@ -1904,6 +1893,16 @@ impl Config {
                         .to_string(),
                 ),
             }
+        }
+
+        if cluster_mode_active && self.redis.deployment_mode == RedisDeploymentMode::Sentinel {
+            errors.push(
+                "cluster.enabled=true is not supported with Redis Sentinel. \
+                 Startup still relies on Redis distributed locks for migrations and room coordination, \
+                 and Sentinel failover can create split-brain lock windows. \
+                 Switch Redis to a non-Sentinel deployment before enabling cluster mode."
+                    .to_string(),
+            );
         }
 
         // HLS shared storage validation in cluster mode.
@@ -2462,16 +2461,20 @@ mod tests {
         // Invalid: below minimum
         config.server.grpc_max_message_size_bytes = 1024 * 1024 - 1; // Just under 1 MB
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 MB")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 MB"))
+        );
 
         // Invalid: above maximum
         config.server.grpc_max_message_size_bytes = 1024 * 1024 * 1024 + 1; // Just over 1 GB
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 GB")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 GB"))
+        );
     }
 
     #[test]
@@ -2657,9 +2660,11 @@ mod tests {
         config.cluster.enabled = true;
         config.livestream.hls_shared_storage = false;
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("hls_shared_storage") && e.contains("Cluster mode")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("hls_shared_storage") && e.contains("Cluster mode"))
+        );
     }
 
     #[test]
@@ -2682,7 +2687,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_cluster_oauth2_accepts_redis_sentinel_backend_without_url() {
+    fn test_validate_cluster_oauth2_rejects_redis_sentinel_backend_without_url() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.cluster.leader_election_mode = "k8s_lease".to_string();
@@ -2703,16 +2708,13 @@ mod tests {
             ("POD_NAMESPACE", "default"),
         ]));
 
-        let errors = result.expect_err("Sentinel + cluster mode must now be rejected");
-        assert!(
-            !errors.iter().any(|e| e.contains("OAuth2 requires Redis")),
-            "Sentinel-backed Redis should still satisfy OAuth2 backend detection, got: {errors:?}"
-        );
+        let errors =
+            result.expect_err("Sentinel-backed Redis must still be rejected in cluster mode");
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("Redis Sentinel is not supported when cluster mode is enabled")),
-            "expected Sentinel + cluster rejection, got: {errors:?}"
+                .any(|e| e.contains("cluster.enabled=true is not supported with Redis Sentinel")),
+            "expected Sentinel rejection while Redis distributed locks are still required, got: {errors:?}"
         );
     }
 
@@ -2735,9 +2737,11 @@ mod tests {
         let result = config.validate();
 
         let errors = result.expect_err("unsupported Redis Cluster backend must be rejected");
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("Redis Cluster mode is not yet supported")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Redis Cluster mode is not yet supported"))
+        );
     }
 
     #[test]
@@ -2746,9 +2750,11 @@ mod tests {
         config.server.grpc_port = 8080;
         config.server.http_port = 8080;
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("grpc_port") && e.contains("http_port")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("grpc_port") && e.contains("http_port"))
+        );
     }
 
     #[test]
@@ -2756,9 +2762,11 @@ mod tests {
         let mut config = valid_prod_config();
         config.livestream.rtmp_port = 8080;
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("rtmp_port") && e.contains("http_port")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("rtmp_port") && e.contains("http_port"))
+        );
     }
 
     #[test]
@@ -2766,9 +2774,11 @@ mod tests {
         let mut config = valid_prod_config();
         config.livestream.rtmp_port = 50051;
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("rtmp_port") && e.contains("grpc_port")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("rtmp_port") && e.contains("grpc_port"))
+        );
     }
 
     #[test]
@@ -2776,9 +2786,11 @@ mod tests {
         let mut config = valid_prod_config();
         config.server.http_port = 0;
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("http_port") && e.contains('0')));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("http_port") && e.contains('0'))
+        );
     }
 
     #[test]
@@ -2803,9 +2815,11 @@ mod tests {
         // 31 characters - just under the 32 minimum
         config.jwt.secret = "a".repeat(31);
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("JWT secret") && e.contains("32") && e.contains("characters")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("JWT secret") && e.contains("32") && e.contains("characters"))
+        );
     }
 
     #[test]
@@ -2858,9 +2872,11 @@ jwt:
         let mut config = valid_prod_config();
         config.bootstrap.root_password = "root".to_string();
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("Root password") && e.contains("default")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Root password") && e.contains("default"))
+        );
     }
 
     #[test]
@@ -2900,9 +2916,11 @@ jwt:
         let mut config = valid_prod_config();
         config.bootstrap.root_username = "ab".to_string();
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("Root username") && e.contains('3')));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Root username") && e.contains('3'))
+        );
     }
 
     #[test]
@@ -2911,9 +2929,11 @@ jwt:
         config.database.min_connections = 30;
         config.database.max_connections = 10;
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("min_connections") && e.contains("max_connections")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("min_connections") && e.contains("max_connections"))
+        );
     }
 
     #[test]
@@ -2921,9 +2941,11 @@ jwt:
         let mut config = valid_prod_config();
         config.database.max_connections = 0;
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("max_connections") && e.contains("greater than 0")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("max_connections") && e.contains("greater than 0"))
+        );
     }
 
     #[test]
@@ -2947,15 +2969,21 @@ jwt:
 
         let errors = config.validate().unwrap_err();
 
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("database.connect_timeout_seconds")));
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("database.idle_timeout_seconds")));
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("database.max_lifetime_seconds")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("database.connect_timeout_seconds"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("database.idle_timeout_seconds"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("database.max_lifetime_seconds"))
+        );
     }
 
     #[test]
@@ -2984,25 +3012,31 @@ jwt:
         let errors = config
             .validate()
             .expect_err("chat rate limit must be validated");
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("messaging_rate_limits.chat_per_second")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("messaging_rate_limits.chat_per_second"))
+        );
 
         config.messaging_rate_limits.chat_per_second = 1;
         config.messaging_rate_limits.danmaku_per_second = 0;
         let errors = config
             .validate()
             .expect_err("danmaku rate limit must be validated");
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("messaging_rate_limits.danmaku_per_second")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("messaging_rate_limits.danmaku_per_second"))
+        );
 
         config.messaging_rate_limits.danmaku_per_second = 1;
         config.messaging_rate_limits.window_seconds = 0;
         let errors = config.validate().expect_err("window must be validated");
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("messaging_rate_limits.window_seconds")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("messaging_rate_limits.window_seconds"))
+        );
     }
 
     #[test]
@@ -3064,9 +3098,11 @@ jwt:
         config.email.smtp_host = "smtp.example.com".to_string();
         config.email.from_email = "@invalid".to_string();
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("from_email") && e.contains("not a valid")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("from_email") && e.contains("not a valid"))
+        );
     }
 
     #[test]
@@ -3102,9 +3138,11 @@ jwt:
         let mut config = valid_prod_config();
         config.redis.deployment_mode = RedisDeploymentMode::Cluster;
         let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("Cluster") && e.contains("not yet supported")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Cluster") && e.contains("not yet supported"))
+        );
     }
 
     #[test]
@@ -3149,19 +3187,48 @@ jwt:
     }
 
     #[test]
-    fn test_validate_cluster_enabled_with_sentinel_is_rejected() {
+    fn test_validate_cluster_enabled_with_sentinel_rejects_k8s_lease() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.redis.url = String::new();
         config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
         config.redis.sentinel_master_name = Some("mymaster".to_string());
         config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
+        config.cluster.leader_election_mode = "k8s_lease".to_string();
+        config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
+
+        let errors = config
+            .validate_with_env_map(&env_map(&[
+                ("POD_NAME", "synctv-0"),
+                ("POD_NAMESPACE", "default"),
+            ]))
+            .unwrap_err();
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("cluster.enabled=true is not supported with Redis Sentinel")),
+            "expected Sentinel + k8s_lease rejection while Redis locks are still required, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_cluster_enabled_with_sentinel_rejects_redis_leader_election() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.redis.url = String::new();
+        config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
+        config.redis.sentinel_master_name = Some("mymaster".to_string());
+        config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
+        config.cluster.leader_election_mode = "redis".to_string();
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
 
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("Redis Sentinel is not supported when cluster mode is enabled")),
-            "expected Sentinel + cluster error, got: {errors:?}"
+            errors
+                .iter()
+                .any(|e| e.contains("cluster.enabled=true is not supported with Redis Sentinel")),
+            "expected Sentinel rejection in cluster mode, got: {errors:?}"
         );
     }
 

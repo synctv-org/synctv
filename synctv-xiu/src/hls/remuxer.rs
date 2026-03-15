@@ -34,6 +34,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+const STREAM_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Segment metadata for M3U8 generation
 #[derive(Debug, Clone)]
@@ -82,12 +83,18 @@ pub struct RegistryCleanupChecker {
 }
 
 impl crate::hls::segment_manager::StreamCleanupChecker for RegistryCleanupChecker {
-    fn get_streams_marked_for_cleanup(&self) -> Vec<(String, String)> {
+    fn get_streams_marked_for_cleanup(
+        &self,
+    ) -> Vec<crate::hls::segment_manager::MarkedStreamCleanup> {
         let mut result = Vec::new();
         for entry in self.registry.iter() {
             let state = entry.value().read();
             if state.marked_for_cleanup {
-                result.push((state.app_name.clone(), state.stream_name.clone()));
+                result.push(crate::hls::segment_manager::MarkedStreamCleanup {
+                    app_name: state.app_name.clone(),
+                    stream_name: state.stream_name.clone(),
+                    segment_names: state.cleanup_segment_names.clone(),
+                });
             }
         }
         result
@@ -620,10 +627,14 @@ impl StreamHandler {
             .try_send(subscribe_event)
             .map_err(|_| HlsRemuxerError::StreamHubEventSendError)?;
 
-        let receiver = event_result_receiver
-            .await
-            .map_err(|_| HlsRemuxerError::SubscribeError)??
-            .0
+        let (data_receiver, _stat_sender) =
+            tokio::time::timeout(STREAM_SUBSCRIBE_TIMEOUT, event_result_receiver)
+                .await
+                .map_err(|_| HlsRemuxerError::SubscribeTimeout)?
+                .map_err(|_| HlsRemuxerError::SubscribeError)?
+                .map_err(|_| HlsRemuxerError::SubscribeError)?;
+
+        let receiver = data_receiver
             .frame_receiver
             .ok_or(HlsRemuxerError::NoFrameReceiver)?;
 
@@ -1093,6 +1104,9 @@ pub enum HlsRemuxerError {
     #[error("Subscribe error")]
     SubscribeError,
 
+    #[error("Subscribe timed out")]
+    SubscribeTimeout,
+
     #[error("No frame receiver")]
     NoFrameReceiver,
 
@@ -1269,6 +1283,42 @@ mod tests {
 
         let error = HlsRemuxerError::StorageError("storage failed".to_string());
         assert_eq!(error.to_string(), "Storage error: storage failed");
+
+        let error = HlsRemuxerError::SubscribeTimeout;
+        assert_eq!(error.to_string(), "Subscribe timed out");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_stream_handler_subscribe_times_out_when_result_never_arrives() {
+        let (event_sender, mut event_rx) = tokio::sync::mpsc::channel(8);
+        let storage = Arc::new(crate::storage::MemoryStorage::new());
+        let segment_manager = Arc::new(SegmentManager::new(storage, Default::default()));
+        let registry: StreamRegistry = Arc::new(DashMap::new());
+
+        let mut handler = StreamHandler::new(
+            "live".to_string(),
+            "room/stream".to_string(),
+            event_sender,
+            segment_manager,
+            registry,
+            None,
+        );
+
+        let subscribe_task = tokio::spawn(async move { handler.subscribe_from_stream_hub().await });
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("subscribe event should be emitted");
+        assert!(matches!(event, StreamHubEvent::Subscribe { .. }));
+
+        tokio::time::advance(STREAM_SUBSCRIBE_TIMEOUT + Duration::from_secs(1)).await;
+
+        let err = subscribe_task
+            .await
+            .expect("task should join")
+            .expect_err("subscribe should time out when no result arrives");
+        assert!(matches!(err, HlsRemuxerError::SubscribeTimeout));
     }
 
     #[test]
@@ -1408,7 +1458,12 @@ mod tests {
 
         // Only the ended stream should be returned
         assert_eq!(marked.len(), 1);
-        assert_eq!(marked[0], ("live".to_string(), "ended_stream".to_string()));
+        assert_eq!(marked[0].app_name, "live");
+        assert_eq!(marked[0].stream_name, "ended_stream");
+        assert_eq!(
+            marked[0].segment_names,
+            vec!["seg0".to_string(), "seg1".to_string()]
+        );
     }
 
     #[test]

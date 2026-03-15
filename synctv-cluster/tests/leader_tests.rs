@@ -313,3 +313,24 @@ async fn test_leader_guard_race_condition_stress() {
         "No race condition failures expected, but got {failures} failures out of {ITERATIONS} iterations"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_leader_guard_does_not_block_current_thread_runtime() {
+    let elector = MockElector::new();
+
+    let guard = tokio::time::timeout(Duration::from_millis(100), async { elector.leader_guard() })
+        .await
+        .expect("leader_guard should not block the current-thread runtime");
+
+    assert!(
+        !guard.is_cancelled(),
+        "guard should remain active until a loss event is delivered"
+    );
+
+    let _ = elector.tx.send(LeadershipEvent::Lost);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        guard.is_cancelled(),
+        "Lost event should still cancel the guard"
+    );
+}

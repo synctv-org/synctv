@@ -99,12 +99,13 @@ impl K8sDnsDiscovery {
             ));
         }
 
-        let self_ip = std::env::var("POD_IP").unwrap_or_default();
+        let self_ip = std::env::var("POD_IP").map_err(|_| {
+            Error::Configuration(
+                "POD_IP env var is required for k8s_dns discovery mode".to_string(),
+            )
+        })?;
         if self_ip.is_empty() {
-            tracing::warn!(
-                "POD_IP env var is empty or missing; this node will not be excluded \
-                 from its own peer list, which may cause self-connections"
-            );
+            return Err(Error::Configuration("POD_IP must not be empty".to_string()));
         }
 
         let dns_name = format!("{service_name}.{namespace}.svc.cluster.local");
@@ -372,6 +373,41 @@ mod tests {
         assert_eq!(disc.grpc_port, 50051);
         assert_eq!(disc.http_port, 8080);
         assert_eq!(disc.self_ip, "10.0.0.1");
+    }
+
+    #[test]
+    fn test_from_env_requires_pod_ip() {
+        let headless_prev = std::env::var("HEADLESS_SERVICE_NAME").ok();
+        let namespace_prev = std::env::var("POD_NAMESPACE").ok();
+        let pod_ip_prev = std::env::var("POD_IP").ok();
+
+        std::env::set_var("HEADLESS_SERVICE_NAME", "synctv-headless");
+        std::env::set_var("POD_NAMESPACE", "default");
+        std::env::remove_var("POD_IP");
+
+        let result = K8sDnsDiscovery::from_env(50051, 8080);
+
+        match headless_prev {
+            Some(value) => std::env::set_var("HEADLESS_SERVICE_NAME", value),
+            None => std::env::remove_var("HEADLESS_SERVICE_NAME"),
+        }
+        match namespace_prev {
+            Some(value) => std::env::set_var("POD_NAMESPACE", value),
+            None => std::env::remove_var("POD_NAMESPACE"),
+        }
+        match pod_ip_prev {
+            Some(value) => std::env::set_var("POD_IP", value),
+            None => std::env::remove_var("POD_IP"),
+        }
+
+        let err = match result {
+            Ok(_) => panic!("missing POD_IP must fail closed"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("POD_IP"),
+            "configuration error should explicitly mention POD_IP: {err}"
+        );
     }
 
     #[tokio::test]

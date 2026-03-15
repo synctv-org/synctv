@@ -1373,7 +1373,7 @@ mod tests {
             "Distributed room counter should be written to Redis"
         );
 
-        manager.shutdown();
+        manager.shutdown().await;
     }
 
     #[tokio::test]
@@ -1427,7 +1427,7 @@ mod tests {
             "cluster ConnectionManager must continue using the shared Redis handle after a hot swap"
         );
 
-        manager.shutdown();
+        manager.shutdown().await;
     }
 
     #[tokio::test]
@@ -1473,7 +1473,7 @@ mod tests {
             "Standalone mode must not write distributed room counters just because Redis exists"
         );
 
-        manager.shutdown();
+        manager.shutdown().await;
     }
 
     #[test]

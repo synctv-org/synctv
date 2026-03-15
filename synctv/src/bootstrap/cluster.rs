@@ -6,12 +6,12 @@ use tracing::{info, warn};
 #[cfg(feature = "k8s")]
 use synctv_cluster::discovery::K8sDnsDiscovery;
 use synctv_cluster::discovery::{
-    health_monitor::HealthProbeConfig, HealthMonitor, LoadBalancer, LoadBalancingStrategy,
-    NodeRegistry, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig,
+    HealthMonitor, LoadBalancer, LoadBalancingStrategy, NodeRegistry, StaticDiscovery,
+    StaticDiscoveryConfig, StaticPeerConfig, health_monitor::HealthProbeConfig,
 };
 use synctv_cluster::sync::{ClusterManager, ConnectionManager};
-use synctv_core::bootstrap::RedisHandles;
 use synctv_core::Config;
+use synctv_core::bootstrap::RedisHandles;
 
 /// Initialize the shared cluster components: `NodeRegistry`, heartbeat loop,
 /// `HealthMonitor`, and `LoadBalancer`.
@@ -144,9 +144,12 @@ pub async fn init_cluster_discovery(
                     .map_err(|e| {
                         anyhow::anyhow!(
                             "Failed to initialize K8s DNS discovery: {e}. \
-                             Ensure HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars are set."
+                         Ensure HEADLESS_SERVICE_NAME, POD_NAMESPACE, and POD_IP env vars are set."
                         )
                     })?;
+            let (registry, hm, lb) =
+                init_cluster_components(redis_handles, cm, config, connection_manager).await?;
+            let k8s_discovery = k8s_discovery.with_node_registry(registry.clone());
 
             // Perform initial DNS resolution
             if let Err(e) = k8s_discovery.refresh().await {
@@ -162,42 +165,12 @@ pub async fn init_cluster_discovery(
             // Start background refresh loop (re-resolve every 10 seconds)
             let dns_refresh_handle = k8s_discovery.start_refresh_loop(10, shutdown_token);
 
-            let (registry, hm, lb) =
-                init_cluster_components(redis_handles, cm, config, connection_manager).await?;
-
-            // Bridge: periodically merge DNS-discovered peers into the
-            // NodeRegistry so HealthMonitor/LoadBalancer see newly-scaled
-            // pods before they self-register via Redis heartbeat.
-            let bridge_handle = {
-                let dns = k8s_discovery.clone();
-                let reg = registry.clone();
-                let bridge_cancel = cm.cancel_token();
-                tokio::spawn(async move {
-                    let mut timer = tokio::time::interval(Duration::from_secs(15));
-                    loop {
-                        tokio::select! {
-                            () = bridge_cancel.cancelled() => {
-                                info!("K8s DNS -> NodeRegistry sync bridge shutting down");
-                                return;
-                            }
-                            _ = timer.tick() => {
-                                let dns_peers = dns.get_peers_as_node_info().await;
-                                if !dns_peers.is_empty() {
-                                    reg.merge_dns_peers(dns_peers).await;
-                                }
-                            }
-                        }
-                    }
-                })
-            };
-            info!("K8s DNS -> NodeRegistry sync bridge started (15s interval)");
-
             Ok((
                 Some(registry),
                 Some(hm),
                 Some(lb),
                 Some(dns_refresh_handle),
-                Some(bridge_handle),
+                None,
             ))
         }
         #[cfg(not(feature = "k8s"))]
@@ -222,7 +195,9 @@ pub async fn init_cluster_discovery(
                 .collect();
 
             if peer_configs.is_empty() {
-                warn!("Static discovery mode selected but no peers configured (cluster.peers is empty)");
+                warn!(
+                    "Static discovery mode selected but no peers configured (cluster.peers is empty)"
+                );
             }
 
             let static_config = StaticDiscoveryConfig {
@@ -252,14 +227,129 @@ pub async fn init_cluster_discovery(
 
 #[cfg(test)]
 mod tests {
+    use crate::bootstrap::cluster::init_cluster_discovery;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use synctv_cluster::sync::{
+        ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
+    };
+    use synctv_core::Config;
+    use synctv_core::bootstrap::RedisHandles;
+    use tokio::sync::RwLock;
+    use tokio_util::sync::CancellationToken;
+
+    fn test_cluster_config() -> Config {
+        let mut config = Config::default();
+        config.server.host = "127.0.0.1".to_string();
+        config.server.grpc_port = 50051;
+        config.server.http_port = 8080;
+        config.server.cluster_secret.clear();
+        config.redis.url = "redis://127.0.0.1:6379".to_string();
+        config.cluster.discovery_mode = "k8s_dns".to_string();
+        config
+    }
+
     #[test]
-    fn test_cluster_discovery_return_shape_reserves_bridge_handle_for_k8s_only() {
+    fn test_cluster_discovery_return_shape_uses_single_dns_handle_for_k8s() {
         let redis_shape = (true, true, true, false, false);
         let static_shape = (true, true, true, true, false);
-        let k8s_dns_shape = (true, true, true, true, true);
+        let k8s_dns_shape = (true, true, true, true, false);
 
         assert_eq!(redis_shape, (true, true, true, false, false));
         assert_eq!(static_shape, (true, true, true, true, false));
-        assert_eq!(k8s_dns_shape, (true, true, true, true, true));
+        assert_eq!(k8s_dns_shape, (true, true, true, true, false));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn test_k8s_dns_env_validation_happens_before_node_registration() {
+        let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
+        let shared_conn = Arc::new(RwLock::new(
+            redis::aio::ConnectionManager::new(client.clone())
+                .await
+                .expect("shared redis connection manager"),
+        ));
+        let redis_handles = RedisHandles {
+            client: client.clone(),
+            conn: shared_conn.clone(),
+        };
+
+        let cluster_config = ClusterConfig {
+            redis_client: Some(client.clone()),
+            redis_conn: None,
+            cluster_enabled: true,
+            node_id: "bootstrap-k8s-env-order".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 16,
+            publish_channel_capacity: 16,
+            key_prefix: "test-k8s-env-order:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            shared_redis_conn: Some(shared_conn),
+            parent_cancel_token: Some(CancellationToken::new()),
+        };
+        let mut manager = ClusterManager::new(cluster_config, None, None)
+            .await
+            .expect("cluster manager");
+        let connection_manager = ConnectionManager::new(ConnectionLimits::default());
+        manager.set_connection_manager(connection_manager.clone());
+        let manager = Arc::new(manager);
+
+        let mut config = test_cluster_config();
+        config.redis.key_prefix = "test-k8s-env-order:".to_string();
+
+        let old_service_name = std::env::var_os("HEADLESS_SERVICE_NAME");
+        let old_namespace = std::env::var_os("POD_NAMESPACE");
+        let old_pod_ip = std::env::var_os("POD_IP");
+        std::env::set_var("HEADLESS_SERVICE_NAME", "synctv-headless");
+        std::env::set_var("POD_NAMESPACE", "default");
+        std::env::remove_var("POD_IP");
+
+        let result = init_cluster_discovery(
+            &config,
+            &redis_handles,
+            &manager,
+            &connection_manager,
+            CancellationToken::new(),
+        )
+        .await;
+
+        match old_service_name {
+            Some(value) => std::env::set_var("HEADLESS_SERVICE_NAME", value),
+            None => std::env::remove_var("HEADLESS_SERVICE_NAME"),
+        }
+        match old_namespace {
+            Some(value) => std::env::set_var("POD_NAMESPACE", value),
+            None => std::env::remove_var("POD_NAMESPACE"),
+        }
+        match old_pod_ip {
+            Some(value) => std::env::set_var("POD_IP", value),
+            None => std::env::remove_var("POD_IP"),
+        }
+
+        assert!(
+            result.is_err(),
+            "missing POD_IP must fail before cluster components are initialized"
+        );
+
+        let registry = synctv_cluster::discovery::NodeRegistry::new(
+            client,
+            "bootstrap-k8s-env-order".to_string(),
+            30,
+            &config.redis.key_prefix,
+        )
+        .expect("node registry");
+        let nodes = registry
+            .get_all_nodes()
+            .await
+            .expect("node registry query should succeed");
+
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.node_id != "bootstrap-k8s-env-order"),
+            "failed k8s env validation must not leave a ghost node registered in Redis"
+        );
     }
 }

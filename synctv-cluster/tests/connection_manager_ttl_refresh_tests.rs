@@ -185,7 +185,7 @@ async fn test_shutdown_cancels_ttl_refresh_task() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Call shutdown
-    manager.shutdown();
+    manager.shutdown().await;
 
     // The task should terminate gracefully
     // We verify this by waiting a short time and checking the manager is still usable
@@ -218,7 +218,7 @@ async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
 
     // Measure how long shutdown takes
     let start = std::time::Instant::now();
-    manager.shutdown();
+    manager.shutdown().await;
     let elapsed = start.elapsed();
 
     // Shutdown should be nearly instantaneous since it just cancels tokens
@@ -241,9 +241,9 @@ async fn test_ttl_shutdown_is_idempotent() {
         ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "idempotent:");
 
     // Call shutdown multiple times
-    manager.shutdown();
-    manager.shutdown();
-    manager.shutdown();
+    manager.shutdown().await;
+    manager.shutdown().await;
+    manager.shutdown().await;
 
     // Should not panic, and manager should still work
     assert_eq!(manager.connection_count(), 0);
@@ -259,7 +259,7 @@ async fn test_manager_without_redis_works_without_shutdown() {
 
     // No Redis configured, so no background tasks
     // shutdown() should still be safe to call
-    manager.shutdown();
+    manager.shutdown().await;
 
     // Manager should work for local operations
     let user_id = uid("local_user");
@@ -298,7 +298,7 @@ async fn test_shutdown_during_active_operations() {
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Call shutdown while registrations are in progress
-    manager.shutdown();
+    manager.shutdown().await;
 
     // Wait for the registration task to complete
     let _ = register_handle.await;
@@ -341,7 +341,7 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Call shutdown
-    manager.shutdown();
+    manager.shutdown().await;
 
     // Should complete without hanging
     // (If disconnect retry task wasn't cancelled, this could hang)

@@ -9,7 +9,7 @@ use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
 
 use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 
@@ -17,9 +17,18 @@ pub type RedisConnectionManager = redis::aio::ConnectionManager;
 pub type RedisConnectionHandle = Arc<RwLock<redis::aio::ConnectionManager>>;
 static REDIS_START_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
+const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 8;
+const MIN_REDIS_ACTIVE_PARALLELISM: usize = 1;
+const REDIS_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_REDIS_ACTIVE_PARALLELISM";
+static REDIS_ACTIVE_SERIALIZER: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(redis_active_parallelism()));
 const TEST_CONTAINER_OWNER_LABEL: &str = "synctv.test.owner_pid";
 
 struct ProcessLock(File);
+struct DockerSlotGuard {
+    _local_permit: SemaphorePermit<'static>,
+    _process_lock: ProcessLock,
+}
 
 impl ProcessLock {
     fn try_acquire(name: &str) -> Option<Self> {
@@ -53,6 +62,18 @@ impl Drop for ProcessLock {
             .unlock()
             .expect("failed to release process lock for redis test startup");
     }
+}
+
+fn redis_active_parallelism() -> usize {
+    redis_active_parallelism_from(std::env::var(REDIS_ACTIVE_PARALLELISM_ENV).ok().as_deref())
+}
+
+fn redis_active_parallelism_from(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.parse::<usize>().ok())
+        .map_or(DEFAULT_REDIS_ACTIVE_PARALLELISM, |slots| {
+            slots.max(MIN_REDIS_ACTIVE_PARALLELISM)
+        })
 }
 
 fn sanitize_container_name(raw: &str) -> String {
@@ -166,14 +187,16 @@ pub struct RedisContainer {
     inner: Option<ContainerAsync<Redis>>,
     name: String,
     cleaned_up: bool,
+    _slot_guard: Option<DockerSlotGuard>,
 }
 
 impl RedisContainer {
-    const fn new(inner: ContainerAsync<Redis>, name: String) -> Self {
+    fn new(inner: ContainerAsync<Redis>, name: String, slot_guard: DockerSlotGuard) -> Self {
         Self {
             inner: Some(inner),
             name,
             cleaned_up: false,
+            _slot_guard: Some(slot_guard),
         }
     }
 
@@ -221,6 +244,7 @@ impl Drop for RedisContainer {
 
 async fn start_redis_inner(label: &str) -> (RedisContainer, String, redis::Client) {
     let container_name = redis_container_name(label);
+    let container_slot = acquire_docker_active_slot("redis-active").await;
     cleanup_orphaned_testcontainers("synctv-redis-");
     let container = {
         let _redis_process_lock = acquire_docker_start_slot("redis-start").await;
@@ -240,21 +264,23 @@ async fn start_redis_inner(label: &str) -> (RedisContainer, String, redis::Clien
     let client = redis::Client::open(redis_url.clone()).expect("Failed to create Redis client");
     wait_for_redis_ready(&client).await;
     (
-        RedisContainer::new(container, container_name),
+        RedisContainer::new(container, container_name, container_slot),
         redis_url,
         client,
     )
 }
 
-async fn acquire_docker_start_slot(name: &str) -> ProcessLock {
-    let slots = docker_startup_parallelism();
-    let _local_permit = REDIS_START_SERIALIZER
-        .acquire()
-        .await
-        .expect("Redis startup guard should not be closed");
+async fn acquire_docker_slot(
+    serializer: &'static LazyLock<Semaphore>,
+    slots: usize,
+    name: &str,
+    closed_message: &'static str,
+    panic_message: &'static str,
+) -> DockerSlotGuard {
+    let local_permit = serializer.acquire().await.expect(closed_message);
     let prefix = name.to_string();
 
-    tokio::task::spawn_blocking(move || loop {
+    let process_lock = tokio::task::spawn_blocking(move || loop {
         for slot in 0..slots {
             let slot_name = format!("{prefix}-slot-{slot}");
             if let Some(lock) = ProcessLock::try_acquire(&slot_name) {
@@ -264,7 +290,34 @@ async fn acquire_docker_start_slot(name: &str) -> ProcessLock {
         std::thread::sleep(Duration::from_millis(100));
     })
     .await
-    .expect("redis process slot task should not panic")
+    .expect(panic_message);
+
+    DockerSlotGuard {
+        _local_permit: local_permit,
+        _process_lock: process_lock,
+    }
+}
+
+async fn acquire_docker_start_slot(name: &str) -> DockerSlotGuard {
+    acquire_docker_slot(
+        &REDIS_START_SERIALIZER,
+        docker_startup_parallelism(),
+        name,
+        "Redis startup guard should not be closed",
+        "redis process slot task should not panic",
+    )
+    .await
+}
+
+async fn acquire_docker_active_slot(name: &str) -> DockerSlotGuard {
+    acquire_docker_slot(
+        &REDIS_ACTIVE_SERIALIZER,
+        redis_active_parallelism(),
+        name,
+        "Redis active-container guard should not be closed",
+        "redis active container slot task should not panic",
+    )
+    .await
 }
 
 pub async fn start_redis_with_client() -> (RedisContainer, redis::Client) {
@@ -297,20 +350,55 @@ pub async fn start_redis_url() -> (RedisContainer, String) {
 
 pub async fn wait_for_redis_ready(client: &redis::Client) {
     let deadline = std::time::Instant::now() + docker_startup_timeout();
+    let mut last_error = String::from("redis readiness probe has not run yet");
     while std::time::Instant::now() < deadline {
-        if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
-            let ping_result: redis::RedisResult<String> =
-                redis::cmd("PING").query_async(&mut conn).await;
-            let set_result: redis::RedisResult<()> =
-                conn.set_ex("synctv:test:ping", "pong", 5).await;
-            let get_result: redis::RedisResult<String> = conn.get("synctv:test:ping").await;
-            if ping_result.is_ok() && set_result.is_ok() && get_result.as_deref() == Ok("pong") {
-                return;
+        let manager_ready = match redis::aio::ConnectionManager::new(client.clone()).await {
+            Ok(mut conn) => match redis::cmd("PING").query_async::<String>(&mut conn).await {
+                Ok(_) => true,
+                Err(err) => {
+                    last_error = format!("connection manager ping failed: {err}");
+                    false
+                }
+            },
+            Err(err) => {
+                last_error = format!("connection manager init failed: {err}");
+                false
             }
+        };
+
+        let multiplexed_ready = match client.get_multiplexed_async_connection().await {
+            Ok(mut conn) => {
+                let ping_result: redis::RedisResult<String> =
+                    redis::cmd("PING").query_async(&mut conn).await;
+                let set_result: redis::RedisResult<()> =
+                    conn.set_ex("synctv:test:ping", "pong", 5).await;
+                let get_result: redis::RedisResult<String> = conn.get("synctv:test:ping").await;
+                match (ping_result, set_result, get_result) {
+                    (Ok(_), Ok(()), Ok(value)) if value == "pong" => true,
+                    (ping_result, set_result, get_result) => {
+                        last_error = format!(
+                            "multiplexed probe failed: ping={ping_result:?} set={set_result:?} get={get_result:?}"
+                        );
+                        false
+                    }
+                }
+            }
+            Err(err) => {
+                last_error = format!("multiplexed init failed: {err}");
+                false
+            }
+        };
+
+        if manager_ready && multiplexed_ready {
+            return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
-    panic!("Redis container did not become ready in time");
+    panic!(
+        "Redis container did not become ready within {:?}: {}",
+        docker_startup_timeout(),
+        last_error
+    );
 }
 
 #[cfg(test)]
@@ -318,11 +406,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn redis_active_parallelism_defaults_to_redlock_friendly_limit() {
+        assert_eq!(
+            redis_active_parallelism_from(None),
+            DEFAULT_REDIS_ACTIVE_PARALLELISM
+        );
+        assert_eq!(DEFAULT_REDIS_ACTIVE_PARALLELISM, 8);
+    }
+
+    #[test]
+    fn redis_active_parallelism_honors_valid_override() {
+        assert_eq!(redis_active_parallelism_from(Some("7")), 7);
+    }
+
+    #[test]
+    fn redis_active_parallelism_rejects_zero_override() {
+        assert_eq!(
+            redis_active_parallelism_from(Some("0")),
+            MIN_REDIS_ACTIVE_PARALLELISM
+        );
+    }
+
+    #[test]
     fn cleanup_marks_container_as_cleaned_up() {
         let container = RedisContainer {
             inner: None,
             name: "synctv-redis-test".to_string(),
             cleaned_up: false,
+            _slot_guard: None,
         };
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");

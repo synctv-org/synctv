@@ -69,7 +69,11 @@ const fn should_fail_webrtc_signal_broadcast(
     result: synctv_cluster::sync::BroadcastResult,
     cluster_redis_enabled: bool,
 ) -> bool {
-    cluster_redis_enabled && !result.redis_sent
+    if cluster_redis_enabled {
+        !result.redis_sent
+    } else {
+        result.local_sent == 0 && !result.redis_sent
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1230,8 +1234,8 @@ impl StreamMessageHandler {
         room_id: &str,
         member: Option<&synctv_core::models::RoomMember>,
     ) -> ServerMessage {
-        use crate::proto::client::server_message::Message;
         use crate::proto::client::UserJoinedRoom;
+        use crate::proto::client::server_message::Message;
         use synctv_proto::common::RoomMember as ProtoRoomMember;
 
         let (role_proto, permissions, added, removed, admin_added, admin_removed) = match member {
@@ -1446,7 +1450,19 @@ impl StreamMessageHandler {
             return;
         }
 
-        let should_broadcast_user_left = match self
+        let has_other_local_connection = self
+            .connection_manager
+            .get_user_connections(&self.user_id)
+            .into_iter()
+            .any(|conn| {
+                conn.connection_id != self.connection_id
+                    && conn
+                        .room_id
+                        .as_ref()
+                        .is_some_and(|rid| rid == &self.room_id)
+            });
+
+        let user_left_delivery_plan = match self
             .connection_manager
             .has_other_connection_for_user_in_room_distributed(
                 &self.user_id,
@@ -1455,7 +1471,9 @@ impl StreamMessageHandler {
             )
             .await
         {
-            Ok(has_other_connection) => !has_other_connection,
+            Ok(has_other_connection) => {
+                should_broadcast_user_left(has_other_local_connection, Ok(has_other_connection))
+            }
             Err(error) => {
                 tracing::warn!(
                     error = %error,
@@ -1464,23 +1482,9 @@ impl StreamMessageHandler {
                     connection = %self.connection_id,
                     "Distributed same-user presence lookup failed during cleanup; skipping UserLeft broadcast to avoid false offline signal"
                 );
-                false
+                should_broadcast_user_left(has_other_local_connection, Err(()))
             }
         };
-
-        if !should_broadcast_user_left {
-            tracing::debug!(
-                user = %self.username,
-                room = %room_id,
-                connection = %self.connection_id,
-                "Skipping UserLeft broadcast in cleanup because another connection for the same user remains in the room"
-            );
-            self.connection_manager
-                .unregister(&self.connection_id)
-                .await;
-            self.cluster_manager.unsubscribe(&self.connection_id);
-            return;
-        }
 
         // Broadcast UserLeft BEFORE unregistering from the connection manager.
         // This order prevents state divergence: if the broadcast reaches subscribers
@@ -1494,102 +1498,120 @@ impl StreamMessageHandler {
             username: self.username.clone(),
             timestamp: chrono::Utc::now(),
         };
-        let result = self.cluster_manager.broadcast(event);
+        let result = match user_left_delivery_plan {
+            UserLeftDeliveryPlan::Skip => {
+                tracing::debug!(
+                    user = %self.username,
+                    room = %room_id,
+                    connection = %self.connection_id,
+                    "Skipping UserLeft broadcast in cleanup because another connection for the same user remains in the room"
+                );
+                None
+            }
+            UserLeftDeliveryPlan::LocalAndRedis => Some(self.cluster_manager.broadcast(event)),
+        };
 
-        if should_retry_user_left_broadcast(
-            result.clone(),
-            self.cluster_manager.metrics().redis_enabled,
-        ) {
-            // Critical UserLeft event failed to reach any destination.
-            // This can happen when Redis is temporarily unavailable.
-            // Spawn a background task to retry the broadcast with exponential backoff.
-            //
-            // Use a global semaphore to limit concurrent retry tasks. During mass
-            // disconnects with Redis down, thousands of connections may all try to
-            // spawn retry tasks simultaneously. Without this bound, we'd exhaust
-            // memory and CPU on unbounded task spawning.
-            let cluster_manager = self.cluster_manager.clone();
-            let room_id = self.room_id.clone();
-            let user_id = self.user_id.clone();
-            let username = self.username.clone();
-            let connection_id = self.connection_id.clone();
+        if let Some(result) = result {
+            if user_left_delivery_plan == UserLeftDeliveryPlan::LocalAndRedis
+                && should_retry_user_left_broadcast(
+                    result.clone(),
+                    self.cluster_manager.metrics().redis_enabled,
+                )
+            {
+                // Critical UserLeft event failed to reach any destination.
+                // This can happen when Redis is temporarily unavailable.
+                // Spawn a background task to retry the broadcast with exponential backoff.
+                //
+                // Use a global semaphore to limit concurrent retry tasks. During mass
+                // disconnects with Redis down, thousands of connections may all try to
+                // spawn retry tasks simultaneously. Without this bound, we'd exhaust
+                // memory and CPU on unbounded task spawning.
+                let cluster_manager = self.cluster_manager.clone();
+                let room_id = self.room_id.clone();
+                let user_id = self.user_id.clone();
+                let username = self.username.clone();
+                let connection_id = self.connection_id.clone();
 
-            let semaphore = Arc::clone(&USER_LEFT_RETRY_SEMAPHORE);
-            let permit = semaphore.try_acquire_owned();
+                let semaphore = Arc::clone(&USER_LEFT_RETRY_SEMAPHORE);
+                let permit = semaphore.try_acquire_owned();
 
-            match permit {
-                Ok(permit) => {
-                    tracing::warn!(
-                        user = %username,
-                        room = %room_id.as_str(),
-                        connection = %connection_id,
-                        "UserLeft broadcast reached no subscribers; starting retry task"
-                    );
+                match permit {
+                    Ok(permit) => {
+                        tracing::warn!(
+                            user = %username,
+                            room = %room_id.as_str(),
+                            connection = %connection_id,
+                            "UserLeft broadcast reached no subscribers; starting retry task"
+                        );
 
-                    spawn_monitored("userleft_retry", async move {
-                        let _permit = permit; // Hold permit for duration of retry task
+                        spawn_monitored("userleft_retry", async move {
+                            let _permit = permit; // Hold permit for duration of retry task
 
-                        const MAX_RETRIES: u32 = 5;
-                        const INITIAL_DELAY_MS: u64 = 100;
-                        const MAX_DELAY_MS: u64 = 5000;
+                            const MAX_RETRIES: u32 = 5;
+                            const INITIAL_DELAY_MS: u64 = 100;
+                            const MAX_DELAY_MS: u64 = 5000;
 
-                        let mut delay_ms = INITIAL_DELAY_MS;
+                            let mut delay_ms = INITIAL_DELAY_MS;
 
-                        for attempt in 1..=MAX_RETRIES {
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                            for attempt in 1..=MAX_RETRIES {
+                                tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
+                                    .await;
 
-                            let retry_event = ClusterEvent::UserLeft {
-                                event_id: nanoid::nanoid!(16),
-                                room_id: room_id.clone(),
-                                user_id: user_id.clone(),
-                                username: username.clone(),
-                                timestamp: chrono::Utc::now(),
-                            };
+                                let retry_event = ClusterEvent::UserLeft {
+                                    event_id: nanoid::nanoid!(16),
+                                    room_id: room_id.clone(),
+                                    user_id: user_id.clone(),
+                                    username: username.clone(),
+                                    timestamp: chrono::Utc::now(),
+                                };
 
-                            let retry_result = cluster_manager.broadcast(retry_event);
+                                let retry_result = synctv_cluster::sync::BroadcastResult {
+                                    local_sent: 0,
+                                    redis_sent: cluster_manager.publish_only(retry_event),
+                                };
 
-                            if retry_result.local_sent > 0 || retry_result.redis_sent {
-                                tracing::info!(
+                                if retry_result.redis_sent {
+                                    tracing::info!(
+                                        user = %username,
+                                        room = %room_id.as_str(),
+                                        connection = %connection_id,
+                                        attempt = attempt,
+                                        redis_sent = retry_result.redis_sent,
+                                        "UserLeft retry succeeded"
+                                    );
+                                    return;
+                                }
+
+                                tracing::warn!(
                                     user = %username,
                                     room = %room_id.as_str(),
                                     connection = %connection_id,
                                     attempt = attempt,
-                                    local_sent = retry_result.local_sent,
-                                    redis_sent = retry_result.redis_sent,
-                                    "UserLeft retry succeeded"
+                                    max_retries = MAX_RETRIES,
+                                    "UserLeft retry attempt failed"
                                 );
-                                return;
+
+                                // Exponential backoff with cap
+                                delay_ms = std::cmp::min(delay_ms * 2, MAX_DELAY_MS);
                             }
 
-                            tracing::warn!(
+                            tracing::error!(
                                 user = %username,
                                 room = %room_id.as_str(),
                                 connection = %connection_id,
-                                attempt = attempt,
-                                max_retries = MAX_RETRIES,
-                                "UserLeft retry attempt failed"
+                                "UserLeft event permanently lost after {} retry attempts; other replicas may have stale user state",
+                                MAX_RETRIES
                             );
-
-                            // Exponential backoff with cap
-                            delay_ms = std::cmp::min(delay_ms * 2, MAX_DELAY_MS);
-                        }
-
-                        tracing::error!(
+                        });
+                    }
+                    Err(_) => {
+                        tracing::warn!(
                             user = %username,
                             room = %room_id.as_str(),
                             connection = %connection_id,
-                            "UserLeft event permanently lost after {} retry attempts; other replicas may have stale user state",
-                            MAX_RETRIES
+                            "UserLeft retry task limit reached (max 100 concurrent); event may be lost"
                         );
-                    });
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        user = %username,
-                        room = %room_id.as_str(),
-                        connection = %connection_id,
-                        "UserLeft retry task limit reached (max 100 concurrent); event may be lost"
-                    );
+                    }
                 }
             }
         }
@@ -2733,8 +2755,8 @@ impl StreamMessageHandler {
 
     /// Send heartbeat acknowledgment to client
     fn send_heartbeat_ack(&self) -> Result<(), String> {
-        use crate::proto::client::server_message::Message;
         use crate::proto::client::HeartbeatAck;
+        use crate::proto::client::server_message::Message;
 
         let msg = ServerMessage {
             message: Some(Message::HeartbeatAck(HeartbeatAck {
@@ -3101,6 +3123,27 @@ const fn should_retry_user_left_broadcast(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserLeftDeliveryPlan {
+    Skip,
+    LocalAndRedis,
+}
+
+const fn should_broadcast_user_left(
+    has_other_local_connection: bool,
+    distributed_presence: Result<bool, ()>,
+) -> UserLeftDeliveryPlan {
+    if has_other_local_connection {
+        return UserLeftDeliveryPlan::Skip;
+    }
+
+    match distributed_presence {
+        Ok(true) => UserLeftDeliveryPlan::Skip,
+        Ok(false) => UserLeftDeliveryPlan::LocalAndRedis,
+        Err(()) => UserLeftDeliveryPlan::Skip,
+    }
+}
+
 const fn should_transition_webrtc_membership(
     current_rtc_joined: Option<bool>,
     target_joined: bool,
@@ -3245,8 +3288,8 @@ mod tests {
     use super::*;
     use crate::proto::client::server_message::Message;
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
     use synctv_cluster::sync::{
         ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
@@ -3591,7 +3634,7 @@ mod tests {
         connection_manager: ConnectionManager,
     ) {
         cluster_manager.shutdown().await;
-        connection_manager.shutdown();
+        connection_manager.shutdown().await;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
@@ -4440,9 +4483,11 @@ mod tests {
         // Non-hex characters should be rejected
         let result = super::validate_danmaku_color(&Some("#GGGGGG".to_string()));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("must contain only hex characters"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("must contain only hex characters")
+        );
 
         let result = super::validate_danmaku_color(&Some("#ZZZZZZ".to_string()));
         assert!(result.is_err());
@@ -4826,7 +4871,10 @@ mod tests {
             redis_sent: false,
         };
 
-        assert!(super::should_fail_webrtc_signal_broadcast(result, true));
+        assert!(
+            super::should_fail_webrtc_signal_broadcast(result, true),
+            "cluster-mode WebRTC signaling must fail closed unless Redis publish succeeds because local room fan-out cannot prove the targeted peer received the signal"
+        );
     }
 
     #[test]
@@ -4847,6 +4895,16 @@ mod tests {
         };
 
         assert!(!super::should_fail_webrtc_signal_broadcast(result, true));
+    }
+
+    #[test]
+    fn test_webrtc_signal_fails_when_neither_local_nor_redis_delivery_succeeds() {
+        let result = synctv_cluster::sync::BroadcastResult {
+            local_sent: 0,
+            redis_sent: false,
+        };
+
+        assert!(super::should_fail_webrtc_signal_broadcast(result, true));
     }
 
     #[test]
@@ -4877,6 +4935,30 @@ mod tests {
     fn test_webrtc_membership_transition_ignores_duplicate_leave() {
         let result = super::should_transition_webrtc_membership(Some(false), false);
         assert_eq!(result, Ok(false));
+    }
+
+    #[test]
+    fn test_user_left_delivery_skips_when_local_connection_remains() {
+        let plan = super::should_broadcast_user_left(true, Ok(false));
+        assert_eq!(plan, super::UserLeftDeliveryPlan::Skip);
+    }
+
+    #[test]
+    fn test_user_left_delivery_skips_when_distributed_presence_exists() {
+        let plan = super::should_broadcast_user_left(false, Ok(true));
+        assert_eq!(plan, super::UserLeftDeliveryPlan::Skip);
+    }
+
+    #[test]
+    fn test_user_left_delivery_uses_local_and_redis_when_user_is_last_presence() {
+        let plan = super::should_broadcast_user_left(false, Ok(false));
+        assert_eq!(plan, super::UserLeftDeliveryPlan::LocalAndRedis);
+    }
+
+    #[test]
+    fn test_user_left_delivery_skips_when_distributed_check_fails() {
+        let plan = super::should_broadcast_user_left(false, Err(()));
+        assert_eq!(plan, super::UserLeftDeliveryPlan::Skip);
     }
 
     #[tokio::test]

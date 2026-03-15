@@ -8,6 +8,9 @@ use axum::{
     Json,
 };
 
+use super::validation::{
+    validate_id, validate_playback_position, validate_playback_speed, ValidationError,
+};
 use super::{middleware::AuthUser, AppResult, AppState};
 use crate::proto::client::{
     AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, CheckRoomPasswordRequest,
@@ -24,6 +27,27 @@ use crate::proto::client::{
     SwapMediaRequest, SwapMediaResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
+
+fn map_validation_error(err: ValidationError) -> super::AppError {
+    match err {
+        ValidationError::TooLong { field, .. } => {
+            super::AppError::validation_failed(field, "value is too long")
+        }
+        ValidationError::TooShort { field, .. } => {
+            super::AppError::validation_failed(field, "value is too short")
+        }
+        ValidationError::InvalidFormat { field } => {
+            super::AppError::validation_failed(field, "contains invalid characters")
+        }
+        ValidationError::InvalidValue(message) => super::AppError::bad_request(message),
+        ValidationError::Required(field) => {
+            super::AppError::validation_failed(field, "field is required")
+        }
+        ValidationError::SecurityRisk => {
+            super::AppError::bad_request("Potential security issue detected in input")
+        }
+    }
+}
 
 // ==================== Room Management Endpoints ====================
 
@@ -626,6 +650,19 @@ pub async fn update_playback(
         }
         None => None,
     };
+
+    if let Some(position) = req.position {
+        validate_playback_position(position).map_err(map_validation_error)?;
+    }
+    if let Some(speed) = req.speed {
+        validate_playback_speed(speed).map_err(map_validation_error)?;
+    }
+    if let Some(media_id) = req.media_id.as_deref() {
+        validate_id(media_id, "media_id").map_err(map_validation_error)?;
+    }
+    if let Some(playlist_id) = req.playlist_id.as_deref().filter(|id| !id.is_empty()) {
+        validate_id(playlist_id, "playlist_id").map_err(map_validation_error)?;
+    }
 
     let media_id = req.media_id.map(MediaId::from_string);
     let playlist_id = req.playlist_id.map(|pid| {

@@ -34,28 +34,20 @@ fn test_validate_required_rejects_whitespace_only() {
 
 #[test]
 fn test_alist_grpc_host_url_format_validation() {
-    // Note: SSRF protection happens at the HTTP client DNS resolver level,
-    // not at gRPC validation time. validate_host only checks URL format.
+    for host in [
+        "http://192.168.1.100:5244",
+        "http://10.0.0.1:5244",
+        "http://127.0.0.1:5244",
+        "http://[::1]:5244",
+        "http://169.254.169.254",
+    ] {
+        let result = validate_host(host);
+        assert!(
+            result.is_ok(),
+            "validation layer should allow private and local hosts: {host}"
+        );
+    }
 
-    // Valid URL formats should pass
-    let result = validate_host("http://192.168.1.100:5244");
-    assert!(result.is_ok());
-
-    let result = validate_host("http://10.0.0.1:5244");
-    assert!(result.is_ok());
-
-    let result = validate_host("http://127.0.0.1:5244");
-    assert!(result.is_ok());
-
-    // Loopback IPv6
-    let result = validate_host("http://[::1]:5244");
-    assert!(result.is_ok());
-
-    // Cloud metadata endpoints - URL format is valid, SSRF protection is at network level
-    let result = validate_host("http://169.254.169.254");
-    assert!(result.is_ok());
-
-    // Public IPs should be allowed
     let result = validate_host("https://alist.example.com:5244");
     assert!(result.is_ok());
 }

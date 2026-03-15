@@ -1351,8 +1351,8 @@ mod tests {
         );
         assert_eq!(
             response.status(),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "request should reach the registered route and fail closed when websocket runtime dependencies are unavailable in the test fixture"
+            StatusCode::UNAUTHORIZED,
+            "request should reach the registered route and follow the normal auth path; playback PATCH is not gated by websocket-runtime-only middleware"
         );
     }
 

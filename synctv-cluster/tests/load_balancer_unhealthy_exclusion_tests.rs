@@ -186,3 +186,31 @@ async fn test_unknown_health_treated_as_healthy() {
         "Nodes without health status should be selectable, got {selected_ids:?}"
     );
 }
+
+/// Explicit node selection must honor the same health filtering as normal selection.
+#[tokio::test]
+async fn test_select_node_by_id_respects_health_filtering() {
+    let registry = setup_registry(&["node-a", "node-b"]).await;
+    let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
+
+    {
+        let mut status = monitor.health_status.write().await;
+        status.insert("node-a".to_string(), NodeHealth::Healthy);
+        status.insert("node-b".to_string(), NodeHealth::Unhealthy);
+    }
+
+    let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
+        .with_health_monitor(Arc::clone(&monitor));
+
+    let healthy = lb
+        .select_node_by_id("node-a")
+        .await
+        .expect("healthy node should be selectable");
+    assert_eq!(healthy, "node-a");
+
+    let unhealthy = lb.select_node_by_id("node-b").await;
+    assert!(
+        unhealthy.is_err(),
+        "unhealthy node should not be selectable via explicit lookup"
+    );
+}

@@ -20,6 +20,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+fn validate_credential_host(data: &CredentialData) -> Result<()> {
+    let host = match data {
+        CredentialData::Alist { host, .. } | CredentialData::Emby { host, .. } => host,
+        CredentialData::Bilibili { .. } => return Ok(()),
+    };
+
+    crate::grpc::validation::validate_host(host)
+        .map_err(|status| CredentialStorageError::InvalidData(status.message().to_string()))
+}
+
 /// Error type for credential storage operations
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialStorageError {
@@ -352,6 +362,8 @@ impl CredentialStorage for InMemoryCredentialStorage {
         provider_instance_name: Option<&str>,
         data: CredentialData,
     ) -> Result<StoredCredential> {
+        validate_credential_host(&data)?;
+
         // Encrypt sensitive fields before storage
         let encrypted_data = self.encrypt_data(data)?;
 

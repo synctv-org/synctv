@@ -268,6 +268,18 @@ impl GrpcCircuitBreakerRegistry {
             .collect()
     }
 
+    /// Returns `true` only when the endpoint has a known circuit breaker entry
+    /// and that breaker is currently open.
+    ///
+    /// Unknown endpoints return `false` so degraded-mode callers can still probe
+    /// newly discovered nodes that have not accumulated breaker history yet.
+    pub async fn is_endpoint_open_known(&self, address: &str) -> bool {
+        let breakers = self.breakers.read().await;
+        breakers
+            .get(address)
+            .is_some_and(|breaker| breaker.was_open.load(Ordering::Acquire))
+    }
+
     /// Remove circuit breakers for endpoints that are no longer present in
     /// the active address set.
     ///
@@ -439,5 +451,23 @@ mod tests {
         assert_eq!(first, second, "healthy_endpoints() should be idempotent");
         assert!(first.contains(&"node2:50051".to_string()));
         assert!(!first.contains(&"node1:50051".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_is_endpoint_open_known_treats_unknown_endpoint_as_queryable() {
+        let registry = GrpcCircuitBreakerRegistry::new();
+
+        for _ in 0..3 {
+            registry.on_error("node-open:50051").await;
+        }
+
+        assert!(
+            registry.is_endpoint_open_known("node-open:50051").await,
+            "known open breaker should be reported as open"
+        );
+        assert!(
+            !registry.is_endpoint_open_known("node-unknown:50051").await,
+            "unknown endpoints must remain queryable during degraded mode"
+        );
     }
 }

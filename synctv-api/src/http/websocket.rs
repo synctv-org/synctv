@@ -1057,6 +1057,12 @@ async fn handle_socket(
         stream_handler
     };
     let connection_id = stream_handler.connection_id().to_string();
+
+    if let Err(error) = stream_handler.pre_join().await {
+        error!("Failed to join WebSocket connection before message loop: {}", error);
+        return;
+    }
+
     reservation_cleanup.disarm();
     reservation.release(&state.connection_manager);
 
@@ -1086,8 +1092,8 @@ async fn handle_socket(
         raw_sender: raw_sender_for_ping,
     };
 
-    // Run unified message loop - ALL logic is here!
-    if let Err(e) = stream_handler.run(&mut stream).await {
+    // Run unified message loop after the connection has been registered/joined.
+    if let Err(e) = stream_handler.run_after_join(&mut stream).await {
         error!("Stream handler error: {}", e);
     }
 
@@ -1577,6 +1583,78 @@ mod tests {
         assert!(
             manager.reserve_room_slot(&room_id).is_ok(),
             "cleanup should free room reservation capacity"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reservation_stays_full_until_connection_pre_join_succeeds() {
+        let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
+            max_per_room: 1,
+            max_per_user: 1,
+            ..ConnectionLimits::default()
+        }));
+        let user_id = UserId::from_string("user-pre-join-transfer".to_string());
+        let room_id = RoomId::from_string("room-pre-join-transfer".to_string());
+        let reservation = HandshakeReservation {
+            room_id: room_id.clone(),
+            user_id: user_id.clone(),
+        };
+        let connection_id = "conn-pre-join-transfer".to_string();
+
+        manager
+            .reserve_user_slot(&user_id)
+            .expect("handshake should reserve a user slot");
+        manager
+            .reserve_room_slot(&room_id)
+            .expect("handshake should reserve a room slot");
+
+        assert!(
+            manager.reserve_user_slot(&user_id).is_err(),
+            "user capacity must remain full while only the handshake reservation exists"
+        );
+        assert!(
+            manager.reserve_room_slot(&room_id).is_err(),
+            "room capacity must remain full while only the handshake reservation exists"
+        );
+
+        manager
+            .register(connection_id.clone(), user_id.clone())
+            .await
+            .expect("pre_join should register the connection before releasing reservation");
+        manager
+            .join_room(&connection_id, room_id.clone())
+            .await
+            .expect("pre_join should join the room before releasing reservation");
+
+        assert!(
+            manager.reserve_user_slot(&user_id).is_err(),
+            "active registration must keep user capacity full before reservation release"
+        );
+        assert!(
+            manager.reserve_room_slot(&room_id).is_err(),
+            "active room membership must keep room capacity full before reservation release"
+        );
+
+        reservation.release(&manager);
+
+        assert!(
+            manager.reserve_user_slot(&user_id).is_err(),
+            "releasing the handshake reservation must not free capacity still used by the active connection"
+        );
+        assert!(
+            manager.reserve_room_slot(&room_id).is_err(),
+            "releasing the handshake reservation must not free room capacity still used by the active connection"
+        );
+
+        manager.unregister(&connection_id).await;
+
+        assert!(
+            manager.reserve_user_slot(&user_id).is_ok(),
+            "capacity should reopen only after the active connection leaves"
+        );
+        assert!(
+            manager.reserve_room_slot(&room_id).is_ok(),
+            "room capacity should reopen only after the active connection leaves"
         );
     }
 

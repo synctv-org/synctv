@@ -86,7 +86,17 @@ pub fn load_config() -> Result<Config> {
 #[cfg(test)]
 mod tests {
     use super::load_config;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
+
+    static CONFIG_TEST_SERIAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn acquire_process_config_test_lock() -> MutexGuard<'static, ()> {
+        CONFIG_TEST_SERIAL_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("config test lock should not be poisoned")
+    }
 
     struct EnvVarGuard {
         key: &'static str,
@@ -143,6 +153,7 @@ mod tests {
 
     #[test]
     fn test_load_config_fails_for_invalid_auto_discovered_file() {
+        let _lock = acquire_process_config_test_lock();
         let dir = tempdir().expect("temp dir should be created");
         let config_path = dir.path().join("config.yaml");
         std::fs::write(&config_path, "not: [valid").expect("invalid config should be written");
@@ -159,6 +170,7 @@ mod tests {
 
     #[test]
     fn test_load_config_fails_for_invalid_explicit_file() {
+        let _lock = acquire_process_config_test_lock();
         let dir = tempdir().expect("temp dir should be created");
         let config_path = dir.path().join("explicit-config.yaml");
         std::fs::write(&config_path, "not: [valid").expect("invalid config should be written");

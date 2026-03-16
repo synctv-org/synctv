@@ -395,6 +395,11 @@ impl Clone for StreamMessageHandler {
 }
 
 impl StreamMessageHandler {
+    #[must_use]
+    pub fn generate_connection_id(user_id: &UserId) -> String {
+        format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8))
+    }
+
     fn error_server_message(error: impl Into<crate::impls::ApiError>) -> ServerMessage {
         let api_error: crate::impls::ApiError = error.into();
         ServerMessage {
@@ -503,7 +508,7 @@ impl StreamMessageHandler {
         sender: Arc<dyn MessageSender>,
         concurrency_config: Arc<MessageConcurrencyConfig>,
     ) -> Self {
-        let connection_id = format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8));
+        let connection_id = Self::generate_connection_id(&user_id);
         // Create membership cache with TTL for heartbeat validation.
         // This reduces database queries from every heartbeat (25-35s) to at most once per TTL (30s).
         let membership_cache = Arc::new(
@@ -539,6 +544,12 @@ impl StreamMessageHandler {
     #[must_use]
     pub const fn with_ws_message_rate_limit(mut self, limit: u32) -> Self {
         self.ws_message_rate_limit = limit;
+        self
+    }
+
+    #[must_use]
+    pub fn with_connection_id(mut self, connection_id: String) -> Self {
+        self.connection_id = connection_id;
         self
     }
 

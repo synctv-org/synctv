@@ -125,6 +125,15 @@ struct HandshakeAuthContext {
     ticket_commit: Option<TicketAuthCommit>,
 }
 
+#[derive(Debug, Clone)]
+struct PreparedWebSocketUpgrade {
+    room_id: RoomId,
+    auth: HandshakeAuthContext,
+    username: String,
+    connection_id: String,
+    reservation: HandshakeReservation,
+}
+
 /// Extract user ID from authentication credentials
 ///
 /// Priority:
@@ -729,23 +738,27 @@ pub async fn websocket_handler(
 ) -> Result<impl IntoResponse, AppError> {
     validate_websocket_runtime_dependencies(&state)?;
 
-    let (rid, auth) = run_websocket_handshake_with_timeout(prepare_websocket_upgrade(
+    let prepared = run_websocket_handshake_with_timeout(prepare_websocket_upgrade(
         &state, &room_id, &query, &headers,
     ))
     .await?;
-    let user_id = auth.user_id.clone();
-    commit_prevalidated_ticket(&state, &rid, &auth)
-        .await
-        .map_err(|error| {
-            state.connection_manager.release_room_reservation(&rid);
-            state.connection_manager.release_user_reservation(&user_id);
-            error
-        })?;
+    let rid = prepared.room_id.clone();
+    let auth = prepared.auth.clone();
+    let username = prepared.username.clone();
+    let connection_id = prepared.connection_id.clone();
+    let reservation = prepared.reservation.clone();
+    commit_prevalidated_ticket(&state, &rid, &auth).await.map_err(|error| {
+        let manager = state.connection_manager.clone();
+        let reservation = reservation.clone();
+        tokio::spawn(async move {
+            reservation.release(&manager);
+        });
+        error
+    })?;
 
     let failed_upgrade_cleanup = build_failed_upgrade_cleanup(
         state.connection_manager.clone(),
-        rid.clone(),
-        user_id.clone(),
+        reservation.clone(),
     );
 
     // Authentication and membership verified, upgrade to WebSocket.
@@ -754,7 +767,9 @@ pub async fn websocket_handler(
     Ok(ws
         .max_message_size(64 * 1024)
         .on_failed_upgrade(failed_upgrade_cleanup)
-        .on_upgrade(move |socket| handle_socket(socket, state, rid, auth)))
+        .on_upgrade(move |socket| {
+            handle_socket(socket, state, rid, auth, username, connection_id, reservation)
+        }))
 }
 
 async fn commit_prevalidated_ticket(
@@ -785,12 +800,85 @@ async fn run_websocket_handshake_with_timeout<T>(
         .map_err(|_| AppError::new(StatusCode::REQUEST_TIMEOUT, "WebSocket handshake timed out"))?
 }
 
+struct ReservationCleanupGuard {
+    connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+    reservation: HandshakeReservation,
+    armed: bool,
+}
+
+impl ReservationCleanupGuard {
+    fn new(
+        connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+        reservation: HandshakeReservation,
+    ) -> Self {
+        Self {
+            connection_manager,
+            reservation,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ReservationCleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let connection_manager = Arc::clone(&self.connection_manager);
+        let reservation = self.reservation.clone();
+        tokio::spawn(async move {
+            reservation.release(&connection_manager);
+        });
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HandshakeReservation {
+    room_id: RoomId,
+    user_id: UserId,
+}
+
+impl HandshakeReservation {
+    fn release(&self, connection_manager: &synctv_cluster::sync::ConnectionManager) {
+        connection_manager.release_room_reservation(&self.room_id);
+        connection_manager.release_user_reservation(&self.user_id);
+    }
+}
+
+async fn reserve_websocket_upgrade_slots(
+    connection_manager: &synctv_cluster::sync::ConnectionManager,
+    room_id: &RoomId,
+    user_id: &UserId,
+) -> Result<HandshakeReservation, AppError> {
+    connection_manager
+        .reserve_user_slot(user_id)
+        .map_err(map_websocket_pre_join_error)?;
+
+    if let Err(error) = connection_manager
+        .reserve_room_slot(room_id)
+        .map_err(map_websocket_pre_join_error)
+    {
+        connection_manager.release_user_reservation(user_id);
+        return Err(error);
+    }
+
+    Ok(HandshakeReservation {
+        room_id: room_id.clone(),
+        user_id: user_id.clone(),
+    })
+}
+
 async fn prepare_websocket_upgrade(
     state: &AppState,
     room_id: &str,
     query: &WsQuery,
     headers: &HeaderMap,
-) -> Result<(RoomId, HandshakeAuthContext), AppError> {
+) -> Result<PreparedWebSocketUpgrade, AppError> {
     validate_websocket_origin(headers, &state.config.server.cors_allowed_origins)?;
 
     let rid = crate::room_id_validation::parse_room_id(room_id)
@@ -827,96 +915,6 @@ async fn prepare_websocket_upgrade(
     }
 
     validate_websocket_runtime_dependencies(state)?;
-
-    if let Err(e) = state.connection_manager.reserve_room_slot(&rid) {
-        return Err(AppError::too_many_requests(e));
-    }
-
-    if let Err(e) = state.connection_manager.reserve_user_slot(&user_id) {
-        state.connection_manager.release_room_reservation(&rid);
-        return Err(AppError::too_many_requests(e));
-    }
-
-    Ok((rid, auth))
-}
-
-fn build_failed_upgrade_cleanup(
-    connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
-    room_id: RoomId,
-    user_id: UserId,
-) -> impl FnOnce(axum::Error) + Send + 'static {
-    move |error| {
-        warn!(
-            room_id = %room_id.as_str(),
-            user_id = %user_id.as_str(),
-            error = %error,
-            "WebSocket upgrade failed after reserving connection slots; releasing reservations"
-        );
-        connection_manager.release_room_reservation(&room_id);
-        connection_manager.release_user_reservation(&user_id);
-    }
-}
-
-struct ReservationGuard {
-    connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
-    room_id: RoomId,
-    user_id: UserId,
-    released: bool,
-}
-
-impl ReservationGuard {
-    const fn new(
-        connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
-        room_id: RoomId,
-        user_id: UserId,
-    ) -> Self {
-        Self {
-            connection_manager,
-            room_id,
-            user_id,
-            released: false,
-        }
-    }
-
-    fn release(&mut self) {
-        if self.released {
-            return;
-        }
-
-        self.connection_manager
-            .release_room_reservation(&self.room_id);
-        self.connection_manager
-            .release_user_reservation(&self.user_id);
-        self.released = true;
-    }
-}
-
-impl Drop for ReservationGuard {
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
-fn websocket_content_filter(filter: &Arc<ContentFilter>) -> Arc<ContentFilter> {
-    Arc::clone(filter)
-}
-
-async fn handle_socket(
-    socket: axum::extract::ws::WebSocket,
-    state: AppState,
-    room_id: RoomId,
-    auth: HandshakeAuthContext,
-) {
-    let user_id = auth.user_id.clone();
-    let mut reservation_guard = ReservationGuard::new(
-        state.connection_manager.clone(),
-        room_id.clone(),
-        user_id.clone(),
-    );
-
-    let socket = socket;
-
-    // Get username from user service
     let username = state
         .user_service
         .get_username(&user_id)
@@ -924,6 +922,64 @@ async fn handle_socket(
         .ok()
         .flatten()
         .unwrap_or_else(|| user_id.as_str().to_string());
+    let connection_id = StreamMessageHandler::generate_connection_id(&user_id);
+    let reservation =
+        reserve_websocket_upgrade_slots(&state.connection_manager, &rid, &user_id).await?;
+
+    Ok(PreparedWebSocketUpgrade {
+        room_id: rid,
+        auth,
+        username,
+        connection_id,
+        reservation,
+    })
+}
+
+fn build_failed_upgrade_cleanup(
+    connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+    reservation: HandshakeReservation,
+) -> impl FnOnce(axum::Error) + Send + 'static {
+    move |error| {
+        warn!(
+            room_id = %reservation.room_id.as_str(),
+            user_id = %reservation.user_id.as_str(),
+            error = %error,
+            "WebSocket upgrade failed after reserving connection capacity; releasing reservation"
+        );
+        tokio::spawn(async move {
+            reservation.release(&connection_manager);
+        });
+    }
+}
+
+fn websocket_content_filter(filter: &Arc<ContentFilter>) -> Arc<ContentFilter> {
+    Arc::clone(filter)
+}
+
+fn map_websocket_pre_join_error(error: String) -> AppError {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("capacity") || lower.contains("too many connections") {
+        AppError::too_many_requests(error)
+    } else if lower.contains("unavailable") || lower.contains("redis is degraded") {
+        AppError::service_unavailable()
+    } else {
+        AppError::internal_server_error(error)
+    }
+}
+
+async fn handle_socket(
+    socket: axum::extract::ws::WebSocket,
+    state: AppState,
+    room_id: RoomId,
+    auth: HandshakeAuthContext,
+    username: String,
+    connection_id: String,
+    reservation: HandshakeReservation,
+) {
+    let user_id = auth.user_id.clone();
+    let socket = socket;
+    let mut reservation_cleanup =
+        ReservationCleanupGuard::new(state.connection_manager.clone(), reservation.clone());
 
     info!(
         "WebSocket connection established: user={}, room={}",
@@ -985,6 +1041,7 @@ async fn handle_socket(
         content_filter,
         ws_sender_for_handler,
     )
+    .with_connection_id(connection_id.clone())
     .with_heartbeat_schedule(state.heartbeat_schedule)
     .with_ws_message_rate_limit(
         state
@@ -1000,6 +1057,8 @@ async fn handle_socket(
         stream_handler
     };
     let connection_id = stream_handler.connection_id().to_string();
+    reservation_cleanup.disarm();
+    reservation.release(&state.connection_manager);
 
     // Split WebSocket into sender and receiver
     let (mut ws_sender_sink, ws_receiver) = socket.split();
@@ -1027,15 +1086,8 @@ async fn handle_socket(
         raw_sender: raw_sender_for_ping,
     };
 
-    if let Err(e) = stream_handler.pre_join().await {
-        error!("Failed to join WebSocket stream before message loop: {}", e);
-        return;
-    }
-
-    reservation_guard.release();
-
     // Run unified message loop - ALL logic is here!
-    if let Err(e) = stream_handler.run_after_join(&mut stream).await {
+    if let Err(e) = stream_handler.run(&mut stream).await {
         error!("Stream handler error: {}", e);
     }
 
@@ -1364,6 +1416,67 @@ mod tests {
         assert_eq!(err.message, "WebSocket handshake timed out");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn test_handshake_timeout_releases_reserved_capacity_without_marking_presence() {
+        let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
+            max_per_room: 1,
+            max_per_user: 1,
+            ..ConnectionLimits::default()
+        }));
+        let user_id = UserId::from_string("user-timeout-cleanup".to_string());
+        let room_id = RoomId::from_string("room-timeout-cleanup".to_string());
+        let reservation = HandshakeReservation {
+            room_id: room_id.clone(),
+            user_id: user_id.clone(),
+        };
+
+        manager
+            .reserve_user_slot(&user_id)
+            .expect("handshake should reserve a user slot");
+        manager
+            .reserve_room_slot(&room_id)
+            .expect("handshake should reserve a room slot");
+
+        assert!(
+            manager.get_connection_id(&room_id, &user_id).is_none(),
+            "reserved handshakes must not appear as active presence"
+        );
+        assert!(
+            manager.reserve_user_slot(&user_id).is_err(),
+            "user handshake reservations should remain full while the reservation is active"
+        );
+        assert!(
+            manager.reserve_room_slot(&room_id).is_err(),
+            "room handshake reservations should remain full while the reservation is active"
+        );
+
+        let handshake_manager = manager.clone();
+        let handshake = async move {
+            let _cleanup = ReservationCleanupGuard::new(handshake_manager, reservation);
+            std::future::pending::<Result<(), AppError>>().await
+        };
+
+        let timeout_task =
+            tokio::spawn(async move { run_websocket_handshake_with_timeout(handshake).await });
+
+        tokio::time::advance(WEBSOCKET_HANDSHAKE_TIMEOUT + Duration::from_secs(1)).await;
+
+        let err = timeout_task
+            .await
+            .expect("timeout task should complete")
+            .expect_err("pending reserved handshake must time out");
+        assert_eq!(err.status, StatusCode::REQUEST_TIMEOUT);
+
+        assert!(
+            manager.reserve_user_slot(&user_id).is_ok(),
+            "timeout cleanup should free user reservation capacity"
+        );
+        assert!(
+            manager.reserve_room_slot(&room_id).is_ok(),
+            "timeout cleanup should free room reservation capacity"
+        );
+    }
+
     #[test]
     fn test_room_not_found_maps_to_not_found_error_during_websocket_prepare() {
         let err = AppError::from(synctv_core::Error::NotFound("Room not found".to_string()));
@@ -1419,160 +1532,51 @@ mod tests {
         assert!(debug_str.contains("window_seconds"));
     }
 
-    #[test]
-    fn test_failed_upgrade_cleanup_releases_room_reservation() {
+    #[tokio::test]
+    async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence() {
         let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
             max_per_room: 1,
-            max_per_user: 4,
-            ..ConnectionLimits::default()
-        }));
-        let room_id = RoomId::from_string("room-upgrade-fail".to_string());
-        let user_id = UserId::from_string("user-upgrade-fail".to_string());
-
-        manager
-            .reserve_room_slot(&room_id)
-            .expect("initial room reservation should succeed");
-        assert!(
-            manager.reserve_room_slot(&room_id).is_err(),
-            "second reservation should fail until cleanup runs"
-        );
-
-        let cleanup = build_failed_upgrade_cleanup(manager.clone(), room_id.clone(), user_id);
-        cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
-
-        assert!(
-            manager.reserve_room_slot(&room_id).is_ok(),
-            "cleanup should release the leaked room reservation"
-        );
-    }
-
-    #[test]
-    fn test_failed_upgrade_cleanup_releases_user_reservation() {
-        let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
-            max_per_room: 4,
             max_per_user: 1,
             ..ConnectionLimits::default()
         }));
-        let room_id = RoomId::from_string("room-upgrade-fail".to_string());
         let user_id = UserId::from_string("user-upgrade-fail".to_string());
+        let room_id = RoomId::from_string("room-upgrade-fail".to_string());
+        let reservation = HandshakeReservation {
+            room_id: room_id.clone(),
+            user_id: user_id.clone(),
+        };
 
         manager
             .reserve_user_slot(&user_id)
-            .expect("initial user reservation should succeed");
-        assert!(
-            manager.reserve_user_slot(&user_id).is_err(),
-            "second reservation should fail until cleanup runs"
-        );
-
-        let cleanup = build_failed_upgrade_cleanup(manager.clone(), room_id, user_id.clone());
-        cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
-
-        assert!(
-            manager.reserve_user_slot(&user_id).is_ok(),
-            "cleanup should release the leaked user reservation"
-        );
-    }
-
-    #[test]
-    fn test_websocket_reservations_are_held_until_pre_join_finishes() {
-        let manager = ConnectionManager::new(ConnectionLimits {
-            max_per_room: 1,
-            max_per_user: 1,
-            max_total: 2,
-            ..ConnectionLimits::default()
-        });
-        let room_id = RoomId::from_string("room-prejoin".to_string());
-        let user_id = UserId::from_string("user-prejoin".to_string());
-
+            .expect("handshake should reserve a user slot");
         manager
             .reserve_room_slot(&room_id)
-            .expect("first room reservation should succeed");
-        manager
-            .reserve_user_slot(&user_id)
-            .expect("first user reservation should succeed");
+            .expect("handshake should reserve a room slot");
 
         assert!(
-            manager.reserve_room_slot(&room_id).is_err(),
-            "room reservation must remain held until pre_join completes"
+            manager.get_connection_id(&room_id, &user_id).is_none(),
+            "failed upgrades must not leave a visible active connection"
         );
         assert!(
             manager.reserve_user_slot(&user_id).is_err(),
-            "user reservation must remain held until pre_join completes"
-        );
-
-        manager.release_room_reservation(&room_id);
-        manager.release_user_reservation(&user_id);
-
-        assert!(
-            manager.reserve_room_slot(&room_id).is_ok(),
-            "room reservation should be reusable after explicit release"
+            "user handshake reservations should remain full while the upgrade reservation is active"
         );
         assert!(
-            manager.reserve_user_slot(&user_id).is_ok(),
-            "user reservation should be reusable after explicit release"
+            manager.reserve_room_slot(&room_id).is_err(),
+            "room handshake reservations should remain full while the upgrade reservation is active"
         );
-    }
 
-    #[test]
-    fn test_reservation_guard_releases_on_drop() {
-        let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
-            max_per_room: 1,
-            max_per_user: 1,
-            ..ConnectionLimits::default()
-        }));
-        let room_id = RoomId::from_string("room-guard-drop".to_string());
-        let user_id = UserId::from_string("user-guard-drop".to_string());
+        let cleanup = build_failed_upgrade_cleanup(manager.clone(), reservation);
+        cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
+        tokio::task::yield_now().await;
 
-        manager
-            .reserve_room_slot(&room_id)
-            .expect("room reservation should succeed");
-        manager
-            .reserve_user_slot(&user_id)
-            .expect("user reservation should succeed");
-
-        {
-            let _guard = ReservationGuard::new(manager.clone(), room_id.clone(), user_id.clone());
-        }
-
-        assert!(
-            manager.reserve_room_slot(&room_id).is_ok(),
-            "dropping the guard should release the room reservation"
-        );
         assert!(
             manager.reserve_user_slot(&user_id).is_ok(),
-            "dropping the guard should release the user reservation"
+            "cleanup should free user reservation capacity"
         );
-    }
-
-    #[test]
-    fn test_reservation_guard_release_is_idempotent() {
-        let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
-            max_per_room: 1,
-            max_per_user: 1,
-            ..ConnectionLimits::default()
-        }));
-        let room_id = RoomId::from_string("room-guard-idempotent".to_string());
-        let user_id = UserId::from_string("user-guard-idempotent".to_string());
-
-        manager
-            .reserve_room_slot(&room_id)
-            .expect("room reservation should succeed");
-        manager
-            .reserve_user_slot(&user_id)
-            .expect("user reservation should succeed");
-
-        let mut guard = ReservationGuard::new(manager.clone(), room_id.clone(), user_id.clone());
-        guard.release();
-        guard.release();
-        drop(guard);
-
         assert!(
             manager.reserve_room_slot(&room_id).is_ok(),
-            "explicit release should free the room reservation exactly once"
-        );
-        assert!(
-            manager.reserve_user_slot(&user_id).is_ok(),
-            "explicit release should free the user reservation exactly once"
+            "cleanup should free room reservation capacity"
         );
     }
 

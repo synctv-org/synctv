@@ -107,6 +107,25 @@ fn partition_startup_error(kind: &str, error: impl std::fmt::Display) -> anyhow:
     )
 }
 
+async fn abort_running_leadership_task(running_task: &mut Option<tokio::task::JoinHandle<()>>) {
+    if let Some(handle) = running_task.take() {
+        handle.abort();
+        let _ = handle.await;
+    }
+}
+
+fn register_cache_invalidation_shutdown_hook(
+    shutdown: &mut ShutdownCoordinator,
+    service: Arc<CacheInvalidationService>,
+) -> Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> {
+    let listener_task = Arc::new(tokio::sync::Mutex::new(None));
+    shutdown.register_hook(CacheInvalidationStopHook {
+        service,
+        listener_task: listener_task.clone(),
+    });
+    listener_task
+}
+
 async fn ensure_administrator_bootstrap_precondition(
     pool: &PgPool,
     bootstrap_config: &synctv_core::config::BootstrapConfig,
@@ -128,12 +147,21 @@ fn spawn_on_leadership_gain(
     task_factory: AsyncOnceTaskFactory,
 ) -> tokio::task::JoinHandle<()> {
     synctv_core::spawn::spawn_monitored(name, async move {
-        let run_once = |task_factory: &AsyncOnceTaskFactory| task_factory();
+        let spawn_task = |task_factory: &AsyncOnceTaskFactory| {
+            let task_factory = task_factory.clone();
+            synctv_core::spawn::spawn_monitored(name, async move {
+                task_factory().await;
+            })
+        };
         let mut last_ran_epoch = None;
+        let mut running_epoch = None;
+        let mut running_task = None;
 
         if leader_runtime.is_leader() {
-            last_ran_epoch = Some(leader_runtime.leader_epoch());
-            run_once(&task_factory).await;
+            let epoch = leader_runtime.leader_epoch();
+            last_ran_epoch = Some(epoch);
+            running_epoch = Some(epoch);
+            running_task = Some(spawn_task(&task_factory));
         }
 
         let mut rx = leader_runtime.subscribe();
@@ -141,28 +169,61 @@ fn spawn_on_leadership_gain(
         loop {
             tokio::select! {
                 () = cancel.cancelled() => {
+                    abort_running_leadership_task(&mut running_task).await;
                     info!("{name} cancelled while waiting for leadership transitions");
                     return;
+                }
+                result = async {
+                    match running_task.as_mut() {
+                        Some(handle) => Some(handle.await),
+                        None => None,
+                    }
+                }, if running_task.is_some() => {
+                    running_epoch = None;
+                    running_task = None;
+                    if let Some(Err(err)) = result {
+                        if err.is_panic() {
+                            std::panic::resume_unwind(err.into_panic());
+                        }
+                        warn!(task = name, error = %err, "leadership-gated task ended unexpectedly");
+                    }
                 }
                 event = rx.recv() => {
                     match event {
                         Ok(LeadershipEvent::Gained { epoch }) => {
-                            if last_ran_epoch != Some(epoch) {
-                                run_once(&task_factory).await;
-                                last_ran_epoch = Some(epoch);
+                            if running_epoch == Some(epoch) || last_ran_epoch == Some(epoch) {
+                                continue;
                             }
+                            abort_running_leadership_task(&mut running_task).await;
+                            last_ran_epoch = Some(epoch);
+                            running_epoch = Some(epoch);
+                            running_task = Some(spawn_task(&task_factory));
                         }
                         Ok(LeadershipEvent::Lost | LeadershipEvent::Vacancy) => {
                             last_ran_epoch = None;
+                            running_epoch = None;
+                            abort_running_leadership_task(&mut running_task).await;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                             let epoch = leader_runtime.leader_epoch();
-                            if leader_runtime.is_leader() && last_ran_epoch != Some(epoch) {
-                                run_once(&task_factory).await;
-                                last_ran_epoch = Some(epoch);
+                            if !leader_runtime.is_leader() {
+                                last_ran_epoch = None;
+                                running_epoch = None;
+                                abort_running_leadership_task(&mut running_task).await;
+                                continue;
                             }
+                            if running_epoch == Some(epoch) || last_ran_epoch == Some(epoch) {
+                                continue;
+                            }
+                            abort_running_leadership_task(&mut running_task).await;
+                            last_ran_epoch = Some(epoch);
+                            running_epoch = Some(epoch);
+                            running_task = Some(spawn_task(&task_factory));
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            abort_running_leadership_task(&mut running_task).await;
+                            return;
+                        }
                     }
                 }
             }
@@ -343,7 +404,11 @@ impl Application {
 
         // Redis (optional in standalone mode, mandatory in cluster mode)
         let sentinel_cancel = shutdown.register_token("sentinel_health_check");
-        let redis_handles = init_redis(&config, Some(sentinel_cancel)).await?;
+        let redis_init = init_redis(&config, Some(sentinel_cancel)).await?;
+        let redis_handles = redis_init.handles;
+        if let Some(task) = redis_init.sentinel_health_check_task {
+            shutdown.register_task("sentinel_master_health_check", task);
+        }
 
         if redis_handles.is_some() {
             info!("Redis connected");
@@ -353,7 +418,11 @@ impl Application {
 
         // Database (with cancellable pool metrics task)
         let db_metrics_cancel = shutdown.register_token("db_pool_metrics");
-        let pool = init_database_with_cancel(&config, Some(db_metrics_cancel)).await?;
+        let db_init = init_database_with_cancel(&config, Some(db_metrics_cancel)).await?;
+        if let Some(task) = db_init.metrics_task {
+            shutdown.register_task("db_pool_metrics", task);
+        }
+        let pool = db_init.pool;
 
         Ok(Infrastructure {
             config,
@@ -448,9 +517,8 @@ impl Application {
             cache_invalidation_svc
         };
         let cache_invalidation = Arc::new(cache_invalidation_svc);
-        shutdown.register_hook(CacheInvalidationStopHook {
-            service: cache_invalidation.clone(),
-        });
+        let cache_invalidation_listener_task =
+            register_cache_invalidation_shutdown_hook(shutdown, cache_invalidation.clone());
 
         // Start the cache invalidation Redis subscriber BEFORE init_services.
         // Issue #44: subscriber must be running before any service publishes an
@@ -476,6 +544,7 @@ impl Application {
             &infra.config,
             infra.redis_handles.clone(),
             cache_invalidation.clone(),
+            cache_invalidation_listener_task,
         )
         .await?;
 
@@ -665,18 +734,20 @@ impl Application {
             "db_maintenance",
             db_maintenance.spawn_maintenance_loop(singleton_cancel),
         );
-        info!("Database maintenance service started (leader-gated: partitions every 12h, cleanups every 1h)");
+        info!("Database maintenance service started (leader-gated cleanup tasks every 1h)");
 
         if cluster_runtime_enabled(&infra.config) {
             let pool = infra.pool.clone();
             let settings_registry = core.services.settings_registry.clone();
             let leader_runtime = leader.leader_runtime.clone();
+            let deferred_leader_runtime = leader_runtime.clone();
             let deferred_cleanup_config = cleanup_config;
             let cancel = shutdown.register_token("cluster_leader_startup_work");
             let task_factory: AsyncOnceTaskFactory = Arc::new(move || {
                 let pool = pool.clone();
                 let settings_registry = settings_registry.clone();
                 let cleanup_config = deferred_cleanup_config.clone();
+                let leader_runtime = deferred_leader_runtime.clone();
                 Box::pin(async move {
                     info!(
                         "Leadership gained after startup; running deferred singleton maintenance"
@@ -685,7 +756,7 @@ impl Application {
                     let cleanup_service = synctv_core::service::CleanupService::new(
                         pool.clone(),
                         cleanup_config.clone(),
-                        Arc::new(synctv_core::service::AlwaysLeader),
+                        leader_runtime.clone(),
                     )
                     .with_settings_registry(settings_registry.clone());
                     let cleanup_result = cleanup_service.run_all().await;
@@ -703,7 +774,7 @@ impl Application {
 
                     let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new(
                         pool,
-                        Arc::new(synctv_core::service::AlwaysLeader),
+                        leader_runtime,
                     )
                     .with_cleanup_config(cleanup_config.clone())
                     .with_settings_registry(settings_registry);
@@ -1056,6 +1127,7 @@ mod tests {
 
     struct TestLeaderRuntime {
         is_leader: std::sync::atomic::AtomicBool,
+        epoch: std::sync::atomic::AtomicU64,
         tx: broadcast::Sender<LeadershipEvent>,
     }
 
@@ -1064,14 +1136,16 @@ mod tests {
             let (tx, _rx) = broadcast::channel(8);
             Self {
                 is_leader: std::sync::atomic::AtomicBool::new(is_leader),
+                epoch: std::sync::atomic::AtomicU64::new(u64::from(is_leader)),
                 tx,
             }
         }
 
         fn gain_leadership(&self) {
+            let epoch = self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             self.is_leader
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            let _ = self.tx.send(LeadershipEvent::Gained { epoch: 1 });
+            let _ = self.tx.send(LeadershipEvent::Gained { epoch });
         }
     }
 
@@ -1096,7 +1170,7 @@ mod tests {
         }
 
         fn leader_epoch(&self) -> u64 {
-            u64::from(self.is_leader.load(std::sync::atomic::Ordering::SeqCst))
+            self.epoch.load(std::sync::atomic::Ordering::SeqCst)
         }
 
         async fn resign(&self) {
@@ -1600,5 +1674,179 @@ mod tests {
         handle.await.expect("task should join");
 
         assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn deferred_startup_work_is_aborted_when_leadership_is_lost_mid_run() {
+        struct DropSignal(Arc<tokio::sync::Notify>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.notify_one();
+            }
+        }
+
+        let leader_runtime = Arc::new(TestLeaderRuntime::new(true));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(tokio::sync::Notify::new());
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started_clone = started.clone();
+        let dropped_clone = dropped.clone();
+        let completed_clone = completed.clone();
+
+        let handle = spawn_on_leadership_gain(
+            "test_leadership_loss_mid_run",
+            leader_runtime.clone(),
+            cancel.clone(),
+            Arc::new(move || {
+                let started = started_clone.clone();
+                let dropped = dropped_clone.clone();
+                let completed = completed_clone.clone();
+                Box::pin(async move {
+                    let _drop_signal = DropSignal(dropped);
+                    started.notify_one();
+                    std::future::pending::<()>().await;
+                    completed.store(true, std::sync::atomic::Ordering::SeqCst);
+                })
+            }),
+        );
+
+        started.notified().await;
+        leader_runtime.resign().await;
+        tokio::time::timeout(Duration::from_millis(200), dropped.notified())
+            .await
+            .expect("running startup work must be aborted on leadership loss");
+
+        cancel.cancel();
+        handle.await.expect("task should join");
+
+        assert!(
+            !completed.load(std::sync::atomic::Ordering::SeqCst),
+            "deferred startup work must not complete after leadership loss"
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_startup_work_aborts_previous_epoch_before_replacement_starts() {
+        struct ActiveGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+        impl Drop for ActiveGuard {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let leader_runtime = Arc::new(TestLeaderRuntime::new(true));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+
+        let handle = spawn_on_leadership_gain(
+            "test_leadership_epoch_replacement",
+            leader_runtime.clone(),
+            cancel.clone(),
+            Arc::new({
+                let active = active.clone();
+                let max_active = max_active.clone();
+                let starts = starts.clone();
+                let started = started.clone();
+                move || {
+                    let active = active.clone();
+                    let max_active = max_active.clone();
+                    let starts = starts.clone();
+                    let started = started.clone();
+                    Box::pin(async move {
+                        let current = active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        max_active.fetch_max(current, std::sync::atomic::Ordering::SeqCst);
+                        starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let _guard = ActiveGuard(active);
+                        started.notify_waiters();
+                        std::future::pending::<()>().await;
+                    })
+                }
+            }),
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while starts.load(std::sync::atomic::Ordering::SeqCst) < 1 {
+                started.notified().await;
+            }
+        })
+        .await
+        .expect("initial leader task should start");
+
+        tokio::task::yield_now().await;
+        leader_runtime.gain_leadership();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while starts.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                started.notified().await;
+            }
+        })
+        .await
+        .expect("replacement leader task should start for the new epoch");
+
+        cancel.cancel();
+        handle.await.expect("task should join");
+
+        assert_eq!(
+            max_active.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "leadership-gated work must fence the previous epoch before starting the replacement"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_invalidation_shutdown_hook_registered_before_listener_start_still_cleans_up() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let service = Arc::new(CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "test:cache:invalidate".to_string(),
+        ));
+        let mut shutdown = ShutdownCoordinator::new(Duration::from_millis(50));
+        let listener_task =
+            register_cache_invalidation_shutdown_hook(&mut shutdown, service.clone());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_for_task = dropped.clone();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let started_for_task = started.clone();
+        let task = tokio::spawn(async move {
+            let _drop_flag = DropFlag(dropped_for_task);
+            started_for_task.notify_one();
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+        *listener_task.lock().await = Some(task);
+
+        started.notified().await;
+        shutdown.shutdown().await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cache invalidation listener task should be aborted when startup cleanup runs");
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "startup-registered cache invalidation shutdown hook must abort listener tasks even if the task is attached later"
+        );
     }
 }

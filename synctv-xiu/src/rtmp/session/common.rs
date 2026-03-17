@@ -22,7 +22,8 @@ use {
             StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo, TStreamHandler,
         },
         errors::{StreamHubError, StreamHubErrorValue},
-        send_event_with_backpressure_timeout,
+        send_event_with_backpressure_timeout, subscribe_with_rollback_on_timeout,
+        SubscribeWithRollbackError,
         stream::StreamIdentifier,
         utils::Uuid,
     },
@@ -40,6 +41,7 @@ use {
 const MAX_VIDEO_FRAMES_PER_SECOND: usize = 120; // Max 120 FPS video (generous for 60 FPS + margin)
 const MAX_AUDIO_FRAMES_PER_SECOND: usize = 200; // Max 200 FPS audio (AAC 48kHz ~47fps, with generous margin)
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
+const STREAM_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Distinguishes audio vs video for per-track rate limiting.
 #[derive(Clone, Copy)]
@@ -433,22 +435,22 @@ impl Common {
             stream_name,
         };
 
-        let (event_result_sender, event_result_receiver) = oneshot::channel();
-
-        let subscribe_event = StreamHubEvent::Subscribe {
+        let subscriber_info = self.get_subscriber_info();
+        let result = subscribe_with_rollback_on_timeout(
+            &self.event_producer,
             identifier,
-            info: self.get_subscriber_info(),
-            result_sender: event_result_sender,
-        };
-        let rv = self.event_producer.try_send(subscribe_event);
-
-        if rv.is_err() {
-            return Err(SessionError {
+            subscriber_info,
+            STREAM_SUBSCRIBE_TIMEOUT,
+        )
+        .await
+        .map_err(|err| match err {
+            SubscribeWithRollbackError::Timeout => SessionError {
+                value: SessionErrorValue::Timeout,
+            },
+            SubscribeWithRollbackError::StreamHub(_) => SessionError {
                 value: SessionErrorValue::StreamHubEventSendErr,
-            });
-        }
-
-        let result = event_result_receiver.await??;
+            },
+        })?;
         self.data_receiver = Some(result.0.frame_receiver.ok_or(SessionError {
             value: SessionErrorValue::StreamHubEventSendErr,
         })?);
@@ -821,5 +823,51 @@ mod tests {
             .expect_err("closed event channel must surface unsubscribe failure");
 
         assert!(matches!(err.value, SessionErrorValue::ChannelError(_)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_subscribe_from_stream_hub_times_out_when_result_never_arrives() {
+        let (event_sender, mut event_rx) = mpsc::channel(1);
+        let mut common = Common::new(None, event_sender, SessionType::Server, None);
+        common.request_url = "/live/room/stream".to_string();
+
+        let subscribe_task = tokio::spawn(async move {
+            common
+                .subscribe_from_stream_hub("live".to_string(), "room/stream".to_string())
+                .await
+        });
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("subscribe event should be delivered");
+        assert!(matches!(event, StreamHubEvent::Subscribe { .. }));
+
+        tokio::time::advance(STREAM_SUBSCRIBE_TIMEOUT + Duration::from_secs(1)).await;
+
+        let err = subscribe_task
+            .await
+            .expect("subscribe task should join")
+            .expect_err("subscribe should time out when the streamhub result never arrives");
+
+        assert!(matches!(err.value, SessionErrorValue::Timeout));
+
+        let rollback = event_rx
+            .recv()
+            .await
+            .expect("timed-out subscribe should emit rollback unsubscribe");
+        match rollback {
+            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
+                StreamIdentifier::Rtmp {
+                    app_name,
+                    stream_name,
+                } => {
+                    assert_eq!(app_name, "live");
+                    assert_eq!(stream_name, "room/stream");
+                }
+                other => panic!("unexpected stream identifier: {other:?}"),
+            },
+            other => panic!("expected rollback unsubscribe event, got {other:?}"),
+        }
     }
 }

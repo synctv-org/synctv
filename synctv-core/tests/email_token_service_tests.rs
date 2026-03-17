@@ -199,3 +199,33 @@ async fn test_service_concurrent_single_use() {
     );
     assert_eq!(failures, 9, "9 concurrent validations should fail");
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_service_validate_for_wrong_user_does_not_consume_token() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let service = EmailTokenService::new(pool);
+
+    let owner = user_repo.create(&make_user("svc_user_owner")).await.unwrap();
+    let other = user_repo.create(&make_user("svc_user_other")).await.unwrap();
+
+    let token = service
+        .generate_token(&owner.id, EmailTokenType::PasswordReset)
+        .await
+        .unwrap();
+
+    let wrong_user_attempt = service
+        .validate_token_for_user(&token, EmailTokenType::PasswordReset, &other.id)
+        .await;
+    assert!(
+        wrong_user_attempt.is_err(),
+        "wrong-user validation must fail without consuming the token"
+    );
+
+    let owner_attempt = service
+        .validate_token_for_user(&token, EmailTokenType::PasswordReset, &owner.id)
+        .await
+        .unwrap();
+    assert_eq!(owner_attempt, owner.id);
+}

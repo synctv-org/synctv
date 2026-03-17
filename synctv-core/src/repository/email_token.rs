@@ -128,6 +128,37 @@ impl EmailTokenRepository {
         Ok(t)
     }
 
+    /// Atomically validate and consume a token for an expected user.
+    ///
+    /// This prevents mismatched email/user submissions from consuming a valid
+    /// one-time token that belongs to someone else.
+    pub async fn validate_and_consume_for_user(
+        &self,
+        token: &str,
+        token_type: EmailTokenType,
+        expected_user_id: &UserId,
+    ) -> Result<Option<EmailToken>> {
+        let t = sqlx::query_as::<_, EmailToken>(
+            r"
+            UPDATE email_tokens
+            SET used_at = CURRENT_TIMESTAMP
+            WHERE token = $1
+              AND token_type = $2
+              AND user_id = $3
+              AND used_at IS NULL
+              AND expires_at > CURRENT_TIMESTAMP
+            RETURNING id::TEXT, token, user_id, token_type, expires_at, used_at, created_at
+            ",
+        )
+        .bind(token)
+        .bind(token_type.as_str())
+        .bind(expected_user_id.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(t)
+    }
+
     /// Delete all tokens of a specific type for a user
     pub async fn delete_user_tokens(
         &self,

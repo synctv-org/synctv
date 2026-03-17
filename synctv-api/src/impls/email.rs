@@ -7,6 +7,11 @@ use synctv_core::service::{EmailService, EmailTokenService, EmailTokenType, User
 
 use crate::impls::ApiError;
 
+const GENERIC_VERIFICATION_MESSAGE: &str =
+    "If an account exists with this email, a verification code will be sent.";
+const GENERIC_PASSWORD_RESET_MESSAGE: &str =
+    "If an account exists with this email, a password reset code will be sent.";
+
 /// Shared email operations implementation.
 pub struct EmailApiImpl {
     pub user_service: Arc<UserService>,
@@ -56,9 +61,6 @@ impl EmailApiImpl {
         &self,
         email: &str,
     ) -> Result<SendVerificationResult, ApiError> {
-        let generic_message =
-            "If an account exists with this email, a verification code will be sent.".to_string();
-
         let user = self
             .user_service
             .get_by_email(email)
@@ -73,7 +75,7 @@ impl EmailApiImpl {
             let delay_ms = rand::random_range(100u64..500u64);
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             return Ok(SendVerificationResult {
-                message: generic_message,
+                message: GENERIC_VERIFICATION_MESSAGE.to_string(),
             });
         };
 
@@ -89,7 +91,7 @@ impl EmailApiImpl {
         );
 
         Ok(SendVerificationResult {
-            message: generic_message,
+            message: GENERIC_VERIFICATION_MESSAGE.to_string(),
         })
     }
 
@@ -99,20 +101,20 @@ impl EmailApiImpl {
         email: &str,
         token: &str,
     ) -> Result<ConfirmEmailResult, ApiError> {
-        let validated_user_id = self
-            .email_token_service
-            .validate_token(token, EmailTokenType::EmailVerification)
-            .await
-            .map_err(|_| {
-                ApiError::InvalidInput("Invalid or expired verification token".to_string())
-            })?;
-
         let user = self
             .user_service
             .get_by_email(email)
             .await
             .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
             .ok_or_else(|| {
+                ApiError::InvalidInput("Invalid or expired verification token".to_string())
+            })?;
+
+        let validated_user_id = self
+            .email_token_service
+            .validate_token_for_user(token, EmailTokenType::EmailVerification, &user.id)
+            .await
+            .map_err(|_| {
                 ApiError::InvalidInput("Invalid or expired verification token".to_string())
             })?;
 
@@ -166,9 +168,7 @@ impl EmailApiImpl {
             let delay_ms = rand::random_range(100u64..500u64);
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             return Ok(RequestPasswordResetResult {
-                message:
-                    "If an account exists with this email, a password reset code will be sent."
-                        .to_string(),
+                message: GENERIC_PASSWORD_RESET_MESSAGE.to_string(),
             });
         };
 
@@ -181,7 +181,7 @@ impl EmailApiImpl {
         tracing::info!("Password reset requested for user {}", user.id.as_str());
 
         Ok(RequestPasswordResetResult {
-            message: "Password reset code sent to your email".to_string(),
+            message: GENERIC_PASSWORD_RESET_MESSAGE.to_string(),
         })
     }
 
@@ -196,18 +196,18 @@ impl EmailApiImpl {
         // UserService::set_password() which uses the full PasswordValidator.
         // No redundant length-only check here.
 
-        let validated_user_id = self
-            .email_token_service
-            .validate_token(token, EmailTokenType::PasswordReset)
-            .await
-            .map_err(|_| ApiError::InvalidInput("Invalid or expired reset token".to_string()))?;
-
         let user = self
             .user_service
             .get_by_email(email)
             .await
             .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
             .ok_or_else(|| ApiError::InvalidInput("Invalid or expired reset token".to_string()))?;
+
+        let validated_user_id = self
+            .email_token_service
+            .validate_token_for_user(token, EmailTokenType::PasswordReset, &user.id)
+            .await
+            .map_err(|_| ApiError::InvalidInput("Invalid or expired reset token".to_string()))?;
 
         if validated_user_id != user.id {
             return Err(ApiError::InvalidInput(
@@ -239,5 +239,79 @@ impl EmailApiImpl {
             message: "Password reset successfully".to_string(),
             user_id: user.id.to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EmailApiImpl, GENERIC_PASSWORD_RESET_MESSAGE};
+    use std::sync::Arc;
+    use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
+    use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
+    use synctv_core::service::{
+        auth::BruteForceProtection, EmailService, EmailTokenService, InMemoryTokenBlacklistStore,
+        JwtService, UserService,
+    };
+
+    fn make_user(username: &str) -> User {
+        let now = chrono::Utc::now();
+        User {
+            id: UserId::new(),
+            username: username.to_string(),
+            email: Some(format!("{username}@example.com")),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            email_verified: true,
+            signup_method: SignupMethod::Email,
+            created_at: now,
+            updated_at: now,
+            password_changed_at: now,
+            password_version: 0,
+            version: 0,
+            deleted_at: None,
+        }
+    }
+
+    fn build_email_api(pool: sqlx::PgPool) -> EmailApiImpl {
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+        let jwt_service =
+            JwtService::new("test-secret-key-for-email-api-tests-minimum-32-chars").unwrap();
+        let user_service = Arc::new(UserService::new(
+            pool.clone(),
+            jwt_service,
+            username_cache,
+            synctv_core::config::PasswordComplexityConfig::default(),
+            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            KeyBuilder::new("test"),
+            BruteForceProtection::in_memory("test".to_string()),
+        ));
+
+        EmailApiImpl::new(
+            user_service,
+            Arc::new(EmailService::new(None).unwrap()),
+            Arc::new(EmailTokenService::new(pool)),
+        )
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn request_password_reset_returns_same_message_for_existing_and_missing_users() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let api = build_email_api(pool.clone());
+        let repo = synctv_core::repository::UserRepository::new(pool);
+        let existing_user = make_user("email_api_existing");
+        let existing_email = existing_user.email.clone().unwrap();
+        repo.create(&existing_user).await.unwrap();
+
+        let existing = api.request_password_reset(&existing_email).await.unwrap();
+        let missing = api
+            .request_password_reset("missing-email@example.com")
+            .await
+            .unwrap();
+
+        assert_eq!(existing.message, GENERIC_PASSWORD_RESET_MESSAGE);
+        assert_eq!(missing.message, GENERIC_PASSWORD_RESET_MESSAGE);
     }
 }

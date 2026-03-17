@@ -207,6 +207,28 @@ impl EmailTokenService {
         Ok(token_record.user_id)
     }
 
+    /// Validate and consume a token only if it belongs to the expected user.
+    pub async fn validate_token_for_user(
+        &self,
+        token: &str,
+        token_type: EmailTokenType,
+        expected_user_id: &UserId,
+    ) -> Result<UserId> {
+        let token_record = self
+            .repository
+            .validate_and_consume_for_user(token, token_type, expected_user_id)
+            .await?
+            .ok_or_else(|| Error::InvalidInput("Invalid or expired token".to_string()))?;
+
+        info!(
+            "Validated {} token for expected user {}",
+            token_type.as_str(),
+            expected_user_id.as_str()
+        );
+
+        Ok(token_record.user_id)
+    }
+
     /// Invalidate all tokens of a specific type for a user
     pub async fn invalidate_user_tokens(
         &self,

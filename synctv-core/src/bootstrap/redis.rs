@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::config::RedisDeploymentMode;
@@ -23,6 +24,12 @@ type RedisNodeSettings = redis::RedisConnectionInfo;
 pub struct RedisHandles {
     pub client: redis::Client,
     pub conn: Arc<RwLock<redis::aio::ConnectionManager>>,
+}
+
+#[derive(Debug)]
+pub struct RedisInit {
+    pub handles: Option<RedisHandles>,
+    pub sentinel_health_check_task: Option<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for RedisHandles {
@@ -60,21 +67,26 @@ impl RedisHandles {
 pub async fn init_redis(
     config: &Config,
     cancel: Option<tokio_util::sync::CancellationToken>,
-) -> Result<Option<RedisHandles>, anyhow::Error> {
-    let handles = match config.redis.deployment_mode {
+) -> Result<RedisInit, anyhow::Error> {
+    match config.redis.deployment_mode {
         RedisDeploymentMode::Standalone => {
             if config.redis.url.is_empty() {
                 info!("Redis URL is not configured — running without Redis");
-                return Ok(None);
+                return Ok(RedisInit {
+                    handles: None,
+                    sentinel_health_check_task: None,
+                });
             }
-            init_standalone(config).await?
+            Ok(RedisInit {
+                handles: Some(init_standalone(config).await?),
+                sentinel_health_check_task: None,
+            })
         }
-        RedisDeploymentMode::Sentinel => init_sentinel(config, cancel).await?,
+        RedisDeploymentMode::Sentinel => init_sentinel(config, cancel).await,
         RedisDeploymentMode::Cluster => {
             unreachable!("Cluster mode was already checked and rejected by config validation");
         }
-    };
-    Ok(Some(handles))
+    }
 }
 
 #[cfg(test)]
@@ -91,7 +103,8 @@ mod init_tests {
             .await
             .expect("standalone without redis.url should be allowed");
 
-        assert!(result.is_none());
+        assert!(result.handles.is_none());
+        assert!(result.sentinel_health_check_task.is_none());
     }
 
     #[tokio::test]
@@ -185,7 +198,7 @@ async fn init_standalone(config: &Config) -> Result<RedisHandles, anyhow::Error>
 async fn init_sentinel(
     config: &Config,
     cancel: Option<tokio_util::sync::CancellationToken>,
-) -> Result<RedisHandles, anyhow::Error> {
+) -> Result<RedisInit, anyhow::Error> {
     info!("Initializing Redis in sentinel mode");
     let master_name = config
         .redis
@@ -230,7 +243,7 @@ async fn init_sentinel(
         let node_info = node_info.clone();
         let manager_config = redis_connection_manager_config(config);
         let shared_conn_clone = shared_conn.clone();
-        crate::spawn::spawn_monitored("sentinel_master_health_check", async move {
+        let health_check_task = crate::spawn::spawn_monitored("sentinel_master_health_check", async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             // Skip the first immediate tick
             interval.tick().await;
@@ -354,12 +367,15 @@ async fn init_sentinel(
         info!(
             "Sentinel master health check started (interval: 5s, failover threshold: 3 failures)"
         );
-    }
 
-    Ok(RedisHandles {
-        client,
-        conn: shared_conn,
-    })
+        return Ok(RedisInit {
+            handles: Some(RedisHandles {
+                client,
+                conn: shared_conn,
+            }),
+            sentinel_health_check_task: Some(health_check_task),
+        });
+    }
 }
 
 #[cfg(test)]

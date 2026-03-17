@@ -286,6 +286,7 @@ impl ShutdownHook for AuditFlushHook {
 /// Stops the `CacheInvalidationService` (signals shutdown, trims Redis stream).
 pub struct CacheInvalidationStopHook {
     pub service: Arc<synctv_core::cache::CacheInvalidationService>,
+    pub listener_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl ShutdownHook for CacheInvalidationStopHook {
@@ -298,6 +299,11 @@ impl ShutdownHook for CacheInvalidationStopHook {
     fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         Box::pin(async move {
             self.service.stop().await;
+            let mut guard = self.listener_task.lock().await;
+            if let Some(task) = guard.take() {
+                task.abort();
+                let _ = task.await;
+            }
             info!("Cache invalidation service stopped");
         })
     }
@@ -522,6 +528,89 @@ mod tests {
         assert!(
             dropped.load(Ordering::SeqCst),
             "timed-out shutdown hook must abort the owned background task instead of detaching it"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_invalidation_stop_hook_joins_listener_task() {
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "test:cache:invalidate".to_string(),
+        ));
+        let mut coord = ShutdownCoordinator::new(Duration::from_millis(50));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_for_task = Arc::clone(&dropped);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let started_for_task = Arc::clone(&started);
+        let task = tokio::spawn(async move {
+            let _drop_flag = DropFlag(dropped_for_task);
+            started_for_task.notify_one();
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+
+        coord.register_hook(CacheInvalidationStopHook {
+            service,
+            listener_task: Arc::new(Mutex::new(Some(task))),
+        });
+
+        started.notified().await;
+        coord.shutdown().await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cache invalidation listener task should be aborted promptly during shutdown");
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "cache invalidation shutdown must not detach the local listener task"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_invalidation_stop_hook_does_not_consume_full_timeout_budget() {
+        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "test:cache:invalidate".to_string(),
+        ));
+        let mut coord = ShutdownCoordinator::new(Duration::from_millis(250));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let started_for_task = Arc::clone(&started);
+        let task = tokio::spawn(async move {
+            started_for_task.notify_one();
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+        coord.register_hook(CacheInvalidationStopHook {
+            service,
+            listener_task: Arc::new(Mutex::new(Some(task))),
+        });
+
+        started.notified().await;
+        let start = tokio::time::Instant::now();
+        coord.shutdown().await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "cache invalidation shutdown should abort the local listener promptly instead of burning the hook timeout budget: {elapsed:?}"
         );
     }
 }

@@ -1986,6 +1986,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_publish_only_user_notification_does_not_hit_admin_channel() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "test_publish_only_user_notification".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 4,
+            publish_channel_capacity: 4,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            shared_redis_conn: None,
+            parent_cancel_token: None,
+        };
+
+        let mut manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("ClusterManager::new should succeed");
+        let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
+        manager.redis_publish_tx = Some(publish_tx);
+        let mut admin_rx = manager.subscribe_admin_events();
+
+        let event = ClusterEvent::UserNotification {
+            event_id: nanoid::nanoid!(16),
+            user_id: UserId::from_string("notify-user".to_string()),
+            notification_id: "notification-1".to_string(),
+            title: "title".to_string(),
+            content: "content".to_string(),
+            notification_type: "system".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        assert!(
+            manager.publish_only(event.clone()),
+            "publish_only should enqueue UserNotification to Redis"
+        );
+
+        let published = tokio::time::timeout(Duration::from_millis(100), publish_rx.recv())
+            .await
+            .expect("user notification should reach Redis queue")
+            .expect("publish queue should stay open");
+        assert_eq!(published.event.event_type(), event.event_type());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), admin_rx.recv())
+                .await
+                .is_err(),
+            "publish_only must not emit UserNotification to the local admin channel"
+        );
+    }
+
+    #[tokio::test]
     async fn test_drop_aborts_injected_connection_manager_background_tasks() {
         let config = ClusterConfig {
             redis_client: None,

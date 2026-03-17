@@ -28,7 +28,6 @@ fn unavailable_pg_store() -> PgTokenBlacklistStore {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-#[ignore = "Requires Docker (Redis testcontainer)"]
 async fn test_blacklist_if_not_exists_requires_pg_success_before_redis_cache_write() {
     let (_container, redis_client) = start_redis().await;
     let shared_conn = Arc::new(RwLock::new(

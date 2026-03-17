@@ -221,6 +221,13 @@ const fn should_mark_notification_service_serving(notification_service_available
     notification_service_available
 }
 
+const fn should_fail_user_notification_fanout(
+    redis_publish_succeeded: bool,
+    cluster_redis_enabled: bool,
+) -> bool {
+    cluster_redis_enabled && !redis_publish_succeeded
+}
+
 const fn should_register_email_service(email_available: bool, email_token_available: bool) -> bool {
     email_available && email_token_available
 }
@@ -839,6 +846,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         // when the gRPC server stops.
         if let Some(ref cm) = cluster_manager_for_rt {
             let cm = Arc::clone(cm);
+            let cluster_redis_enabled = cm.metrics().redis_enabled;
             let mut notification_rx = notif_svc.subscribe_events();
             // Clone the optional shutdown watch receiver so the bridge task
             // can stop cleanly when the server receives a shutdown signal.
@@ -878,7 +886,12 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                                         notification_type: event.notification.notification_type.to_string(),
                                         timestamp: chrono::Utc::now(),
                                     };
-                                    cm.broadcast(cluster_event);
+                                    let redis_sent = cm.publish_only(cluster_event);
+                                    if should_fail_user_notification_fanout(redis_sent, cluster_redis_enabled) {
+                                        tracing::error!(
+                                            "Notification-to-cluster bridge failed to publish user notification to Redis"
+                                        );
+                                    }
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                                     tracing::warn!(
@@ -1227,6 +1240,7 @@ mod tests {
         set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
         should_mark_cluster_service_serving, should_mark_email_service_serving,
         should_mark_livestream_relay_serving, should_mark_notification_service_serving,
+        should_fail_user_notification_fanout,
         should_mark_oauth2_service_serving, should_mark_provider_services_serving,
         should_register_cluster_grpc_service, should_register_email_service,
         should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
@@ -1467,6 +1481,13 @@ mod tests {
         assert!(!should_mark_oauth2_service_serving(false));
         assert!(should_mark_provider_services_serving(true));
         assert!(!should_mark_provider_services_serving(false));
+    }
+
+    #[test]
+    fn test_user_notification_fanout_requires_redis_when_cluster_enabled() {
+        assert!(should_fail_user_notification_fanout(false, true));
+        assert!(!should_fail_user_notification_fanout(true, true));
+        assert!(!should_fail_user_notification_fanout(false, false));
     }
 
     #[test]

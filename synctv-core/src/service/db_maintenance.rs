@@ -1,12 +1,12 @@
 //! Unified database maintenance service
 //!
-//! Coordinates all periodic database maintenance in a single background task:
-//! - Partition creation for `audit_logs` (monthly)
+//! Coordinates periodic database maintenance in a single background task:
 //! - Cleanup of expired email tokens, old notifications, and expired credentials
 //! - Cleanup of chat messages older than the configurable retention cap (default: 90 days)
 //!
-//! Note: chat message partition management (creation and old partition dropping)
-//! is handled exclusively by `ChatPartitionManager` to avoid conflicting operations.
+//! Note: partition creation/retention is owned by dedicated managers:
+//! - `AuditPartitionManager` for `audit_logs`
+//! - `ChatPartitionManager` for chat partitions
 //!
 //! Uses the existing SQL functions defined in migrations but previously uncalled
 //! by application code.
@@ -78,20 +78,6 @@ impl DatabaseMaintenanceService {
 
     const fn expired_credential_buffer_hours(&self) -> i32 {
         self.config.expired_credential_buffer_hours as i32
-    }
-
-    /// Create audit log partitions for the next `months_ahead` months.
-    pub async fn run_audit_partition_maintenance(&self) -> Result<(), sqlx::Error> {
-        let result =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT create_audit_logs_partitions($1)")
-                .bind(3i32)
-                .fetch_one(&self.pool)
-                .await?;
-
-        let success = result["success_count"].as_i64().unwrap_or(0);
-        let total = result["total_requested"].as_i64().unwrap_or(0);
-        info!(success, total, "Audit log partition maintenance completed");
-        Ok(())
     }
 
     /// Delete expired email tokens.
@@ -168,13 +154,9 @@ impl DatabaseMaintenanceService {
 
     /// Run all maintenance tasks. Logs errors but does not fail.
     ///
-    /// Note: chat message partition management is handled exclusively by
-    /// `ChatPartitionManager` which also performs health checks, handles missing
-    /// partitions, and drops old partitions based on the retention period.
+    /// Partition maintenance is intentionally excluded here:
+    /// `AuditPartitionManager` and `ChatPartitionManager` are the single owners.
     pub async fn run_all_maintenance(&self) {
-        if let Err(e) = self.run_audit_partition_maintenance().await {
-            error!(error = %e, "Audit partition maintenance failed");
-        }
         if let Err(e) = self.run_cleanup_email_tokens().await {
             error!(error = %e, "Email token cleanup failed");
         }
@@ -191,9 +173,7 @@ impl DatabaseMaintenanceService {
 
     /// Spawn the maintenance background loop.
     ///
-    /// Runs all maintenance once at startup, then:
-    /// - Partition checks every 12 hours
-    /// - Cleanup tasks every hour
+    /// Runs all cleanup maintenance once at startup, then every hour.
     ///
     /// Only executes when this node is the leader.
     /// Stops when the `CancellationToken` is cancelled.
@@ -213,12 +193,9 @@ impl DatabaseMaintenanceService {
                 service.run_all_maintenance().await;
             }
 
-            let mut partition_interval =
-                tokio::time::interval(tokio::time::Duration::from_hours(12));
             let mut cleanup_interval = tokio::time::interval(tokio::time::Duration::from_hours(1));
 
             // Skip the first immediate tick (we already ran at startup)
-            partition_interval.tick().await;
             cleanup_interval.tick().await;
 
             loop {
@@ -226,17 +203,6 @@ impl DatabaseMaintenanceService {
                     () = cancel.cancelled() => {
                         info!("Database maintenance task cancelled, shutting down");
                         return;
-                    }
-                    _ = partition_interval.tick() => {
-                        if !service.leader_check.is_leader() {
-                            info!("Skipping partition maintenance (not leader)");
-                            continue;
-                        }
-                        info!("Running scheduled partition maintenance");
-                        // Note: chat partition management is handled by ChatPartitionManager
-                        if let Err(e) = service.run_audit_partition_maintenance().await {
-                            error!(error = %e, "Scheduled audit partition maintenance failed");
-                        }
                     }
                     _ = cleanup_interval.tick() => {
                         if !service.leader_check.is_leader() {

@@ -89,6 +89,9 @@ pub struct Services {
     /// Wrapped in `Arc<Mutex<Option<...>>>` so `Services` remains `Clone`.
     /// Take the handle out of the `Option` to join it on shutdown.
     pub settings_listen_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Cache invalidation listener task handle (joined on shutdown).
+    pub cache_invalidation_listener_task:
+        Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Audit flush handle for graceful shutdown of audit logging
     pub audit_flush_handle: Arc<tokio::sync::Mutex<Option<AuditFlushHandle>>>,
     /// Cancellation token for the provider invalidation listener.
@@ -195,6 +198,7 @@ pub async fn init_services(
     config: &Config,
     redis_handles: Option<RedisHandles>,
     cache_invalidation: Arc<CacheInvalidationService>,
+    cache_invalidation_listener_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 ) -> Result<Services, anyhow::Error> {
     info!("Initializing services...");
 
@@ -451,7 +455,9 @@ pub async fn init_services(
     // Initialize CacheManager and start cross-replica invalidation listener
     let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
         .with_username_cache(Arc::new(username_cache.clone()));
-    cache_manager.start_invalidation_listener(&cache_invalidation);
+    let cache_invalidation_listener_task_handle =
+        cache_manager.start_invalidation_listener(&cache_invalidation);
+    *cache_invalidation_listener_task.lock().await = Some(cache_invalidation_listener_task_handle);
     info!("CacheManager initialized with invalidation listener");
 
     // Initialize OAuth2 service (optional - requires OAuth2 provider config).
@@ -615,6 +621,7 @@ pub async fn init_services(
         redis_client: redis_handles.as_ref().map(|h| h.client.clone()),
         settings_cancel,
         settings_listen_task: Arc::new(tokio::sync::Mutex::new(Some(settings_listen_task))),
+        cache_invalidation_listener_task,
         audit_flush_handle: Arc::new(tokio::sync::Mutex::new(Some(audit_flush_handle))),
         provider_invalidation_cancel,
         provider_invalidation_task,

@@ -5,6 +5,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, PgPool, Postgres};
 use std::time::Duration;
+use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 use crate::resilience::timeout::DB_QUERY_TIMEOUT;
@@ -14,7 +15,13 @@ use crate::Config;
 ///
 /// Note: Migrations should be run separately by the binary crate.
 pub async fn init_database(config: &Config) -> Result<PgPool> {
-    init_database_with_cancel(config, None).await
+    Ok(init_database_with_cancel(config, None).await?.pool)
+}
+
+#[derive(Debug)]
+pub struct DatabaseInit {
+    pub pool: PgPool,
+    pub metrics_task: Option<JoinHandle<()>>,
 }
 
 /// Initialize database connection pool with an optional `CancellationToken`
@@ -24,7 +31,7 @@ pub async fn init_database(config: &Config) -> Result<PgPool> {
 pub async fn init_database_with_cancel(
     config: &Config,
     cancel: Option<tokio_util::sync::CancellationToken>,
-) -> Result<PgPool> {
+) -> Result<DatabaseInit> {
     let database_url = config.database_url();
 
     // Log only host/port, not credentials
@@ -66,7 +73,7 @@ pub async fn init_database_with_cancel(
     // Spawn periodic task to update pool usage metrics.
     // Respects the CancellationToken for graceful shutdown.
     let pool_clone = pool.clone();
-    crate::spawn::spawn_monitored("db_pool_metrics", async move {
+    let metrics_task = crate::spawn::spawn_monitored("db_pool_metrics", async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(15));
         loop {
             if let Some(ref token) = cancel {
@@ -95,7 +102,10 @@ pub async fn init_database_with_cancel(
 
     info!("Database connected successfully");
 
-    Ok(pool)
+    Ok(DatabaseInit {
+        pool,
+        metrics_task: Some(metrics_task),
+    })
 }
 
 /// Acquire a dedicated connection for migration/DDL style work with
@@ -203,7 +213,8 @@ mod tests {
         };
         let pool = init_database_with_cancel(&config, None)
             .await
-            .expect("production pool initialization should succeed");
+            .expect("production pool initialization should succeed")
+            .pool;
 
         {
             let mut conn = acquire_unbounded_ddl_connection(&pool)

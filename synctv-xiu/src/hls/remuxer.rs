@@ -23,6 +23,7 @@ use crate::streamhub::{
         StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo,
     },
     send_event_with_backpressure_timeout, spawn_event_delivery_with_backpressure_timeout,
+    subscribe_with_rollback_on_timeout, SubscribeWithRollbackError,
     stream::StreamIdentifier,
     utils::Uuid,
 };
@@ -615,24 +616,17 @@ impl StreamHandler {
             stream_name: self.stream_name.clone(),
         };
 
-        let (event_result_sender, event_result_receiver) = tokio::sync::oneshot::channel();
-
-        let subscribe_event = StreamHubEvent::Subscribe {
+        let (data_receiver, _stat_sender) = subscribe_with_rollback_on_timeout(
+            &self.event_producer,
             identifier,
-            info: sub_info,
-            result_sender: event_result_sender,
-        };
-
-        self.event_producer
-            .try_send(subscribe_event)
-            .map_err(|_| HlsRemuxerError::StreamHubEventSendError)?;
-
-        let (data_receiver, _stat_sender) =
-            tokio::time::timeout(STREAM_SUBSCRIBE_TIMEOUT, event_result_receiver)
-                .await
-                .map_err(|_| HlsRemuxerError::SubscribeTimeout)?
-                .map_err(|_| HlsRemuxerError::SubscribeError)?
-                .map_err(|_| HlsRemuxerError::SubscribeError)?;
+            sub_info,
+            STREAM_SUBSCRIBE_TIMEOUT,
+        )
+        .await
+        .map_err(|err| match err {
+            SubscribeWithRollbackError::Timeout => HlsRemuxerError::SubscribeTimeout,
+            SubscribeWithRollbackError::StreamHub(_) => HlsRemuxerError::SubscribeError,
+        })?;
 
         let receiver = data_receiver
             .frame_receiver
@@ -1319,6 +1313,24 @@ mod tests {
             .expect("task should join")
             .expect_err("subscribe should time out when no result arrives");
         assert!(matches!(err, HlsRemuxerError::SubscribeTimeout));
+
+        let rollback = event_rx
+            .recv()
+            .await
+            .expect("timed-out subscribe should emit rollback unsubscribe");
+        match rollback {
+            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
+                StreamIdentifier::Rtmp {
+                    app_name,
+                    stream_name,
+                } => {
+                    assert_eq!(app_name, "live");
+                    assert_eq!(stream_name, "room/stream");
+                }
+                other => panic!("unexpected stream identifier: {other:?}"),
+            },
+            other => panic!("expected rollback unsubscribe event, got {other:?}"),
+        }
     }
 
     #[test]

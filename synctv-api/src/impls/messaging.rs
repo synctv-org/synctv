@@ -633,6 +633,28 @@ impl StreamMessageHandler {
             return Err(e);
         }
 
+        let membership_lookup = self
+            .room_service
+            .member_service()
+            .get_member(&self.room_id, &self.user_id)
+            .await;
+        if let Some(reason) = initial_realtime_join_denial_reason(&membership_lookup) {
+            self.skip_cleanup_user_left
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.connection_manager
+                .unregister(&self.connection_id)
+                .await;
+            return Err(reason.to_string());
+        }
+        if let Err(error) = membership_lookup {
+            tracing::warn!(
+                error = %error,
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                "Failed to re-validate membership during pre_join; allowing connection to continue until runtime checks can verify membership"
+            );
+        }
+
         Ok(())
     }
 
@@ -695,13 +717,35 @@ impl StreamMessageHandler {
             .map(|svc| svc.subscribe_events());
 
         // E6 fix: Fetch member data ONCE and pass to both methods
-        let member_data = self
+        let member_lookup = self
             .room_service
             .member_service()
             .get_member(&self.room_id, &self.user_id)
-            .await
-            .ok()
-            .flatten();
+            .await;
+        if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
+            tracing::info!(
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                reason,
+                "Aborting real-time join because membership was revoked before initialization completed"
+            );
+            self.skip_cleanup_user_left
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.cleanup(&room_id_str).await;
+            return Ok(());
+        }
+        let member_data = match member_lookup {
+            Ok(member) => member,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %self.room_id.as_str(),
+                    user_id = %self.user_id.as_str(),
+                    "Failed to fetch membership during initial real-time join; using fallback member payload"
+                );
+                None
+            }
+        };
 
         // Send initial user joined notification.
         // If the transport is already gone here, we still need to run cleanup()
@@ -1681,13 +1725,31 @@ impl StreamMessageHandler {
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
         // E6 fix: Fetch member data ONCE and pass to both methods
-        let member_data = self
+        let member_lookup = self
             .room_service
             .member_service()
             .get_member(&self.room_id, &self.user_id)
-            .await
-            .ok()
-            .flatten();
+            .await;
+        if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
+            self.skip_cleanup_user_left
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.connection_manager
+                .unregister(&self.connection_id)
+                .await;
+            return Err(reason.to_string());
+        }
+        let member_data = match member_lookup {
+            Ok(member) => member,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %self.room_id.as_str(),
+                    user_id = %self.user_id.as_str(),
+                    "Failed to fetch membership during start(); using fallback member payload"
+                );
+                None
+            }
+        };
 
         // Send initial UserJoined message to the client (mirrors run() behavior)
         let room_id_str = self.room_id.as_str().to_string();
@@ -3172,6 +3234,20 @@ fn membership_invalidation_requires_skip_cleanup(
     match member {
         Some(member) => member.status == synctv_core::models::MemberStatus::Banned,
         None => true,
+    }
+}
+
+#[inline]
+fn initial_realtime_join_denial_reason(
+    member_lookup: &std::result::Result<Option<synctv_core::models::RoomMember>, synctv_core::Error>,
+) -> Option<&'static str> {
+    match member_lookup {
+        Ok(Some(member)) if member.status == synctv_core::models::MemberStatus::Banned => {
+            Some("User is banned from this room")
+        }
+        Ok(Some(_)) => None,
+        Ok(None) => Some("Not a member of this room"),
+        Err(_) => None,
     }
 }
 
@@ -5084,6 +5160,40 @@ mod tests {
         assert!(!super::membership_invalidation_requires_skip_cleanup(Some(
             &member
         )));
+    }
+
+    #[test]
+    fn test_initial_realtime_join_denial_reason_rejects_missing_member() {
+        let lookup: std::result::Result<Option<synctv_core::models::RoomMember>, synctv_core::Error> =
+            Ok(None);
+
+        assert_eq!(
+            super::initial_realtime_join_denial_reason(&lookup),
+            Some("Not a member of this room")
+        );
+    }
+
+    #[test]
+    fn test_initial_realtime_join_denial_reason_rejects_banned_member() {
+        let mut member = synctv_core::models::RoomMember::new(
+            room_id(),
+            user_id(),
+            synctv_core::models::RoomRole::Member,
+        );
+        member.status = synctv_core::models::MemberStatus::Banned;
+        let lookup = Ok(Some(member));
+
+        assert_eq!(
+            super::initial_realtime_join_denial_reason(&lookup),
+            Some("User is banned from this room")
+        );
+    }
+
+    #[test]
+    fn test_initial_realtime_join_denial_reason_allows_lookup_errors_to_retry_later() {
+        let lookup = Err(synctv_core::Error::Internal("db unavailable".to_string()));
+
+        assert_eq!(super::initial_realtime_join_denial_reason(&lookup), None);
     }
 
     #[test]

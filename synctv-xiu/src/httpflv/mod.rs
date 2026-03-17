@@ -11,12 +11,13 @@ use crate::streamhub::{
         FrameData, FrameDataReceiver, NotifyInfo, StreamHubEvent, StreamHubEventSender,
         SubDataType, SubscribeType, SubscriberInfo,
     },
-    send_event_with_backpressure_timeout,
+    send_event_with_backpressure_timeout, subscribe_with_rollback_on_timeout,
+    SubscribeWithRollbackError,
     stream::StreamIdentifier,
     utils::Uuid,
 };
 use bytes::BytesMut;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 /// Capacity for the HTTP response channel (bounded to prevent OOM with slow clients).
@@ -254,28 +255,24 @@ impl HttpFlvSession {
             stream_name: self.stream_name.clone(),
         };
 
-        let (event_result_sender, event_result_receiver) = oneshot::channel();
-
-        let subscribe_event = StreamHubEvent::Subscribe {
+        let result = subscribe_with_rollback_on_timeout(
+            &self.event_producer,
             identifier,
-            info: sub_info,
-            result_sender: event_result_sender,
-        };
-
-        self.event_producer
-            .try_send(subscribe_event)
-            .map_err(|_| anyhow::anyhow!("Failed to send subscribe event"))?;
-
-        let result = tokio::time::timeout(STREAM_SUBSCRIBE_TIMEOUT, event_result_receiver)
-            .await
-            .map_err(|_| {
+            sub_info,
+            STREAM_SUBSCRIBE_TIMEOUT,
+        )
+        .await
+        .map_err(|err| match err {
+            SubscribeWithRollbackError::Timeout => {
                 anyhow::anyhow!(
                     "Subscribe timed out after {}s",
                     STREAM_SUBSCRIBE_TIMEOUT.as_secs()
                 )
-            })?
-            .map_err(|e| anyhow::anyhow!("Event result channel error: {e}"))?
-            .map_err(|e| anyhow::anyhow!("Subscribe failed: {e:?}"))?;
+            }
+            SubscribeWithRollbackError::StreamHub(e) => {
+                anyhow::anyhow!("Subscribe failed: {e:?}")
+            }
+        })?;
         self.data_receiver = Some(
             result
                 .0
@@ -793,5 +790,23 @@ mod tests {
             err.to_string().contains("Subscribe timed out"),
             "unexpected error: {err}"
         );
+
+        let rollback = event_rx
+            .recv()
+            .await
+            .expect("timed-out subscribe should emit rollback unsubscribe");
+        match rollback {
+            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
+                StreamIdentifier::Rtmp {
+                    app_name,
+                    stream_name,
+                } => {
+                    assert_eq!(app_name, "live");
+                    assert_eq!(stream_name, "room/stream");
+                }
+                other => panic!("unexpected stream identifier: {other:?}"),
+            },
+            other => panic!("expected rollback unsubscribe event, got {other:?}"),
+        }
     }
 }

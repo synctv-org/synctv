@@ -9,6 +9,7 @@ use super::{
 };
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 /// Minimum interval between lag-triggered full L1 flushes (Issue #32).
@@ -53,7 +54,10 @@ impl CacheManager {
     /// - `InvalidationMessage::All` -> `clear_all_l1()`
     ///
     /// Permission-related messages are ignored here (handled by `PermissionService`).
-    pub fn start_invalidation_listener(&self, invalidation_service: &CacheInvalidationService) {
+    pub fn start_invalidation_listener(
+        &self,
+        invalidation_service: &CacheInvalidationService,
+    ) -> JoinHandle<()> {
         let user_cache = self.user_cache.clone();
         let room_cache = self.room_cache.clone();
         let username_cache = self.username_cache.clone();
@@ -150,7 +154,7 @@ impl CacheManager {
                     }
                 }
             }
-        });
+        })
     }
 
     /// Clear all L1 caches (memory only)

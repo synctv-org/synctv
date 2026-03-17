@@ -97,6 +97,62 @@ pub async fn send_event_with_backpressure_timeout(
     }
 }
 
+pub enum SubscribeWithRollbackError {
+    Timeout,
+    StreamHub(StreamHubError),
+}
+
+impl From<StreamHubError> for SubscribeWithRollbackError {
+    fn from(error: StreamHubError) -> Self {
+        Self::StreamHub(error)
+    }
+}
+
+pub async fn subscribe_with_rollback_on_timeout(
+    sender: &StreamHubEventSender,
+    identifier: StreamIdentifier,
+    info: SubscriberInfo,
+    timeout: std::time::Duration,
+) -> Result<
+    (
+        define::DataReceiver,
+        Option<define::StatisticDataSender>,
+    ),
+    SubscribeWithRollbackError,
+> {
+    let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
+
+    send_event_with_backpressure_timeout(
+        sender,
+        StreamHubEvent::Subscribe {
+            identifier: identifier.clone(),
+            info: info.clone(),
+            result_sender,
+        },
+    )
+    .await?;
+
+    match tokio::time::timeout(timeout, result_receiver).await {
+        Ok(result) => result
+            .map_err(|_| StreamHubError {
+                value: StreamHubErrorValue::SendError,
+            })?
+            .map_err(SubscribeWithRollbackError::StreamHub),
+        Err(_) => {
+            if let Err(err) = send_event_with_backpressure_timeout(
+                sender,
+                StreamHubEvent::UnSubscribe { identifier, info },
+            )
+            .await
+            {
+                tracing::warn!("subscribe timeout rollback failed: {err}");
+            }
+
+            Err(SubscribeWithRollbackError::Timeout)
+        }
+    }
+}
+
 pub fn spawn_event_delivery_with_backpressure_timeout(
     sender: StreamHubEventSender,
     event: StreamHubEvent,

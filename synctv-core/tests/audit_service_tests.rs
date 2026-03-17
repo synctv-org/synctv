@@ -166,6 +166,7 @@ async fn test_audit_query_date_range() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_buffered_service_enqueues_without_error() {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
     let (service, _handle) = AuditService::new(pool);
@@ -189,6 +190,7 @@ async fn test_buffered_service_enqueues_without_error() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_unbuffered_service_dropped_count_zero() {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
     let service = AuditService::new_unbuffered(pool);
@@ -407,6 +409,7 @@ async fn test_log_stream_kicked_multiple_kicks_are_logged_separately() {
 // ========== S12: Buffer-full drops events ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_buffer_full_increments_dropped_count() {
     // Create a buffered service with a very small capacity (2)
     // The fake pool means the background flush task will fail to write to DB,

@@ -1680,6 +1680,41 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
 mod tests {
     use super::*;
 
+    struct AlwaysFailTokenBlacklistStore;
+
+    #[async_trait]
+    impl TokenBlacklistStore for AlwaysFailTokenBlacklistStore {
+        async fn is_blacklisted_checked(&self, _key: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> Result<()> {
+            Err(crate::Error::Internal(
+                "test primary blacklist failure".to_string(),
+            ))
+        }
+
+        async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
+            None
+        }
+
+        async fn get_family_revoked_at_checked(&self, _key: &str) -> Result<Option<i64>> {
+            Ok(None)
+        }
+
+        async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) -> Result<()> {
+            Err(crate::Error::Internal(
+                "test primary family failure".to_string(),
+            ))
+        }
+    }
+
+    fn expired_instant() -> Instant {
+        Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("expired instant should be representable")
+    }
+
     // Helper: create a TieredTokenBlacklistStore with no Redis and a lazy PG pool
     // that won't be contacted (for L1-only tests).
     // Uses a very short acquire_timeout so tests that accidentally hit PG
@@ -1869,7 +1904,10 @@ mod tests {
         store.blacklist(key, 1).await.unwrap();
         assert!(store.is_blacklisted(key).await);
 
-        tokio::time::sleep(Duration::from_millis(1100)).await;
+        store
+            .jti_blacklist
+            .insert(key.to_string(), expired_instant())
+            .await;
         assert!(
             !store.is_blacklisted(key).await,
             "Should no longer be blacklisted after TTL expiry"
@@ -1923,13 +1961,14 @@ mod tests {
         store.blacklist(key, 3600).await.unwrap();
         assert!(store.is_blacklisted(key).await);
 
-        // Wait for original TTL (1s) but not new TTL (3600s)
-        tokio::time::sleep(Duration::from_millis(1100)).await;
-
-        // Should still be blacklisted because TTL was overwritten
+        let expiry = store
+            .jti_blacklist
+            .get(key)
+            .await
+            .expect("overwrite should leave an expiry entry");
         assert!(
-            store.is_blacklisted(key).await,
-            "Should still be blacklisted after TTL overwrite"
+            expiry > Instant::now() + Duration::from_secs(3000),
+            "TTL overwrite should extend the stored expiry"
         );
     }
 
@@ -1943,8 +1982,10 @@ mod tests {
         store.set_family_revoked(key, timestamp, 1).await.unwrap();
         assert_eq!(store.get_family_revoked_at(key).await, Some(timestamp));
 
-        // Wait for expiry
-        tokio::time::sleep(Duration::from_millis(1100)).await;
+        store
+            .family_revoked
+            .insert(key.to_string(), (timestamp, expired_instant()))
+            .await;
         assert!(
             store.get_family_revoked_at(key).await.is_none(),
             "Family revocation should expire after TTL"
@@ -2103,7 +2144,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fallback_ttl_expiry() {
-        let primary = Arc::new(make_in_memory_store()) as Arc<dyn TokenBlacklistStore>;
+        let primary = Arc::new(AlwaysFailTokenBlacklistStore) as Arc<dyn TokenBlacklistStore>;
         let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
 
         let key = "jti:fallback_ttl_test";
@@ -2111,8 +2152,11 @@ mod tests {
         fallback.blacklist(key, 1).await.unwrap();
         assert!(fallback.is_blacklisted(key).await);
 
-        // Wait for expiry
-        tokio::time::sleep(Duration::from_millis(1100)).await;
+        fallback
+            .fallback
+            .jti_blacklist
+            .insert(key.to_string(), expired_instant())
+            .await;
 
         assert!(
             !fallback.is_blacklisted(key).await,
@@ -2122,20 +2166,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_fallback_family_ttl_expiry() {
-        let primary = Arc::new(make_in_memory_store()) as Arc<dyn TokenBlacklistStore>;
+        let primary = Arc::new(AlwaysFailTokenBlacklistStore) as Arc<dyn TokenBlacklistStore>;
         let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
 
         let key = "family:fallback_ttl_test";
         let timestamp = 1700000000_i64;
 
-        fallback
-            .set_family_revoked(key, timestamp, 1)
-            .await
-            .unwrap();
+        let result = fallback.set_family_revoked(key, timestamp, 1).await;
+        assert!(result.is_err());
         assert_eq!(fallback.get_family_revoked_at(key).await, Some(timestamp));
 
-        // Wait for expiry
-        tokio::time::sleep(Duration::from_millis(1100)).await;
+        fallback
+            .fallback
+            .family_revoked
+            .insert(key.to_string(), (timestamp, expired_instant()))
+            .await;
 
         assert!(
             fallback.get_family_revoked_at(key).await.is_none(),

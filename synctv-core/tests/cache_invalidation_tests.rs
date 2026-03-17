@@ -92,6 +92,9 @@ async fn test_cache_invalidation_broadcast_received() {
             panic!("Timeout waiting for invalidation message");
         }
     }
+
+    service1.stop().await;
+    service2.stop().await;
 }
 
 #[tokio::test]
@@ -133,6 +136,9 @@ async fn test_cache_invalidation_all_message() {
             panic!("Timeout waiting for invalidation message");
         }
     }
+
+    service1.stop().await;
+    service2.stop().await;
 }
 
 #[tokio::test]
@@ -176,6 +182,9 @@ async fn test_cache_invalidation_room_permission() {
             panic!("Timeout waiting for invalidation message");
         }
     }
+
+    service1.stop().await;
+    service2.stop().await;
 }
 
 #[tokio::test]
@@ -239,6 +248,9 @@ async fn test_cache_invalidation_multiple_messages() {
 
     let messages = received_messages.read().await;
     assert_eq!(messages.len(), 3, "Should receive 3 messages");
+
+    service1.stop().await;
+    service2.stop().await;
 }
 
 #[tokio::test]
@@ -273,6 +285,8 @@ async fn test_cache_invalidation_without_redis() {
         .invalidate_all()
         .await
         .expect("Failed to invalidate all (should be no-op)");
+
+    service.stop().await;
 }
 
 #[tokio::test]
@@ -383,6 +397,9 @@ async fn test_cache_invalidation_playback_state() {
             panic!("Timeout waiting for invalidation message");
         }
     }
+
+    service1.stop().await;
+    service2.stop().await;
 }
 
 #[tokio::test]
@@ -431,6 +448,9 @@ async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcast
             panic!("Timeout waiting for shared-conn invalidation message");
         }
     }
+
+    service1.stop().await;
+    service2.stop().await;
 }
 
 #[tokio::test]

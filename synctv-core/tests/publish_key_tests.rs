@@ -32,6 +32,7 @@ fn create_service_with_short_ttl() -> PublishKeyService {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_validate_expired_token_rejected() {
     // Create a service with 0-hour TTL -- tokens expire at creation time
     let service = create_service_with_short_ttl();
@@ -62,6 +63,7 @@ async fn test_validate_expired_token_rejected() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_first_claim_succeeds() {
     let store = InMemoryJtiStore::new(300);
     let result = store.try_claim("jti_1", 300).await.unwrap();
@@ -69,6 +71,7 @@ async fn test_in_memory_jti_store_first_claim_succeeds() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_duplicate_returns_false() {
     let store = InMemoryJtiStore::new(300);
 
@@ -80,6 +83,7 @@ async fn test_in_memory_jti_store_duplicate_returns_false() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_different_jti_independent() {
     let store = InMemoryJtiStore::new(300);
 
@@ -91,6 +95,7 @@ async fn test_in_memory_jti_store_different_jti_independent() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_is_claimed() {
     let store = InMemoryJtiStore::new(300);
 
@@ -111,6 +116,7 @@ async fn test_in_memory_jti_store_is_claimed() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_publish_key_single_use() {
     let service = create_service();
     let room_id = RoomId::new();
@@ -141,6 +147,7 @@ async fn test_publish_key_single_use() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_publish_key_room_mismatch_does_not_consume_token() {
     let service = create_service();
     let room_id = RoomId::new();
@@ -172,6 +179,7 @@ async fn test_publish_key_room_mismatch_does_not_consume_token() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_publish_key_user_validator_failure_does_not_consume_token() {
     let service = create_service();
     let room_id = RoomId::new();

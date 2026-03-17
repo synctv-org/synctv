@@ -18,7 +18,7 @@
 //! - Tickets are single-use and expire quickly (30 seconds by default)
 
 use axum::{
-    extract::{Path, Query, State, WebSocketUpgrade},
+    extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade},
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
@@ -226,6 +226,8 @@ fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<Stri
 fn validate_websocket_origin(
     headers: &HeaderMap,
     allowed_origins: &[String],
+    direct_peer_ip: Option<std::net::IpAddr>,
+    trusted_proxies: &[String],
 ) -> Result<(), AppError> {
     let Some(origin) = headers.get(header::ORIGIN) else {
         // Non-browser clients typically omit Origin. Keep supporting them.
@@ -255,9 +257,15 @@ fn validate_websocket_origin(
         .get(header::HOST)
         .and_then(|host| host.to_str().ok())
     {
-        let forwarded_proto = headers
-            .get("x-forwarded-proto")
-            .and_then(|value| value.to_str().ok());
+        let forwarded_proto = direct_peer_ip.and_then(|peer_ip| {
+            if is_trusted_proxy(peer_ip, trusted_proxies) {
+                headers
+                    .get("x-forwarded-proto")
+                    .and_then(|value| value.to_str().ok())
+            } else {
+                None
+            }
+        });
         if same_origin_as_host(&parsed_origin, host, forwarded_proto) {
             return Ok(());
         }
@@ -270,6 +278,20 @@ fn validate_websocket_origin(
     Err(AppError::forbidden(
         "WebSocket Origin is not allowed for this endpoint",
     ))
+}
+
+fn is_trusted_proxy(peer_ip: std::net::IpAddr, trusted_proxies: &[String]) -> bool {
+    trusted_proxies.iter().any(|proxy| {
+        proxy
+            .parse::<ipnet::IpNet>()
+            .map(|network| network.contains(&peer_ip))
+            .or_else(|_| {
+                proxy
+                    .parse::<std::net::IpAddr>()
+                    .map(|proxy_ip| proxy_ip == peer_ip)
+            })
+            .unwrap_or(false)
+    })
 }
 
 fn same_origin_as_host(
@@ -734,12 +756,17 @@ pub async fn websocket_handler(
     Path(room_id): Path<String>,
     Query(query): Query<WsQuery>,
     headers: HeaderMap,
+    connect_info: ConnectInfo<std::net::SocketAddr>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
     validate_websocket_runtime_dependencies(&state)?;
 
     let prepared = run_websocket_handshake_with_timeout(prepare_websocket_upgrade(
-        &state, &room_id, &query, &headers,
+        &state,
+        &room_id,
+        &query,
+        &headers,
+        connect_info.0.ip(),
     ))
     .await?;
     let rid = prepared.room_id.clone();
@@ -878,8 +905,14 @@ async fn prepare_websocket_upgrade(
     room_id: &str,
     query: &WsQuery,
     headers: &HeaderMap,
+    direct_peer_ip: std::net::IpAddr,
 ) -> Result<PreparedWebSocketUpgrade, AppError> {
-    validate_websocket_origin(headers, &state.config.server.cors_allowed_origins)?;
+    validate_websocket_origin(
+        headers,
+        &state.config.server.cors_allowed_origins,
+        Some(direct_peer_ip),
+        &state.config.server.trusted_proxies,
+    )?;
 
     let rid = crate::room_id_validation::parse_room_id(room_id)
         .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
@@ -1304,7 +1337,8 @@ mod tests {
     #[test]
     fn test_validate_websocket_origin_allows_missing_origin_for_non_browser_clients() {
         let headers = HeaderMap::new();
-        validate_websocket_origin(&headers, &[]).expect("missing origin should be allowed");
+        validate_websocket_origin(&headers, &[], None, &[])
+            .expect("missing origin should be allowed");
     }
 
     #[test]
@@ -1313,9 +1347,13 @@ mod tests {
         headers.insert(header::HOST, "app.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
 
-        validate_websocket_origin(&headers, &["https://app.example.com".to_string()]).expect(
-            "same-origin browser websocket should only be allowed when explicitly configured",
-        );
+        validate_websocket_origin(
+            &headers,
+            &["https://app.example.com".to_string()],
+            None,
+            &[],
+        )
+        .expect("same-origin browser websocket should only be allowed when explicitly configured");
     }
 
     #[test]
@@ -1324,9 +1362,8 @@ mod tests {
         headers.insert(header::HOST, "app.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
 
-        validate_websocket_origin(&headers, &[]).expect(
-            "same-origin browser websocket should be allowed without explicit CORS allowlist",
-        );
+        validate_websocket_origin(&headers, &[], None, &[])
+            .expect("same-origin browser websocket should be allowed without explicit CORS allowlist");
     }
 
     #[test]
@@ -1335,8 +1372,13 @@ mod tests {
         headers.insert(header::HOST, "api.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
 
-        validate_websocket_origin(&headers, &["https://app.example.com".to_string()])
-            .expect("configured frontend origin should be allowed");
+        validate_websocket_origin(
+            &headers,
+            &["https://app.example.com".to_string()],
+            None,
+            &[],
+        )
+        .expect("configured frontend origin should be allowed");
     }
 
     #[test]
@@ -1346,9 +1388,30 @@ mod tests {
         headers.insert(header::ORIGIN, "http://app.example.com".parse().unwrap());
         headers.insert("x-forwarded-proto", "https".parse().unwrap());
 
-        let err = validate_websocket_origin(&headers, &[])
+        let err = validate_websocket_origin(
+            &headers,
+            &[],
+            Some("127.0.0.1".parse().unwrap()),
+            &["127.0.0.1".to_string()],
+        )
             .expect_err("same host with proxy-reported https must reject an http origin");
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_validate_websocket_origin_ignores_forwarded_proto_from_untrusted_peer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "app.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "http://app.example.com".parse().unwrap());
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+
+        validate_websocket_origin(
+            &headers,
+            &[],
+            Some("198.51.100.10".parse().unwrap()),
+            &["127.0.0.1".to_string()],
+        )
+        .expect("untrusted peers must not influence same-origin checks via x-forwarded-proto");
     }
 
     #[test]
@@ -1364,7 +1427,7 @@ mod tests {
         headers.insert(header::HOST, "api.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "https://evil.example.com".parse().unwrap());
 
-        let err = validate_websocket_origin(&headers, &[])
+        let err = validate_websocket_origin(&headers, &[], None, &[])
             .expect_err("unconfigured cross-origin websocket must fail closed");
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
         assert!(err.message.contains("Origin"));
@@ -1376,7 +1439,7 @@ mod tests {
         headers.insert(header::HOST, "api.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "null".parse().unwrap());
 
-        let err = validate_websocket_origin(&headers, &[])
+        let err = validate_websocket_origin(&headers, &[], None, &[])
             .expect_err("null origin should not be trusted");
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     }

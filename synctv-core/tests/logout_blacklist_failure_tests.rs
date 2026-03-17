@@ -8,6 +8,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use synctv_core::service::{
     FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, TokenBlacklistStore,
 };
@@ -241,23 +242,50 @@ async fn test_concurrent_blacklist_failures_all_return_errors() {
 
 #[tokio::test]
 async fn test_blacklist_ttl_passed_correctly() {
-    // This test verifies that the TTL is correctly passed to the blacklist store
-    // which is important for logout to properly expire tokens
+    struct RecordingTtlStore {
+        ttl_secs: AtomicU64,
+    }
 
-    let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
+    #[async_trait::async_trait]
+    impl TokenBlacklistStore for RecordingTtlStore {
+        async fn is_blacklisted(&self, _key: &str) -> bool {
+            false
+        }
 
-    // Blacklist with a short TTL
+        async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
+            Ok(false)
+        }
+
+        async fn blacklist(&self, _key: &str, ttl_secs: u64) -> synctv_core::Result<()> {
+            self.ttl_secs.store(ttl_secs, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
+            None
+        }
+
+        async fn set_family_revoked(
+            &self,
+            _key: &str,
+            _timestamp: i64,
+            _ttl_secs: u64,
+        ) -> synctv_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    let store = RecordingTtlStore {
+        ttl_secs: AtomicU64::new(0),
+    };
+
     let short_ttl = 1u64;
     store.blacklist("jti:short_ttl", short_ttl).await.unwrap();
-    assert!(store.is_blacklisted("jti:short_ttl").await);
 
-    // Wait for TTL to expire
-    tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
-
-    // Token should no longer be blacklisted
-    assert!(
-        !store.is_blacklisted("jti:short_ttl").await,
-        "Token should be removed from blacklist after TTL expires"
+    assert_eq!(
+        store.ttl_secs.load(Ordering::SeqCst),
+        short_ttl,
+        "Blacklist should pass the requested TTL through to the store"
     );
 }
 

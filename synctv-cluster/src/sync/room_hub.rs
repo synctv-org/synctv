@@ -50,44 +50,6 @@ const fn requires_reliable_target_delivery(event: &ClusterEvent) -> bool {
     event.is_critical() || matches!(event, ClusterEvent::WebRTCSignaling { .. })
 }
 
-fn block_on_reliable_delivery(
-    sender: MessageSender,
-    event: ClusterEvent,
-    room_id: RoomId,
-    connection_id: ConnectionId,
-) -> bool {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        if matches!(
-            handle.runtime_flavor(),
-            tokio::runtime::RuntimeFlavor::MultiThread
-        ) {
-            tokio::task::block_in_place(|| {
-                handle.block_on(deliver_reliable_event(
-                    sender,
-                    event,
-                    room_id,
-                    connection_id,
-                ))
-            })
-        } else {
-            warn!(
-                room_id = %room_id.as_str(),
-                connection_id = %connection_id,
-                "Reliable targeted delivery cannot block on a current-thread Tokio runtime; falling back to async retry"
-            );
-            try_spawn(deliver_reliable_event(
-                sender,
-                event,
-                room_id,
-                connection_id,
-            ))
-            .is_some()
-        }
-    } else {
-        false
-    }
-}
-
 async fn deliver_reliable_event(
     sender: MessageSender,
     event: ClusterEvent,
@@ -116,6 +78,33 @@ async fn deliver_reliable_event(
             );
             false
         }
+    }
+}
+
+fn block_on_reliable_delivery(
+    sender: MessageSender,
+    event: ClusterEvent,
+    room_id: RoomId,
+    connection_id: ConnectionId,
+) -> bool {
+    let delivery = deliver_reliable_event(sender, event, room_id, connection_id);
+
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => match handle.runtime_flavor() {
+            tokio::runtime::RuntimeFlavor::MultiThread => {
+                #[allow(clippy::disallowed_methods)]
+                tokio::task::block_in_place(|| handle.block_on(delivery))
+            }
+            tokio::runtime::RuntimeFlavor::CurrentThread => {
+                try_spawn(delivery).is_some()
+            }
+            _ => try_spawn(delivery).is_some(),
+        },
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map(|runtime| runtime.block_on(delivery))
+            .unwrap_or(false),
     }
 }
 
@@ -151,6 +140,18 @@ impl Clone for Subscriber {
             consecutive_drops: self.consecutive_drops.clone(),
         }
     }
+}
+
+enum TargetedDelivery {
+    Delivered,
+    Dropped,
+    Closed(ConnectionId),
+    Retry {
+        sender: MessageSender,
+        event: ClusterEvent,
+        room_id: RoomId,
+        connection_id: ConnectionId,
+    },
 }
 
 /// In-memory hub for routing messages to connected clients in rooms
@@ -861,71 +862,81 @@ impl RoomMessageHub {
     ///
     /// Used for targeted delivery (e.g., WebRTC signaling to a specific peer).
     /// Returns 1 if sent, 0 if the connection was not found or the channel was full.
-    pub fn broadcast_to_connection(
+    pub async fn broadcast_to_connection(
         &self,
         room_id: &RoomId,
         connection_id: &str,
         event: ClusterEvent,
     ) -> usize {
-        let mut result = 0;
-        let mut failed_connection: Option<ConnectionId> = None;
         let reliable_target_delivery = requires_reliable_target_delivery(&event);
-
-        if let Some(subscribers) = self.rooms.get(room_id) {
-            if let Some(subscriber) = subscribers.get(connection_id) {
-                let event_type = event.event_type().to_string();
-                match subscriber.sender.try_send(event.clone()) {
-                    Ok(()) => {
-                        debug!(
-                            room_id = %room_id.as_str(),
-                            connection_id = %connection_id,
-                            event_type = %event_type,
-                            "Event sent to specific connection"
-                        );
-                        result = 1;
-                    }
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        if reliable_target_delivery {
-                            let delivered = block_on_reliable_delivery(
-                                subscriber.sender.clone(),
-                                event,
-                                room_id.clone(),
-                                subscriber.connection_id.clone(),
-                            );
-                            if delivered {
-                                result = 1;
-                            } else {
-                                failed_connection = Some(subscriber.connection_id.clone());
-                            }
-                        } else {
-                            warn!(
+        let delivery = self
+            .rooms
+            .get(room_id)
+            .and_then(|subscribers| {
+                subscribers.get(connection_id).map(|subscriber| {
+                    let event_type = event.event_type().to_string();
+                    match subscriber.sender.try_send(event.clone()) {
+                        Ok(()) => {
+                            debug!(
                                 room_id = %room_id.as_str(),
                                 connection_id = %connection_id,
                                 event_type = %event_type,
-                                "Subscriber channel full, dropping targeted event"
+                                "Event sent to specific connection"
                             );
+                            TargetedDelivery::Delivered
+                        }
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            if reliable_target_delivery {
+                                TargetedDelivery::Retry {
+                                    sender: subscriber.sender.clone(),
+                                    event,
+                                    room_id: room_id.clone(),
+                                    connection_id: subscriber.connection_id.clone(),
+                                }
+                            } else {
+                                warn!(
+                                    room_id = %room_id.as_str(),
+                                    connection_id = %connection_id,
+                                    event_type = %event_type,
+                                    "Subscriber channel full, dropping targeted event"
+                                );
+                                TargetedDelivery::Dropped
+                            }
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            warn!(
+                                room_id = %room_id.as_str(),
+                                connection_id = %connection_id,
+                                "Subscriber channel closed for targeted event"
+                            );
+                            TargetedDelivery::Closed(subscriber.connection_id.clone())
                         }
                     }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        warn!(
-                            room_id = %room_id.as_str(),
-                            connection_id = %connection_id,
-                            "Subscriber channel closed for targeted event"
-                        );
-                        failed_connection = Some(subscriber.connection_id.clone());
-                    }
+                })
+            })
+            .unwrap_or(TargetedDelivery::Dropped);
+
+        match delivery {
+            TargetedDelivery::Delivered => 1,
+            TargetedDelivery::Dropped => 0,
+            TargetedDelivery::Closed(conn_id) => {
+                self.unsubscribe(&conn_id);
+                0
+            }
+            TargetedDelivery::Retry {
+                sender,
+                event,
+                room_id,
+                connection_id,
+            } => {
+                if deliver_reliable_event(sender, event, room_id, connection_id.clone()).await {
+                    1
+                } else {
+                    self.unsubscribe(connection_id.as_str());
+                    0
                 }
             }
         }
-        // Drop the DashMap read guard above before calling unsubscribe(),
-        // which takes a write lock, to avoid deadlock on the same shard.
-
-        // Clean up closed connection
-        if let Some(conn_id) = failed_connection {
-            self.unsubscribe(&conn_id);
-        }
-
-        result
     }
 
     /// Get the number of subscribers in a room

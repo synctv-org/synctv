@@ -1863,7 +1863,8 @@ impl RedisPubSub {
                 );
                 let sent = self
                     .message_hub
-                    .broadcast_to_connection(&room_id, &target_conn, event);
+                    .broadcast_to_connection(&room_id, &target_conn, event)
+                    .await;
                 debug!(
                     room_id = %room_id.as_str(),
                     target_connection = %target_conn,

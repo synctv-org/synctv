@@ -17,7 +17,7 @@ pub type RedisConnectionManager = redis::aio::ConnectionManager;
 pub type RedisConnectionHandle = Arc<RwLock<redis::aio::ConnectionManager>>;
 static REDIS_START_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
-const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 8;
+const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 4;
 const MIN_REDIS_ACTIVE_PARALLELISM: usize = 1;
 const REDIS_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_REDIS_ACTIVE_PARALLELISM";
 static REDIS_ACTIVE_SERIALIZER: LazyLock<Semaphore> =
@@ -406,12 +406,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn redis_active_parallelism_defaults_to_redlock_friendly_limit() {
+    fn redis_active_parallelism_defaults_to_conservative_live_limit() {
         assert_eq!(
             redis_active_parallelism_from(None),
             DEFAULT_REDIS_ACTIVE_PARALLELISM
         );
-        assert_eq!(DEFAULT_REDIS_ACTIVE_PARALLELISM, 8);
+        assert_eq!(DEFAULT_REDIS_ACTIVE_PARALLELISM, 4);
     }
 
     #[test]

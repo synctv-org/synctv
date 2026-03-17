@@ -19,18 +19,28 @@ const STREAM_MESSAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 const STREAM_HUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-async fn next_packet_with_timeout(
-    stream: &mut tonic::Streaming<super::proto::RtmpPacket>,
-) -> anyhow::Result<Option<super::proto::RtmpPacket>> {
-    tokio::time::timeout(STREAM_MESSAGE_TIMEOUT, stream.message())
+async fn timeout_stream_message<T, E>(
+    timeout: std::time::Duration,
+    future: impl std::future::Future<Output = Result<Option<T>, E>>,
+) -> anyhow::Result<Option<T>>
+where
+    E: std::fmt::Display,
+{
+    tokio::time::timeout(timeout, future)
         .await
         .map_err(|_| {
             anyhow::anyhow!(
                 "No gRPC relay frame received for {}s, stream appears dead",
-                STREAM_MESSAGE_TIMEOUT.as_secs()
+                timeout.as_secs()
             )
         })?
         .map_err(|e| anyhow::anyhow!("Stream error: {e}"))
+}
+
+async fn next_packet_with_timeout(
+    stream: &mut tonic::Streaming<super::proto::RtmpPacket>,
+) -> anyhow::Result<Option<super::proto::RtmpPacket>> {
+    timeout_stream_message(STREAM_MESSAGE_TIMEOUT, stream.message()).await
 }
 
 async fn send_frame_with_backpressure(
@@ -773,49 +783,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_next_packet_with_timeout_fails_when_stream_stalls() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener should bind");
-        let addr = listener.local_addr().expect("listener addr");
-
-        let server = tokio::spawn(async move {
-            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-            let svc = tonic::transport::Server::builder()
-                .add_service(StreamRelayServiceServer::new(TestStalledStreamRelayService));
-            svc.serve_with_incoming(incoming)
-                .await
-                .expect("test grpc server should run");
-        });
-
-        let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
-            .expect("valid endpoint")
-            .connect()
-            .await
-            .expect("client should connect");
-        let mut client = StreamRelayServiceClient::new(endpoint);
-        let response = client
-            .pull_rtmp_stream(Request::new(PullRtmpStreamRequest {
-                room_id: "room".to_string(),
-                media_id: "media".to_string(),
-                is_reconnect: false,
-            }))
-            .await
-            .expect("stream should open");
-
-        let mut stream = response.into_inner();
         let err = tokio::time::timeout(
             TEST_STREAM_MESSAGE_TIMEOUT + Duration::from_secs(1),
-            async {
-                tokio::time::timeout(TEST_STREAM_MESSAGE_TIMEOUT, stream.message())
-                    .await
-                    .map_err(|_| {
-                        anyhow::anyhow!(
-                            "No gRPC relay frame received for {}ms, stream appears dead",
-                            TEST_STREAM_MESSAGE_TIMEOUT.as_millis()
-                        )
-                    })?
-                    .map_err(|e| anyhow::anyhow!("Stream error: {e}"))
-            },
+            timeout_stream_message(TEST_STREAM_MESSAGE_TIMEOUT, async {
+                tokio::time::sleep(TEST_STREAM_MESSAGE_TIMEOUT + Duration::from_secs(1)).await;
+                Ok::<Option<super::super::proto::RtmpPacket>, tonic::Status>(None)
+            }),
         )
         .await
         .expect("helper should return timeout error")
@@ -824,53 +797,5 @@ mod tests {
             err.to_string().contains("stream appears dead"),
             "unexpected error: {err}"
         );
-
-        server.abort();
-        let _ = server.await;
-    }
-
-    struct TestStalledStreamRelayService;
-
-    #[tonic::async_trait]
-    impl super::super::proto::stream_relay_service_server::StreamRelayService
-        for TestStalledStreamRelayService
-    {
-        type PullRtmpStreamStream = std::pin::Pin<
-            Box<
-                dyn tokio_stream::Stream<
-                        Item = Result<super::super::proto::RtmpPacket, tonic::Status>,
-                    > + Send,
-            >,
-        >;
-
-        async fn pull_rtmp_stream(
-            &self,
-            _request: Request<PullRtmpStreamRequest>,
-        ) -> Result<Response<Self::PullRtmpStreamStream>, tonic::Status> {
-            let pending_stream = stream::once(async {
-                tokio::time::sleep(TEST_STREAM_MESSAGE_TIMEOUT + Duration::from_secs(1)).await;
-                Ok(super::super::proto::RtmpPacket {
-                    data: bytes::Bytes::new(),
-                    timestamp: 0,
-                    frame_type: 1,
-                })
-            })
-            .boxed();
-            Ok(Response::new(Box::pin(pending_stream)))
-        }
-
-        async fn get_hls_playlist(
-            &self,
-            _request: Request<super::super::proto::GetHlsPlaylistRequest>,
-        ) -> Result<Response<super::super::proto::GetHlsPlaylistResponse>, tonic::Status> {
-            Err(tonic::Status::unimplemented("not used in test"))
-        }
-
-        async fn get_hls_segment(
-            &self,
-            _request: Request<super::super::proto::GetHlsSegmentRequest>,
-        ) -> Result<Response<super::super::proto::GetHlsSegmentResponse>, tonic::Status> {
-            Err(tonic::Status::unimplemented("not used in test"))
-        }
     }
 }

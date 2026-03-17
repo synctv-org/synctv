@@ -25,6 +25,11 @@ fn create_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-batch-tests-long-enough-1234567890").unwrap()
 }
 
+fn create_lazy_pool() -> PgPool {
+    PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused")
+        .expect("lazy pool construction should not connect")
+}
+
 fn create_user_service(pool: PgPool) -> UserService {
     let jwt = create_jwt_service();
     let l2 = Arc::new(NoopCacheL2);
@@ -97,10 +102,8 @@ async fn batch_ban_users_succeeds() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn batch_ban_users_exceeds_limit_fails() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(create_lazy_pool());
 
     // The size limit check happens before any DB operations, so we don't need
     // to create real users -- fake IDs are enough to trigger the validation.
@@ -201,10 +204,8 @@ async fn batch_ban_users_nonexistent_user_fails() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn batch_ban_users_empty_list_fails() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(create_lazy_pool());
 
     let result = service.batch_ban_users(&[]).await;
     assert!(result.is_err(), "Batch ban should fail with empty list");
@@ -239,10 +240,8 @@ async fn batch_delete_users_succeeds() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn batch_delete_users_exceeds_limit_fails() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(create_lazy_pool());
 
     // The size limit check happens before any DB operations, so we don't need
     // to create real users -- fake IDs are enough to trigger the validation.
@@ -259,10 +258,8 @@ async fn batch_delete_users_exceeds_limit_fails() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn batch_delete_users_empty_list_fails() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(create_lazy_pool());
 
     let result = service.batch_delete_users(&[]).await;
     assert!(result.is_err(), "Batch delete should fail with empty list");

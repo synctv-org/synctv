@@ -100,7 +100,7 @@ async fn test_ice_candidate_routing() {
     };
 
     // Broadcast to specific connection
-    let sent = hub.broadcast_to_connection(&room, "conn2", event);
+    let sent = hub.broadcast_to_connection(&room, "conn2", event).await;
     assert_eq!(sent, 1, "Should send to exactly one connection");
 
     // user2 should receive
@@ -141,7 +141,7 @@ async fn test_ice_candidate_routing_supports_conn_id_only_target() {
         timestamp: chrono::Utc::now(),
     };
 
-    let sent = hub.broadcast_to_connection(&room, "conn2", event);
+    let sent = hub.broadcast_to_connection(&room, "conn2", event).await;
     assert_eq!(
         sent, 1,
         "conn_id-only signaling should still target one connection"
@@ -260,7 +260,7 @@ async fn test_sdp_offer_answer_flow() {
         data: "OFFER_SDP".to_string(),
         timestamp: chrono::Utc::now(),
     };
-    hub.broadcast_to_connection(&room, "conn2", offer);
+    hub.broadcast_to_connection(&room, "conn2", offer).await;
 
     // Callee receives offer
     let received = tokio::time::timeout(Duration::from_millis(100), rx_callee.recv()).await;
@@ -276,7 +276,7 @@ async fn test_sdp_offer_answer_flow() {
         data: "ANSWER_SDP".to_string(),
         timestamp: chrono::Utc::now(),
     };
-    hub.broadcast_to_connection(&room, "conn1", answer);
+    hub.broadcast_to_connection(&room, "conn1", answer).await;
 
     // Caller receives answer
     let received = tokio::time::timeout(Duration::from_millis(100), rx_caller.recv()).await;
@@ -500,7 +500,7 @@ async fn test_multi_user_signaling() {
         data: "ICE_DATA".to_string(),
         timestamp: chrono::Utc::now(),
     };
-    hub.broadcast_to_connection(&room, "conn2", event);
+    hub.broadcast_to_connection(&room, "conn2", event).await;
 
     // Only user2 should receive
     let r2 = tokio::time::timeout(Duration::from_millis(50), rx2.recv()).await;

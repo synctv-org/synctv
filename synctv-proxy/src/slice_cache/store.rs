@@ -492,25 +492,34 @@ impl SliceCache {
         }
 
         // Validate Content-Range response header (nginx header filter pattern).
-        if let Some(cr_value) = resp
+        let parsed_content_range = if let Some(cr_value) = resp
             .headers()
             .get("content-range")
             .and_then(|v| v.to_str().ok())
         {
-            if let Ok(cr) = parse_content_range(cr_value) {
-                let expected_end =
-                    std::cmp::min(range_start + self.config.slice_size as u64, total_size);
-                if cr.start != range_start || cr.end != expected_end {
+            let cr = parse_content_range(cr_value)?;
+            let expected_end =
+                std::cmp::min(range_start + self.config.slice_size as u64, total_size);
+            if cr.start != range_start || cr.end != expected_end {
+                return Err(anyhow::anyhow!(
+                    "Content-Range mismatch: got {}-{}, expected {}-{} \
+                     (nginx slice header filter validation)",
+                    cr.start,
+                    cr.end,
+                    range_start,
+                    expected_end,
+                ));
+            }
+            match cr.complete_length {
+                Some(complete_length) if complete_length == total_size => {}
+                Some(complete_length) => {
                     return Err(anyhow::anyhow!(
-                        "Content-Range mismatch: got {}-{}, expected {}-{} \
-                         (nginx slice header filter validation)",
-                        cr.start,
-                        cr.end,
-                        range_start,
-                        expected_end,
+                        "Content-Range total mismatch: got {complete_length}, expected {total_size}"
                     ));
                 }
+                None => {}
             }
+            Some(cr)
         } else {
             tracing::warn!(
                 slice_index = slice_index,
@@ -518,7 +527,8 @@ impl SliceCache {
                 "Upstream returned 206 Partial Content without Content-Range header; \
                  cannot validate slice boundaries"
             );
-        }
+            None
+        };
 
         // Extract headers for metadata before consuming body.
         let resp_etag = resp
@@ -573,6 +583,18 @@ impl SliceCache {
             .bytes()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to read slice body: {e}"))?;
+
+        if let Some(cr) = parsed_content_range {
+            let expected_len = usize::try_from(cr.end.saturating_sub(cr.start))
+                .map_err(|_| anyhow::anyhow!("Slice length overflow for slice {}", slice_index))?;
+            if data.len() != expected_len {
+                return Err(anyhow::anyhow!(
+                    "Slice body length mismatch: got {}, expected {} from Content-Range",
+                    data.len(),
+                    expected_len
+                ));
+            }
+        }
 
         if existing_etag_cloned.is_none() && !self.meta.contains_key(&mk) {
             // First slice for this resource -- store metadata.

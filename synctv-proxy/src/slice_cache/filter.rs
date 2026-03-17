@@ -488,20 +488,26 @@ async fn refresh_full_body_cache_entry(
     cache: &SliceCache,
     url: &str,
     provider_headers: &HashMap<String, String>,
-    resp: reqwest::Response,
+    _resp: reqwest::Response,
 ) -> Result<(), anyhow::Error> {
+    if !_resp.status().is_success() {
+        let key = SliceCache::full_body_key(url, provider_headers);
+        cache.finish_full_body_update(&key);
+        return Ok(());
+    }
+
     let key = SliceCache::full_body_key(url, provider_headers);
-    let content_type = resp
+    let content_type = _resp
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .map(ToString::to_string);
-    let etag = resp
+    let etag = _resp
         .headers()
         .get("etag")
         .and_then(|v| v.to_str().ok())
         .map(ToString::to_string);
-    let last_modified = resp
+    let last_modified = _resp
         .headers()
         .get("last-modified")
         .and_then(|v| v.to_str().ok())
@@ -509,7 +515,7 @@ async fn refresh_full_body_cache_entry(
 
     let max_body = cache.config().max_cacheable_body;
     let mut buf = Vec::with_capacity(std::cmp::min(max_body, 4 * 1024 * 1024));
-    let mut stream = resp.bytes_stream();
+    let mut stream = _resp.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
@@ -636,6 +642,19 @@ async fn handle_full_body_response(
             .map_err(|e| anyhow::anyhow!("Failed to build bypass response: {e}"));
     }
     let body_bytes = Bytes::from(buf);
+
+    if !status.is_success() {
+        let mut builder = Response::builder()
+            .status(status)
+            .header("Content-Length", body_bytes.len().to_string())
+            .header("X-Cache-Status", pre_status.as_str());
+        if let Some(ref ct) = content_type {
+            builder = builder.header("Content-Type", ct.as_str());
+        }
+        return builder
+            .body(Body::from(body_bytes))
+            .map_err(|e| anyhow::anyhow!("Failed to build full-body error response: {e}"));
+    }
 
     // Cache the body.
     let ttl = match content_type.as_deref() {

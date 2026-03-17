@@ -1121,6 +1121,70 @@ async fn test_full_body_cache_expiry_returns_expired() {
     let _ = resp2.into_body().collect().await.unwrap().to_bytes();
 }
 
+/// Non-success full-body responses must not be cached, otherwise transient
+/// upstream failures poison subsequent requests.
+#[tokio::test]
+async fn test_full_body_non_success_response_is_not_cached() {
+    let mock_server = MockServer::start().await;
+
+    let first_guard = Mock::given(method("GET"))
+        .and(path("/error-then-ok.bin"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .set_body_string("upstream-error")
+                .insert_header("Content-Type", "text/plain")
+                .insert_header("Content-Length", "14"),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+    let url = mock_public_url(&mock_server, "/error-then-ok.bin");
+    let provider_headers = HashMap::new();
+
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
+    assert_eq!(resp1.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        resp1.headers()
+            .get("X-Cache-Status")
+            .and_then(|v| v.to_str().ok()),
+        Some("MISS")
+    );
+    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body1.as_ref(), b"upstream-error");
+
+    drop(first_guard);
+
+    Mock::given(method("GET"))
+        .and(path("/error-then-ok.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("fresh-ok")
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("Content-Length", "8"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), StatusCode::OK);
+    assert_eq!(
+        resp2.headers()
+            .get("X-Cache-Status")
+            .and_then(|v| v.to_str().ok()),
+        Some("MISS"),
+        "second request must refetch instead of hitting a cached 500 response"
+    );
+    let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body2.as_ref(), b"fresh-ok");
+}
+
 // ==================================================================
 // Enhancement 2: ETag consistency validation
 // ==================================================================
@@ -2029,6 +2093,91 @@ async fn test_full_body_failed_revalidation_does_not_stick_updating_forever() {
     })
     .await
     .expect("failed background revalidation should clear updating marker and allow a retry");
+}
+
+/// Background stale revalidation must ignore non-success responses instead of
+/// overwriting a previously good cached body with an error page.
+#[tokio::test]
+async fn test_full_body_stale_background_revalidation_ignores_non_success_response() {
+    let mock_server = MockServer::start().await;
+
+    let first_guard = Mock::given(method("GET"))
+        .and(path("/stale-error-refresh.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("version-1")
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("Content-Length", "9"),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        segment_ttl: Duration::from_millis(50),
+        stale_max_age: Duration::from_secs(5),
+        stale_while_revalidate: true,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/stale-error-refresh.bin");
+    let provider_headers = HashMap::new();
+
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
+    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body1.as_ref(), b"version-1");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(first_guard);
+
+    let failed_refresh_guard = Mock::given(method("GET"))
+        .and(path("/stale-error-refresh.bin"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .set_body_string("error-page")
+                .insert_header("Content-Type", "text/plain")
+                .insert_header("Content-Length", "10"),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let stale_resp =
+        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+            .await
+            .unwrap();
+    assert_eq!(
+        stale_resp
+            .headers()
+            .get("X-Cache-Status")
+            .and_then(|v| v.to_str().ok()),
+        Some("STALE")
+    );
+    let stale_body = stale_resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(stale_body.as_ref(), b"version-1");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    drop(failed_refresh_guard);
+
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
+    let status2 = resp2
+        .headers()
+        .get("X-Cache-Status")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body2.as_ref(), b"version-1");
+    assert!(
+        matches!(
+            status2.as_deref(),
+            Some("STALE") | Some("HIT") | Some("UPDATING")
+        ),
+        "cache must retain the last successful body instead of storing a 500 response"
+    );
 }
 
 /// When stale_while_revalidate is enabled, an expired slice within the stale
@@ -3006,6 +3155,130 @@ async fn test_200_response_rejected_for_slice_request() {
         err_msg.contains("206") || err_msg.contains("Partial Content") || err_msg.contains("200"),
         "Error should mention expected 206 status, got: {err_msg}"
     );
+}
+
+/// A 206 response with a mismatched complete length must be rejected to avoid
+/// caching data for the wrong resource size.
+#[tokio::test]
+async fn test_206_response_rejected_when_content_range_total_mismatches_expected_size() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 2048;
+    let body = Bytes::from(vec![0xEEu8; 1024]);
+
+    Mock::given(method("GET"))
+        .and(path("/bad-total.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(body)
+                .insert_header("Content-Range", "bytes 0-1023/4096")
+                .insert_header("Content-Length", "1024"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/bad-total.bin");
+    let headers = HashMap::new();
+
+    let result = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await;
+
+    assert!(result.is_err(), "206 with mismatched total size must be rejected");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Content-Range") || err_msg.contains("total"),
+        "error should mention Content-Range total mismatch, got: {err_msg}"
+    );
+}
+
+/// A 206 response whose body length disagrees with its declared range must be
+/// rejected instead of being cached as a valid slice.
+#[tokio::test]
+async fn test_206_response_rejected_when_body_length_does_not_match_range() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 2048;
+    let short_body = Bytes::from(vec![0xEFu8; 512]);
+
+    Mock::given(method("GET"))
+        .and(path("/bad-length.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(short_body)
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "512"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/bad-length.bin");
+    let headers = HashMap::new();
+
+    let result = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "206 with a body shorter than the declared range must be rejected"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("length") || err_msg.contains("Content-Range"),
+        "error should mention body length mismatch, got: {err_msg}"
+    );
+}
+
+/// A 206 response with `Content-Range: bytes start-end/*` remains valid when
+/// the total size was already discovered earlier; slice boundaries and body
+/// length can still be validated against the known resource size.
+#[tokio::test]
+async fn test_206_response_accepts_missing_content_range_total_when_slice_matches() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 2048;
+    let body = Bytes::from(vec![0xABu8; 1024]);
+
+    Mock::given(method("GET"))
+        .and(path("/missing-total.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(body.clone())
+                .insert_header("Content-Range", "bytes 0-1023/*")
+                .insert_header("Content-Length", "1024"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/missing-total.bin");
+    let headers = HashMap::new();
+
+    let (cached, status) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .expect("206 slice with wildcard total length should be accepted");
+
+    assert_eq!(status, CacheStatus::Miss);
+    assert_eq!(cached, body);
 }
 
 // ------------------------------------------------------------------

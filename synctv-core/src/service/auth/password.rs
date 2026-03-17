@@ -23,6 +23,30 @@ fn build_argon2() -> Result<Argon2<'static>> {
     ))
 }
 
+fn hash_password_with_argon2(
+    password: &str,
+    salt: &SaltString,
+    argon2: &Argon2<'_>,
+) -> Result<String> {
+    argon2
+        .hash_password(password.as_bytes(), salt)
+        .map_err(|e| Error::Internal(format!("Failed to hash password: {e}")))
+        .map(|password_hash| password_hash.to_string())
+}
+
+fn verify_password_with_argon2(password: &str, hash: &str, argon2: &Argon2<'_>) -> Result<bool> {
+    let parsed_hash = PasswordHash::new(hash)
+        .map_err(|e| Error::Internal(format!("Invalid password hash format: {e}")))?;
+
+    match argon2.verify_password(password.as_bytes(), &parsed_hash) {
+        Ok(()) => Ok(true),
+        Err(argon2::password_hash::Error::Password) => Ok(false),
+        Err(e) => Err(Error::Internal(format!(
+            "Password verification failed: {e}"
+        ))),
+    }
+}
+
 static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
     let salt = SaltString::encode_b64(b"synctv-dummy-salt")
         .unwrap_or_else(|e| panic!("Failed to build dummy password salt: {e}"));
@@ -53,18 +77,9 @@ pub async fn hash_password(password: &str) -> Result<String> {
     let password = password.to_string();
 
     task::spawn_blocking(move || {
-        // Generate a random salt
         let salt = SaltString::generate(&mut OsRng);
-
         let argon2 = build_argon2()?;
-
-        // Hash the password
-        let password_hash = argon2
-            .hash_password(password.as_bytes(), &salt)
-            .map_err(|e| Error::Internal(format!("Failed to hash password: {e}")))?
-            .to_string();
-
-        Ok(password_hash)
+        hash_password_with_argon2(&password, &salt, &argon2)
     })
     .await
     .map_err(|e| Error::Internal(format!("Password hashing task failed: {e}")))?
@@ -78,19 +93,8 @@ pub async fn verify_password(password: &str, hash: &str) -> Result<bool> {
     let hash = hash.to_string();
 
     task::spawn_blocking(move || {
-        // Parse the PHC string
-        let parsed_hash = PasswordHash::new(&hash)
-            .map_err(|e| Error::Internal(format!("Invalid password hash format: {e}")))?;
-
-        // Verify the password
         let argon2 = Argon2::default();
-        match argon2.verify_password(password.as_bytes(), &parsed_hash) {
-            Ok(()) => Ok(true),
-            Err(argon2::password_hash::Error::Password) => Ok(false),
-            Err(e) => Err(Error::Internal(format!(
-                "Password verification failed: {e}"
-            ))),
-        }
+        verify_password_with_argon2(&password, &hash, &argon2)
     })
     .await
     .map_err(|e| Error::Internal(format!("Password verification task failed: {e}")))?
@@ -100,6 +104,24 @@ pub async fn verify_password(password: &str, hash: &str) -> Result<bool> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn build_test_argon2() -> Argon2<'static> {
+        let params = ParamsBuilder::new()
+            .m_cost(8 * 1024)
+            .t_cost(1)
+            .p_cost(1)
+            .output_len(32)
+            .build()
+            .expect("test Argon2 params should build");
+
+        Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params)
+    }
+
+    fn hash_password_for_tests(password: &str) -> String {
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = build_test_argon2();
+        hash_password_with_argon2(password, &salt, &argon2).expect("test password hashing")
+    }
 
     #[tokio::test]
     async fn test_hash_password() {
@@ -114,65 +136,59 @@ mod tests {
     #[tokio::test]
     async fn test_verify_password_correct() {
         let password = "test_password_123";
-        let hash = hash_password(password).await.unwrap();
+        let hash = hash_password_for_tests(password);
 
-        let is_valid = verify_password(password, &hash).await.unwrap();
+        let is_valid = verify_password_with_argon2(password, &hash, &build_test_argon2()).unwrap();
         assert!(is_valid);
     }
 
     #[tokio::test]
     async fn test_verify_password_incorrect() {
         let password = "test_password_123";
-        let hash = hash_password(password).await.unwrap();
+        let hash = hash_password_for_tests(password);
 
-        let is_valid = verify_password("wrong_password", &hash).await.unwrap();
+        let is_valid =
+            verify_password_with_argon2("wrong_password", &hash, &build_test_argon2()).unwrap();
         assert!(!is_valid);
     }
 
     #[tokio::test]
     async fn test_hash_uniqueness() {
         let password = "test_password_123";
-        let hash1 = hash_password(password).await.unwrap();
-        let hash2 = hash_password(password).await.unwrap();
+        let hash1 = hash_password_for_tests(password);
+        let hash2 = hash_password_for_tests(password);
 
-        // Same password should produce different hashes (different salts)
         assert_ne!(hash1, hash2);
-
-        // But both should verify correctly
-        assert!(verify_password(password, &hash1).await.unwrap());
-        assert!(verify_password(password, &hash2).await.unwrap());
+        assert!(verify_password_with_argon2(password, &hash1, &build_test_argon2()).unwrap());
+        assert!(verify_password_with_argon2(password, &hash2, &build_test_argon2()).unwrap());
     }
 
     #[tokio::test]
     async fn test_hash_password_long_password() {
-        // Test with a very long password (should still work)
         let password = "a".repeat(1000);
-        let hash = hash_password(&password).await.unwrap();
-        assert!(verify_password(&password, &hash).await.unwrap());
+        let hash = hash_password_for_tests(&password);
+        assert!(verify_password_with_argon2(&password, &hash, &build_test_argon2()).unwrap());
     }
 
     #[tokio::test]
     async fn test_hash_password_unicode() {
-        // Test with unicode characters
         let password = "密码测试🔐🔒123";
-        let hash = hash_password(password).await.unwrap();
-        assert!(verify_password(password, &hash).await.unwrap());
+        let hash = hash_password_for_tests(password);
+        assert!(verify_password_with_argon2(password, &hash, &build_test_argon2()).unwrap());
     }
 
     #[tokio::test]
     async fn test_hash_password_empty() {
-        // Empty password should still hash (validation happens elsewhere)
         let password = "";
-        let hash = hash_password(password).await.unwrap();
-        assert!(verify_password(password, &hash).await.unwrap());
+        let hash = hash_password_for_tests(password);
+        assert!(verify_password_with_argon2(password, &hash, &build_test_argon2()).unwrap());
     }
 
     #[tokio::test]
     async fn test_hash_password_special_chars() {
-        // Test with special characters
         let password = "P@ssw0rd!#$%^&*()_+-=[]{}|;':\",./<>?`~";
-        let hash = hash_password(password).await.unwrap();
-        assert!(verify_password(password, &hash).await.unwrap());
+        let hash = hash_password_for_tests(password);
+        assert!(verify_password_with_argon2(password, &hash, &build_test_argon2()).unwrap());
     }
 
     #[test]

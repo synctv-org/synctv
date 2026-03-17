@@ -3,6 +3,8 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use synctv_xiu::streamhub::{
     define::{NotifyInfo, StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo},
+    errors::StreamHubErrorValue,
+    send_event_with_backpressure_timeout,
     stream::StreamIdentifier,
     utils::Uuid,
 };
@@ -25,6 +27,16 @@ type ResponseStream = Pin<Box<dyn Stream<Item = Result<RtmpPacket, Status>> + Se
 /// Metadata key for cluster authentication shared secret
 const AUTH_SECRET_METADATA_KEY: &str = "x-cluster-secret";
 const STREAM_HUB_SUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn map_streamhub_enqueue_error(error: synctv_xiu::streamhub::errors::StreamHubError) -> Status {
+    match error.value {
+        StreamHubErrorValue::SendError => Status::internal("StreamHub subscribe queue is unavailable"),
+        other => {
+            tracing::error!("failed to enqueue StreamHub subscribe event: {other:?}");
+            Status::internal("Failed to enqueue subscribe event")
+        }
+    }
+}
 
 /// Callback invoked when the relay service forwards frames from a local publisher.
 ///
@@ -265,9 +277,17 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         };
 
         // Send subscribe event (mpsc::Sender is Clone + Send + Sync, no Mutex needed)
-        self.stream_hub_event_sender
-            .try_send(subscribe_event)
-            .map_err(|_| Status::internal("Failed to send subscribe event"))?;
+        send_event_with_backpressure_timeout(&self.stream_hub_event_sender, subscribe_event)
+            .await
+            .map_err(|error| {
+                if matches!(error.value, StreamHubErrorValue::SendError)
+                    && !self.stream_hub_event_sender.is_closed()
+                {
+                    Status::resource_exhausted("StreamHub subscribe queue is saturated")
+                } else {
+                    map_streamhub_enqueue_error(error)
+                }
+            })?;
 
         // Wait for subscription result
         let subscribe_result =
@@ -451,7 +471,8 @@ mod tests {
     use super::*;
     use crate::grpc::proto::stream_relay_service_server::StreamRelayService;
     use bytes::Bytes;
-    use synctv_xiu::streamhub::define::StreamHubEvent;
+    use synctv_xiu::streamhub::define::{DataReceiver, StreamHubEvent};
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
     use tokio::time::{timeout, Duration};
 
     #[tokio::test]
@@ -647,5 +668,156 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
         assert!(status.message().contains("Timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_pull_rtmp_stream_waits_for_temporarily_full_streamhub_queue() {
+        let registry = Arc::new(crate::relay::InMemoryStreamRegistry::new());
+        registry
+            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
+            .await
+            .expect("register publisher");
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+        event_tx
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name: "prefill".to_string(),
+                    stream_name: "prefill".to_string(),
+                },
+            })
+            .expect("prefill event channel");
+
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret");
+
+        let service_task = tokio::spawn(async move {
+            let mut request = Request::new(PullRtmpStreamRequest {
+                room_id: "room1".to_string(),
+                media_id: "media1".to_string(),
+                is_reconnect: false,
+            });
+            request
+                .metadata_mut()
+                .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+            service.pull_rtmp_stream(request).await
+        });
+
+        let blocked = event_rx.recv().await.expect("prefill event should be present");
+        assert!(matches!(blocked, StreamHubEvent::UnPublish { .. }));
+
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("subscribe event should be emitted once queue capacity is freed")
+            .expect("event channel should receive subscribe request");
+        let StreamHubEvent::Subscribe { result_sender, .. } = event else {
+            panic!("expected subscribe event");
+        };
+
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(8);
+        drop(frame_tx);
+        result_sender
+            .send(Ok((
+                DataReceiver {
+                    frame_receiver: Some(frame_rx),
+                    packet_receiver: None,
+                },
+                None,
+            )))
+            .expect("subscription response should be delivered");
+
+        let response = timeout(Duration::from_secs(1), service_task)
+            .await
+            .expect("service call should complete once StreamHub queue drains")
+            .expect("service task should complete")
+            .expect("pull_rtmp_stream should succeed");
+        drop(response);
+    }
+
+    #[tokio::test]
+    async fn test_pull_rtmp_stream_maps_full_streamhub_queue_to_resource_exhausted() {
+        let registry = Arc::new(crate::relay::InMemoryStreamRegistry::new());
+        registry
+            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
+            .await
+            .expect("register publisher");
+
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        event_tx
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name: "prefill".to_string(),
+                    stream_name: "prefill".to_string(),
+                },
+            })
+            .expect("prefill event channel");
+
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret");
+
+        let mut request = Request::new(PullRtmpStreamRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            is_reconnect: false,
+        });
+        request
+            .metadata_mut()
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+
+        let status = match service.pull_rtmp_stream(request).await {
+            Ok(_) => panic!("persistently full queue must fail"),
+            Err(status) => status,
+        };
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+    }
+
+    #[tokio::test]
+    async fn test_pull_rtmp_stream_maps_closed_streamhub_queue_to_internal() {
+        let registry = Arc::new(crate::relay::InMemoryStreamRegistry::new());
+        registry
+            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
+            .await
+            .expect("register publisher");
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);
+        drop(event_rx);
+
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret");
+
+        let mut request = Request::new(PullRtmpStreamRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            is_reconnect: false,
+        });
+        request
+            .metadata_mut()
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+
+        let status = match service.pull_rtmp_stream(request).await {
+            Ok(_) => panic!("closed streamhub queue must fail"),
+            Err(status) => status,
+        };
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert!(
+            status.message().contains("unavailable"),
+            "closed streamhub queue should report backend unavailability, got: {}",
+            status.message()
+        );
     }
 }

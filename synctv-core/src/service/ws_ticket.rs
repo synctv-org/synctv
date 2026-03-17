@@ -397,7 +397,7 @@ impl TicketStore for InMemoryTicketStore {
         expected_ticket: &WsTicketData,
     ) -> Result<bool> {
         let cache_key = format!("{}:{ticket}", expected_room_id.as_str());
-        let Some(entry) = self.cache.remove(&cache_key).await else {
+        let Some(entry) = self.cache.get(&cache_key).await else {
             return Ok(false);
         };
         let now = std::time::SystemTime::now()
@@ -405,9 +405,21 @@ impl TicketStore for InMemoryTicketStore {
             .unwrap_or_default()
             .as_secs();
         if now.saturating_sub(entry.data.created_at) > entry.ttl.as_secs() {
+            self.cache.remove(&cache_key).await;
             return Ok(false);
         }
-        Ok(entry.data == *expected_ticket)
+        if entry.data != *expected_ticket {
+            return Ok(false);
+        }
+
+        let Some(removed) = self.cache.remove(&cache_key).await else {
+            return Ok(false);
+        };
+        if now.saturating_sub(removed.data.created_at) > removed.ttl.as_secs() {
+            return Ok(false);
+        }
+
+        Ok(removed.data == *expected_ticket)
     }
 
     async fn consume(
@@ -1047,6 +1059,38 @@ mod tests {
 
         assert_eq!(successes, 1, "exactly one checked consume should succeed");
         assert_eq!(failures, 7, "all remaining concurrent consumers must fail");
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_claim_mismatch_does_not_consume_ticket() {
+        let room_id = create_test_room_id("room-claim");
+        let ticket = "ticket-claim";
+        let store = InMemoryTicketStore::new(30);
+        let original = WsTicketData {
+            user_id: "user1".to_string(),
+            room_id: room_id.as_str().to_string(),
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            password_version: 7,
+        };
+        store.store(ticket, &original, 30).await.unwrap();
+
+        let mut mismatched = original.clone();
+        mismatched.password_version += 1;
+
+        let first_claim = store.claim(ticket, &room_id, &mismatched).await.unwrap();
+        assert!(
+            !first_claim,
+            "claim with mismatched ticket data must fail without consuming the ticket"
+        );
+
+        let second_claim = store.claim(ticket, &room_id, &original).await.unwrap();
+        assert!(
+            second_claim,
+            "ticket must remain claimable after a failed compare-and-delete attempt"
+        );
     }
 
     #[tokio::test]

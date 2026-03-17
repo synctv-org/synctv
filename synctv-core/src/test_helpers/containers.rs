@@ -33,7 +33,7 @@ const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLE
 const DEFAULT_POSTGRES_ACTIVE_PARALLELISM: usize = 4;
 const MIN_POSTGRES_ACTIVE_PARALLELISM: usize = 1;
 const POSTGRES_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_POSTGRES_ACTIVE_PARALLELISM";
-const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 12;
+const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 4;
 const MIN_REDIS_ACTIVE_PARALLELISM: usize = 1;
 const REDIS_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_REDIS_ACTIVE_PARALLELISM";
 static POSTGRES_START_SERIALIZER: std::sync::LazyLock<Semaphore> =
@@ -816,8 +816,8 @@ mod tests {
     }
 
     #[test]
-    fn redis_active_parallelism_defaults_to_redlock_friendly_limit() {
+    fn redis_active_parallelism_defaults_to_conservative_live_limit() {
         assert_eq!(redis_active_parallelism(), DEFAULT_REDIS_ACTIVE_PARALLELISM);
-        assert_eq!(DEFAULT_REDIS_ACTIVE_PARALLELISM, 12);
+        assert_eq!(DEFAULT_REDIS_ACTIVE_PARALLELISM, 4);
     }
 }

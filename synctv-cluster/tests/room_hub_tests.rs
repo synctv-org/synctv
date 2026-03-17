@@ -62,7 +62,7 @@ async fn test_broadcast_to_connection_targeted() {
         .expect("subscribe should succeed");
 
     let event = chat_event(&room, &u1);
-    let sent = hub.broadcast_to_connection(&room, "c2", event);
+    let sent = hub.broadcast_to_connection(&room, "c2", event).await;
     assert_eq!(sent, 1, "broadcast_to_connection should return 1");
 
     // c2 should receive
@@ -92,7 +92,9 @@ async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full
         .expect("subscribe should succeed");
 
     for _ in 0..512 {
-        let sent = hub.broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")));
+        let sent = hub
+            .broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")))
+            .await;
         assert_eq!(
             sent, 1,
             "prefill targeted messages should enqueue until channel fills"
@@ -102,7 +104,9 @@ async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full
     let room_for_task = room.clone();
     let hub_for_task = hub.clone();
     let notify = tokio::spawn(async move {
-        hub_for_task.broadcast_to_connection(&room_for_task, "conn-target", webrtc_event(&room))
+        hub_for_task
+            .broadcast_to_connection(&room_for_task, "conn-target", webrtc_event(&room))
+            .await
     });
 
     tokio::task::yield_now().await;
@@ -147,14 +151,19 @@ async fn test_broadcast_to_connection_does_not_report_success_when_reliable_deli
         .expect("subscribe should succeed");
 
     for _ in 0..512 {
-        let sent = hub.broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")));
+        let sent = hub
+            .broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")))
+            .await;
         assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
     }
 
     let notify = tokio::spawn({
         let hub = hub.clone();
         let room = room.clone();
-        async move { hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room)) }
+        async move {
+            hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room))
+                .await
+        }
     });
 
     tokio::task::yield_now().await;
@@ -179,23 +188,38 @@ async fn test_broadcast_to_connection_keeps_current_thread_target_registered_whe
         .expect("subscribe should succeed");
 
     for _ in 0..512 {
-        let sent = hub.broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")));
+        let sent = hub
+            .broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")))
+            .await;
         assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
     }
 
-    let sent = hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room));
-    assert_eq!(
-        sent, 1,
-        "current-thread runtimes should accept reliable targeted delivery via async retry"
-    );
+    let notify = tokio::spawn({
+        let hub = hub.clone();
+        let room = room.clone();
+        async move {
+            hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room))
+                .await
+        }
+    });
+
     assert_eq!(
         hub.connection_count(),
         1,
-        "targeted reliable fallback must not unsubscribe the connection"
+        "reliable targeted delivery must not unsubscribe the connection while waiting for capacity"
     );
 
     let drained = rx.recv().await.expect("prefill message should exist");
     assert!(matches!(drained, ClusterEvent::ChatMessage { .. }));
+
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(1), notify)
+        .await
+        .expect("current-thread reliable delivery should complete after capacity is freed")
+        .expect("broadcast task should not panic");
+    assert_eq!(
+        sent, 1,
+        "current-thread runtimes should report success only after the event is actually queued"
+    );
 
     let mut delivered_webrtc = false;
     for _ in 0..512 {
@@ -212,6 +236,106 @@ async fn test_broadcast_to_connection_keeps_current_thread_target_registered_whe
     assert!(
         delivered_webrtc,
         "expected queued WebRTC signaling after draining capacity"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_broadcast_to_user_current_thread_reliable_delivery_does_not_panic_when_channel_full() {
+    let hub = RoomMessageHub::new();
+    let room = rid("r1-user-current-thread");
+    let user = uid("u1");
+
+    let mut rx = hub
+        .subscribe(room.clone(), user.clone(), "conn-user".to_string())
+        .await
+        .expect("subscribe should succeed");
+
+    for _ in 0..512 {
+        let sent = hub.broadcast_to_user(&room, &user, chat_event(&room, &uid("u2")));
+        assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
+    }
+
+    let hub_for_task = hub.clone();
+    let room_for_task = room.clone();
+    let user_for_task = user.clone();
+    let event = ClusterEvent::KickUserFromRoom {
+        event_id: nanoid::nanoid!(16),
+        room_id: room.clone(),
+        user_id: user.clone(),
+        reason: "testing".to_string(),
+        timestamp: chrono::Utc::now(),
+    };
+    let notify = tokio::spawn(async move {
+        hub_for_task.broadcast_to_user(&room_for_task, &user_for_task, event)
+    });
+
+    tokio::task::yield_now().await;
+
+    let sent = notify
+        .await
+        .expect("broadcast_to_user task should not panic");
+    assert!(
+        matches!(sent, 0 | 1),
+        "current-thread reliable fallback should return a bounded delivery count without panicking"
+    );
+
+    assert_eq!(
+        hub.connection_count(),
+        1,
+        "current-thread reliable fallback must keep the subscriber registered while retrying asynchronously"
+    );
+
+    let _drained = rx.recv().await.expect("prefill message should exist");
+
+    let delivered = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let msg = rx.recv().await.expect("channel should remain open");
+            if matches!(msg, ClusterEvent::KickUserFromRoom { .. }) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(
+        delivered.is_ok(),
+        "current-thread reliable fallback should still enqueue the critical event once capacity is freed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broadcast_to_connection_unsubscribes_target_when_reliable_delivery_times_out() {
+    let hub = RoomMessageHub::new();
+    let room = rid("r1-cleanup-timeout");
+    let user = uid("u1");
+
+    let _rx = hub
+        .subscribe(room.clone(), user, "conn-target".to_string())
+        .await
+        .expect("subscribe should succeed");
+
+    for _ in 0..512 {
+        let sent = hub
+            .broadcast_to_connection(&room, "conn-target", chat_event(&room, &uid("u2")))
+            .await;
+        assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
+    }
+
+    let sent = hub
+        .broadcast_to_connection(&room, "conn-target", webrtc_event(&room))
+        .await;
+    assert_eq!(
+        sent, 0,
+        "reliable targeted delivery should report failure after timing out"
+    );
+    assert_eq!(
+        hub.connection_count(),
+        0,
+        "timed-out reliable targeted delivery must clean up the dead/stuck connection"
+    );
+    assert_eq!(
+        hub.subscriber_count(&room),
+        0,
+        "timed-out reliable targeted delivery must remove the subscriber from the room"
     );
 }
 
@@ -273,11 +397,11 @@ async fn test_remove_room_cleans_connections() {
     let u1 = uid("u1");
     let u2 = uid("u2");
 
-    let _rx1 = hub
+    let rx1 = hub
         .subscribe(room.clone(), u1.clone(), "c1".to_string())
         .await
         .expect("subscribe should succeed");
-    let _rx2 = hub
+    let rx2 = hub
         .subscribe(room.clone(), u2.clone(), "c2".to_string())
         .await
         .expect("subscribe should succeed");
@@ -298,6 +422,9 @@ async fn test_remove_room_cleans_connections() {
         "All connections should be cleaned up"
     );
     assert_eq!(hub.room_count(), 0, "Room should be removed");
+
+    drop(rx1);
+    drop(rx2);
 }
 
 // ============================================================================

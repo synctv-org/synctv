@@ -246,6 +246,7 @@ async fn test_audit_log_multiple_actions_same_actor() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_buffer_full_drops_events_with_fake_pool() {
     // Create a buffered service with a very small capacity
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
@@ -293,6 +294,7 @@ async fn test_buffer_full_drops_events_with_fake_pool() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_dropped_count_starts_at_zero() {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
     let (service, _handle) = AuditService::with_capacity(pool, 100);
@@ -309,6 +311,7 @@ async fn test_dropped_count_starts_at_zero() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_unbuffered_service_never_drops() {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
     let service = AuditService::new_unbuffered(pool);

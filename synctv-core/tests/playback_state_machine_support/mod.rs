@@ -1,0 +1,59 @@
+use std::sync::Arc;
+
+use chrono::Utc;
+use sqlx::PgPool;
+use synctv_core::{
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    config::PasswordComplexityConfig,
+    models::{User, UserId, UserRole, UserStatus},
+    service::{
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
+    },
+};
+
+pub fn make_user_service(pool: PgPool) -> UserService {
+    let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
+    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let l2 = Arc::new(NoopCacheL2);
+    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let password_complexity = PasswordComplexityConfig::default();
+    let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+    UserService::new(
+        pool,
+        jwt_service,
+        username_cache,
+        password_complexity,
+        token_blacklist,
+        key_builder,
+        brute_force,
+    )
+}
+
+pub fn make_room_service(pool: PgPool) -> RoomService {
+    let user_service = make_user_service(pool.clone());
+    RoomService::new(pool, user_service)
+}
+
+pub fn make_user(username: &str) -> User {
+    let now = Utc::now();
+    User {
+        id: UserId::new(),
+        username: username.to_string(),
+        email: Some(format!("{username}@test.com")),
+        password_hash: "hash".to_string(),
+        role: UserRole::User,
+        status: UserStatus::Active,
+        email_verified: true,
+        signup_method: synctv_core::models::SignupMethod::Email,
+        created_at: now,
+        updated_at: now,
+        password_changed_at: now,
+        password_version: 0,
+        version: 0,
+        deleted_at: None,
+    }
+}

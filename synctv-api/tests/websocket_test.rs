@@ -1079,7 +1079,12 @@ mod websocket_e2e {
 
         // Spawn server
         tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("server error");
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .expect("server error");
         });
 
         E2EServer {
@@ -4184,7 +4189,12 @@ mod websocket_connection_limit_timing {
         let addr_str = format!("127.0.0.1:{}", addr.port());
 
         tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("server error");
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .expect("server error");
         });
 
         LimitTestServer {

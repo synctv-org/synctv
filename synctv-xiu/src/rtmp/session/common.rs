@@ -22,10 +22,11 @@ use {
             StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo, TStreamHandler,
         },
         errors::{StreamHubError, StreamHubErrorValue},
-        send_event_with_backpressure_timeout, subscribe_with_rollback_on_timeout,
-        SubscribeWithRollbackError,
+        send_event_with_backpressure_timeout,
         stream::StreamIdentifier,
+        subscribe_with_rollback_on_timeout,
         utils::Uuid,
+        SubscribeWithRollbackError,
     },
     async_trait::async_trait,
     bytes::BytesMut,
@@ -865,7 +866,10 @@ mod tests {
             .expect("event channel should stay open");
 
         let result = unpublish_task.await.expect("unpublish task should join");
-        assert!(result.is_ok(), "unpublish should succeed after capacity frees");
+        assert!(
+            result.is_ok(),
+            "unpublish should succeed after capacity frees"
+        );
 
         match unpublish {
             StreamHubEvent::UnPublish { identifier } => match identifier {

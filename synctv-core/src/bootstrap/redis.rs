@@ -243,127 +243,131 @@ async fn init_sentinel(
         let node_info = node_info.clone();
         let manager_config = redis_connection_manager_config(config);
         let shared_conn_clone = shared_conn.clone();
-        let health_check_task = crate::spawn::spawn_monitored("sentinel_master_health_check", async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            // Skip the first immediate tick
-            interval.tick().await;
-            let mut consecutive_ping_failures = 0u32;
-            let mut known_master = known_master_addr;
+        let health_check_task = crate::spawn::spawn_monitored(
+            "sentinel_master_health_check",
+            async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                // Skip the first immediate tick
+                interval.tick().await;
+                let mut consecutive_ping_failures = 0u32;
+                let mut known_master = known_master_addr;
 
-            loop {
-                if let Some(ref token) = cancel {
-                    tokio::select! {
-                        () = token.cancelled() => {
-                            tracing::info!("Sentinel health check cancelled");
-                            return;
+                loop {
+                    if let Some(ref token) = cancel {
+                        tokio::select! {
+                            () = token.cancelled() => {
+                                tracing::info!("Sentinel health check cancelled");
+                                return;
+                            }
+                            _ = interval.tick() => {}
                         }
-                        _ = interval.tick() => {}
+                    } else {
+                        interval.tick().await;
                     }
-                } else {
-                    interval.tick().await;
-                }
 
-                // Clone the ConnectionManager under a read lock to minimize lock
-                // duration. PING is a read-only operation and should not hold
-                // the write lock that is only needed for hot-swapping on failover.
-                let ping_ok = {
-                    let mut conn = shared_conn_clone.read().await.clone();
-                    redis::cmd("PING")
-                        .query_async::<String>(&mut conn)
-                        .await
-                        .is_ok()
-                };
+                    // Clone the ConnectionManager under a read lock to minimize lock
+                    // duration. PING is a read-only operation and should not hold
+                    // the write lock that is only needed for hot-swapping on failover.
+                    let ping_ok = {
+                        let mut conn = shared_conn_clone.read().await.clone();
+                        redis::cmd("PING")
+                            .query_async::<String>(&mut conn)
+                            .await
+                            .is_ok()
+                    };
 
-                if ping_ok {
-                    if consecutive_ping_failures > 0 {
-                        tracing::info!(
-                            previous_failures = consecutive_ping_failures,
-                            "Sentinel health check: Redis PING recovered"
-                        );
+                    if ping_ok {
+                        if consecutive_ping_failures > 0 {
+                            tracing::info!(
+                                previous_failures = consecutive_ping_failures,
+                                "Sentinel health check: Redis PING recovered"
+                            );
+                        }
+                        consecutive_ping_failures = 0;
+                        continue;
                     }
-                    consecutive_ping_failures = 0;
-                    continue;
-                }
 
-                consecutive_ping_failures += 1;
-                tracing::warn!(
-                    consecutive_failures = consecutive_ping_failures,
-                    "Sentinel health check: Redis PING failed"
-                );
+                    consecutive_ping_failures += 1;
+                    tracing::warn!(
+                        consecutive_failures = consecutive_ping_failures,
+                        "Sentinel health check: Redis PING failed"
+                    );
 
-                if consecutive_ping_failures < 3 {
-                    continue;
-                }
+                    if consecutive_ping_failures < 3 {
+                        continue;
+                    }
 
-                tracing::warn!(
+                    tracing::warn!(
                     "Sentinel health check: {} consecutive PING failures, querying Sentinel for current master",
                     consecutive_ping_failures
                 );
 
-                let addrs: Vec<&str> = sentinel_addresses.iter().map(String::as_str).collect();
-                let sentinel_result = redis::sentinel::Sentinel::build(addrs);
-                let mut sentinel = match sentinel_result {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "Sentinel health check: failed to connect to Sentinel nodes"
-                        );
-                        continue;
-                    }
-                };
-
-                match sentinel
-                    .async_master_for(master_name.as_str(), node_info.as_ref())
-                    .await
-                {
-                    Ok(new_master_client) => {
-                        let new_addr = new_master_client.get_connection_info().addr().to_string();
-                        if new_addr == known_master {
-                            tracing::info!(
-                                master = %new_addr,
-                                "Sentinel master unchanged, rebuilding connection"
-                            );
-                        } else {
+                    let addrs: Vec<&str> = sentinel_addresses.iter().map(String::as_str).collect();
+                    let sentinel_result = redis::sentinel::Sentinel::build(addrs);
+                    let mut sentinel = match sentinel_result {
+                        Ok(s) => s,
+                        Err(e) => {
                             tracing::warn!(
-                                old_master = %known_master,
-                                new_master = %new_addr,
-                                "Sentinel failover detected, reconnecting to new master"
+                                error = %e,
+                                "Sentinel health check: failed to connect to Sentinel nodes"
+                            );
+                            continue;
+                        }
+                    };
+
+                    match sentinel
+                        .async_master_for(master_name.as_str(), node_info.as_ref())
+                        .await
+                    {
+                        Ok(new_master_client) => {
+                            let new_addr =
+                                new_master_client.get_connection_info().addr().to_string();
+                            if new_addr == known_master {
+                                tracing::info!(
+                                    master = %new_addr,
+                                    "Sentinel master unchanged, rebuilding connection"
+                                );
+                            } else {
+                                tracing::warn!(
+                                    old_master = %known_master,
+                                    new_master = %new_addr,
+                                    "Sentinel failover detected, reconnecting to new master"
+                                );
+                            }
+
+                            match redis::aio::ConnectionManager::new_with_config(
+                                new_master_client,
+                                manager_config.clone(),
+                            )
+                            .await
+                            {
+                                Ok(new_conn) => {
+                                    *shared_conn_clone.write().await = new_conn;
+                                    known_master = new_addr;
+                                    consecutive_ping_failures = 0;
+                                    tracing::info!(
+                                        master = %known_master,
+                                        "Sentinel health check: reconnected to Redis master"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        error = %e,
+                                        "Sentinel health check: failed to create new ConnectionManager"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Sentinel health check: failed to query current master"
                             );
                         }
-
-                        match redis::aio::ConnectionManager::new_with_config(
-                            new_master_client,
-                            manager_config.clone(),
-                        )
-                        .await
-                        {
-                            Ok(new_conn) => {
-                                *shared_conn_clone.write().await = new_conn;
-                                known_master = new_addr;
-                                consecutive_ping_failures = 0;
-                                tracing::info!(
-                                    master = %known_master,
-                                    "Sentinel health check: reconnected to Redis master"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    error = %e,
-                                    "Sentinel health check: failed to create new ConnectionManager"
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "Sentinel health check: failed to query current master"
-                        );
                     }
                 }
-            }
-        });
+            },
+        );
         info!(
             "Sentinel master health check started (interval: 5s, failover threshold: 3 failures)"
         );

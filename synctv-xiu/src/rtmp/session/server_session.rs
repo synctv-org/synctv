@@ -1021,8 +1021,10 @@ mod tests {
             _app_name: &str,
             _stream_name: &str,
             _query: Option<&str>,
-        ) -> Result<Option<crate::rtmp::auth::AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>>
-        {
+        ) -> Result<
+            Option<crate::rtmp::auth::AuthPublishRewrite>,
+            Box<dyn std::error::Error + Send + Sync>,
+        > {
             Ok(None)
         }
 
@@ -1036,7 +1038,10 @@ mod tests {
         }
 
         async fn on_unpublish(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
-            self.events.lock().expect("lock auth events").push("unpublish");
+            self.events
+                .lock()
+                .expect("lock auth events")
+                .push("unpublish");
         }
 
         async fn on_unplay(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
@@ -1254,7 +1259,10 @@ mod tests {
 
         let result = session.force_shutdown().await;
 
-        assert!(result.is_ok(), "force shutdown should succeed without active stream");
+        assert!(
+            result.is_ok(),
+            "force shutdown should succeed without active stream"
+        );
         assert_eq!(
             shutdowns.load(Ordering::SeqCst),
             1,

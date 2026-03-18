@@ -240,8 +240,7 @@ async fn test_broadcast_to_connection_keeps_current_thread_target_registered_whe
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn test_broadcast_to_user_current_thread_defers_reliable_delivery_when_channel_full(
-) {
+async fn test_broadcast_to_user_current_thread_defers_reliable_delivery_when_channel_full() {
     let hub = RoomMessageHub::new();
     let room = rid("r1-user-current-thread");
     let user = uid("u1");
@@ -291,7 +290,9 @@ async fn test_broadcast_to_user_current_thread_defers_reliable_delivery_when_cha
     for _ in 0..512 {
         let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
             .await
-            .expect("deferred reliable delivery should eventually enqueue once capacity is available")
+            .expect(
+                "deferred reliable delivery should eventually enqueue once capacity is available",
+            )
             .expect("channel should remain open");
         if matches!(msg, ClusterEvent::KickUserFromRoom { .. }) {
             delivered_kick = true;
@@ -346,7 +347,9 @@ async fn test_broadcast_current_thread_defers_reliable_delivery_when_channel_ful
     for _ in 0..512 {
         let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
             .await
-            .expect("deferred critical broadcast should eventually enqueue once capacity is available")
+            .expect(
+                "deferred critical broadcast should eventually enqueue once capacity is available",
+            )
             .expect("channel should remain open");
         if matches!(msg, ClusterEvent::RoomDeleted { .. }) {
             delivered_delete = true;
@@ -401,8 +404,13 @@ async fn test_broadcast_to_user_current_thread_deferred_delivery_keeps_connectio
 
     let _drained = rx.recv().await.expect("prefill message should exist");
 
-    let sent = notify.await.expect("broadcast_to_user task should not panic");
-    assert_eq!(sent, 1, "deferred delivery should still count as local acceptance");
+    let sent = notify
+        .await
+        .expect("broadcast_to_user task should not panic");
+    assert_eq!(
+        sent, 1,
+        "deferred delivery should still count as local acceptance"
+    );
 
     let mut delivered_kick = false;
     for _ in 0..512 {

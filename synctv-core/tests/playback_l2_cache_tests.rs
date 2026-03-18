@@ -658,10 +658,12 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
     .unwrap();
 
     let cache_stream = format!("test:playback:invalidate:stream:{}", nanoid::nanoid!(8));
-    let redis_url = format!(
-        "redis://127.0.0.1:{}",
-        redis_container.get_host_port_ipv4(6379).await.unwrap()
-    );
+    let (redis_host, redis_port) = redis_container.host_port(6379).await;
+    let redis_url = if redis_host.contains(':') && !redis_host.starts_with('[') {
+        format!("redis://[{redis_host}]:{redis_port}")
+    } else {
+        format!("redis://{redis_host}:{redis_port}")
+    };
     let subscriber = Arc::new(synctv_core::cache::CacheInvalidationService::new(
         Some(redis::Client::open(redis_url.clone()).unwrap()),
         "node-subscriber".to_string(),

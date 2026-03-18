@@ -207,8 +207,14 @@ async fn test_service_validate_for_wrong_user_does_not_consume_token() {
     let user_repo = UserRepository::new(pool.clone());
     let service = EmailTokenService::new(pool);
 
-    let owner = user_repo.create(&make_user("svc_user_owner")).await.unwrap();
-    let other = user_repo.create(&make_user("svc_user_other")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("svc_user_owner"))
+        .await
+        .unwrap();
+    let other = user_repo
+        .create(&make_user("svc_user_other"))
+        .await
+        .unwrap();
 
     let token = service
         .generate_token(&owner.id, EmailTokenType::PasswordReset)

@@ -1,6 +1,7 @@
 //! `PostgreSQL` test container helpers
 
 use std::fs::{File, OpenOptions};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::LazyLock;
@@ -102,6 +103,36 @@ impl TestContainer {
         self.inner
             .as_ref()
             .expect("postgres test container should still be present")
+    }
+
+    pub async fn host(&self) -> String {
+        self.host_port(5432).await.0
+    }
+
+    pub async fn port_ipv4(&self, internal_port: u16) -> u16 {
+        self.host_port(internal_port).await.1
+    }
+
+    pub async fn host_port(&self, internal_port: u16) -> (String, u16) {
+        let host = self
+            .raw()
+            .get_host()
+            .await
+            .expect("Failed to get Postgres host")
+            .to_string();
+        let ports = self
+            .raw()
+            .ports()
+            .await
+            .expect("Failed to inspect Postgres port mappings");
+        candidate_endpoints_for_host(
+            &host,
+            ports.map_to_host_port_ipv4(internal_port),
+            ports.map_to_host_port_ipv6(internal_port),
+        )
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("Failed to resolve Postgres endpoint for host {host}"))
     }
 
     #[cfg(test)]
@@ -372,6 +403,142 @@ fn named_postgres_request(
         .with_ready_conditions(postgres_ready_conditions())
 }
 
+fn postgres_connection_url(host: &str, port: u16, db_name: &str) -> String {
+    format!(
+        "postgresql://synctv:synctv_test@{}:{port}/{db_name}",
+        format_socket_host(host)
+    )
+}
+
+fn format_socket_host(host: &str) -> String {
+    if matches!(host_address_family(host), Some(IpAddr::V6(_))) && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
+async fn resolve_host_port(
+    container: &ContainerAsync<Postgres>,
+    internal_port: u16,
+    db_name: &str,
+) -> (String, u16) {
+    let host = container
+        .get_host()
+        .await
+        .expect("Failed to get Postgres host")
+        .to_string();
+    let ports = container
+        .ports()
+        .await
+        .expect("Failed to inspect Postgres port mappings");
+    let endpoints = candidate_endpoints_for_host(
+        &host,
+        ports.map_to_host_port_ipv4(internal_port),
+        ports.map_to_host_port_ipv6(internal_port),
+    );
+
+    assert!(
+        !endpoints.is_empty(),
+        "Failed to resolve Postgres endpoint for host {host}"
+    );
+
+    let deadline = std::time::Instant::now() + docker_startup_timeout();
+    let mut retries = 0u32;
+    let mut last_error = None;
+
+    while std::time::Instant::now() < deadline {
+        for (candidate_host, candidate_port) in &endpoints {
+            let connect_options = PgConnectOptions::new()
+                .host(candidate_host)
+                .port(*candidate_port)
+                .username("synctv")
+                .password("synctv_test")
+                .database(db_name)
+                .ssl_mode(PgSslMode::Disable);
+
+            match sqlx::postgres::PgConnection::connect_with(&connect_options).await {
+                Ok(mut conn) => {
+                    sqlx::query_scalar::<_, i32>("SELECT 1")
+                        .fetch_one(&mut conn)
+                        .await
+                        .expect("PostgreSQL readiness probe should succeed once connected");
+                    drop(conn);
+                    return (candidate_host.clone(), *candidate_port);
+                }
+                Err(err) => last_error = Some(err),
+            }
+        }
+
+        retries += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    panic!(
+        "PostgreSQL not ready within {:?} after {retries} retries across endpoints {:?}: {}",
+        docker_startup_timeout(),
+        endpoints,
+        last_error
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "connection attempts did not yield an error".to_string())
+    );
+}
+
+fn host_address_family(host: &str) -> Option<IpAddr> {
+    let normalized = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    normalized.parse::<IpAddr>().ok()
+}
+
+fn candidate_endpoints_for_host(
+    host: &str,
+    ipv4_port: Option<u16>,
+    ipv6_port: Option<u16>,
+) -> Vec<(String, u16)> {
+    let mut candidates = Vec::new();
+
+    match host_address_family(host) {
+        Some(IpAddr::V4(_)) => {
+            if let Some(port) = ipv4_port {
+                candidates.push((host.to_string(), port));
+            }
+            if let Some(port) = ipv6_port.filter(|port| Some(*port) != ipv4_port) {
+                candidates.push(("::1".to_string(), port));
+            }
+        }
+        Some(IpAddr::V6(_)) => {
+            if let Some(port) = ipv6_port {
+                candidates.push((host.to_string(), port));
+            }
+            if let Some(port) = ipv4_port.filter(|port| Some(*port) != ipv6_port) {
+                candidates.push(("127.0.0.1".to_string(), port));
+            }
+        }
+        None => {
+            if let Some(port) = ipv6_port.filter(|_| host == "localhost") {
+                candidates.push(("::1".to_string(), port));
+            }
+            if let Some(port) = ipv4_port {
+                let ipv4_host = if host == "localhost" {
+                    "127.0.0.1".to_string()
+                } else {
+                    host.to_string()
+                };
+                candidates.push((ipv4_host, port));
+            }
+            if let Some(port) =
+                ipv6_port.filter(|port| Some(*port) != ipv4_port && host != "localhost")
+            {
+                candidates.push((host.to_string(), port));
+            }
+        }
+    }
+
+    candidates
+}
+
 /// Creates a `PostgreSQL` test container and connection pool
 ///
 /// This function:
@@ -419,55 +586,21 @@ pub async fn create_test_pool_with_options_and_label(
         .expect("Failed to start Postgres container")
     };
 
-    let port = postgres
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get port");
+    let (host, port) = resolve_host_port(&postgres, 5432, db_name).await;
     let connect_options = PgConnectOptions::new()
-        .host("127.0.0.1")
+        .host(&host)
         .port(port)
         .username("synctv")
         .password("synctv_test")
         .database(db_name)
         .ssl_mode(PgSslMode::Disable);
 
-    let pool = {
-        let deadline = std::time::Instant::now() + docker_startup_timeout();
-        let mut retries = 0u32;
-        let mut last_error = None;
-
-        loop {
-            match sqlx::postgres::PgConnection::connect_with(&connect_options).await {
-                Ok(mut conn) => {
-                    sqlx::query_scalar::<_, i32>("SELECT 1")
-                        .fetch_one(&mut conn)
-                        .await
-                        .expect("PostgreSQL readiness probe should succeed once connected");
-                    drop(conn);
-
-                    let pool = PgPoolOptions::new()
-                        .acquire_timeout(acquire_timeout)
-                        .max_connections(max_connections)
-                        .connect_with(connect_options.clone())
-                        .await
-                        .expect("PostgreSQL pool creation should succeed after readiness probe");
-                    break pool;
-                }
-                Err(err) if std::time::Instant::now() < deadline => {
-                    retries += 1;
-                    last_error = Some(err);
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-                Err(err) => panic!(
-                    "PostgreSQL not ready within {:?} after {retries} retries: {}",
-                    docker_startup_timeout(),
-                    last_error
-                        .as_ref()
-                        .map_or_else(|| err.to_string(), std::string::ToString::to_string)
-                ),
-            }
-        }
-    };
+    let pool = PgPoolOptions::new()
+        .acquire_timeout(acquire_timeout)
+        .max_connections(max_connections)
+        .connect_with(connect_options.clone())
+        .await
+        .expect("PostgreSQL pool creation should succeed after readiness probe");
 
     sqlx::migrate!("../../migrations")
         .run(&pool)
@@ -514,48 +647,8 @@ pub async fn create_test_database_url_with_label(
         .expect("Failed to start Postgres container")
     };
 
-    let port = postgres
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get port");
-    let database_url = format!("postgresql://synctv:synctv_test@127.0.0.1:{port}/{db_name}");
-
-    let connect_options = PgConnectOptions::new()
-        .host("127.0.0.1")
-        .port(port)
-        .username("synctv")
-        .password("synctv_test")
-        .database(db_name)
-        .ssl_mode(PgSslMode::Disable);
-
-    let deadline = std::time::Instant::now() + docker_startup_timeout();
-    let mut retries = 0u32;
-    let mut last_error = None;
-
-    loop {
-        match sqlx::postgres::PgConnection::connect_with(&connect_options).await {
-            Ok(mut conn) => {
-                sqlx::query_scalar::<_, i32>("SELECT 1")
-                    .fetch_one(&mut conn)
-                    .await
-                    .expect("PostgreSQL readiness probe should succeed once connected");
-                drop(conn);
-                break;
-            }
-            Err(err) if std::time::Instant::now() < deadline => {
-                retries += 1;
-                last_error = Some(err);
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-            Err(err) => panic!(
-                "PostgreSQL not ready within {:?} after {retries} retries: {}",
-                docker_startup_timeout(),
-                last_error
-                    .as_ref()
-                    .map_or_else(|| err.to_string(), std::string::ToString::to_string)
-            ),
-        }
-    }
+    let (host, port) = resolve_host_port(&postgres, 5432, db_name).await;
+    let database_url = postgres_connection_url(&host, port, db_name);
 
     (
         TestContainer::new(postgres, container_name, container_slot),
@@ -681,6 +774,76 @@ mod tests {
         assert!(
             container.is_cleaned_up(),
             "explicit cleanup must suppress the Drop-time docker rm fallback"
+        );
+    }
+
+    #[test]
+    fn postgres_connection_url_uses_resolved_host() {
+        let url = postgres_connection_url("docker.internal", 5432, "synctv_test");
+
+        assert_eq!(
+            url,
+            "postgresql://synctv:synctv_test@docker.internal:5432/synctv_test"
+        );
+        assert!(
+            !url.contains("@127.0.0.1:"),
+            "connection URL must not hardcode localhost"
+        );
+    }
+
+    #[test]
+    fn postgres_connection_url_brackets_ipv6_literals() {
+        let url = postgres_connection_url("::1", 5432, "synctv_test");
+
+        assert_eq!(
+            url,
+            "postgresql://synctv:synctv_test@[::1]:5432/synctv_test"
+        );
+    }
+
+    #[test]
+    fn resolve_host_port_uses_ipv4_port_for_domain_hosts() {
+        assert_eq!(
+            candidate_endpoints_for_host("docker.internal", Some(5432), Some(15433)),
+            vec![
+                ("docker.internal".to_string(), 5432),
+                ("docker.internal".to_string(), 15433)
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_host_port_keeps_reported_host_for_ipv4_domain_mappings() {
+        assert_eq!(
+            candidate_endpoints_for_host("10.0.0.8", Some(5432), None),
+            vec![("10.0.0.8".to_string(), 5432)]
+        );
+    }
+
+    #[test]
+    fn resolve_host_port_uses_ipv6_port_for_ipv6_hosts() {
+        assert_eq!(
+            candidate_endpoints_for_host("[::1]", Some(5432), Some(15433)),
+            vec![
+                ("[::1]".to_string(), 15433),
+                ("127.0.0.1".to_string(), 5432)
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_host_port_uses_ipv6_when_domain_only_has_ipv6_mapping() {
+        assert_eq!(
+            candidate_endpoints_for_host("docker.internal", None, Some(15433)),
+            vec![("docker.internal".to_string(), 15433)]
+        );
+    }
+
+    #[test]
+    fn resolve_host_port_rewrites_localhost_to_ipv6_literal_when_needed() {
+        assert_eq!(
+            candidate_endpoints_for_host("localhost", Some(5432), Some(15433)),
+            vec![("::1".to_string(), 15433), ("127.0.0.1".to_string(), 5432)]
         );
     }
 }

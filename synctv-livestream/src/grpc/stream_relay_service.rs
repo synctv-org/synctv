@@ -30,7 +30,9 @@ const STREAM_HUB_SUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::f
 
 fn map_streamhub_enqueue_error(error: synctv_xiu::streamhub::errors::StreamHubError) -> Status {
     match error.value {
-        StreamHubErrorValue::SendError => Status::internal("StreamHub subscribe queue is unavailable"),
+        StreamHubErrorValue::SendError => {
+            Status::internal("StreamHub subscribe queue is unavailable")
+        }
         other => {
             tracing::error!("failed to enqueue StreamHub subscribe event: {other:?}");
             Status::internal("Failed to enqueue subscribe event")
@@ -708,7 +710,10 @@ mod tests {
             service.pull_rtmp_stream(request).await
         });
 
-        let blocked = event_rx.recv().await.expect("prefill event should be present");
+        let blocked = event_rx
+            .recv()
+            .await
+            .expect("prefill event should be present");
         assert!(matches!(blocked, StreamHubEvent::UnPublish { .. }));
 
         let event = timeout(Duration::from_secs(1), event_rx.recv())

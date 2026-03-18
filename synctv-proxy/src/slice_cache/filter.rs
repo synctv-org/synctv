@@ -468,7 +468,9 @@ async fn revalidate_stale_full_body_entry(
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         let _ = resp.bytes().await;
-        if let Some((data, content_type)) = cache.get_full_body_cached_entry(url, provider_headers).await
+        if let Some((data, content_type)) = cache
+            .get_full_body_cached_entry(url, provider_headers)
+            .await
         {
             let (etag, last_modified) = existing_meta
                 .as_ref()
@@ -478,16 +480,17 @@ async fn revalidate_stale_full_body_entry(
                 Some(ct) if is_manifest_content_type(ct) => cache.config().manifest_ttl,
                 _ => cache.config().segment_ttl,
             };
-            cache.put_full_body(
-                url,
-                provider_headers,
-                data,
-                etag,
-                last_modified,
-                content_type.as_deref(),
-                ttl,
-            )
-            .await;
+            cache
+                .put_full_body(
+                    url,
+                    provider_headers,
+                    data,
+                    etag,
+                    last_modified,
+                    content_type.as_deref(),
+                    ttl,
+                )
+                .await;
         }
         return Ok(());
     }

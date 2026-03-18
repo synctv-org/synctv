@@ -1702,7 +1702,12 @@ mod tests {
             Ok(None)
         }
 
-        async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) -> Result<()> {
+        async fn set_family_revoked(
+            &self,
+            _key: &str,
+            _timestamp: i64,
+            _ttl_secs: u64,
+        ) -> Result<()> {
             Err(crate::Error::Internal(
                 "test primary family failure".to_string(),
             ))

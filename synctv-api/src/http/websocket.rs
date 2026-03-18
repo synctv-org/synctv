@@ -774,15 +774,15 @@ pub async fn websocket_handler(
     let username = prepared.username.clone();
     let connection_id = prepared.connection_id.clone();
     let reservation = prepared.reservation.clone();
-    commit_prevalidated_ticket(&state, &rid, &auth).await.map_err(|error| {
-        reservation.release(&state.connection_manager);
-        error
-    })?;
+    commit_prevalidated_ticket(&state, &rid, &auth)
+        .await
+        .map_err(|error| {
+            reservation.release(&state.connection_manager);
+            error
+        })?;
 
-    let failed_upgrade_cleanup = build_failed_upgrade_cleanup(
-        state.connection_manager.clone(),
-        reservation.clone(),
-    );
+    let failed_upgrade_cleanup =
+        build_failed_upgrade_cleanup(state.connection_manager.clone(), reservation.clone());
 
     // Authentication and membership verified, upgrade to WebSocket.
     // Reservations are released inside handle_socket after join_room completes.
@@ -791,7 +791,15 @@ pub async fn websocket_handler(
         .max_message_size(64 * 1024)
         .on_failed_upgrade(failed_upgrade_cleanup)
         .on_upgrade(move |socket| {
-            handle_socket(socket, state, rid, auth, username, connection_id, reservation)
+            handle_socket(
+                socket,
+                state,
+                rid,
+                auth,
+                username,
+                connection_id,
+                reservation,
+            )
         }))
 }
 
@@ -1082,7 +1090,10 @@ async fn handle_socket(
     let connection_id = stream_handler.connection_id().to_string();
 
     if let Err(error) = stream_handler.pre_join().await {
-        error!("Failed to join WebSocket connection before message loop: {}", error);
+        error!(
+            "Failed to join WebSocket connection before message loop: {}",
+            error
+        );
         return;
     }
 
@@ -1352,8 +1363,9 @@ mod tests {
         headers.insert(header::HOST, "app.example.com".parse().unwrap());
         headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
 
-        validate_websocket_origin(&headers, &[], None, &[])
-            .expect("same-origin browser websocket should be allowed without explicit CORS allowlist");
+        validate_websocket_origin(&headers, &[], None, &[]).expect(
+            "same-origin browser websocket should be allowed without explicit CORS allowlist",
+        );
     }
 
     #[test]
@@ -1384,7 +1396,7 @@ mod tests {
             Some("127.0.0.1".parse().unwrap()),
             &["127.0.0.1".to_string()],
         )
-            .expect_err("same host with proxy-reported https must reject an http origin");
+        .expect_err("same host with proxy-reported https must reject an http origin");
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     }
 

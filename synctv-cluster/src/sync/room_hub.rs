@@ -99,7 +99,8 @@ fn block_on_reliable_delivery(
 
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => match handle.runtime_flavor() {
-            tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::runtime::RuntimeFlavor::MultiThread =>
+            {
                 #[allow(clippy::disallowed_methods)]
                 tokio::task::block_in_place(|| handle.block_on(delivery))
             }
@@ -822,25 +823,26 @@ impl RoomMessageHub {
                             }
                             Err(mpsc::error::TrySendError::Full(_)) => {
                                 if is_critical {
-                                match block_on_reliable_delivery(
-                                    subscriber.sender.clone(),
-                                    event.clone(),
-                                    room_id.clone(),
-                                    subscriber.connection_id.clone(),
-                                ) {
-                                    ReliableDeliveryOutcome::Delivered => {
-                                        sent_count += 1;
+                                    match block_on_reliable_delivery(
+                                        subscriber.sender.clone(),
+                                        event.clone(),
+                                        room_id.clone(),
+                                        subscriber.connection_id.clone(),
+                                    ) {
+                                        ReliableDeliveryOutcome::Delivered => {
+                                            sent_count += 1;
+                                        }
+                                        ReliableDeliveryOutcome::Deferred => {
+                                            sent_count += 1;
+                                        }
+                                        ReliableDeliveryOutcome::Closed
+                                        | ReliableDeliveryOutcome::TimedOut => {
+                                            failed_connections
+                                                .push(subscriber.connection_id.clone());
+                                        }
+                                        ReliableDeliveryOutcome::Unavailable => {}
                                     }
-                                    ReliableDeliveryOutcome::Deferred => {
-                                        sent_count += 1;
-                                    }
-                                    ReliableDeliveryOutcome::Closed
-                                    | ReliableDeliveryOutcome::TimedOut => {
-                                        failed_connections.push(subscriber.connection_id.clone());
-                                    }
-                                    ReliableDeliveryOutcome::Unavailable => {}
-                                }
-                            } else {
+                                } else {
                                     let drops = subscriber
                                         .consecutive_drops
                                         .fetch_add(1, Ordering::Relaxed)

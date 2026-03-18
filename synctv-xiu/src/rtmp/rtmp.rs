@@ -170,9 +170,7 @@ impl RtmpServer {
             .await
             .is_err()
         {
-            tracing::warn!(
-                "RTMP shutdown grace period expired, aborting lingering sessions"
-            );
+            tracing::warn!("RTMP shutdown grace period expired, aborting lingering sessions");
             forced_session_shutdown.cancel();
             let _ = tokio::time::timeout(Duration::from_secs(1), session_tracker.wait()).await;
         }
@@ -193,7 +191,9 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_force_closes_stuck_sessions_after_grace_period() {
         let (event_tx, _event_rx) = mpsc::channel(1);
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind listener");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
         let local_addr = listener.local_addr().expect("listener local addr");
 
         let mut server = RtmpServer::new(local_addr.to_string(), event_tx, 1, None, None)

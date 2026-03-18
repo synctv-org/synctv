@@ -105,7 +105,8 @@ impl TestRedis {
                 return;
             }
 
-            assert!(retries < 60, 
+            assert!(
+                retries < 60,
                 "Redis not ready after {retries} retries: manager_ready={manager_ready}, multiplexed_ready={multiplexed_ready}"
             );
 
@@ -286,6 +287,28 @@ pub async fn wait_until(label: &str, timeout: Duration, mut condition: impl FnMu
 
     loop {
         if condition() {
+            return;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[allow(dead_code)]
+pub async fn wait_until_async<F, Fut>(label: &str, timeout: Duration, mut condition: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if condition().await {
             return;
         }
 

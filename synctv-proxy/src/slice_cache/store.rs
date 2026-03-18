@@ -189,7 +189,8 @@ impl SliceCache {
             let mut retry_request = self.client.get(url);
             retry_request = apply_provider_headers(retry_request, url, provider_headers)?;
             retry_request = retry_request.header("Range", &range_header);
-            let retry_resp = match send_with_redirect_validation(&self.client, retry_request).await {
+            let retry_resp = match send_with_redirect_validation(&self.client, retry_request).await
+            {
                 Ok(proxy_response) => proxy_response.response,
                 Err(e) => return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}")),
             };

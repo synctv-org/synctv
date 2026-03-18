@@ -62,7 +62,11 @@ async fn test_concurrent_play_pause_operations() {
     println!("Concurrent play/pause: success={success_count}/10, errors={error_count}");
     assert!(success_count >= 3);
 
-    let state = room_service.playback_service().get_state(&room.id).await.unwrap();
+    let state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
     let _ = state.is_playing;
 }
 

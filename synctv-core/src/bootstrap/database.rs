@@ -108,10 +108,7 @@ pub async fn init_database_with_cancel(
 
     info!("Database connected successfully");
 
-    Ok(DatabaseInit {
-        pool,
-        metrics_task,
-    })
+    Ok(DatabaseInit { pool, metrics_task })
 }
 
 /// Acquire a dedicated connection for migration/DDL style work with
@@ -255,9 +252,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn init_database_without_cancel_does_not_spawn_unmanaged_metrics_task() {
-        let (_postgres, database_url) =
-            synctv_core_testing::create_test_database_url_with_label("synctv_test", "init-no-metrics")
-                .await;
+        let (_postgres, database_url) = synctv_core_testing::create_test_database_url_with_label(
+            "synctv_test",
+            "init-no-metrics",
+        )
+        .await;
 
         let config = crate::Config {
             database: crate::config::DatabaseConfig {
@@ -284,9 +283,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn init_database_with_cancel_returns_stoppable_metrics_task() {
-        let (_postgres, database_url) =
-            synctv_core_testing::create_test_database_url_with_label("synctv_test", "init-with-metrics")
-                .await;
+        let (_postgres, database_url) = synctv_core_testing::create_test_database_url_with_label(
+            "synctv_test",
+            "init-with-metrics",
+        )
+        .await;
 
         let config = crate::Config {
             database: crate::config::DatabaseConfig {

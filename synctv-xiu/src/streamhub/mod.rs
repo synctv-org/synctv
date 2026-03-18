@@ -113,13 +113,8 @@ pub async fn subscribe_with_rollback_on_timeout(
     identifier: StreamIdentifier,
     info: SubscriberInfo,
     timeout: std::time::Duration,
-) -> Result<
-    (
-        define::DataReceiver,
-        Option<define::StatisticDataSender>,
-    ),
-    SubscribeWithRollbackError,
-> {
+) -> Result<(define::DataReceiver, Option<define::StatisticDataSender>), SubscribeWithRollbackError>
+{
     let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
 
     send_event_with_backpressure_timeout(

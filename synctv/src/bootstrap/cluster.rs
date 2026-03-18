@@ -6,12 +6,12 @@ use tracing::{info, warn};
 #[cfg(feature = "k8s")]
 use synctv_cluster::discovery::K8sDnsDiscovery;
 use synctv_cluster::discovery::{
-    HealthMonitor, LoadBalancer, LoadBalancingStrategy, NodeRegistry, StaticDiscovery,
-    StaticDiscoveryConfig, StaticPeerConfig, health_monitor::HealthProbeConfig,
+    health_monitor::HealthProbeConfig, HealthMonitor, LoadBalancer, LoadBalancingStrategy,
+    NodeRegistry, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig,
 };
 use synctv_cluster::sync::{ClusterManager, ConnectionManager};
-use synctv_core::Config;
 use synctv_core::bootstrap::RedisHandles;
+use synctv_core::Config;
 
 /// Initialize the shared cluster components: `NodeRegistry`, heartbeat loop,
 /// `HealthMonitor`, and `LoadBalancer`.
@@ -233,8 +233,8 @@ mod tests {
     use synctv_cluster::sync::{
         ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
     };
-    use synctv_core::Config;
     use synctv_core::bootstrap::RedisHandles;
+    use synctv_core::Config;
     use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
 

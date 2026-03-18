@@ -12,7 +12,9 @@ use chrono::Utc;
 use synctv_cluster::sync::events::ClusterEvent;
 use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
-use integration_test_helpers::{broadcast_until_all_clients_receive, create_node, TestRedis};
+use integration_test_helpers::{
+    broadcast_until_all_clients_receive, create_node, wait_until, wait_until_async, TestRedis,
+};
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -171,9 +173,19 @@ async fn test_node_discovery_three_nodes() {
         .await
         .expect("Failed to unregister C");
 
-    // After unregister + cache expiry, only 2 nodes should remain
-    // Wait for moka cache invalidation (5s TTL)
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    // After unregister + cache expiry, only 2 nodes should remain.
+    wait_until_async(
+        "node C removal visibility",
+        Duration::from_secs(8),
+        || async {
+            registry_a
+                .get_all_nodes()
+                .await
+                .map(|nodes| nodes.iter().all(|node| node.node_id != "node_c"))
+                .unwrap_or(false)
+        },
+    )
+    .await;
 
     let nodes_after = registry_a
         .get_all_nodes()
@@ -309,8 +321,19 @@ async fn test_leader_election_single_leader() {
     let _handle_b = elector_b.start(cancel_b.clone());
     let _handle_c = elector_c.start(cancel_c.clone());
 
-    // Wait for the election to settle (at least one renew_interval)
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Wait for the election to settle.
+    wait_until("initial leader election", Duration::from_secs(5), || {
+        let leader_count = [
+            elector_a.is_leader(),
+            elector_b.is_leader(),
+            elector_c.is_leader(),
+        ]
+        .iter()
+        .filter(|&&v| v)
+        .count();
+        leader_count == 1
+    })
+    .await;
 
     // Count leaders
     let leader_count = [
@@ -349,8 +372,19 @@ async fn test_leader_election_single_leader() {
         _ => unreachable!(),
     }
 
-    // Wait for lease to expire + one election cycle
-    tokio::time::sleep(Duration::from_secs(7)).await;
+    // Wait for lease expiration and failover election to converge.
+    wait_until("leader failover", Duration::from_secs(10), || {
+        [
+            (!cancel_a.is_cancelled(), elector_a.is_leader()),
+            (!cancel_b.is_cancelled(), elector_b.is_leader()),
+            (!cancel_c.is_cancelled(), elector_c.is_leader()),
+        ]
+        .iter()
+        .filter(|(active, is_leader)| *active && *is_leader)
+        .count()
+            == 1
+    })
+    .await;
 
     // A new leader should have been elected among the remaining two
     let remaining_leaders: Vec<&str> = [

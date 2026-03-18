@@ -923,6 +923,14 @@ impl Config {
             }
             Ok(())
         };
+        let env_override_enum = |name: &str,
+                                 apply: &mut dyn FnMut(&str) -> Result<(), ConfigError>|
+         -> Result<(), ConfigError> {
+            if let Some(val) = get_env(name) {
+                apply(&val)?;
+            }
+            Ok(())
+        };
         let env_override_csv = |name: &str, target: &mut Vec<String>| {
             if let Some(val) = get_env(name) {
                 *target = val
@@ -1017,14 +1025,19 @@ impl Config {
             &mut self.redis.connect_timeout_seconds,
         )?;
         env_override_str("SYNCTV_REDIS_KEY_PREFIX", &mut self.redis.key_prefix);
-        if let Some(val) = get_env("SYNCTV_REDIS_DEPLOYMENT_MODE") {
+        env_override_enum("SYNCTV_REDIS_DEPLOYMENT_MODE", &mut |val| {
             match val.to_lowercase().as_str() {
                 "standalone" => self.redis.deployment_mode = RedisDeploymentMode::Standalone,
                 "sentinel" => self.redis.deployment_mode = RedisDeploymentMode::Sentinel,
                 "cluster" => self.redis.deployment_mode = RedisDeploymentMode::Cluster,
-                _ => {}
+                _ => {
+                    return Err(ConfigError::Message(format!(
+                        "Invalid value for environment variable SYNCTV_REDIS_DEPLOYMENT_MODE: '{val}' (expected one of: standalone, sentinel, cluster)"
+                    )));
+                }
             }
-        }
+            Ok(())
+        })?;
         env_override_opt_str(
             "SYNCTV_REDIS_SENTINEL_MASTER_NAME",
             &mut self.redis.sentinel_master_name,
@@ -1147,13 +1160,18 @@ impl Config {
         )?;
 
         // -- WebRTC --
-        if let Some(val) = get_env("SYNCTV_WEBRTC_MODE") {
+        env_override_enum("SYNCTV_WEBRTC_MODE", &mut |val| {
             match val.to_lowercase().as_str() {
                 "signaling_only" => self.webrtc.mode = WebRTCMode::SignalingOnly,
                 "peer_to_peer" => self.webrtc.mode = WebRTCMode::PeerToPeer,
-                _ => {}
+                _ => {
+                    return Err(ConfigError::Message(format!(
+                        "Invalid value for environment variable SYNCTV_WEBRTC_MODE: '{val}' (expected one of: signaling_only, peer_to_peer)"
+                    )));
+                }
             }
-        }
+            Ok(())
+        })?;
         env_override_bool(
             "SYNCTV_WEBRTC_ENABLE_BUILTIN_STUN",
             &mut self.webrtc.enable_builtin_stun,
@@ -2461,20 +2479,16 @@ mod tests {
         // Invalid: below minimum
         config.server.grpc_max_message_size_bytes = 1024 * 1024 - 1; // Just under 1 MB
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 MB"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 MB")));
 
         // Invalid: above maximum
         config.server.grpc_max_message_size_bytes = 1024 * 1024 * 1024 + 1; // Just over 1 GB
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 GB"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 GB")));
     }
 
     #[test]
@@ -2587,6 +2601,26 @@ mod tests {
         assert!(message.contains("maybe"));
     }
 
+    #[test]
+    fn test_from_env_rejects_invalid_redis_deployment_mode_override() {
+        let error = Config::from_env_map(&env_map(&[("SYNCTV_REDIS_DEPLOYMENT_MODE", "sentinal")]))
+            .expect_err("invalid redis deployment mode override must fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("SYNCTV_REDIS_DEPLOYMENT_MODE"));
+        assert!(message.contains("sentinal"));
+    }
+
+    #[test]
+    fn test_from_env_rejects_invalid_webrtc_mode_override() {
+        let error = Config::from_env_map(&env_map(&[("SYNCTV_WEBRTC_MODE", "p2p")]))
+            .expect_err("invalid webrtc mode override must fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("SYNCTV_WEBRTC_MODE"));
+        assert!(message.contains("p2p"));
+    }
+
     /// Helper to create a valid production config for validation tests
     fn valid_prod_config() -> Config {
         Config {
@@ -2660,11 +2694,9 @@ mod tests {
         config.cluster.enabled = true;
         config.livestream.hls_shared_storage = false;
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("hls_shared_storage") && e.contains("Cluster mode"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("hls_shared_storage") && e.contains("Cluster mode")));
     }
 
     #[test]
@@ -2737,11 +2769,9 @@ mod tests {
         let result = config.validate();
 
         let errors = result.expect_err("unsupported Redis Cluster backend must be rejected");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("Redis Cluster mode is not yet supported"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("Redis Cluster mode is not yet supported")));
     }
 
     #[test]
@@ -2750,11 +2780,9 @@ mod tests {
         config.server.grpc_port = 8080;
         config.server.http_port = 8080;
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("grpc_port") && e.contains("http_port"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("grpc_port") && e.contains("http_port")));
     }
 
     #[test]
@@ -2762,11 +2790,9 @@ mod tests {
         let mut config = valid_prod_config();
         config.livestream.rtmp_port = 8080;
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("rtmp_port") && e.contains("http_port"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("rtmp_port") && e.contains("http_port")));
     }
 
     #[test]
@@ -2774,11 +2800,9 @@ mod tests {
         let mut config = valid_prod_config();
         config.livestream.rtmp_port = 50051;
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("rtmp_port") && e.contains("grpc_port"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("rtmp_port") && e.contains("grpc_port")));
     }
 
     #[test]
@@ -2786,11 +2810,9 @@ mod tests {
         let mut config = valid_prod_config();
         config.server.http_port = 0;
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("http_port") && e.contains('0'))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("http_port") && e.contains('0')));
     }
 
     #[test]
@@ -2815,11 +2837,9 @@ mod tests {
         // 31 characters - just under the 32 minimum
         config.jwt.secret = "a".repeat(31);
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("JWT secret") && e.contains("32") && e.contains("characters"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("JWT secret") && e.contains("32") && e.contains("characters")));
     }
 
     #[test]
@@ -2872,11 +2892,9 @@ jwt:
         let mut config = valid_prod_config();
         config.bootstrap.root_password = "root".to_string();
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("Root password") && e.contains("default"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("Root password") && e.contains("default")));
     }
 
     #[test]
@@ -2916,11 +2934,9 @@ jwt:
         let mut config = valid_prod_config();
         config.bootstrap.root_username = "ab".to_string();
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("Root username") && e.contains('3'))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("Root username") && e.contains('3')));
     }
 
     #[test]
@@ -2929,11 +2945,9 @@ jwt:
         config.database.min_connections = 30;
         config.database.max_connections = 10;
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("min_connections") && e.contains("max_connections"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("min_connections") && e.contains("max_connections")));
     }
 
     #[test]
@@ -2941,11 +2955,9 @@ jwt:
         let mut config = valid_prod_config();
         config.database.max_connections = 0;
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("max_connections") && e.contains("greater than 0"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("max_connections") && e.contains("greater than 0")));
     }
 
     #[test]
@@ -2969,21 +2981,15 @@ jwt:
 
         let errors = config.validate().unwrap_err();
 
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("database.connect_timeout_seconds"))
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("database.idle_timeout_seconds"))
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("database.max_lifetime_seconds"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("database.connect_timeout_seconds")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("database.idle_timeout_seconds")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("database.max_lifetime_seconds")));
     }
 
     #[test]
@@ -3012,31 +3018,25 @@ jwt:
         let errors = config
             .validate()
             .expect_err("chat rate limit must be validated");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("messaging_rate_limits.chat_per_second"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("messaging_rate_limits.chat_per_second")));
 
         config.messaging_rate_limits.chat_per_second = 1;
         config.messaging_rate_limits.danmaku_per_second = 0;
         let errors = config
             .validate()
             .expect_err("danmaku rate limit must be validated");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("messaging_rate_limits.danmaku_per_second"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("messaging_rate_limits.danmaku_per_second")));
 
         config.messaging_rate_limits.danmaku_per_second = 1;
         config.messaging_rate_limits.window_seconds = 0;
         let errors = config.validate().expect_err("window must be validated");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("messaging_rate_limits.window_seconds"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("messaging_rate_limits.window_seconds")));
     }
 
     #[test]
@@ -3098,11 +3098,9 @@ jwt:
         config.email.smtp_host = "smtp.example.com".to_string();
         config.email.from_email = "@invalid".to_string();
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("from_email") && e.contains("not a valid"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("from_email") && e.contains("not a valid")));
     }
 
     #[test]
@@ -3138,11 +3136,9 @@ jwt:
         let mut config = valid_prod_config();
         config.redis.deployment_mode = RedisDeploymentMode::Cluster;
         let errors = config.validate().unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("Cluster") && e.contains("not yet supported"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("Cluster") && e.contains("not yet supported")));
     }
 
     #[test]

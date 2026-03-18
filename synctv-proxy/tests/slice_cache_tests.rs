@@ -1167,7 +1167,8 @@ async fn test_full_body_non_success_response_is_not_cached() {
         .unwrap();
     assert_eq!(resp1.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
-        resp1.headers()
+        resp1
+            .headers()
             .get("X-Cache-Status")
             .and_then(|v| v.to_str().ok()),
         Some("MISS")
@@ -1194,7 +1195,8 @@ async fn test_full_body_non_success_response_is_not_cached() {
         .unwrap();
     assert_eq!(resp2.status(), StatusCode::OK);
     assert_eq!(
-        resp2.headers()
+        resp2
+            .headers()
             .get("X-Cache-Status")
             .and_then(|v| v.to_str().ok()),
         Some("MISS"),
@@ -2530,9 +2532,12 @@ async fn test_slice_failed_background_revalidation_does_not_stick_updating_forev
     assert_eq!(stale_status, CacheStatus::Stale);
     assert_eq!(stale_data, stale_slice);
 
-    tokio::time::timeout(Duration::from_secs(2), failed_refresh_guard.wait_until_satisfied())
-        .await
-        .expect("failed background slice revalidation should still reach upstream");
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        failed_refresh_guard.wait_until_satisfied(),
+    )
+    .await
+    .expect("failed background slice revalidation should still reach upstream");
 
     drop(failed_refresh_guard);
 
@@ -3521,7 +3526,10 @@ async fn test_206_response_rejected_when_content_range_total_mismatches_expected
         .get_or_fetch_slice(&url, &headers, 0, total_size)
         .await;
 
-    assert!(result.is_err(), "206 with mismatched total size must be rejected");
+    assert!(
+        result.is_err(),
+        "206 with mismatched total size must be rejected"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("Content-Range") || err_msg.contains("total"),

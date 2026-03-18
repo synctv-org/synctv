@@ -7,8 +7,8 @@
 //! Run with: cargo test --test logout_blacklist_failure_tests -- --nocapture
 #![allow(clippy::unwrap_used)]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use synctv_core::service::{
     FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, TokenBlacklistStore,
 };

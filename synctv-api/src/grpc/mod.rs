@@ -1238,13 +1238,12 @@ mod tests {
     use super::{
         effective_grpc_request_timeout, extract_client_ip, grpc_unary_request_timeout,
         set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
-        should_mark_cluster_service_serving, should_mark_email_service_serving,
-        should_mark_livestream_relay_serving, should_mark_notification_service_serving,
-        should_fail_user_notification_fanout,
-        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
-        should_register_cluster_grpc_service, should_register_email_service,
-        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
-        GrpcHealthRegistrationState,
+        should_fail_user_notification_fanout, should_mark_cluster_service_serving,
+        should_mark_email_service_serving, should_mark_livestream_relay_serving,
+        should_mark_notification_service_serving, should_mark_oauth2_service_serving,
+        should_mark_provider_services_serving, should_register_cluster_grpc_service,
+        should_register_email_service, should_register_livestream_relay_service,
+        validate_cluster_grpc_runtime_requirements, GrpcHealthRegistrationState,
     };
     use std::net::SocketAddr;
     use tonic::metadata::{MetadataKey, MetadataValue};

@@ -1289,8 +1289,8 @@ impl StreamMessageHandler {
         room_id: &str,
         member: Option<&synctv_core::models::RoomMember>,
     ) -> ServerMessage {
-        use crate::proto::client::UserJoinedRoom;
         use crate::proto::client::server_message::Message;
+        use crate::proto::client::UserJoinedRoom;
         use synctv_proto::common::RoomMember as ProtoRoomMember;
 
         let (role_proto, permissions, added, removed, admin_added, admin_removed) = match member {
@@ -2828,8 +2828,8 @@ impl StreamMessageHandler {
 
     /// Send heartbeat acknowledgment to client
     fn send_heartbeat_ack(&self) -> Result<(), String> {
-        use crate::proto::client::HeartbeatAck;
         use crate::proto::client::server_message::Message;
+        use crate::proto::client::HeartbeatAck;
 
         let msg = ServerMessage {
             message: Some(Message::HeartbeatAck(HeartbeatAck {
@@ -3239,7 +3239,10 @@ fn membership_invalidation_requires_skip_cleanup(
 
 #[inline]
 fn initial_realtime_join_denial_reason(
-    member_lookup: &std::result::Result<Option<synctv_core::models::RoomMember>, synctv_core::Error>,
+    member_lookup: &std::result::Result<
+        Option<synctv_core::models::RoomMember>,
+        synctv_core::Error,
+    >,
 ) -> Option<&'static str> {
     match member_lookup {
         Ok(Some(member)) if member.status == synctv_core::models::MemberStatus::Banned => {
@@ -3375,8 +3378,8 @@ mod tests {
     use super::*;
     use crate::proto::client::server_message::Message;
     use std::collections::VecDeque;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
     use synctv_cluster::sync::{
         ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
@@ -4570,11 +4573,9 @@ mod tests {
         // Non-hex characters should be rejected
         let result = super::validate_danmaku_color(&Some("#GGGGGG".to_string()));
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("must contain only hex characters")
-        );
+        assert!(result
+            .unwrap_err()
+            .contains("must contain only hex characters"));
 
         let result = super::validate_danmaku_color(&Some("#ZZZZZZ".to_string()));
         assert!(result.is_err());
@@ -5164,8 +5165,10 @@ mod tests {
 
     #[test]
     fn test_initial_realtime_join_denial_reason_rejects_missing_member() {
-        let lookup: std::result::Result<Option<synctv_core::models::RoomMember>, synctv_core::Error> =
-            Ok(None);
+        let lookup: std::result::Result<
+            Option<synctv_core::models::RoomMember>,
+            synctv_core::Error,
+        > = Ok(None);
 
         assert_eq!(
             super::initial_realtime_join_denial_reason(&lookup),

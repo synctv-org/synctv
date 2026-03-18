@@ -1,11 +1,12 @@
 use std::fs::{File, OpenOptions};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use redis::AsyncCommands;
-use testcontainers::core::ImageExt;
+use testcontainers::core::{ImageExt, IntoContainerPort};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
@@ -124,6 +125,131 @@ fn named_redis_request(container_name: &str) -> testcontainers::ContainerRequest
         .with_label(TEST_CONTAINER_OWNER_LABEL, std::process::id().to_string())
 }
 
+fn redis_connection_url(host: &str, port: u16) -> String {
+    format!("redis://{}:{port}", format_socket_host(host))
+}
+
+fn format_socket_host(host: &str) -> String {
+    if matches!(host_address_family(host), Some(IpAddr::V6(_))) && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
+async fn resolve_host_port(container: &ContainerAsync<Redis>, internal_port: u16) -> (String, u16) {
+    let host = container
+        .get_host()
+        .await
+        .expect("Failed to get Redis host")
+        .to_string();
+    let ports = container
+        .ports()
+        .await
+        .expect("Failed to inspect Redis port mappings");
+    let endpoints = candidate_endpoints_for_host(
+        &host,
+        ports.map_to_host_port_ipv4(internal_port.tcp()),
+        ports.map_to_host_port_ipv6(internal_port.tcp()),
+    );
+
+    assert!(
+        !endpoints.is_empty(),
+        "Failed to resolve Redis endpoint for host {host}"
+    );
+
+    let deadline = std::time::Instant::now() + docker_startup_timeout();
+    let mut last_error = String::from("redis endpoint probe has not run yet");
+
+    while std::time::Instant::now() < deadline {
+        for (candidate_host, candidate_port) in &endpoints {
+            let redis_url = redis_connection_url(candidate_host, *candidate_port);
+            match redis::Client::open(redis_url.clone()) {
+                Ok(client) => match client.get_multiplexed_async_connection().await {
+                    Ok(mut conn) => {
+                        let ping_result: redis::RedisResult<String> =
+                            redis::cmd("PING").query_async(&mut conn).await;
+                        if ping_result.is_ok() {
+                            return (candidate_host.clone(), *candidate_port);
+                        }
+                        last_error = format!("ping failed for {redis_url}: {ping_result:?}");
+                    }
+                    Err(err) => {
+                        last_error = format!("connect failed for {redis_url}: {err}");
+                    }
+                },
+                Err(err) => {
+                    last_error = format!("client open failed for {redis_url}: {err}");
+                }
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+
+    panic!(
+        "Redis container did not become reachable within {:?} across endpoints {:?}: {}",
+        docker_startup_timeout(),
+        endpoints,
+        last_error
+    );
+}
+
+fn host_address_family(host: &str) -> Option<IpAddr> {
+    let normalized = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    normalized.parse::<IpAddr>().ok()
+}
+
+fn candidate_endpoints_for_host(
+    host: &str,
+    ipv4_port: Option<u16>,
+    ipv6_port: Option<u16>,
+) -> Vec<(String, u16)> {
+    let mut candidates = Vec::new();
+
+    match host_address_family(host) {
+        Some(IpAddr::V4(_)) => {
+            if let Some(port) = ipv4_port {
+                candidates.push((host.to_string(), port));
+            }
+            if let Some(port) = ipv6_port.filter(|port| Some(*port) != ipv4_port) {
+                candidates.push(("::1".to_string(), port));
+            }
+        }
+        Some(IpAddr::V6(_)) => {
+            if let Some(port) = ipv6_port {
+                candidates.push((host.to_string(), port));
+            }
+            if let Some(port) = ipv4_port.filter(|port| Some(*port) != ipv6_port) {
+                candidates.push(("127.0.0.1".to_string(), port));
+            }
+        }
+        None => {
+            if let Some(port) = ipv6_port.filter(|_| host == "localhost") {
+                candidates.push(("::1".to_string(), port));
+            }
+            if let Some(port) = ipv4_port {
+                let ipv4_host = if host == "localhost" {
+                    "127.0.0.1".to_string()
+                } else {
+                    host.to_string()
+                };
+                candidates.push((ipv4_host, port));
+            }
+            if let Some(port) =
+                ipv6_port.filter(|port| Some(*port) != ipv4_port && host != "localhost")
+            {
+                candidates.push((host.to_string(), port));
+            }
+        }
+    }
+
+    candidates
+}
+
 fn process_is_alive(pid: &str) -> bool {
     Command::new("kill")
         .args(["-0", pid])
@@ -213,6 +339,18 @@ impl RedisContainer {
             .expect("redis container should still be present")
     }
 
+    pub async fn host(&self) -> String {
+        self.host_port(6379).await.0
+    }
+
+    pub async fn port_ipv4(&self, internal_port: u16) -> u16 {
+        self.host_port(internal_port).await.1
+    }
+
+    pub async fn host_port(&self, internal_port: u16) -> (String, u16) {
+        resolve_host_port(self.raw(), internal_port).await
+    }
+
     #[cfg(test)]
     const fn is_cleaned_up(&self) -> bool {
         self.cleaned_up
@@ -256,11 +394,8 @@ async fn start_redis_inner(label: &str) -> (RedisContainer, String, redis::Clien
         .expect("Docker container startup timed out (is Docker running?)")
         .expect("Failed to start Redis")
     };
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{port}");
+    let (host, port) = resolve_host_port(&container, 6379).await;
+    let redis_url = redis_connection_url(&host, port);
     let client = redis::Client::open(redis_url.clone()).expect("Failed to create Redis client");
     wait_for_redis_ready(&client).await;
     (
@@ -449,6 +584,70 @@ mod tests {
         assert!(
             container.is_cleaned_up(),
             "explicit cleanup must suppress the Drop-time docker rm fallback"
+        );
+    }
+
+    #[test]
+    fn redis_connection_url_uses_resolved_host() {
+        let url = redis_connection_url("docker.internal", 6379);
+
+        assert_eq!(url, "redis://docker.internal:6379");
+        assert!(
+            !url.contains("127.0.0.1"),
+            "redis URL must not hardcode localhost"
+        );
+    }
+
+    #[test]
+    fn redis_connection_url_brackets_ipv6_literals() {
+        let url = redis_connection_url("::1", 6379);
+
+        assert_eq!(url, "redis://[::1]:6379");
+    }
+
+    #[test]
+    fn resolve_host_port_uses_ipv4_port_for_domain_hosts() {
+        assert_eq!(
+            candidate_endpoints_for_host("docker.internal", Some(6379), Some(16380)),
+            vec![
+                ("docker.internal".to_string(), 6379),
+                ("docker.internal".to_string(), 16380)
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_host_port_keeps_reported_host_for_ipv4_domain_mappings() {
+        assert_eq!(
+            candidate_endpoints_for_host("10.0.0.8", Some(6379), None),
+            vec![("10.0.0.8".to_string(), 6379)]
+        );
+    }
+
+    #[test]
+    fn resolve_host_port_uses_ipv6_port_for_ipv6_hosts() {
+        assert_eq!(
+            candidate_endpoints_for_host("[::1]", Some(6379), Some(16380)),
+            vec![
+                ("[::1]".to_string(), 16380),
+                ("127.0.0.1".to_string(), 6379)
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_host_port_uses_ipv6_when_domain_only_has_ipv6_mapping() {
+        assert_eq!(
+            candidate_endpoints_for_host("docker.internal", None, Some(16380)),
+            vec![("docker.internal".to_string(), 16380)]
+        );
+    }
+
+    #[test]
+    fn resolve_host_port_rewrites_localhost_to_ipv6_literal_when_needed() {
+        assert_eq!(
+            candidate_endpoints_for_host("localhost", Some(6379), Some(16380)),
+            vec![("::1".to_string(), 16380), ("127.0.0.1".to_string(), 6379)]
         );
     }
 }

@@ -772,12 +772,10 @@ impl Application {
                         "Deferred cleanup completed after leadership gain"
                     );
 
-                    let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new(
-                        pool,
-                        leader_runtime,
-                    )
-                    .with_cleanup_config(cleanup_config.clone())
-                    .with_settings_registry(settings_registry);
+                    let db_maintenance =
+                        synctv_core::service::DatabaseMaintenanceService::new(pool, leader_runtime)
+                            .with_cleanup_config(cleanup_config.clone())
+                            .with_settings_registry(settings_registry);
                     db_maintenance.run_all_maintenance().await;
                     info!("Deferred database maintenance completed after leadership gain");
                 })

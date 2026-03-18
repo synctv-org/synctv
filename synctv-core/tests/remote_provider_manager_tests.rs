@@ -30,8 +30,6 @@ struct TestInfra {
     pool: PgPool,
     redis_client: redis::Client,
     #[allow(dead_code)]
-    redis_url: String,
-    #[allow(dead_code)]
     postgres: synctv_core_testing::TestContainer,
     #[allow(dead_code)]
     redis: synctv_core_testing::RedisContainer,
@@ -47,18 +45,10 @@ impl TestInfra {
         )
         .await;
         let (redis, redis_client) = start_redis_with_client().await;
-        let redis_url = format!(
-            "redis://127.0.0.1:{}",
-            redis
-                .get_host_port_ipv4(6379)
-                .await
-                .expect("Failed to get Redis port")
-        );
 
         Self {
             pool,
             redis_client,
-            redis_url,
             postgres,
             redis,
         }

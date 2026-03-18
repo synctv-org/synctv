@@ -240,7 +240,8 @@ async fn test_broadcast_to_connection_keeps_current_thread_target_registered_whe
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn test_broadcast_to_user_current_thread_reliable_delivery_does_not_panic_when_channel_full() {
+async fn test_broadcast_to_user_current_thread_defers_reliable_delivery_when_channel_full(
+) {
     let hub = RoomMessageHub::new();
     let room = rid("r1-user-current-thread");
     let user = uid("u1");
@@ -274,31 +275,149 @@ async fn test_broadcast_to_user_current_thread_reliable_delivery_does_not_panic_
     let sent = notify
         .await
         .expect("broadcast_to_user task should not panic");
-    assert!(
-        matches!(sent, 0 | 1),
-        "current-thread reliable fallback should return a bounded delivery count without panicking"
+    assert_eq!(
+        sent, 1,
+        "current-thread runtimes should count deferred critical delivery as locally accepted"
     );
 
     assert_eq!(
         hub.connection_count(),
         1,
-        "current-thread reliable fallback must keep the subscriber registered while retrying asynchronously"
+        "deferred reliable delivery must not unsubscribe the subscriber"
+    );
+
+    let _drained = rx.recv().await.expect("prefill message should exist");
+    let mut delivered_kick = false;
+    for _ in 0..512 {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("deferred reliable delivery should eventually enqueue once capacity is available")
+            .expect("channel should remain open");
+        if matches!(msg, ClusterEvent::KickUserFromRoom { .. }) {
+            delivered_kick = true;
+            break;
+        }
+    }
+
+    assert!(
+        delivered_kick,
+        "current-thread fallback must still enqueue the critical event after capacity is freed"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_broadcast_current_thread_defers_reliable_delivery_when_channel_full() {
+    let hub = RoomMessageHub::new();
+    let room = rid("r1-broadcast-current-thread");
+    let user = uid("u1");
+
+    let mut rx = hub
+        .subscribe(room.clone(), user, "conn-broadcast".to_string())
+        .await
+        .expect("subscribe should succeed");
+
+    for _ in 0..512 {
+        let sent = hub.broadcast(&room, chat_event(&room, &uid("u2")));
+        assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
+    }
+
+    let event = ClusterEvent::RoomDeleted {
+        event_id: nanoid::nanoid!(16),
+        room_id: room.clone(),
+        deleted_by: uid("deleter"),
+        timestamp: chrono::Utc::now(),
+    };
+
+    let hub_for_task = hub.clone();
+    let room_for_task = room.clone();
+    let notify = tokio::spawn(async move { hub_for_task.broadcast(&room_for_task, event) });
+
+    tokio::task::yield_now().await;
+
+    let sent = notify.await.expect("broadcast task should not panic");
+    assert_eq!(
+        sent, 1,
+        "current-thread synchronous broadcast should count deferred critical delivery as local success"
     );
 
     let _drained = rx.recv().await.expect("prefill message should exist");
 
-    let delivered = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        loop {
-            let msg = rx.recv().await.expect("channel should remain open");
-            if matches!(msg, ClusterEvent::KickUserFromRoom { .. }) {
-                break;
-            }
+    let mut delivered_delete = false;
+    for _ in 0..512 {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("deferred critical broadcast should eventually enqueue once capacity is available")
+            .expect("channel should remain open");
+        if matches!(msg, ClusterEvent::RoomDeleted { .. }) {
+            delivered_delete = true;
+            break;
         }
-    })
-    .await;
+    }
+
     assert!(
-        delivered.is_ok(),
-        "current-thread reliable fallback should still enqueue the critical event once capacity is freed"
+        delivered_delete,
+        "current-thread broadcast fallback must still enqueue the critical event after capacity is freed"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_broadcast_to_user_current_thread_deferred_delivery_keeps_connection_registered() {
+    let hub = RoomMessageHub::new();
+    let room = rid("r1-user-current-thread-registered");
+    let user = uid("u1");
+
+    let mut rx = hub
+        .subscribe(room.clone(), user.clone(), "conn-user".to_string())
+        .await
+        .expect("subscribe should succeed");
+
+    for _ in 0..512 {
+        let sent = hub.broadcast_to_user(&room, &user, chat_event(&room, &uid("u2")));
+        assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
+    }
+
+    let event = ClusterEvent::KickUserFromRoom {
+        event_id: nanoid::nanoid!(16),
+        room_id: room.clone(),
+        user_id: user.clone(),
+        reason: "testing".to_string(),
+        timestamp: chrono::Utc::now(),
+    };
+
+    let hub_for_task = hub.clone();
+    let room_for_task = room.clone();
+    let user_for_task = user.clone();
+    let notify = tokio::spawn(async move {
+        hub_for_task.broadcast_to_user(&room_for_task, &user_for_task, event)
+    });
+
+    tokio::task::yield_now().await;
+
+    assert_eq!(
+        hub.connection_count(),
+        1,
+        "deferred current-thread delivery must keep the subscriber registered while waiting for capacity"
+    );
+
+    let _drained = rx.recv().await.expect("prefill message should exist");
+
+    let sent = notify.await.expect("broadcast_to_user task should not panic");
+    assert_eq!(sent, 1, "deferred delivery should still count as local acceptance");
+
+    let mut delivered_kick = false;
+    for _ in 0..512 {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("deferred reliable delivery should eventually enqueue")
+            .expect("channel should remain open");
+        if matches!(msg, ClusterEvent::KickUserFromRoom { .. }) {
+            delivered_kick = true;
+            break;
+        }
+    }
+    assert!(
+        delivered_kick,
+        "deferred current-thread delivery must still enqueue the critical event"
     );
 }
 

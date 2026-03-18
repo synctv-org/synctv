@@ -76,6 +76,10 @@ impl TNetIO for MockNetIO {
         self.read().await
     }
 
+    async fn shutdown(&mut self) -> Result<(), BytesIOError> {
+        Ok(())
+    }
+
     fn get_net_type(&self) -> NetType {
         NetType::TCP
     }

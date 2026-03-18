@@ -14,8 +14,14 @@ use crate::Config;
 /// Initialize database connection pool
 ///
 /// Note: Migrations should be run separately by the binary crate.
-pub async fn init_database(config: &Config) -> Result<PgPool> {
-    Ok(init_database_with_cancel(config, None).await?.pool)
+///
+/// This convenience entry point intentionally does not spawn the background
+/// pool metrics task because it has no cancellation token to bind the task
+/// lifetime to. Callers that need the metrics task must use
+/// [`init_database_with_cancel`] and register the returned handle with their
+/// shutdown coordinator.
+pub async fn init_database(config: &Config) -> Result<DatabaseInit> {
+    init_database_with_cancel(config, None).await
 }
 
 #[derive(Debug)]
@@ -70,13 +76,15 @@ pub async fn init_database_with_cancel(
     // Set database pool metrics
     crate::metrics::database::DB_POOL_SIZE_MAX.set(i64::from(config.database.max_connections));
 
-    // Spawn periodic task to update pool usage metrics.
-    // Respects the CancellationToken for graceful shutdown.
-    let pool_clone = pool.clone();
-    let metrics_task = crate::spawn::spawn_monitored("db_pool_metrics", async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(15));
-        loop {
-            if let Some(ref token) = cancel {
+    // Spawn periodic task to update pool usage metrics only when the caller
+    // supplies a cancellation token and can therefore manage the task
+    // lifecycle. Starting the task without any shutdown hook would leak it for
+    // the rest of the process lifetime while it continues to hold the pool.
+    let metrics_task = cancel.map(|token| {
+        let pool_clone = pool.clone();
+        crate::spawn::spawn_monitored("db_pool_metrics", async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(15));
+            loop {
                 tokio::select! {
                     () = token.cancelled() => {
                         tracing::debug!("DB pool metrics task cancelled");
@@ -84,27 +92,25 @@ pub async fn init_database_with_cancel(
                     }
                     _ = ticker.tick() => {}
                 }
-            } else {
-                ticker.tick().await;
+                let size = i64::from(pool_clone.size());
+                let idle = pool_clone.num_idle() as i64;
+                crate::metrics::database::DB_CONNECTIONS_ACTIVE.set(size - idle);
+                crate::metrics::database::DB_CONNECTIONS_IDLE.set(idle);
+                let max = crate::metrics::database::DB_POOL_SIZE_MAX.get();
+                if max > 0 {
+                    crate::metrics::database::DB_POOL_UTILIZATION
+                        .with_label_values(&["main"])
+                        .set((size - idle) as f64 / max as f64);
+                }
             }
-            let size = i64::from(pool_clone.size());
-            let idle = pool_clone.num_idle() as i64;
-            crate::metrics::database::DB_CONNECTIONS_ACTIVE.set(size - idle);
-            crate::metrics::database::DB_CONNECTIONS_IDLE.set(idle);
-            let max = crate::metrics::database::DB_POOL_SIZE_MAX.get();
-            if max > 0 {
-                crate::metrics::database::DB_POOL_UTILIZATION
-                    .with_label_values(&["main"])
-                    .set((size - idle) as f64 / max as f64);
-            }
-        }
+        })
     });
 
     info!("Database connected successfully");
 
     Ok(DatabaseInit {
         pool,
-        metrics_task: Some(metrics_task),
+        metrics_task,
     })
 }
 
@@ -169,6 +175,8 @@ mod tests {
     use super::*;
     use sqlx::postgres::PgRow;
     use sqlx::Row;
+    use tokio::time::timeout;
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
@@ -242,5 +250,70 @@ mod tests {
             timeout, "0",
             "connections returned to the OLTP pool must not retain unlimited statement_timeout"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn init_database_without_cancel_does_not_spawn_unmanaged_metrics_task() {
+        let (_postgres, database_url) =
+            synctv_core_testing::create_test_database_url_with_label("synctv_test", "init-no-metrics")
+                .await;
+
+        let config = crate::Config {
+            database: crate::config::DatabaseConfig {
+                url: database_url,
+                max_connections: 5,
+                min_connections: 1,
+                connect_timeout_seconds: 5,
+                idle_timeout_seconds: 600,
+                max_lifetime_seconds: 1800,
+            },
+            ..crate::Config::default()
+        };
+
+        let db_init = init_database(&config)
+            .await
+            .expect("database init should succeed without background task");
+        assert!(
+            db_init.metrics_task.is_none(),
+            "init_database must not spawn an unmanaged metrics task"
+        );
+        db_init.pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn init_database_with_cancel_returns_stoppable_metrics_task() {
+        let (_postgres, database_url) =
+            synctv_core_testing::create_test_database_url_with_label("synctv_test", "init-with-metrics")
+                .await;
+
+        let config = crate::Config {
+            database: crate::config::DatabaseConfig {
+                url: database_url,
+                max_connections: 5,
+                min_connections: 1,
+                connect_timeout_seconds: 5,
+                idle_timeout_seconds: 600,
+                max_lifetime_seconds: 1800,
+            },
+            ..crate::Config::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let db_init = init_database_with_cancel(&config, Some(cancel.clone()))
+            .await
+            .expect("database init with cancellation should succeed");
+
+        let handle = db_init
+            .metrics_task
+            .expect("cancellable init must return a managed metrics task");
+
+        cancel.cancel();
+        timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("metrics task should stop after cancellation")
+            .expect("metrics task should exit cleanly");
+        db_init.pool.close().await;
     }
 }

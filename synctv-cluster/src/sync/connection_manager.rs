@@ -4690,9 +4690,28 @@ mod tests {
             .expect("Failed to get Redis port");
         let redis_url = format!("redis://{host}:{port}");
         let client = redis::Client::open(redis_url.as_str()).expect("Failed to open Redis client");
-        let conn = redis::aio::ConnectionManager::new(client.clone())
-            .await
-            .expect("Failed to create Redis ConnectionManager");
-        (container, client, conn, prefix.to_string())
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match redis::aio::ConnectionManager::new(client.clone()).await {
+                Ok(mut conn) => match redis::cmd("PING").query_async::<String>(&mut conn).await {
+                    Ok(_) => {
+                        return (container, client, conn, prefix.to_string());
+                    }
+                    Err(error) => {
+                        if tokio::time::Instant::now() >= deadline {
+                            panic!("Redis test container did not become ready in time: {error}");
+                        }
+                    }
+                },
+                Err(error) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        panic!("Failed to create Redis ConnectionManager: {error}");
+                    }
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }

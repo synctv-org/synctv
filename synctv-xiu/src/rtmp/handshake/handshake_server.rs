@@ -382,6 +382,9 @@ mod tests {
         async fn read_timeout(&mut self, _duration: Duration) -> Result<BytesMut, BytesIOError> {
             Ok(BytesMut::new())
         }
+        async fn shutdown(&mut self) -> Result<(), BytesIOError> {
+            Ok(())
+        }
         fn get_net_type(&self) -> NetType {
             NetType::TCP
         }

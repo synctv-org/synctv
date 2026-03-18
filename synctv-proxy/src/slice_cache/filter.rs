@@ -17,6 +17,7 @@ use crate::apply_provider_headers;
 use crate::{send_head_with_redirect_validation, send_with_redirect_validation};
 
 use super::config::is_manifest_content_type;
+use super::etag::CachedResourceMeta;
 use super::range::{
     aligned_range_for_slice, compute_needed_slices, parse_content_range, parse_range_header,
 };
@@ -32,6 +33,26 @@ fn parse_content_length_header(resp: &reqwest::Response) -> Option<u64> {
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok())
+}
+
+struct FullBodyUpdateGuard<'a> {
+    cache: &'a SliceCache,
+    key: String,
+}
+
+impl<'a> FullBodyUpdateGuard<'a> {
+    fn new(cache: &'a SliceCache, url: &str, provider_headers: &HashMap<String, String>) -> Self {
+        Self {
+            cache,
+            key: SliceCache::full_body_key(url, provider_headers),
+        }
+    }
+}
+
+impl Drop for FullBodyUpdateGuard<'_> {
+    fn drop(&mut self) {
+        self.cache.finish_full_body_update(&self.key);
+    }
 }
 
 fn parse_total_size_from_content_range(
@@ -311,82 +332,14 @@ pub(super) async fn full_body_cache_path(
             let bg_headers = provider_headers.clone();
             let bg_meta = cache.get_resource_meta(url, provider_headers).await;
             tokio::spawn(async move {
-                let mut req = bg_cache.client().get(&bg_url);
-                req = match apply_provider_headers(req, &bg_url, &bg_headers) {
-                    Ok(req) => req,
-                    Err(error) => {
-                        tracing::warn!(
-                            url = %bg_url,
-                            error = %error,
-                            "Skipping background cache revalidation due to invalid provider headers"
-                        );
-                        return;
-                    }
-                };
-                if let Some(ref meta) = bg_meta {
-                    if let Some(ref etag) = meta.etag {
-                        req = req.header("If-None-Match", etag.as_str());
-                    }
-                    if let Some(ref lm) = meta.last_modified {
-                        req = req.header("If-Modified-Since", lm.as_str());
-                    }
-                }
-                match send_with_redirect_validation(bg_cache.client(), req).await {
-                    Ok(proxy_response)
-                        if proxy_response.response.status()
-                            == reqwest::StatusCode::NOT_MODIFIED =>
-                    {
-                        let resp = proxy_response.response;
-                        // Still valid -- refresh TTL so the next request is a HIT instead of
-                        // repeatedly re-entering the stale path.
-                        let _ = resp.bytes().await;
-                        if let Some((data, content_type)) = bg_cache
-                            .get_full_body_cached_entry(&bg_url, &bg_headers)
-                            .await
-                        {
-                            let (etag, last_modified) = bg_meta
-                                .as_ref()
-                                .map(|meta| (meta.etag.as_deref(), meta.last_modified.as_deref()))
-                                .unwrap_or((None, None));
-                            let ttl = match content_type.as_deref() {
-                                Some(ct) if is_manifest_content_type(ct) => {
-                                    bg_cache.config().manifest_ttl
-                                }
-                                _ => bg_cache.config().segment_ttl,
-                            };
-                            bg_cache
-                                .put_full_body(
-                                    &bg_url,
-                                    &bg_headers,
-                                    data,
-                                    etag,
-                                    last_modified,
-                                    content_type.as_deref(),
-                                    ttl,
-                                )
-                                .await;
-                        }
-                    }
-                    Ok(proxy_response) => {
-                        let resp = proxy_response.response;
-                        if let Err(error) =
-                            refresh_full_body_cache_entry(&bg_cache, &bg_url, &bg_headers, resp)
-                                .await
-                        {
-                            tracing::debug!(
-                                url = %bg_url,
-                                error = %error,
-                                "Background full-body revalidation failed to update cache"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            url = %bg_url,
-                            error = %e,
-                            "Background full-body revalidation failed"
-                        );
-                    }
+                if let Err(error) =
+                    revalidate_stale_full_body_entry(&bg_cache, &bg_url, &bg_headers, bg_meta).await
+                {
+                    tracing::debug!(
+                        url = %bg_url,
+                        error = %error,
+                        "Background full-body revalidation failed to update cache"
+                    );
                 }
             });
         }
@@ -484,19 +437,75 @@ pub(super) async fn full_body_cache_path(
     handle_full_body_response(cache, url, provider_headers, resp, pre_status).await
 }
 
+async fn revalidate_stale_full_body_entry(
+    cache: &SliceCache,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+    existing_meta: Option<CachedResourceMeta>,
+) -> Result<(), anyhow::Error> {
+    let _update_guard = FullBodyUpdateGuard::new(cache, url, provider_headers);
+
+    let mut req = cache.client().get(url);
+    req = apply_provider_headers(req, url, provider_headers).map_err(|error| {
+        anyhow::anyhow!(
+            "Skipping background cache revalidation due to invalid provider headers: {error}"
+        )
+    })?;
+
+    if let Some(ref meta) = existing_meta {
+        if let Some(ref etag) = meta.etag {
+            req = req.header("If-None-Match", etag.as_str());
+        }
+        if let Some(ref lm) = meta.last_modified {
+            req = req.header("If-Modified-Since", lm.as_str());
+        }
+    }
+
+    let resp = send_with_redirect_validation(cache.client(), req)
+        .await
+        .map_err(|e| anyhow::anyhow!("Background full-body revalidation failed: {e}"))?
+        .response;
+
+    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+        let _ = resp.bytes().await;
+        if let Some((data, content_type)) = cache.get_full_body_cached_entry(url, provider_headers).await
+        {
+            let (etag, last_modified) = existing_meta
+                .as_ref()
+                .map(|meta| (meta.etag.as_deref(), meta.last_modified.as_deref()))
+                .unwrap_or((None, None));
+            let ttl = match content_type.as_deref() {
+                Some(ct) if is_manifest_content_type(ct) => cache.config().manifest_ttl,
+                _ => cache.config().segment_ttl,
+            };
+            cache.put_full_body(
+                url,
+                provider_headers,
+                data,
+                etag,
+                last_modified,
+                content_type.as_deref(),
+                ttl,
+            )
+            .await;
+        }
+        return Ok(());
+    }
+
+    refresh_full_body_cache_entry(cache, url, provider_headers, resp).await
+}
+
 async fn refresh_full_body_cache_entry(
     cache: &SliceCache,
     url: &str,
     provider_headers: &HashMap<String, String>,
     _resp: reqwest::Response,
 ) -> Result<(), anyhow::Error> {
+    let _update_guard = FullBodyUpdateGuard::new(cache, url, provider_headers);
+
     if !_resp.status().is_success() {
-        let key = SliceCache::full_body_key(url, provider_headers);
-        cache.finish_full_body_update(&key);
         return Ok(());
     }
-
-    let key = SliceCache::full_body_key(url, provider_headers);
     let content_type = _resp
         .headers()
         .get("content-type")
@@ -520,7 +529,6 @@ async fn refresh_full_body_cache_entry(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
         if buf.len().saturating_add(chunk.len()) > max_body {
-            cache.finish_full_body_update(&key);
             return Ok(());
         }
         buf.extend_from_slice(&chunk);
@@ -542,7 +550,6 @@ async fn refresh_full_body_cache_entry(
             ttl,
         )
         .await;
-    cache.finish_full_body_update(&key);
 
     Ok(())
 }

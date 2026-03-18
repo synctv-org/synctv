@@ -10,6 +10,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use bytes::Bytes;
 use http_body_util::BodyExt;
+use sha2::{Digest, Sha256};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -36,6 +37,24 @@ fn mock_client(mock_server: &MockServer) -> reqwest::Client {
 fn slice_cache_for_mock(config: SliceCacheConfig, mock_server: &MockServer) -> SliceCache {
     let client = mock_client(mock_server);
     SliceCache::new_with_client(config, client)
+}
+
+fn full_body_cache_key(url: &str, provider_headers: &HashMap<String, String>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(url.as_bytes());
+    hasher.update(b"\0");
+
+    let mut sorted: Vec<(&String, &String)> = provider_headers.iter().collect();
+    sorted.sort_by_key(|(k, _)| *k);
+    for (k, v) in sorted {
+        hasher.update(k.as_bytes());
+        hasher.update(b"=");
+        hasher.update(v.as_bytes());
+        hasher.update(b"\n");
+    }
+
+    hasher.update(b"\0full");
+    hex::encode(hasher.finalize())
 }
 
 // ==================================================================
@@ -2095,6 +2114,106 @@ async fn test_full_body_failed_revalidation_does_not_stick_updating_forever() {
     .expect("failed background revalidation should clear updating marker and allow a retry");
 }
 
+#[tokio::test]
+async fn test_full_body_304_revalidation_with_evicted_entry_does_not_stick_updating_forever() {
+    let mock_server = MockServer::start().await;
+
+    let first_guard = Mock::given(method("GET"))
+        .and(path("/stale-304-evicted.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("version-1")
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("Content-Length", "9")
+                .insert_header("ETag", "\"version-1\""),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        segment_ttl: Duration::from_millis(50),
+        stale_max_age: Duration::from_secs(5),
+        stale_while_revalidate: true,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/stale-304-evicted.bin");
+    let provider_headers = HashMap::new();
+
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
+    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body1.as_ref(), b"version-1");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(first_guard);
+
+    let not_modified_guard = Mock::given(method("GET"))
+        .and(path("/stale-304-evicted.bin"))
+        .and(header("If-None-Match", "\"version-1\""))
+        .respond_with(ResponseTemplate::new(304))
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let stale_resp =
+        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+            .await
+            .unwrap();
+    assert_eq!(
+        stale_resp
+            .headers()
+            .get("X-Cache-Status")
+            .and_then(|v| v.to_str().ok()),
+        Some("STALE")
+    );
+    let stale_body = stale_resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(stale_body.as_ref(), b"version-1");
+
+    let body_key = full_body_cache_key(&url, &provider_headers);
+    cache.backend().remove(&body_key).await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(not_modified_guard);
+
+    Mock::given(method("GET"))
+        .and(path("/stale-304-evicted.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("version-2")
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("Content-Length", "9")
+                .insert_header("ETag", "\"version-2\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let resp =
+                synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+                    .await
+                    .unwrap();
+            let status = resp
+                .headers()
+                .get("X-Cache-Status")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .unwrap_or_default();
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            if matches!(status.as_str(), "EXPIRED" | "HIT") && body.as_ref() == b"version-2" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("304 revalidation with an evicted body must clear updating state and allow refetch");
+}
+
 /// Background stale revalidation must ignore non-success responses instead of
 /// overwriting a previously good cached body with an error page.
 #[tokio::test]
@@ -2258,6 +2377,218 @@ async fn test_slice_stale_when_expired_within_window() {
         Some("STALE"),
         "Expired slice within stale window should return STALE"
     );
+}
+
+/// The first stale slice request should trigger a background refresh so a
+/// subsequent request observes fresh data instead of staying stale forever.
+#[tokio::test]
+async fn test_slice_stale_request_triggers_background_revalidation() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 1024;
+    let stale_slice = Bytes::from(vec![0x11u8; 1024]);
+    let fresh_slice = Bytes::from(vec![0x22u8; 1024]);
+
+    let initial_guard = Mock::given(method("GET"))
+        .and(path("/stale-refresh.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(stale_slice.clone())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024"),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        segment_ttl: Duration::from_millis(50),
+        stale_max_age: Duration::from_secs(30),
+        stale_while_revalidate: true,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/stale-refresh.bin");
+    let headers = HashMap::new();
+
+    let (first_data, first_status) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(first_status, CacheStatus::Miss);
+    assert_eq!(first_data, stale_slice);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    drop(initial_guard);
+
+    let refresh_guard = Mock::given(method("GET"))
+        .and(path("/stale-refresh.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(fresh_slice.clone())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024"),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let (stale_data, stale_status) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(stale_status, CacheStatus::Stale);
+    assert_eq!(
+        stale_data, stale_slice,
+        "the stale response should still serve the previously cached bytes"
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), refresh_guard.wait_until_satisfied())
+        .await
+        .expect("background slice revalidation should reach upstream");
+
+    let refreshed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let (data, status) = cache
+                .get_or_fetch_slice(&url, &headers, 0, total_size)
+                .await
+                .unwrap();
+            if status == CacheStatus::Hit && data == fresh_slice {
+                break (data, status);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background slice revalidation should refresh the cached slice");
+
+    assert_eq!(refreshed.1, CacheStatus::Hit);
+    assert_eq!(refreshed.0, fresh_slice);
+}
+
+/// A failed slice background revalidation must clear the updating marker so a
+/// later stale request can trigger a fresh retry instead of staying stuck in
+/// Updating forever.
+#[tokio::test]
+async fn test_slice_failed_background_revalidation_does_not_stick_updating_forever() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 2048;
+    let stale_slice = Bytes::from(vec![0x21u8; 1024]);
+    let fresh_slice = Bytes::from(vec![0x42u8; 1024]);
+
+    let initial_guard = Mock::given(method("GET"))
+        .and(path("/slice-stale-retry.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(stale_slice.clone())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024"),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        segment_ttl: Duration::from_millis(50),
+        stale_max_age: Duration::from_secs(30),
+        stale_while_revalidate: true,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/slice-stale-retry.bin");
+    let headers = HashMap::new();
+
+    let (first_data, first_status) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(first_status, CacheStatus::Miss);
+    assert_eq!(first_data, stale_slice);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(initial_guard);
+
+    let failed_refresh_guard = Mock::given(method("GET"))
+        .and(path("/slice-stale-retry.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("temporary failure"))
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let (stale_data, stale_status) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(stale_status, CacheStatus::Stale);
+    assert_eq!(stale_data, stale_slice);
+
+    tokio::time::timeout(Duration::from_secs(2), failed_refresh_guard.wait_until_satisfied())
+        .await
+        .expect("failed background slice revalidation should still reach upstream");
+
+    drop(failed_refresh_guard);
+
+    let successful_refresh_guard = Mock::given(method("GET"))
+        .and(path("/slice-stale-retry.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(fresh_slice.clone())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024"),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let retry_status = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let (_, status) = cache
+                .get_or_fetch_slice(&url, &headers, 0, total_size)
+                .await
+                .unwrap();
+            if status == CacheStatus::Stale {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("after a failed background refresh, stale requests must eventually be able to trigger a retry");
+    assert_eq!(retry_status, CacheStatus::Stale);
+
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        successful_refresh_guard.wait_until_satisfied(),
+    )
+    .await
+    .expect("a subsequent stale request should trigger a new background slice revalidation");
+
+    let refreshed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let (data, status) = cache
+                .get_or_fetch_slice(&url, &headers, 0, total_size)
+                .await
+                .unwrap();
+            if status == CacheStatus::Hit && data == fresh_slice {
+                break (data, status);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("successful retry should refresh the cached slice");
+
+    assert_eq!(refreshed.1, CacheStatus::Hit);
+    assert_eq!(refreshed.0, fresh_slice);
 }
 
 // ------------------------------------------------------------------

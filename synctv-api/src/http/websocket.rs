@@ -775,11 +775,7 @@ pub async fn websocket_handler(
     let connection_id = prepared.connection_id.clone();
     let reservation = prepared.reservation.clone();
     commit_prevalidated_ticket(&state, &rid, &auth).await.map_err(|error| {
-        let manager = state.connection_manager.clone();
-        let reservation = reservation.clone();
-        tokio::spawn(async move {
-            reservation.release(&manager);
-        });
+        reservation.release(&state.connection_manager);
         error
     })?;
 
@@ -856,11 +852,7 @@ impl Drop for ReservationCleanupGuard {
             return;
         }
 
-        let connection_manager = Arc::clone(&self.connection_manager);
-        let reservation = self.reservation.clone();
-        tokio::spawn(async move {
-            reservation.release(&connection_manager);
-        });
+        self.reservation.release(&self.connection_manager);
     }
 }
 
@@ -979,9 +971,7 @@ fn build_failed_upgrade_cleanup(
             error = %error,
             "WebSocket upgrade failed after reserving connection capacity; releasing reservation"
         );
-        tokio::spawn(async move {
-            reservation.release(&connection_manager);
-        });
+        reservation.release(&connection_manager);
     }
 }
 
@@ -1637,7 +1627,6 @@ mod tests {
 
         let cleanup = build_failed_upgrade_cleanup(manager.clone(), reservation);
         cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
-        tokio::task::yield_now().await;
 
         assert!(
             manager.reserve_user_slot(&user_id).is_ok(),

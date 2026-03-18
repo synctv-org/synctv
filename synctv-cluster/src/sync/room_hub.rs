@@ -55,10 +55,10 @@ async fn deliver_reliable_event(
     event: ClusterEvent,
     room_id: RoomId,
     connection_id: ConnectionId,
-) -> bool {
+) -> ReliableDeliveryOutcome {
     let event_type = event.event_type().to_string();
     match tokio::time::timeout(CRITICAL_EVENT_SEND_TIMEOUT, sender.send(event)).await {
-        Ok(Ok(())) => true,
+        Ok(Ok(())) => ReliableDeliveryOutcome::Delivered,
         Ok(Err(e)) => {
             warn!(
                 room_id = %room_id.as_str(),
@@ -66,7 +66,7 @@ async fn deliver_reliable_event(
                 event_type = %event_type,
                 "Failed to deliver reliable event (channel closed): {e}"
             );
-            false
+            ReliableDeliveryOutcome::Closed
         }
         Err(_) => {
             warn!(
@@ -76,9 +76,17 @@ async fn deliver_reliable_event(
                 timeout_secs = CRITICAL_EVENT_SEND_TIMEOUT.as_secs(),
                 "Reliable event delivery timed out"
             );
-            false
+            ReliableDeliveryOutcome::TimedOut
         }
     }
+}
+
+enum ReliableDeliveryOutcome {
+    Delivered,
+    Closed,
+    TimedOut,
+    Unavailable,
+    Deferred,
 }
 
 fn block_on_reliable_delivery(
@@ -86,7 +94,7 @@ fn block_on_reliable_delivery(
     event: ClusterEvent,
     room_id: RoomId,
     connection_id: ConnectionId,
-) -> bool {
+) -> ReliableDeliveryOutcome {
     let delivery = deliver_reliable_event(sender, event, room_id, connection_id);
 
     match tokio::runtime::Handle::try_current() {
@@ -96,15 +104,19 @@ fn block_on_reliable_delivery(
                 tokio::task::block_in_place(|| handle.block_on(delivery))
             }
             tokio::runtime::RuntimeFlavor::CurrentThread => {
-                try_spawn(delivery).is_some()
+                if try_spawn(delivery).is_some() {
+                    ReliableDeliveryOutcome::Deferred
+                } else {
+                    ReliableDeliveryOutcome::Unavailable
+                }
             }
-            _ => try_spawn(delivery).is_some(),
+            _ => ReliableDeliveryOutcome::Unavailable,
         },
         Err(_) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map(|runtime| runtime.block_on(delivery))
-            .unwrap_or(false),
+            .unwrap_or(ReliableDeliveryOutcome::Unavailable),
     }
 }
 
@@ -634,15 +646,23 @@ impl RoomMessageHub {
                         }
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             if is_critical {
-                                if block_on_reliable_delivery(
+                                match block_on_reliable_delivery(
                                     subscriber.sender.clone(),
                                     event.clone(),
                                     room_id.clone(),
                                     subscriber.connection_id.clone(),
                                 ) {
-                                    sent_count += 1;
-                                } else {
-                                    failed_connections.push(subscriber.connection_id.clone());
+                                    ReliableDeliveryOutcome::Delivered => {
+                                        sent_count += 1;
+                                    }
+                                    ReliableDeliveryOutcome::Deferred => {
+                                        sent_count += 1;
+                                    }
+                                    ReliableDeliveryOutcome::Closed
+                                    | ReliableDeliveryOutcome::TimedOut => {
+                                        failed_connections.push(subscriber.connection_id.clone());
+                                    }
+                                    ReliableDeliveryOutcome::Unavailable => {}
                                 }
                             } else {
                                 let drops =
@@ -751,8 +771,12 @@ impl RoomMessageHub {
         }
 
         for delivery in reliable_deliveries {
-            if delivery.await {
-                sent_count += 1;
+            match delivery.await {
+                ReliableDeliveryOutcome::Delivered => {
+                    sent_count += 1;
+                }
+                ReliableDeliveryOutcome::Closed | ReliableDeliveryOutcome::TimedOut => {}
+                ReliableDeliveryOutcome::Unavailable | ReliableDeliveryOutcome::Deferred => {}
             }
         }
 
@@ -798,17 +822,25 @@ impl RoomMessageHub {
                             }
                             Err(mpsc::error::TrySendError::Full(_)) => {
                                 if is_critical {
-                                    if block_on_reliable_delivery(
-                                        subscriber.sender.clone(),
-                                        event.clone(),
-                                        room_id.clone(),
-                                        subscriber.connection_id.clone(),
-                                    ) {
+                                match block_on_reliable_delivery(
+                                    subscriber.sender.clone(),
+                                    event.clone(),
+                                    room_id.clone(),
+                                    subscriber.connection_id.clone(),
+                                ) {
+                                    ReliableDeliveryOutcome::Delivered => {
                                         sent_count += 1;
-                                    } else {
+                                    }
+                                    ReliableDeliveryOutcome::Deferred => {
+                                        sent_count += 1;
+                                    }
+                                    ReliableDeliveryOutcome::Closed
+                                    | ReliableDeliveryOutcome::TimedOut => {
                                         failed_connections.push(subscriber.connection_id.clone());
                                     }
-                                } else {
+                                    ReliableDeliveryOutcome::Unavailable => {}
+                                }
+                            } else {
                                     let drops = subscriber
                                         .consecutive_drops
                                         .fetch_add(1, Ordering::Relaxed)
@@ -929,11 +961,13 @@ impl RoomMessageHub {
                 room_id,
                 connection_id,
             } => {
-                if deliver_reliable_event(sender, event, room_id, connection_id.clone()).await {
-                    1
-                } else {
-                    self.unsubscribe(connection_id.as_str());
-                    0
+                match deliver_reliable_event(sender, event, room_id, connection_id.clone()).await {
+                    ReliableDeliveryOutcome::Delivered => 1,
+                    ReliableDeliveryOutcome::Closed | ReliableDeliveryOutcome::TimedOut => {
+                        self.unsubscribe(connection_id.as_str());
+                        0
+                    }
+                    ReliableDeliveryOutcome::Unavailable | ReliableDeliveryOutcome::Deferred => 0,
                 }
             }
         }

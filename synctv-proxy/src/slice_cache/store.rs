@@ -78,7 +78,149 @@ impl Clone for SliceCache {
     }
 }
 
+struct UpdatingKeyGuard {
+    updating_keys: Arc<dashmap::DashSet<String>>,
+    key: String,
+}
+
+impl UpdatingKeyGuard {
+    fn new(updating_keys: Arc<dashmap::DashSet<String>>, key: String) -> Self {
+        Self { updating_keys, key }
+    }
+}
+
+impl Drop for UpdatingKeyGuard {
+    fn drop(&mut self) {
+        self.updating_keys.remove(&self.key);
+    }
+}
+
 impl SliceCache {
+    fn spawn_slice_revalidation(
+        &self,
+        url: &str,
+        provider_headers: &HashMap<String, String>,
+        slice_index: u64,
+        total_size: u64,
+    ) {
+        let cache = self.clone();
+        let url = url.to_string();
+        let provider_headers = provider_headers.clone();
+
+        tokio::spawn(async move {
+            if let Err(error) = cache
+                .refresh_stale_slice(&url, &provider_headers, slice_index, total_size)
+                .await
+            {
+                tracing::debug!(
+                    url = %url,
+                    slice_index,
+                    error = %error,
+                    "Background slice revalidation failed"
+                );
+            }
+        });
+    }
+
+    async fn refresh_stale_slice(
+        &self,
+        url: &str,
+        provider_headers: &HashMap<String, String>,
+        slice_index: u64,
+        total_size: u64,
+    ) -> Result<(), anyhow::Error> {
+        let key = Self::compute_cache_key(url, provider_headers, slice_index);
+        let _updating_guard = UpdatingKeyGuard::new(self.updating_keys.clone(), key.clone());
+
+        let lock = self
+            .locks
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _guard = tokio::time::timeout(Duration::from_secs(5), lock.lock())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Background cache lock timeout for slice {slice_index} (possible upstream hang)",
+                )
+            })?;
+
+        if let Some(entry) = self.backend.get(&key).await {
+            if !entry.is_expired() {
+                return Ok(());
+            }
+        }
+
+        let (range_start, _range_end) =
+            aligned_range_for_slice(slice_index, self.config.slice_size, total_size)?;
+        let range_header = format!(
+            "bytes={range_start}-{}",
+            std::cmp::min(range_start + self.config.slice_size as u64, total_size) - 1
+        );
+
+        let mut request = self.client.get(url);
+        request = apply_provider_headers(request, url, provider_headers)?;
+        request = request.header("Range", &range_header);
+
+        let mk = Self::meta_key(url, provider_headers);
+        if let Some(meta_ref) = self.meta.get(&mk) {
+            if let Some(ref etag) = meta_ref.etag {
+                request = request.header("If-None-Match", etag.as_str());
+            }
+            if let Some(ref lm) = meta_ref.last_modified {
+                request = request.header("If-Modified-Since", lm.as_str());
+            }
+        }
+
+        let resp = match send_with_redirect_validation(&self.client, request).await {
+            Ok(proxy_response) => proxy_response.response,
+            Err(e) => return Err(anyhow::anyhow!("Slice fetch failed: {e}")),
+        };
+
+        if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+            let _ = resp.bytes().await;
+
+            if let Some(existing) = self.backend.get(&key).await {
+                let refreshed = StoredEntry::new(existing.data.clone(), self.config.segment_ttl);
+                let _ = self.backend.put(&key, refreshed).await;
+                return Ok(());
+            }
+
+            let mut retry_request = self.client.get(url);
+            retry_request = apply_provider_headers(retry_request, url, provider_headers)?;
+            retry_request = retry_request.header("Range", &range_header);
+            let retry_resp = match send_with_redirect_validation(&self.client, retry_request).await {
+                Ok(proxy_response) => proxy_response.response,
+                Err(e) => return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}")),
+            };
+            self.process_slice_response(
+                retry_resp,
+                url,
+                provider_headers,
+                &key,
+                slice_index,
+                total_size,
+                range_start,
+            )
+            .await
+            .map(|_| ())?;
+            return Ok(());
+        }
+
+        self.process_slice_response(
+            resp,
+            url,
+            provider_headers,
+            &key,
+            slice_index,
+            total_size,
+            range_start,
+        )
+        .await
+        .map(|_| ())?;
+        Ok(())
+    }
+
     /// Create a new `SliceCache` with the given configuration.
     ///
     /// This constructor works synchronously for the default in-memory
@@ -324,6 +466,7 @@ impl SliceCache {
                 // was newly inserted (i.e., we are the first stale request).
                 if self.updating_keys.insert(key.clone()) {
                     // Newly inserted -- we are the first stale request.
+                    self.spawn_slice_revalidation(url, provider_headers, slice_index, total_size);
                     return Ok((entry.data, CacheStatus::Stale));
                 }
                 // Already present -- another request is updating this key.

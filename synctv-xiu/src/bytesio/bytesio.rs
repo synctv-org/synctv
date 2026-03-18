@@ -7,6 +7,7 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use futures::SinkExt;
 use futures::StreamExt;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
 use tokio_util::codec::BytesCodec;
@@ -24,6 +25,7 @@ pub trait TNetIO: Send + Sync {
     async fn write(&mut self, bytes: Bytes) -> Result<(), BytesIOError>;
     async fn read(&mut self) -> Result<BytesMut, BytesIOError>;
     async fn read_timeout(&mut self, duration: Duration) -> Result<BytesMut, BytesIOError>;
+    async fn shutdown(&mut self) -> Result<(), BytesIOError>;
     fn get_net_type(&self) -> NetType;
 }
 
@@ -159,6 +161,10 @@ impl TNetIO for UdpIO {
 
         Ok(rv)
     }
+
+    async fn shutdown(&mut self) -> Result<(), BytesIOError> {
+        Ok(())
+    }
 }
 
 pub struct TcpIO {
@@ -212,6 +218,11 @@ impl TNetIO for TcpIO {
                 }),
             },
         )
+    }
+
+    async fn shutdown(&mut self) -> Result<(), BytesIOError> {
+        self.stream.get_mut().shutdown().await?;
+        Ok(())
     }
 }
 

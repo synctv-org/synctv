@@ -566,16 +566,16 @@ impl Common {
             },
         };
 
-        match self.event_producer.try_send(unpublish_event) {
-            Err(_) => {
+        match send_event_with_backpressure_timeout(&self.event_producer, unpublish_event).await {
+            Err(err) => {
                 tracing::error!(
-                    "unpublish_to_stream_hub error.app_name: {app_name}, stream_name: {stream_name}"
+                    "unpublish_to_stream_hub error.app_name: {app_name}, stream_name: {stream_name}, err: {err}"
                 );
                 return Err(SessionError {
-                    value: SessionErrorValue::StreamHubEventSendErr,
+                    value: SessionErrorValue::ChannelError(err),
                 });
             }
-            _ => {
+            Ok(()) => {
                 tracing::info!(
                     "unpublish_to_stream_hub successfully.app_name: {app_name}, stream_name: {stream_name}"
                 );
@@ -821,6 +821,79 @@ mod tests {
             .unsubscribe_from_stream_hub("live".to_string(), "room/stream".to_string())
             .await
             .expect_err("closed event channel must surface unsubscribe failure");
+
+        assert!(matches!(err.value, SessionErrorValue::ChannelError(_)));
+    }
+
+    #[tokio::test]
+    async fn test_unpublish_retries_when_event_channel_is_temporarily_full() {
+        let (event_sender, mut event_rx) = mpsc::channel(1);
+        let mut common = Common::new(None, event_sender.clone(), SessionType::Server, None);
+        common.request_url = "/live/room/stream".to_string();
+
+        event_sender
+            .try_send(StreamHubEvent::UnSubscribe {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name: "live".to_string(),
+                    stream_name: "blocker".to_string(),
+                },
+                info: common.get_subscriber_info(),
+            })
+            .expect("prefill event channel");
+
+        let unpublish_task = tokio::spawn(async move {
+            common
+                .unpublish_to_stream_hub("live".to_string(), "room/stream".to_string())
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !unpublish_task.is_finished(),
+            "unpublish should wait for temporary backpressure instead of failing early"
+        );
+
+        let first = event_rx
+            .recv()
+            .await
+            .expect("blocked event should be readable");
+        assert!(matches!(first, StreamHubEvent::UnSubscribe { .. }));
+
+        let unpublish = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("unpublish should eventually be delivered")
+            .expect("event channel should stay open");
+
+        let result = unpublish_task.await.expect("unpublish task should join");
+        assert!(result.is_ok(), "unpublish should succeed after capacity frees");
+
+        match unpublish {
+            StreamHubEvent::UnPublish { identifier } => match identifier {
+                StreamIdentifier::Rtmp {
+                    app_name,
+                    stream_name,
+                } => {
+                    assert_eq!(app_name, "live");
+                    assert_eq!(stream_name, "room/stream");
+                }
+                other => panic!("unexpected stream identifier: {other:?}"),
+            },
+            other => panic!("expected unpublish event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unpublish_returns_error_when_event_channel_is_closed() {
+        let (event_sender, event_rx) = mpsc::channel(1);
+        drop(event_rx);
+
+        let mut common = Common::new(None, event_sender, SessionType::Server, None);
+        common.request_url = "/live/room/stream".to_string();
+
+        let err = common
+            .unpublish_to_stream_hub("live".to_string(), "room/stream".to_string())
+            .await
+            .expect_err("closed event channel must surface unpublish failure");
 
         assert!(matches!(err.value, SessionErrorValue::ChannelError(_)));
     }

@@ -137,6 +137,57 @@ impl ServerSession {
         }
     }
 
+    async fn teardown_active_stream(&mut self) -> Result<(), SessionError> {
+        if self.app_name.is_empty() || self.stream_name.is_empty() {
+            return Ok(());
+        }
+
+        if self.is_publishing {
+            let hub_cleanup_result = self
+                .common
+                .unpublish_to_stream_hub(self.app_name.clone(), self.stream_name.clone())
+                .await;
+            if let Some(auth) = &self.auth {
+                auth.on_unpublish(&self.app_name, &self.stream_name, self.query.as_deref())
+                    .await;
+            }
+            if let Some(cb) = &self.callbacks.on_publisher_stop {
+                cb();
+            }
+            self.is_publishing = false;
+            hub_cleanup_result?;
+        } else {
+            let hub_cleanup_result = self
+                .common
+                .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
+                .await;
+            if let Some(auth) = &self.auth {
+                auth.on_unplay(&self.app_name, &self.stream_name, self.query.as_deref())
+                    .await;
+            }
+            if let Some(cb) = &self.callbacks.on_viewer_leave {
+                cb();
+            }
+            hub_cleanup_result?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn force_shutdown(&mut self) -> Result<(), SessionError> {
+        let teardown_result = self.teardown_active_stream().await;
+        let shutdown_result = self.io.lock().await.shutdown().await;
+        self.state = ServerSessionState::DeleteStream;
+
+        if let Err(err) = shutdown_result {
+            return Err(SessionError {
+                value: SessionErrorValue::BytesIOError(err),
+            });
+        }
+
+        teardown_result
+    }
+
     async fn handshake(&mut self) -> Result<(), SessionError> {
         let mut bytes_len = 0;
 
@@ -205,54 +256,16 @@ impl ServerSession {
         }
 
         if !self.has_remaing_data {
-            match self
-                .io
-                .lock()
-                .await
-                .read_timeout(Duration::from_secs(2))
-                .await
-            {
+            let read_result = {
+                let mut io = self.io.lock().await;
+                io.read_timeout(Duration::from_secs(2)).await
+            };
+            match read_result {
                 Ok(data) => {
                     self.bytesio_data = data;
                 }
                 Err(err) => {
-                    if self.is_publishing {
-                        if let Some(auth) = &self.auth {
-                            auth.on_unpublish(
-                                &self.app_name,
-                                &self.stream_name,
-                                self.query.as_deref(),
-                            )
-                            .await;
-                        }
-                        self.common
-                            .unpublish_to_stream_hub(
-                                self.app_name.clone(),
-                                self.stream_name.clone(),
-                            )
-                            .await?;
-                        if let Some(cb) = &self.callbacks.on_publisher_stop {
-                            cb();
-                        }
-                    } else {
-                        if let Some(auth) = &self.auth {
-                            auth.on_unplay(
-                                &self.app_name,
-                                &self.stream_name,
-                                self.query.as_deref(),
-                            )
-                            .await;
-                        }
-                        self.common
-                            .unsubscribe_from_stream_hub(
-                                self.app_name.clone(),
-                                self.stream_name.clone(),
-                            )
-                            .await?;
-                        if let Some(cb) = &self.callbacks.on_viewer_leave {
-                            cb();
-                        }
-                    }
+                    self.teardown_active_stream().await?;
 
                     return Err(SessionError {
                         value: SessionErrorValue::BytesIOError(err),
@@ -285,43 +298,7 @@ impl ServerSession {
                 }
                 Err(err) => {
                     if matches!(err.value, UnpackErrorValue::CannotParse) {
-                        if self.is_publishing {
-                            if let Some(auth) = &self.auth {
-                                auth.on_unpublish(
-                                    &self.app_name,
-                                    &self.stream_name,
-                                    self.query.as_deref(),
-                                )
-                                .await;
-                            }
-                            self.common
-                                .unpublish_to_stream_hub(
-                                    self.app_name.clone(),
-                                    self.stream_name.clone(),
-                                )
-                                .await?;
-                            if let Some(cb) = &self.callbacks.on_publisher_stop {
-                                cb();
-                            }
-                        } else {
-                            if let Some(auth) = &self.auth {
-                                auth.on_unplay(
-                                    &self.app_name,
-                                    &self.stream_name,
-                                    self.query.as_deref(),
-                                )
-                                .await;
-                            }
-                            self.common
-                                .unsubscribe_from_stream_hub(
-                                    self.app_name.clone(),
-                                    self.stream_name.clone(),
-                                )
-                                .await?;
-                            if let Some(cb) = &self.callbacks.on_viewer_leave {
-                                cb();
-                            }
-                        }
+                        self.teardown_active_stream().await?;
                         return Err(err)?;
                     }
                     break;
@@ -335,16 +312,7 @@ impl ServerSession {
         match self.common.send_channel_data().await {
             Ok(()) => {}
             Err(err) => {
-                if let Some(auth) = &self.auth {
-                    auth.on_unplay(&self.app_name, &self.stream_name, self.query.as_deref())
-                        .await;
-                }
-                self.common
-                    .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
-                    .await?;
-                if let Some(cb) = &self.callbacks.on_viewer_leave {
-                    cb();
-                }
+                self.teardown_active_stream().await?;
                 return Err(err);
             }
         }
@@ -636,35 +604,7 @@ impl ServerSession {
         transaction_id: &f64,
         stream_id: &f64,
     ) -> Result<(), SessionError> {
-        if self.is_publishing {
-            self.common
-                .unpublish_to_stream_hub(self.app_name.clone(), self.stream_name.clone())
-                .await?;
-
-            if let Some(auth) = &self.auth {
-                auth.on_unpublish(&self.app_name, &self.stream_name, self.query.as_deref())
-                    .await;
-            }
-
-            // Fixed #116: Notify publisher disconnect via callback
-            if let Some(cb) = &self.callbacks.on_publisher_stop {
-                cb();
-            }
-        } else {
-            self.common
-                .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
-                .await?;
-
-            if let Some(auth) = &self.auth {
-                auth.on_unplay(&self.app_name, &self.stream_name, self.query.as_deref())
-                    .await;
-            }
-
-            // Fixed #116: Notify viewer disconnect via callback
-            if let Some(cb) = &self.callbacks.on_viewer_leave {
-                cb();
-            }
-        }
+        self.teardown_active_stream().await?;
 
         let mut netstream = NetStreamWriter::new(Arc::clone(&self.io));
         netstream
@@ -1022,6 +962,10 @@ mod tests {
     use async_trait::async_trait;
     use bytes::{Bytes, BytesMut};
     use std::collections::VecDeque;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex as StdMutex,
+    };
     use tokio::time::timeout;
 
     use crate::bytesio::bytesio::{NetType, TNetIO};
@@ -1030,12 +974,14 @@ mod tests {
 
     struct ChunkedNetIo {
         reads: VecDeque<BytesMut>,
+        shutdowns: Arc<AtomicUsize>,
     }
 
     impl ChunkedNetIo {
         fn new(reads: Vec<BytesMut>) -> Self {
             Self {
                 reads: reads.into(),
+                shutdowns: Arc::new(AtomicUsize::new(0)),
             }
         }
     }
@@ -1054,8 +1000,76 @@ mod tests {
             self.read().await
         }
 
+        async fn shutdown(&mut self) -> Result<(), BytesIOError> {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
         fn get_net_type(&self) -> NetType {
             NetType::TCP
+        }
+    }
+
+    struct RecordingAuthCallback {
+        events: Arc<StdMutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl AuthCallback for RecordingAuthCallback {
+        async fn on_publish(
+            &self,
+            _app_name: &str,
+            _stream_name: &str,
+            _query: Option<&str>,
+        ) -> Result<Option<crate::rtmp::auth::AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>>
+        {
+            Ok(None)
+        }
+
+        async fn on_play(
+            &self,
+            _app_name: &str,
+            _stream_name: &str,
+            _query: Option<&str>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Ok(())
+        }
+
+        async fn on_unpublish(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
+            self.events.lock().expect("lock auth events").push("unpublish");
+        }
+
+        async fn on_unplay(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
+            self.events.lock().expect("lock auth events").push("unplay");
+        }
+    }
+
+    fn build_test_session(
+        event_sender: StreamHubEventSender,
+        auth: Option<Arc<dyn AuthCallback>>,
+        callbacks: Arc<StreamEventCallbacks>,
+    ) -> ServerSession {
+        let io: Box<dyn TNetIO + Send + Sync> = Box::new(ChunkedNetIo::new(vec![]));
+        let io = Arc::new(Mutex::new(io));
+
+        ServerSession {
+            app_name: "live".to_string(),
+            stream_name: "room/stream".to_string(),
+            query: Some("token=abc".to_string()),
+            io: Arc::clone(&io),
+            handshaker: HandshakeServer::new(Arc::clone(&io)),
+            unpacketizer: ChunkUnpacketizer::new(),
+            state: ServerSessionState::ReadChunk,
+            bytesio_data: BytesMut::new(),
+            has_remaing_data: false,
+            connect_properties: ConnectProperties::default(),
+            common: Common::new(None, event_sender, SessionType::Server, None),
+            gop_num: 1,
+            auth,
+            is_publishing: false,
+            last_message_time: tokio::time::Instant::now(),
+            per_stream_max_bytes: None,
+            callbacks,
         }
     }
 
@@ -1114,5 +1128,141 @@ mod tests {
             session.handshaker.state(),
             ServerHandshakeState::ReadC2
         ));
+    }
+
+    #[tokio::test]
+    async fn test_teardown_publish_runs_external_cleanup_even_when_streamhub_unpublish_fails() {
+        let (event_sender, event_receiver) =
+            tokio::sync::mpsc::channel(STREAM_HUB_EVENT_CHANNEL_CAPACITY);
+        drop(event_receiver);
+
+        let auth_events = Arc::new(StdMutex::new(Vec::new()));
+        let auth: Arc<dyn AuthCallback> = Arc::new(RecordingAuthCallback {
+            events: Arc::clone(&auth_events),
+        });
+        let publisher_stop_count = Arc::new(AtomicUsize::new(0));
+        let callbacks = Arc::new(StreamEventCallbacks {
+            on_publisher_stop: Some({
+                let publisher_stop_count = Arc::clone(&publisher_stop_count);
+                Arc::new(move || {
+                    publisher_stop_count.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+            ..StreamEventCallbacks::default()
+        });
+
+        let mut session = build_test_session(event_sender, Some(auth), callbacks);
+        session.is_publishing = true;
+
+        let result = session.teardown_active_stream().await;
+
+        assert!(matches!(
+            result,
+            Err(SessionError {
+                value: SessionErrorValue::ChannelError(_)
+            })
+        ));
+        assert!(
+            !session.is_publishing,
+            "publishing state should reflect the torn-down local session even when StreamHub cleanup fails"
+        );
+        assert_eq!(
+            auth_events.lock().expect("lock auth events").as_slice(),
+            ["unpublish"],
+            "auth cleanup must still run so external tracking is cleared when StreamHub cleanup fails"
+        );
+        assert_eq!(
+            publisher_stop_count.load(Ordering::SeqCst),
+            1,
+            "publisher stop callback must still run when StreamHub cleanup fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_teardown_play_runs_external_cleanup_even_when_streamhub_unsubscribe_fails() {
+        let (event_sender, event_receiver) =
+            tokio::sync::mpsc::channel(STREAM_HUB_EVENT_CHANNEL_CAPACITY);
+        drop(event_receiver);
+
+        let auth_events = Arc::new(StdMutex::new(Vec::new()));
+        let auth: Arc<dyn AuthCallback> = Arc::new(RecordingAuthCallback {
+            events: Arc::clone(&auth_events),
+        });
+        let viewer_leave_count = Arc::new(AtomicUsize::new(0));
+        let callbacks = Arc::new(StreamEventCallbacks {
+            on_viewer_leave: Some({
+                let viewer_leave_count = Arc::clone(&viewer_leave_count);
+                Arc::new(move || {
+                    viewer_leave_count.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+            ..StreamEventCallbacks::default()
+        });
+
+        let mut session = build_test_session(event_sender, Some(auth), callbacks);
+
+        let result = session.teardown_active_stream().await;
+
+        assert!(matches!(
+            result,
+            Err(SessionError {
+                value: SessionErrorValue::ChannelError(_)
+            })
+        ));
+        assert_eq!(
+            auth_events.lock().expect("lock auth events").as_slice(),
+            ["unplay"],
+            "auth cleanup must still run so viewer bookkeeping is cleared when StreamHub cleanup fails"
+        );
+        assert_eq!(
+            viewer_leave_count.load(Ordering::SeqCst),
+            1,
+            "viewer leave callback must still run when StreamHub cleanup fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_force_shutdown_closes_transport_and_transitions_to_delete_stream() {
+        let (event_sender, _event_receiver) =
+            tokio::sync::mpsc::channel(STREAM_HUB_EVENT_CHANNEL_CAPACITY);
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let io: Box<dyn TNetIO + Send + Sync> = Box::new(ChunkedNetIo {
+            reads: VecDeque::new(),
+            shutdowns: Arc::clone(&shutdowns),
+        });
+        let io = Arc::new(Mutex::new(io));
+
+        let mut session = ServerSession {
+            app_name: "live".to_string(),
+            stream_name: "room/stream".to_string(),
+            query: Some("token=abc".to_string()),
+            io: Arc::clone(&io),
+            handshaker: HandshakeServer::new(Arc::clone(&io)),
+            unpacketizer: ChunkUnpacketizer::new(),
+            state: ServerSessionState::ReadChunk,
+            bytesio_data: BytesMut::new(),
+            has_remaing_data: false,
+            connect_properties: ConnectProperties::default(),
+            common: Common::new(None, event_sender, SessionType::Server, None),
+            gop_num: 1,
+            auth: None,
+            is_publishing: false,
+            last_message_time: tokio::time::Instant::now(),
+            per_stream_max_bytes: None,
+            callbacks: Arc::new(StreamEventCallbacks::default()),
+        };
+
+        let result = session.force_shutdown().await;
+
+        assert!(result.is_ok(), "force shutdown should succeed without active stream");
+        assert_eq!(
+            shutdowns.load(Ordering::SeqCst),
+            1,
+            "force shutdown must close the underlying transport"
+        );
+        assert!(
+            matches!(session.state, ServerSessionState::DeleteStream),
+            "force shutdown must transition the session out of the read loop"
+        );
     }
 }

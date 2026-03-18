@@ -467,6 +467,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_execute_proxy_action_with_state_honors_runtime_cache_toggle_even_when_cache_was_built_disabled(
     ) {
         let Some(mock_server) = start_mock_server_or_skip().await else {

@@ -414,6 +414,10 @@ mod async_tests {
             std::future::pending().await
         }
 
+        async fn shutdown(&mut self) -> Result<(), super::super::bytesio_errors::BytesIOError> {
+            Ok(())
+        }
+
         fn get_net_type(&self) -> super::super::bytesio::NetType {
             super::super::bytesio::NetType::TCP
         }

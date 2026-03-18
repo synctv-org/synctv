@@ -382,6 +382,7 @@ impl ShutdownHook for HealthMonitorShutdownHook {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_budget_per_item_divides_evenly() {
@@ -435,6 +436,103 @@ mod tests {
 
         // Should complete quickly (tasks respond to cancel)
         assert!(elapsed < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_cancels_registered_tokens() {
+        let mut coord = ShutdownCoordinator::new(Duration::from_secs(1));
+        let token1 = coord.register_token("token1");
+        let token2 = coord.register_token("token2");
+
+        assert!(!token1.is_cancelled());
+        assert!(!token2.is_cancelled());
+
+        coord.shutdown().await;
+
+        assert!(token1.is_cancelled());
+        assert!(token2.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_runs_hooks() {
+        struct RecordingHook {
+            events: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        impl ShutdownHook for RecordingHook {
+            fn name(&self) -> &'static str {
+                "recording_hook"
+            }
+
+            fn timeout(&self) -> Duration {
+                Duration::from_secs(1)
+            }
+
+            fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                Box::pin(async move {
+                    self.events.lock().await.push("hook");
+                })
+            }
+        }
+
+        let mut coord = ShutdownCoordinator::new(Duration::from_secs(1));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        coord.register_hook(RecordingHook {
+            events: Arc::clone(&events),
+        });
+
+        coord.shutdown().await;
+
+        assert_eq!(*events.lock().await, vec!["hook"]);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_order_is_tokens_then_tasks_then_hooks() {
+        struct RecordingHook {
+            events: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        impl ShutdownHook for RecordingHook {
+            fn name(&self) -> &'static str {
+                "recording_hook"
+            }
+
+            fn timeout(&self) -> Duration {
+                Duration::from_secs(1)
+            }
+
+            fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                Box::pin(async move {
+                    self.events.lock().await.push("hook");
+                })
+            }
+        }
+
+        let mut coord = ShutdownCoordinator::new(Duration::from_secs(1));
+        let token = coord.register_token("token");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let task_events = Arc::clone(&events);
+        let task_token = token.clone();
+
+        coord.register_task(
+            "task",
+            tokio::spawn(async move {
+                task_token.cancelled().await;
+                task_events.lock().await.push("task");
+            }),
+        );
+        coord.register_hook(RecordingHook {
+            events: Arc::clone(&events),
+        });
+
+        coord.shutdown().await;
+
+        assert!(token.is_cancelled(), "shutdown must cancel tokens first");
+        assert_eq!(
+            *events.lock().await,
+            vec!["task", "hook"],
+            "hooks must run after tasks have observed token cancellation"
+        );
     }
 
     #[tokio::test]

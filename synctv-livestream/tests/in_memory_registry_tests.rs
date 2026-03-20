@@ -205,9 +205,6 @@ async fn test_epoch_increments_on_reregistration() {
         .await
         .unwrap();
 
-    // Note: InMemoryStreamRegistry removes epoch counters on unregister,
-    // so re-registration starts from epoch 1 again (different from Redis behavior).
-    // This is acceptable for single-node standalone mode.
     registry
         .try_register_publisher("room1", "media1", "node2", "user2", "localhost:50052")
         .await
@@ -217,9 +214,59 @@ async fn test_epoch_increments_on_reregistration() {
         .await
         .unwrap()
         .unwrap();
-    // After unregister, the epoch counter is removed, so new registration starts at 1
-    assert!(info2.epoch >= 1);
+    assert_eq!(
+        info2.epoch,
+        info1.epoch + 1,
+        "epochs must remain monotonic across unregister for fencing safety"
+    );
     assert_eq!(info2.node_id, "node2");
+}
+
+#[tokio::test]
+async fn test_epoch_does_not_reset_after_many_other_streams_churn() {
+    let registry = InMemoryStreamRegistry::new();
+
+    registry
+        .try_register_publisher("room1", "media1", "node1", "user1", "localhost:50051")
+        .await
+        .unwrap();
+    let first = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
+    registry
+        .unregister_publisher("room1", "media1")
+        .await
+        .unwrap();
+
+    for idx in 0..5000 {
+        let room_id = format!("room-churn-{idx}");
+        let media_id = format!("media-churn-{idx}");
+        registry
+            .try_register_publisher(&room_id, &media_id, "node-x", "user-x", "localhost:50051")
+            .await
+            .unwrap();
+        registry
+            .unregister_publisher(&room_id, &media_id)
+            .await
+            .unwrap();
+    }
+
+    registry
+        .try_register_publisher("room1", "media1", "node2", "user2", "localhost:50052")
+        .await
+        .unwrap();
+    let second = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        second.epoch > first.epoch,
+        "epochs must remain monotonic even after heavy churn on unrelated stream ids"
+    );
 }
 
 #[tokio::test]

@@ -18,6 +18,7 @@ use synctv_livestream::api::{HlsStreamingApi, LiveStreamingInfrastructure};
 use synctv_livestream::libraries::storage::MemoryStorage;
 use synctv_livestream::livestream::segment_manager::{CleanupConfig, SegmentManager};
 use synctv_livestream::protocols::hls::remuxer::{SegmentInfo, StreamProcessorState};
+use synctv_livestream::relay::registry_trait::PublisherRefreshOutcome;
 use tokio::sync::mpsc;
 
 // Mock implementation for testing
@@ -52,11 +53,20 @@ impl synctv_livestream::relay::StreamRegistryTrait for MockStreamRegistry {
         _room_id: &str,
         _media_id: &str,
         _user_id: &str,
-    ) -> anyhow::Result<()> {
-        Ok(())
+    ) -> anyhow::Result<PublisherRefreshOutcome> {
+        Ok(PublisherRefreshOutcome::Refreshed)
     }
 
     async fn unregister_publisher(&self, _room_id: &str, _media_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn unregister_publisher_if_epoch_matches(
+        &self,
+        _room_id: &str,
+        _media_id: &str,
+        _expected_epoch: u64,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 

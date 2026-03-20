@@ -36,7 +36,7 @@ use crate::http::{AppError, AppState};
 use crate::impls::messaging::{MessageSender, ProtoCodec, StreamMessage, StreamMessageHandler};
 use crate::proto::client::{ClientMessage, ServerMessage};
 use synctv_core::models::{RoomId, UserId};
-use synctv_core::service::auth::JwtValidator;
+use synctv_core::service::auth::{AuthErrorCategory, JwtValidator, SecurityPipeline};
 use synctv_core::service::{ContentFilter, PendingValidatedTicket};
 
 /// Threshold for consecutive slow-client drops before disconnecting them
@@ -171,7 +171,7 @@ async fn extract_user_id(
             .security_pipeline
             .check(&claims)
             .await
-            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+            .map_err(map_security_pipeline_error)?;
 
         return Ok(HandshakeAuthContext {
             user_id: authenticated.user_id,
@@ -206,6 +206,14 @@ async fn extract_user_id(
     Err(AppError::unauthorized(
         "Missing authentication: provide token via Authorization header or ?ticket=",
     ))
+}
+
+fn map_security_pipeline_error(error: synctv_core::Error) -> AppError {
+    match SecurityPipeline::classify_auth_error(&error) {
+        AuthErrorCategory::Authentication => AppError::unauthorized(format!("{error}")),
+        AuthErrorCategory::Authorization => AppError::forbidden(format!("{error}")),
+        AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(error),
+    }
 }
 
 fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<String>, AppError> {
@@ -360,6 +368,28 @@ fn validate_websocket_runtime_dependency_flags(
     }
 
     Ok(())
+}
+
+async fn load_websocket_username(state: &AppState, user_id: &UserId) -> Result<String, AppError> {
+    state
+        .user_service
+        .get_username(user_id)
+        .await
+        .map_err(|error| {
+            error!(
+                user_id = %user_id.as_str(),
+                error = %error,
+                "WebSocket handshake rejected: failed to load username"
+            );
+            AppError::service_unavailable()
+        })?
+        .ok_or_else(|| {
+            warn!(
+                user_id = %user_id.as_str(),
+                "WebSocket handshake rejected: authenticated user missing username record"
+            );
+            AppError::unauthorized("Authentication failed")
+        })
 }
 
 /// WebSocket stream implementation of `StreamMessage` trait
@@ -948,13 +978,7 @@ async fn prepare_websocket_upgrade(
     }
 
     validate_websocket_runtime_dependencies(state)?;
-    let username = state
-        .user_service
-        .get_username(&user_id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| user_id.as_str().to_string());
+    let username = load_websocket_username(state, &user_id).await?;
     let connection_id = StreamMessageHandler::generate_connection_id(&user_id);
     let reservation =
         reserve_websocket_upgrade_slots(&state.connection_manager, &rid, &user_id).await?;
@@ -1553,6 +1577,36 @@ mod tests {
         let err = AppError::from(synctv_core::Error::NotFound("Room not found".to_string()));
         assert_eq!(err.status, StatusCode::NOT_FOUND);
         assert_eq!(err.message, "Room not found");
+    }
+
+    #[tokio::test]
+    async fn test_load_websocket_username_fails_closed_on_storage_error() {
+        let state = crate::http::tests::test_app_state();
+        state.user_service.pool().close().await;
+        let user_id = UserId::from_string("ws-user-storage-error".to_string());
+
+        let err = load_websocket_username(&state, &user_id)
+            .await
+            .expect_err("username lookup infrastructure failures must fail closed");
+
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            err.message.contains("temporarily unavailable"),
+            "username lookup outages should surface as retryable handshake failures"
+        );
+    }
+
+    #[test]
+    fn test_map_security_pipeline_error_maps_backend_outages_to_service_unavailable() {
+        let err = map_security_pipeline_error(synctv_core::Error::ServiceUnavailable(
+            "Authentication service temporarily unavailable".to_string(),
+        ));
+
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            err.message.contains("temporarily unavailable"),
+            "websocket auth backend outages should remain retryable"
+        );
     }
 
     // ========== RateLimitConfig Tests ==========

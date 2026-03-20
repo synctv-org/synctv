@@ -22,6 +22,8 @@ use crate::{
 
 use super::{Claims, TokenBlacklistStore};
 
+const AUTHENTICATION_FAILED_MESSAGE: &str = "Authentication failed";
+
 /// Configuration for access token blacklist enforcement.
 #[derive(Debug, Clone, Copy)]
 pub struct BlacklistEnforcement {
@@ -97,6 +99,18 @@ pub struct SecurityPipeline {
 }
 
 impl SecurityPipeline {
+    #[must_use]
+    pub const fn classify_auth_error(err: &Error) -> AuthErrorCategory {
+        match err {
+            Error::Authentication(_) => AuthErrorCategory::Authentication,
+            Error::Authorization(_) | Error::EmailNotVerified => AuthErrorCategory::Authorization,
+            Error::ServiceUnavailable(_) | Error::Database(_) | Error::Redis(_) | Error::Timeout(_) => {
+                AuthErrorCategory::Unavailable
+            }
+            _ => AuthErrorCategory::Internal,
+        }
+    }
+
     /// Create a new security pipeline.
     #[must_use]
     pub const fn new(user_service: Arc<UserService>) -> Self {
@@ -220,7 +234,9 @@ impl SecurityPipeline {
             .get_user(&user_id)
             .await
             .map_err(|e| match &e {
-                Error::NotFound(_) => Error::Authentication("User not found".to_string()),
+                Error::NotFound(_) => {
+                    Error::Authentication(AUTHENTICATION_FAILED_MESSAGE.to_string())
+                }
                 _ => e,
             })?;
 
@@ -306,7 +322,7 @@ impl SecurityPipeline {
                             error = %e,
                             "Access token blacklist check failed due to storage error (fail-closed)"
                         );
-                        Err(Error::Authentication(
+                        Err(Error::ServiceUnavailable(
                             "Authentication service temporarily unavailable".to_string(),
                         ))
                     }
@@ -321,7 +337,7 @@ impl SecurityPipeline {
                         jti = %claims.jti,
                         "Access token blacklist check required but blacklist store not configured"
                     );
-                    Err(Error::Authentication(
+                    Err(Error::ServiceUnavailable(
                         "Authentication service misconfigured".to_string(),
                     ))
                 } else {
@@ -337,6 +353,14 @@ impl SecurityPipeline {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthErrorCategory {
+    Authentication,
+    Authorization,
+    Unavailable,
+    Internal,
 }
 
 impl std::fmt::Debug for SecurityPipeline {
@@ -487,6 +511,19 @@ impl SecurityPipelineBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use sqlx::PgPool;
+
+    use crate::{
+        cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+        config::PasswordComplexityConfig,
+        service::{
+            auth::{BruteForceProtection, JwtService},
+            InMemoryTokenBlacklistStore, UserService,
+        },
+    };
 
     // ========================================================================
     // BlacklistEnforcement behavior tests
@@ -509,5 +546,120 @@ mod tests {
     fn blacklist_enforcement_permissive_is_false() {
         let enforcement = BlacklistEnforcement::permissive();
         assert!(!enforcement.require_blacklist);
+    }
+
+    struct FailingBlacklistStore;
+
+    #[async_trait]
+    impl TokenBlacklistStore for FailingBlacklistStore {
+        async fn is_blacklisted_checked(&self, _key: &str) -> Result<bool> {
+            Err(Error::Redis(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "blacklist backend unavailable",
+            ))))
+        }
+
+        async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
+            None
+        }
+
+        async fn set_family_revoked(
+            &self,
+            _key: &str,
+            _timestamp: i64,
+            _ttl_secs: u64,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn create_user_service(pool: PgPool) -> Arc<UserService> {
+        let jwt_service =
+            JwtService::new("test-secret-key-for-security-pipeline-unit-tests-min-32")
+                .expect("failed to create jwt service");
+        let username_cache = UsernameCache::new(
+            Arc::new(NoopCacheL2),
+            "test:username:".to_string(),
+            100,
+            0,
+        );
+        let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+        let key_builder = KeyBuilder::new("test");
+        let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+        Arc::new(UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            PasswordComplexityConfig::default(),
+            token_blacklist,
+            key_builder,
+            brute_force,
+        ))
+    }
+
+    fn make_claims(user_id: &str, pv: i32) -> Claims {
+        let now = chrono::Utc::now();
+        Claims {
+            sub: user_id.to_string(),
+            typ: "access".to_string(),
+            jti: "test-jti".to_string(),
+            iat: now.timestamp(),
+            exp: (now + chrono::Duration::hours(1)).timestamp(),
+            pv,
+            iss: None,
+            aud: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn blacklist_storage_error_is_service_unavailable() {
+        let pool = PgPool::connect_lazy("postgres://localhost/synctv")
+            .expect("lazy pool should build without network");
+        let pipeline = SecurityPipeline::new(create_user_service(pool))
+            .with_token_blacklist(Arc::new(FailingBlacklistStore), KeyBuilder::new("test"))
+            .with_blacklist_enforcement(BlacklistEnforcement::new());
+
+        let err = pipeline
+            .check_access_token_blacklist(&make_claims("user-1", 0))
+            .await
+            .expect_err("blacklist storage failures must fail closed");
+
+        assert!(
+            matches!(&err, Error::ServiceUnavailable(msg) if msg.contains("temporarily unavailable")),
+            "expected ServiceUnavailable on blacklist storage failure, got: {err}"
+        );
+        assert_eq!(
+            SecurityPipeline::classify_auth_error(&err),
+            AuthErrorCategory::Unavailable
+        );
+    }
+
+    #[test]
+    fn classify_auth_error_preserves_transport_semantics() {
+        assert_eq!(
+            SecurityPipeline::classify_auth_error(&Error::Authentication(
+                AUTHENTICATION_FAILED_MESSAGE.to_string()
+            )),
+            AuthErrorCategory::Authentication
+        );
+        assert_eq!(
+            SecurityPipeline::classify_auth_error(&Error::Authorization("denied".to_string())),
+            AuthErrorCategory::Authorization
+        );
+        assert_eq!(
+            SecurityPipeline::classify_auth_error(&Error::ServiceUnavailable(
+                "backend unavailable".to_string()
+            )),
+            AuthErrorCategory::Unavailable
+        );
+        assert_eq!(
+            SecurityPipeline::classify_auth_error(&Error::Internal("boom".to_string())),
+            AuthErrorCategory::Internal
+        );
     }
 }

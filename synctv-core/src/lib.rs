@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod bootstrap;
+pub mod bench_support;
 pub mod cache;
 pub mod config;
 pub mod error;

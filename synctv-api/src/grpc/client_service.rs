@@ -88,6 +88,17 @@ fn extract_authenticated_user_id(
 }
 
 #[allow(clippy::result_large_err)]
+fn extract_authenticated_token(
+    request: &Request<impl std::fmt::Debug>,
+) -> Result<synctv_core::service::AuthenticatedToken, Status> {
+    request
+        .extensions()
+        .get::<synctv_core::service::AuthenticatedToken>()
+        .cloned()
+        .ok_or_else(|| Status::unauthenticated("Authentication required"))
+}
+
+#[allow(clippy::result_large_err)]
 fn map_message_stream_join_error(error: String) -> Status {
     if error.contains("unavailable") || error.contains("degraded") {
         return Status::unavailable(error);
@@ -321,29 +332,28 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        // Extract the raw JWT from the Authorization metadata so we can blacklist it.
-        // This ensures a logged-out token cannot be reused until it naturally expires.
-        let raw_token = request
-            .metadata()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| synctv_core::service::auth::JwtValidator::extract_bearer_token(v).ok());
+        let authenticated = extract_authenticated_token(&request)?;
+        let claims = authenticated.claims;
 
-        let mut message = String::new();
-        if let Some(token) = raw_token {
-            let outcome = self
-                .client_api
-                .logout(&token)
-                .await
-                .map_err(map_api_error)?;
-            if !outcome.blacklist_ok {
-                message = outcome.message.to_string();
-            }
+        if claims.jti.is_empty() {
+            return Err(Status::unauthenticated("Authentication required"));
         }
+
+        let now = chrono::Utc::now().timestamp();
+        let remaining_ttl = (claims.exp - now).max(0) as u64;
+        if remaining_ttl == 0 {
+            return Err(Status::unauthenticated("Authentication required"));
+        }
+
+        self.user_service
+            .blacklist_access_token(&claims.jti, remaining_ttl)
+            .await
+            .map_err(crate::impls::ApiError::from)
+            .map_err(map_api_error)?;
 
         Ok(Response::new(LogoutResponse {
             success: true,
-            message,
+            message: String::new(),
         }))
     }
 
@@ -1566,6 +1576,39 @@ mod tests {
     fn test_extract_authenticated_user_id_requires_user_context() {
         let request = tonic::Request::new(());
         let result = extract_authenticated_user_id(&request);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn test_extract_authenticated_token_reads_extension() {
+        let user_id = UserId::new();
+        let expected = synctv_core::service::AuthenticatedToken {
+            user_id: user_id.clone(),
+            claims: synctv_core::service::Claims {
+                sub: user_id.as_str().to_string(),
+                typ: "access".to_string(),
+                jti: "logout-token".to_string(),
+                iat: 1_700_000_000,
+                exp: 1_800_000_000,
+                pv: 1,
+                iss: None,
+                aud: None,
+            },
+        };
+
+        let mut request = tonic::Request::new(());
+        request.extensions_mut().insert(expected.clone());
+
+        let actual = extract_authenticated_token(&request).expect("authenticated token");
+        assert_eq!(actual.user_id, expected.user_id);
+        assert_eq!(actual.claims.jti, expected.claims.jti);
+    }
+
+    #[test]
+    fn test_extract_authenticated_token_requires_extension() {
+        let request = tonic::Request::new(());
+        let result = extract_authenticated_token(&request);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
     }

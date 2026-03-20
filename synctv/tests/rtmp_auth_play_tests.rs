@@ -28,7 +28,10 @@ use synctv_core::{
 use synctv_core_testing::create_test_pool;
 use synctv_livestream::{
     api::UserStreamTracker,
-    relay::{registry::PublisherInfo, registry_trait::StreamRegistryTrait},
+    relay::{
+        registry::PublisherInfo,
+        registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait},
+    },
 };
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
@@ -149,11 +152,20 @@ impl StreamRegistryTrait for MockStreamRegistry {
         _room_id: &str,
         _media_id: &str,
         _user_id: &str,
-    ) -> anyhow::Result<()> {
-        Ok(())
+    ) -> anyhow::Result<PublisherRefreshOutcome> {
+        Ok(PublisherRefreshOutcome::Refreshed)
     }
 
     async fn unregister_publisher(&self, _room_id: &str, _media_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn unregister_publisher_if_epoch_matches(
+        &self,
+        _room_id: &str,
+        _media_id: &str,
+        _expected_epoch: u64,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -236,6 +248,7 @@ async fn test_on_play_allows_active_room_with_rtmp_player_enabled() {
         result.is_ok(),
         "Expected play to be allowed for active room with rtmp_player enabled"
     );
+    pool.close().await;
 }
 
 #[tokio::test]
@@ -286,6 +299,7 @@ async fn test_on_play_rejects_banned_room() {
         err.contains("banned"),
         "Expected error to mention 'banned', got: {err}"
     );
+    pool.close().await;
 }
 
 #[tokio::test]
@@ -339,6 +353,7 @@ async fn test_on_play_rejects_pending_room() {
         err.contains("pending"),
         "Expected error to mention 'pending', got: {err}"
     );
+    pool.close().await;
 }
 
 #[tokio::test]
@@ -392,6 +407,7 @@ async fn test_on_play_rejects_closed_room() {
         err.contains("closed"),
         "Expected error to mention 'closed', got: {err}"
     );
+    pool.close().await;
 }
 
 #[tokio::test]
@@ -441,6 +457,7 @@ async fn test_on_play_rejects_when_rtmp_player_disabled() {
         err.contains("rtmp_player") || err.contains("HTTP-FLV"),
         "Expected error to mention 'rtmp_player' or 'HTTP-FLV', got: {err}"
     );
+    pool.close().await;
 }
 
 #[tokio::test]
@@ -465,6 +482,7 @@ async fn test_on_play_rejects_nonexistent_room() {
         err.contains("Failed to load room"),
         "Expected error to mention 'Failed to load room', got: {err}"
     );
+    pool.close().await;
 }
 
 // Allow unused variable warning for container

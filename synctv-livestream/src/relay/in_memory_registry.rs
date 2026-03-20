@@ -7,11 +7,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::registry::PublisherInfo;
-use super::registry_trait::StreamRegistryTrait;
+use super::registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait};
 
 /// In-memory stream registry for standalone mode without Redis.
 ///
@@ -20,10 +21,11 @@ use super::registry_trait::StreamRegistryTrait;
 /// with the Redis-backed implementation.
 ///
 /// Data is lost on process restart, which is acceptable for single-node deployments.
+
 #[derive(Debug, Clone)]
 pub struct InMemoryStreamRegistry {
     publishers: Arc<Mutex<HashMap<(String, String), PublisherInfo>>>,
-    epoch_counters: Arc<Mutex<HashMap<(String, String), u64>>>,
+    next_epoch: Arc<AtomicU64>,
 }
 
 impl InMemoryStreamRegistry {
@@ -31,7 +33,7 @@ impl InMemoryStreamRegistry {
     pub fn new() -> Self {
         Self {
             publishers: Arc::new(Mutex::new(HashMap::new())),
-            epoch_counters: Arc::new(Mutex::new(HashMap::new())),
+            next_epoch: Arc::new(AtomicU64::new(1)),
         }
     }
 }
@@ -54,14 +56,12 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
     ) -> Result<bool> {
         use std::collections::hash_map::Entry;
         let mut publishers = self.publishers.lock().await;
-        let mut epoch_counters = self.epoch_counters.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
         match publishers.entry(key.clone()) {
             Entry::Occupied(_) => Ok(false),
             Entry::Vacant(vacant) => {
-                let epoch = epoch_counters.entry(key).or_insert(0);
-                *epoch += 1;
+                let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
 
                 vacant.insert(PublisherInfo {
                     node_id: node_id.to_string(),
@@ -69,7 +69,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
                     app_name: app_name.to_string(),
                     user_id: String::new(),
                     started_at: Utc::now(),
-                    epoch: *epoch,
+                    epoch,
                 });
                 Ok(true)
             }
@@ -86,14 +86,12 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
     ) -> Result<bool> {
         use std::collections::hash_map::Entry;
         let mut publishers = self.publishers.lock().await;
-        let mut epoch_counters = self.epoch_counters.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
         match publishers.entry(key.clone()) {
             Entry::Occupied(_) => Ok(false),
             Entry::Vacant(vacant) => {
-                let epoch = epoch_counters.entry(key).or_insert(0);
-                *epoch += 1;
+                let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
 
                 vacant.insert(PublisherInfo {
                     node_id: node_id.to_string(),
@@ -101,7 +99,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
                     app_name: "live".to_string(),
                     user_id: user_id.to_string(),
                     started_at: Utc::now(),
-                    epoch: *epoch,
+                    epoch,
                 });
                 Ok(true)
             }
@@ -110,24 +108,41 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
     async fn refresh_publisher_ttl(
         &self,
-        _room_id: &str,
-        _media_id: &str,
+        room_id: &str,
+        media_id: &str,
         _user_id: &str,
-    ) -> Result<()> {
-        // No-op: in-memory entries don't expire via TTL in standalone mode.
-        // The publisher lifecycle is managed by unregister calls.
-        Ok(())
+    ) -> Result<PublisherRefreshOutcome> {
+        let publishers = self.publishers.lock().await;
+        Ok(if publishers.contains_key(&(room_id.to_string(), media_id.to_string())) {
+            PublisherRefreshOutcome::Refreshed
+        } else {
+            PublisherRefreshOutcome::Missing
+        })
     }
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
         let mut publishers = self.publishers.lock().await;
-        let mut epoch_counters = self.epoch_counters.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
         publishers.remove(&key);
-        // Remove the epoch counter to prevent unbounded accumulation of entries
-        // for streams that have ended. Without this, epoch_counters grows forever
-        // (one entry per stream that has ever existed).
-        epoch_counters.remove(&key);
+        Ok(())
+    }
+
+    async fn unregister_publisher_if_epoch_matches(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        expected_epoch: u64,
+    ) -> Result<()> {
+        let key = (room_id.to_string(), media_id.to_string());
+        let mut publishers = self.publishers.lock().await;
+
+        if publishers
+            .get(&key)
+            .is_some_and(|publisher| publisher.epoch == expected_epoch)
+        {
+            publishers.remove(&key);
+        }
+
         Ok(())
     }
 
@@ -168,18 +183,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
     async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()> {
         let mut publishers = self.publishers.lock().await;
-        let mut epoch_counters = self.epoch_counters.lock().await;
-        // Collect keys being removed so we can clean up their epoch counters.
-        let removed_keys: Vec<(String, String)> = publishers
-            .iter()
-            .filter(|(_, info)| info.user_id == user_id)
-            .map(|(key, _)| key.clone())
-            .collect();
         publishers.retain(|_, info| info.user_id != user_id);
-        // Remove epoch counters for all unregistered streams to prevent memory leak.
-        for key in removed_keys {
-            epoch_counters.remove(&key);
-        }
         Ok(())
     }
 
@@ -194,18 +198,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
     async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()> {
         let mut publishers = self.publishers.lock().await;
-        let mut epoch_counters = self.epoch_counters.lock().await;
-        // Collect keys being removed so we can clean up their epoch counters.
-        let removed_keys: Vec<(String, String)> = publishers
-            .iter()
-            .filter(|(_, info)| info.node_id == node_id)
-            .map(|(key, _)| key.clone())
-            .collect();
         publishers.retain(|_, info| info.node_id != node_id);
-        // Remove epoch counters for all unregistered streams to prevent memory leak.
-        for key in removed_keys {
-            epoch_counters.remove(&key);
-        }
         Ok(())
     }
 }

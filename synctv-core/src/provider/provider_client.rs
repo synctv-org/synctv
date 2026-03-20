@@ -25,6 +25,36 @@ use std::sync::Arc;
 use std::time::Duration;
 use synctv_media_providers::alist::{AlistError, AlistInterface};
 use synctv_media_providers::grpc::alist::{FsGetResp, FsListResp, FsOtherResp};
+use tonic::{Code, Request, Status};
+
+#[derive(Clone, Debug)]
+pub struct RemoteProviderConnection {
+    channel: tonic::transport::Channel,
+    auth_secret: Option<Arc<str>>,
+}
+
+impl RemoteProviderConnection {
+    #[must_use]
+    pub fn new(
+        channel: tonic::transport::Channel,
+        auth_secret: Option<impl Into<String>>,
+    ) -> Self {
+        Self {
+            channel,
+            auth_secret: auth_secret.map(|secret| Arc::<str>::from(secret.into())),
+        }
+    }
+
+    #[must_use]
+    pub fn channel(&self) -> tonic::transport::Channel {
+        self.channel.clone()
+    }
+
+    #[must_use]
+    pub fn auth_secret(&self) -> Option<&str> {
+        self.auth_secret.as_deref()
+    }
+}
 
 /// Default per-request timeout for gRPC calls to remote providers.
 ///
@@ -59,10 +89,12 @@ macro_rules! impl_grpc_method {
         {
             Box::pin(async move {
                 use $client_mod as _client_mod;
-                let mut client = _client_mod::$client_name::new(self.channel.clone());
+                let mut client = _client_mod::$client_name::new(self.connection.channel());
+                let request = build_grpc_request(self.connection.auth_secret(), request)
+                    .map_err(<$error>::from)?;
                 let response = tokio::time::timeout(
                     GRPC_REQUEST_TIMEOUT,
-                    client.$method(tonic::Request::new(request)),
+                    client.$method(request),
                 )
                 .await
                 .map_err(|_| {
@@ -72,11 +104,101 @@ macro_rules! impl_grpc_method {
                         stringify!($method),
                     ))
                 })?
-                .map_err(|e| <$error>::Network(format!("gRPC error: {e}")))?;
+                .map_err(|e| <$error>::from(map_grpc_status(stringify!($method), e)))?;
                 Ok(response.into_inner())
             })
         }
     };
+}
+
+fn build_grpc_request<T>(
+    auth_secret: Option<&str>,
+    payload: T,
+) -> Result<Request<T>, synctv_media_providers::ProviderClientError> {
+    let mut request = Request::new(payload);
+    let Some(auth_secret) = auth_secret.map(str::trim).filter(|secret| !secret.is_empty()) else {
+        return Ok(request);
+    };
+
+    let metadata_value = auth_secret.parse().map_err(|e| {
+        synctv_media_providers::ProviderClientError::InvalidHeader(format!(
+            "invalid x-provider-secret metadata value: {e}"
+        ))
+    })?;
+
+    request
+        .metadata_mut()
+        .insert("x-provider-secret", metadata_value);
+    Ok(request)
+}
+
+pub(crate) fn validate_auth_secret(auth_secret: Option<&str>) -> Result<Option<&str>, ProviderError> {
+    match auth_secret.map(str::trim) {
+        Some("") => Err(ProviderError::InvalidConfig(
+            "remote provider auth secret must not be empty".to_string(),
+        )),
+        Some(secret) => {
+            if !secret.is_ascii() {
+                return Err(ProviderError::InvalidConfig(
+                    "remote provider auth secret must be valid ASCII gRPC metadata".to_string(),
+                ));
+            }
+            tonic::metadata::MetadataValue::try_from(secret).map_err(|_| {
+                ProviderError::InvalidConfig(
+                    "remote provider auth secret must be valid ASCII gRPC metadata".to_string(),
+                )
+            })?;
+            Ok(Some(secret))
+        }
+        None => Ok(None),
+    }
+}
+
+fn grpc_status_to_http_status(code: Code) -> Option<reqwest::StatusCode> {
+    match code {
+        Code::NotFound => Some(reqwest::StatusCode::NOT_FOUND),
+        Code::PermissionDenied => Some(reqwest::StatusCode::FORBIDDEN),
+        Code::ResourceExhausted => Some(reqwest::StatusCode::TOO_MANY_REQUESTS),
+        Code::FailedPrecondition | Code::AlreadyExists => Some(reqwest::StatusCode::CONFLICT),
+        _ => None,
+    }
+}
+
+fn map_grpc_status(
+    context: &str,
+    status: Status,
+) -> synctv_media_providers::ProviderClientError {
+    let message = status.message().to_string();
+    match status.code() {
+        Code::Unauthenticated => synctv_media_providers::ProviderClientError::Auth(message),
+        Code::InvalidArgument => {
+            synctv_media_providers::ProviderClientError::InvalidConfig(message)
+        }
+        Code::Unimplemented => synctv_media_providers::ProviderClientError::NotImplemented(message),
+        Code::DeadlineExceeded | Code::Unavailable | Code::Cancelled => {
+            synctv_media_providers::ProviderClientError::Network(format!(
+                "gRPC {} for {}: {}",
+                status.code(),
+                context,
+                message
+            ))
+        }
+        code => {
+            if let Some(http_status) = grpc_status_to_http_status(code) {
+                synctv_media_providers::ProviderClientError::Http {
+                    status: http_status,
+                    url: format!("grpc://remote/{context}"),
+                    retry_after_secs: None,
+                    body: message,
+                }
+            } else {
+                synctv_media_providers::ProviderClientError::Api {
+                    code: i64::from(code as i32),
+                    message,
+                }
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -213,10 +335,10 @@ impl ProviderClientManager {
     #[must_use]
     pub fn resolve_alist_client(
         &self,
-        remote_channel: Option<tonic::transport::Channel>,
+        remote_connection: Option<RemoteProviderConnection>,
     ) -> AlistClientArc {
-        match remote_channel {
-            Some(channel) => create_remote_alist_client(channel),
+        match remote_connection {
+            Some(connection) => create_remote_alist_client(connection),
             None => self.local_alist_client(),
         }
     }
@@ -227,10 +349,10 @@ impl ProviderClientManager {
     #[must_use]
     pub fn resolve_bilibili_client(
         &self,
-        remote_channel: Option<tonic::transport::Channel>,
+        remote_connection: Option<RemoteProviderConnection>,
     ) -> BilibiliClientArc {
-        match remote_channel {
-            Some(channel) => create_remote_bilibili_client(channel),
+        match remote_connection {
+            Some(connection) => create_remote_bilibili_client(connection),
             None => self.local_bilibili_client(),
         }
     }
@@ -241,10 +363,10 @@ impl ProviderClientManager {
     #[must_use]
     pub fn resolve_emby_client(
         &self,
-        remote_channel: Option<tonic::transport::Channel>,
+        remote_connection: Option<RemoteProviderConnection>,
     ) -> EmbyClientArc {
-        match remote_channel {
-            Some(channel) => create_remote_emby_client(channel),
+        match remote_connection {
+            Some(connection) => create_remote_emby_client(connection),
             None => self.local_emby_client(),
         }
     }
@@ -259,21 +381,21 @@ pub type AlistClientArc = Arc<dyn AlistInterface>;
 
 /// Create remote Alist client (thin wrapper around gRPC client)
 #[must_use]
-pub fn create_remote_alist_client(channel: tonic::transport::Channel) -> AlistClientArc {
-    Arc::new(GrpcAlistClient::new(channel))
+pub fn create_remote_alist_client(connection: RemoteProviderConnection) -> AlistClientArc {
+    Arc::new(GrpcAlistClient::new(connection))
 }
 
 /// Thin wrapper around gRPC client
 ///
 /// Implements `AlistInterface` by delegating to gRPC client.
 pub struct GrpcAlistClient {
-    channel: tonic::transport::Channel,
+    connection: RemoteProviderConnection,
 }
 
 impl GrpcAlistClient {
     #[must_use]
-    pub const fn new(channel: tonic::transport::Channel) -> Self {
-        Self { channel }
+    pub fn new(connection: RemoteProviderConnection) -> Self {
+        Self { connection }
     }
 }
 
@@ -326,10 +448,11 @@ impl AlistInterface for GrpcAlistClient {
         request: synctv_media_providers::grpc::alist::LoginReq,
     ) -> Result<String, AlistError> {
         use synctv_media_providers::grpc::alist::alist_client::AlistClient;
-        let mut client = AlistClient::new(self.channel.clone());
+        let mut client = AlistClient::new(self.connection.channel());
+        let request = build_grpc_request(self.connection.auth_secret(), request)?;
         let response = tokio::time::timeout(
             GRPC_REQUEST_TIMEOUT,
-            client.login(tonic::Request::new(request)),
+            client.login(request),
         )
         .await
         .map_err(|_| {
@@ -338,7 +461,7 @@ impl AlistInterface for GrpcAlistClient {
                 GRPC_REQUEST_TIMEOUT.as_secs(),
             ))
         })?
-        .map_err(|e| AlistError::Network(format!("gRPC error: {e}")))?;
+        .map_err(|e| AlistError::from(map_grpc_status("login", e)))?;
         Ok(response.into_inner().token)
     }
 }
@@ -491,19 +614,19 @@ pub type BilibiliClientArc = Arc<dyn BilibiliInterface>;
 
 /// Create remote Bilibili client (thin wrapper around gRPC client)
 #[must_use]
-pub fn create_remote_bilibili_client(channel: tonic::transport::Channel) -> BilibiliClientArc {
-    Arc::new(GrpcBilibiliClient::new(channel))
+pub fn create_remote_bilibili_client(connection: RemoteProviderConnection) -> BilibiliClientArc {
+    Arc::new(GrpcBilibiliClient::new(connection))
 }
 
 /// Thin wrapper around gRPC client for Bilibili
 pub struct GrpcBilibiliClient {
-    channel: tonic::transport::Channel,
+    connection: RemoteProviderConnection,
 }
 
 impl GrpcBilibiliClient {
     #[must_use]
-    pub const fn new(channel: tonic::transport::Channel) -> Self {
-        Self { channel }
+    pub fn new(connection: RemoteProviderConnection) -> Self {
+        Self { connection }
     }
 }
 
@@ -664,19 +787,19 @@ pub type EmbyClientArc = Arc<dyn EmbyInterface>;
 
 /// Create remote Emby client (thin wrapper around gRPC client)
 #[must_use]
-pub fn create_remote_emby_client(channel: tonic::transport::Channel) -> EmbyClientArc {
-    Arc::new(GrpcEmbyClient::new(channel))
+pub fn create_remote_emby_client(connection: RemoteProviderConnection) -> EmbyClientArc {
+    Arc::new(GrpcEmbyClient::new(connection))
 }
 
 /// Thin wrapper around gRPC client for Emby
 pub struct GrpcEmbyClient {
-    channel: tonic::transport::Channel,
+    connection: RemoteProviderConnection,
 }
 
 impl GrpcEmbyClient {
     #[must_use]
-    pub const fn new(channel: tonic::transport::Channel) -> Self {
-        Self { channel }
+    pub fn new(connection: RemoteProviderConnection) -> Self {
+        Self { connection }
     }
 }
 
@@ -787,6 +910,9 @@ impl EmbyInterface for GrpcEmbyClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::StatusCode;
+    use synctv_media_providers::ProviderClientError;
+    use tonic::metadata::MetadataValue;
 
     /// Test that `ProviderClientManager` can be created with default clients
     #[test]
@@ -877,5 +1003,109 @@ mod tests {
         assert_eq!(Arc::as_ptr(&alist), alist_ptr);
         assert_eq!(Arc::as_ptr(&bilibili), bilibili_ptr);
         assert_eq!(Arc::as_ptr(&emby), emby_ptr);
+    }
+
+    #[test]
+    fn test_build_grpc_request_inserts_x_provider_secret() {
+        let request =
+            build_grpc_request(Some("shared-secret"), 42_u32).expect("request should build");
+        assert_eq!(request.get_ref(), &42_u32);
+        assert_eq!(
+            request.metadata().get("x-provider-secret"),
+            Some(&MetadataValue::from_static("shared-secret"))
+        );
+    }
+
+    #[test]
+    fn test_build_grpc_request_omits_header_when_secret_missing() {
+        let request = build_grpc_request(None, 42_u32).expect("request should build");
+        assert_eq!(request.get_ref(), &42_u32);
+        assert!(
+            request.metadata().get("x-provider-secret").is_none(),
+            "legacy remote instances without jwt_secret should preserve the pre-header request format"
+        );
+    }
+
+    #[test]
+    fn test_validate_auth_secret_rejects_empty_secret() {
+        let error = validate_auth_secret(Some("   ")).expect_err("empty secret must fail");
+        assert!(matches!(
+            error,
+            ProviderError::InvalidConfig(message)
+                if message.contains("auth secret must not be empty")
+        ));
+    }
+
+    #[test]
+    fn test_validate_auth_secret_allows_legacy_missing_secret() {
+        assert_eq!(validate_auth_secret(None).unwrap(), None);
+        assert_eq!(
+            validate_auth_secret(Some("  shared-secret  ")).unwrap(),
+            Some("shared-secret")
+        );
+    }
+
+    #[test]
+    fn test_validate_auth_secret_rejects_non_ascii_secret() {
+        let error = validate_auth_secret(Some("密钥")).expect_err("non-ASCII secret must fail");
+        assert!(matches!(
+            error,
+            ProviderError::InvalidConfig(message)
+                if message.contains("valid ASCII gRPC metadata")
+        ));
+    }
+
+    #[test]
+    fn test_validate_auth_secret_rejects_control_characters() {
+        let error =
+            validate_auth_secret(Some("shared\nsecret")).expect_err("control chars must fail");
+        assert!(matches!(
+            error,
+            ProviderError::InvalidConfig(message)
+                if message.contains("valid ASCII gRPC metadata")
+        ));
+    }
+
+    #[test]
+    fn test_map_grpc_status_unauthenticated_to_auth() {
+        let error = map_grpc_status(
+            "login",
+            Status::unauthenticated("Invalid provider secret"),
+        );
+        assert!(matches!(
+            error,
+            ProviderClientError::Auth(message) if message == "Invalid provider secret"
+        ));
+    }
+
+    #[test]
+    fn test_map_grpc_status_invalid_argument_to_invalid_config() {
+        let error =
+            map_grpc_status("fs_get", Status::invalid_argument("missing host parameter"));
+        assert!(matches!(
+            error,
+            ProviderClientError::InvalidConfig(message) if message == "missing host parameter"
+        ));
+    }
+
+    #[test]
+    fn test_map_grpc_status_not_found_to_http_404() {
+        let error = map_grpc_status("me", Status::not_found("user not found"));
+        assert!(matches!(
+            error,
+            ProviderClientError::Http { status, ref url, ref body, retry_after_secs: None }
+                if status == StatusCode::NOT_FOUND
+                    && url == "grpc://remote/me"
+                    && body == "user not found"
+        ));
+    }
+
+    #[test]
+    fn test_map_grpc_status_unimplemented_to_not_implemented() {
+        let error = map_grpc_status("future_method", Status::unimplemented("not available"));
+        assert!(matches!(
+            error,
+            ProviderClientError::NotImplemented(message) if message == "not available"
+        ));
     }
 }

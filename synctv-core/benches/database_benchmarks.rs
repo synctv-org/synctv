@@ -13,12 +13,13 @@
 
 #![allow(clippy::unwrap_used)]
 use std::hint::black_box;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, BenchmarkId, Criterion, Throughput};
 use sqlx::PgPool;
-use std::time::{Duration, Instant};
 use synctv_core::{
+    bench_support,
     models::{
         id::PlaylistId, media::Media, playlist::Playlist, MediaId, PageParams, Room, RoomId,
         RoomListQuery, RoomMember, RoomRole, RoomStatus, User, UserId, UserRole, UserStatus,
@@ -34,8 +35,58 @@ use testcontainers_modules::postgres::Postgres;
 
 const POSTGRES_VERSION: &str = "16-alpine";
 
+struct BenchmarkDatabase {
+    container: ContainerAsync<Postgres>,
+    pool: PgPool,
+}
+
+impl BenchmarkDatabase {
+    fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    fn shutdown(self, rt: &tokio::runtime::Runtime) {
+        rt.block_on(async move {
+            self.pool.close().await;
+            drop(self.container);
+        });
+    }
+}
+
+fn print_benchmark_list() {
+    for room_count in [100, 500, 1000] {
+        println!("list_rooms/paginated/{room_count}: benchmark");
+    }
+
+    for media_count in [100, 500, 1000] {
+        println!("list_media/paginated/{media_count}: benchmark");
+    }
+
+    for batch_size in [10, 50, 100] {
+        println!("batch_insert/media/{batch_size}: benchmark");
+    }
+
+    println!("index_effectiveness/get_by_room_indexed: benchmark");
+    println!("single_row_operations/create_room: benchmark");
+    println!("single_row_operations/get_room_by_id: benchmark");
+
+    for page in [1u32, 5, 25, 45] {
+        println!("pagination_offset/page/{page}: benchmark");
+    }
+}
+
+fn main() {
+    if bench_support::is_nextest_list_mode() {
+        print_benchmark_list();
+        return;
+    }
+
+    benches();
+    Criterion::default().configure_from_args().final_summary();
+}
+
 /// Setup test database with testcontainers
-async fn setup_test_db() -> (ContainerAsync<Postgres>, PgPool) {
+async fn setup_test_db() -> BenchmarkDatabase {
     let postgres = Postgres::default()
         .with_db_name("synctv_bench")
         .with_user("synctv")
@@ -62,7 +113,10 @@ async fn setup_test_db() -> (ContainerAsync<Postgres>, PgPool) {
         .await
         .expect("Failed to run migrations");
 
-    (postgres, pool)
+    BenchmarkDatabase {
+        container: postgres,
+        pool,
+    }
 }
 
 /// Create test user
@@ -126,7 +180,8 @@ fn make_playlist(room_id: &RoomId, parent_id: Option<&PlaylistId>, name: &str) -
 /// Benchmark: Room list queries with different data sizes
 fn bench_list_rooms_with_data(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (_container, pool) = rt.block_on(setup_test_db());
+    let db = rt.block_on(setup_test_db());
+    let pool = db.pool().clone();
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -168,12 +223,14 @@ fn bench_list_rooms_with_data(c: &mut Criterion) {
     }
 
     group.finish();
+    db.shutdown(&rt);
 }
 
 /// Benchmark: Media list queries with different playlist sizes
 fn bench_list_media_with_data(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (_container, pool) = rt.block_on(setup_test_db());
+    let db = rt.block_on(setup_test_db());
+    let pool = db.pool().clone();
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -234,12 +291,14 @@ fn bench_list_media_with_data(c: &mut Criterion) {
     }
 
     group.finish();
+    db.shutdown(&rt);
 }
 
 /// Benchmark: Batch insert operations
 fn bench_batch_insert_operations(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (_container, pool) = rt.block_on(setup_test_db());
+    let db = rt.block_on(setup_test_db());
+    let pool = db.pool().clone();
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -301,12 +360,14 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
     }
 
     group.finish();
+    db.shutdown(&rt);
 }
 
 /// Benchmark: Index effectiveness comparison
 fn bench_index_effectiveness(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (_container, pool) = rt.block_on(setup_test_db());
+    let db = rt.block_on(setup_test_db());
+    let pool = db.pool().clone();
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -340,12 +401,14 @@ fn bench_index_effectiveness(c: &mut Criterion) {
     });
 
     group.finish();
+    db.shutdown(&rt);
 }
 
 /// Benchmark: Single row CRUD operations
 fn bench_single_row_operations(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (_container, pool) = rt.block_on(setup_test_db());
+    let db = rt.block_on(setup_test_db());
+    let pool = db.pool().clone();
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool);
@@ -379,12 +442,14 @@ fn bench_single_row_operations(c: &mut Criterion) {
     });
 
     group.finish();
+    db.shutdown(&rt);
 }
 
 /// Benchmark: Pagination performance at different offsets
 fn bench_pagination_offset_performance(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (_container, pool) = rt.block_on(setup_test_db());
+    let db = rt.block_on(setup_test_db());
+    let pool = db.pool().clone();
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool);
@@ -419,6 +484,7 @@ fn bench_pagination_offset_performance(c: &mut Criterion) {
     }
 
     group.finish();
+    db.shutdown(&rt);
 }
 
 criterion_group!(
@@ -430,4 +496,3 @@ criterion_group!(
     bench_single_row_operations,
     bench_pagination_offset_performance,
 );
-criterion_main!(benches);

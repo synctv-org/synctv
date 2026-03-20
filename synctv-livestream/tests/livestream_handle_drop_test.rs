@@ -11,6 +11,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use synctv_livestream::relay::registry_trait::PublisherRefreshOutcome;
 use tokio::sync::mpsc;
 
 /// Mock StreamRegistryTrait that counts stop_all calls via a shared counter.
@@ -51,11 +52,20 @@ impl synctv_livestream::relay::StreamRegistryTrait for MockStreamRegistry {
         _room_id: &str,
         _media_id: &str,
         _user_id: &str,
-    ) -> anyhow::Result<()> {
-        Ok(())
+    ) -> anyhow::Result<PublisherRefreshOutcome> {
+        Ok(PublisherRefreshOutcome::Refreshed)
     }
 
     async fn unregister_publisher(&self, _room_id: &str, _media_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn unregister_publisher_if_epoch_matches(
+        &self,
+        _room_id: &str,
+        _media_id: &str,
+        _expected_epoch: u64,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 

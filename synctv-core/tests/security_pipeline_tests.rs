@@ -127,8 +127,8 @@ async fn test_db_error_propagates_not_swallowed() {
 
     let err = result.unwrap_err();
     assert!(
-        matches!(&err, Error::Authentication(msg) if msg.contains("User not found")),
-        "NotFound should become Authentication('User not found'), got: {err}"
+        matches!(&err, Error::Authentication(msg) if msg == "Authentication failed"),
+        "NotFound should become generic Authentication failure, got: {err}"
     );
 
     let fake_id2 = UserId::new();

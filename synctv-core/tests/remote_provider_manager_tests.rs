@@ -10,13 +10,17 @@
 
 use chrono::Utc;
 use sqlx::PgPool;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use synctv_media_providers::grpc::{
+    alist::alist_server::AlistServer, alist_server::AlistService as AlistGrpcService,
+};
 use synctv_core::{
     cache::CacheInvalidationService, models::ProviderInstance,
     repository::ProviderInstanceRepository,
-    service::remote_provider_manager::RemoteProviderManager,
+    service::{remote_provider_manager::RemoteProviderManager, CredentialEncryption},
 };
 use synctv_core_testing::{create_test_pool_with_options_and_label, start_redis_with_client};
 use tokio::sync::{Barrier, RwLock};
@@ -84,6 +88,14 @@ async fn flush_provider_instances(infra: &TestInfra) {
         .expect("Failed to truncate media_provider_instances");
 }
 
+fn test_encryption() -> CredentialEncryption {
+    CredentialEncryption::new(&[0x42; 32]).expect("test encryption key should be valid")
+}
+
+fn provider_repo(pool: &PgPool) -> ProviderInstanceRepository {
+    ProviderInstanceRepository::new_with_encryption(pool.clone(), test_encryption())
+}
+
 const REDIS_INVALIDATION_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIS_INVALIDATION_WAIT_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -94,7 +106,7 @@ fn make_test_instance(name: &str) -> ProviderInstance {
         name: name.to_string(),
         endpoint: "http://example.com:50051".to_string(), // Use external domain to pass SSRF
         comment: Some("test instance".to_string()),
-        jwt_secret: None,
+        jwt_secret: Some("remote-provider-test-secret".to_string()),
         custom_ca: None,
         timeout: "1s".to_string(),
         tls: false,
@@ -106,25 +118,171 @@ fn make_test_instance(name: &str) -> ProviderInstance {
     }
 }
 
-async fn spawn_health_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+async fn spawn_authenticated_provider_server(
+    auth_secret: &str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("health test server should bind to an ephemeral port");
+        .expect("provider auth test server should bind to an ephemeral port");
     let addr = listener
         .local_addr()
-        .expect("health test server should expose a local address");
+        .expect("provider auth test server should expose a local address");
 
-    let (reporter, service) = tonic_health::server::health_reporter();
+    let (reporter, health_service) = tonic_health::server::health_reporter();
     reporter
         .set_service_status("", ServingStatus::Serving)
         .await;
+    reporter
+        .set_serving::<AlistServer<AlistGrpcService>>()
+        .await;
 
+    let auth_secret = auth_secret.to_string();
     let handle = tokio::spawn(async move {
         Server::builder()
-            .add_service(service)
+            .add_service(health_service)
+            .add_service(AlistServer::new(GrpcAuthProbeAlistService::new(auth_secret)))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
-            .expect("health test server should run");
+            .expect("provider auth test server should run");
+    });
+
+    (addr, handle)
+}
+
+#[derive(Clone)]
+struct GrpcAuthProbeAlistService {
+    expected_secret: Arc<str>,
+    fail_after_auth: bool,
+}
+
+impl GrpcAuthProbeAlistService {
+    fn new(expected_secret: String) -> Self {
+        Self {
+            expected_secret: Arc::<str>::from(expected_secret),
+            fail_after_auth: false,
+        }
+    }
+
+    fn failing_after_auth(expected_secret: String) -> Self {
+        Self {
+            expected_secret: Arc::<str>::from(expected_secret),
+            fail_after_auth: true,
+        }
+    }
+
+    fn validate_secret<T>(&self, request: &tonic::Request<T>) -> Result<(), tonic::Status> {
+        let value = request
+            .metadata()
+            .get("x-provider-secret")
+            .ok_or_else(|| tonic::Status::unauthenticated("Missing x-provider-secret header"))?;
+        let provided = value
+            .to_str()
+            .map_err(|_| tonic::Status::unauthenticated("Invalid x-provider-secret header"))?;
+        if provided != self.expected_secret.as_ref() {
+            return Err(tonic::Status::unauthenticated("Invalid provider secret"));
+        }
+        Ok(())
+    }
+}
+
+#[tonic::async_trait]
+impl synctv_media_providers::grpc::alist::alist_server::Alist for GrpcAuthProbeAlistService {
+    async fn login(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::alist::LoginReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::LoginResp>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented("login not needed for health probe"))
+    }
+
+    async fn fs_get(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::alist::FsGetReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::FsGetResp>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented("fs_get not needed for health probe"))
+    }
+
+    async fn fs_list(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::alist::FsListReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::FsListResp>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented("fs_list not needed for health probe"))
+    }
+
+    async fn fs_other(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::alist::FsOtherReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::FsOtherResp>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented("fs_other not needed for health probe"))
+    }
+
+    async fn fs_search(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::alist::FsSearchReq>,
+    ) -> Result<
+        tonic::Response<synctv_media_providers::grpc::alist::FsSearchResp>,
+        tonic::Status,
+    > {
+        Err(tonic::Status::unimplemented("fs_search not needed for health probe"))
+    }
+
+    async fn me(
+        &self,
+        request: tonic::Request<synctv_media_providers::grpc::alist::MeReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::MeResp>, tonic::Status>
+    {
+        self.validate_secret(&request)?;
+        if self.fail_after_auth {
+            return Err(tonic::Status::internal(
+                "authenticated provider handler failure",
+            ));
+        }
+        Ok(tonic::Response::new(
+            synctv_media_providers::grpc::alist::MeResp {
+                id: 1,
+                username: "health-check".to_string(),
+                base_path: String::new(),
+                role: 0,
+                disabled: false,
+                permission: 0,
+                sso_id: String::new(),
+                otp: false,
+            },
+        ))
+    }
+}
+
+async fn spawn_authenticated_provider_server_with_handler_failure(
+    auth_secret: &str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("provider auth failure test server should bind to an ephemeral port");
+    let addr = listener
+        .local_addr()
+        .expect("provider auth failure test server should expose a local address");
+
+    let (reporter, health_service) = tonic_health::server::health_reporter();
+    reporter
+        .set_service_status("", ServingStatus::Serving)
+        .await;
+    reporter
+        .set_serving::<AlistServer<AlistGrpcService>>()
+        .await;
+
+    let auth_secret = auth_secret.to_string();
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(health_service)
+            .add_service(AlistServer::new(
+                GrpcAuthProbeAlistService::failing_after_auth(auth_secret),
+            ))
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+            .await
+            .expect("provider auth failure test server should run");
     });
 
     (addr, handle)
@@ -137,7 +295,7 @@ fn make_test_instance_tls(name: &str, insecure: bool) -> ProviderInstance {
         name: name.to_string(),
         endpoint: "https://example.com:50052".to_string(),
         comment: Some("test TLS instance".to_string()),
-        jwt_secret: None,
+        jwt_secret: Some("remote-provider-test-secret".to_string()),
         custom_ca: None,
         timeout: "1s".to_string(),
         tls: true,
@@ -159,7 +317,7 @@ async fn scenario_channel_creation_from_db_config() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance in DB
@@ -179,7 +337,7 @@ async fn scenario_channel_creation_from_db_config() {
     );
 
     // Verify instance exists in DB
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let fetched = repo.get_by_name("test-instance-1").await.unwrap();
     assert!(fetched.is_some());
     assert_eq!(fetched.unwrap().name, "test-instance-1");
@@ -195,7 +353,7 @@ async fn scenario_channel_cache_hit() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance in DB
@@ -224,7 +382,7 @@ async fn scenario_channel_cache_ttl_expiration() {
     let redis_client = Some(infra.redis_client.clone());
 
     // Create a manager with a very short TTL for testing
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance in DB
@@ -254,7 +412,7 @@ async fn scenario_channel_cache_ttl_expiration() {
 async fn scenario_redis_invalidation_on_delete() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let stream_key = format!("test:provider:invalidate:{}", nanoid::nanoid!(8));
     let invalidation1 = CacheInvalidationService::new(
         Some(infra.redis_client.clone()),
@@ -276,7 +434,7 @@ async fn scenario_redis_invalidation_on_delete() {
     invalidation2.start().await.unwrap();
 
     let manager1 = RemoteProviderManager::new_with_invalidation(
-        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Arc::new(provider_repo(&infra.pool)),
         Some(invalidation1.clone()),
     );
     let manager2 =
@@ -328,31 +486,37 @@ async fn scenario_redis_invalidation_on_delete() {
 async fn scenario_health_check_integration() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let (health_addr, health_handle) = spawn_health_server().await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        HashMap::from([(
+            "health-check.test.localhost".to_string(),
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, health_addr.port())),
+        )]),
+    );
 
     // Create instance in DB
     let mut instance = make_test_instance("test-instance-6");
     instance.endpoint = format!("http://health-check.test.localhost:{}", health_addr.port());
+    instance.providers = vec!["alist".to_string()];
     manager.add(instance.clone()).await.unwrap();
 
     // Run health check
     let health_results = manager.health_check().await;
 
-    // The in-process gRPC health service should be reported as healthy.
+    // The in-process provider server should be reported as healthy only when
+    // both the health service and authenticated provider traffic succeed.
     assert!(
         health_results.contains_key("test-instance-6"),
         "Health check should include the instance"
     );
     assert!(
         health_results["test-instance-6"],
-        "Instance should be healthy when the gRPC health service is serving"
+        "Instance should be healthy when both the gRPC health service and authenticated provider probe succeed"
     );
 
     health_handle.abort();
@@ -369,7 +533,7 @@ async fn scenario_health_check_respects_enabled_flag() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create enabled instance
@@ -398,6 +562,161 @@ async fn scenario_health_check_respects_enabled_flag() {
     );
 }
 
+async fn scenario_health_check_reports_enabled_instance_with_invalid_secret_as_unhealthy() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut invalid = make_test_instance("test-instance-7c-invalid-secret");
+    invalid.jwt_secret = Some("shared\nsecret".to_string());
+    provider_repo(&infra.pool)
+        .create(&invalid)
+        .await
+        .expect("legacy invalid-secret row should persist for health-check coverage");
+
+    let health_results = manager.health_check().await;
+    assert!(
+        health_results.contains_key(&invalid.name),
+        "enabled remote instances with invalid secrets should still appear in health results"
+    );
+    assert!(
+        !health_results[&invalid.name],
+        "enabled remote instances with invalid secrets should be reported unhealthy"
+    );
+}
+
+async fn scenario_health_check_reports_enabled_instance_with_missing_secret_as_unhealthy() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        HashMap::from([(
+            "legacy-health.test.localhost".to_string(),
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, health_addr.port())),
+        )]),
+    );
+
+    let mut legacy = make_test_instance("test-instance-7d-missing-secret");
+    legacy.endpoint = format!("http://legacy-health.test.localhost:{}", health_addr.port());
+    legacy.jwt_secret = None;
+    provider_repo(&infra.pool)
+        .create(&legacy)
+        .await
+        .expect("legacy missing-secret row should persist for health-check coverage");
+
+    let health_results = manager.health_check().await;
+    assert!(
+        health_results.contains_key(&legacy.name),
+        "enabled remote instances with missing secrets should still appear in health results"
+    );
+    assert!(
+        !health_results[&legacy.name],
+        "enabled remote instances without secrets must be reported unhealthy"
+    );
+
+    health_handle.abort();
+    let _ = health_handle.await;
+}
+
+async fn scenario_health_check_reports_enabled_instance_with_wrong_secret_as_unhealthy() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        HashMap::from([(
+            "wrong-secret-health.test.localhost".to_string(),
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, health_addr.port())),
+        )]),
+    );
+
+    let mut wrong = make_test_instance("test-instance-7e-wrong-secret");
+    wrong.endpoint = format!(
+        "http://wrong-secret-health.test.localhost:{}",
+        health_addr.port()
+    );
+    wrong.providers = vec!["alist".to_string()];
+    wrong.jwt_secret = Some("wrong-secret".to_string());
+
+    provider_repo(&infra.pool)
+        .create(&wrong)
+        .await
+        .expect("wrong-secret row should persist for health-check coverage");
+
+    let health_results = manager.health_check().await;
+    assert!(
+        health_results.contains_key(&wrong.name),
+        "enabled remote instances with wrong secrets should still appear in health results"
+    );
+    assert!(
+        !health_results[&wrong.name],
+        "enabled remote instances with wrong but well-formed secrets must be reported unhealthy"
+    );
+
+    health_handle.abort();
+    let _ = health_handle.await;
+}
+
+async fn scenario_health_check_reports_authenticated_provider_failure_as_unhealthy() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server_with_handler_failure(
+            "remote-provider-test-secret",
+        )
+        .await;
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        HashMap::from([(
+            "handler-failure-health.test.localhost".to_string(),
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, health_addr.port())),
+        )]),
+    );
+
+    let mut broken = make_test_instance("test-instance-7f-handler-failure");
+    broken.endpoint = format!(
+        "http://handler-failure-health.test.localhost:{}",
+        health_addr.port()
+    );
+    broken.providers = vec!["alist".to_string()];
+
+    provider_repo(&infra.pool)
+        .create(&broken)
+        .await
+        .expect("handler-failure row should persist for health-check coverage");
+
+    let health_results = manager.health_check().await;
+    assert!(
+        health_results.contains_key(&broken.name),
+        "instances with authenticated provider failures should still appear in health results"
+    );
+    assert!(
+        !health_results[&broken.name],
+        "authenticated provider handler failures must be reported unhealthy"
+    );
+
+    health_handle.abort();
+    let _ = health_handle.await;
+}
+
 // ─── Test 8: TLS configuration (non-insecure) ───────────────────────────────
 
 async fn scenario_tls_configuration_secure() {
@@ -408,14 +727,14 @@ async fn scenario_tls_configuration_secure() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let _repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let _repo = provider_repo(&infra.pool);
 
     // Create instance with secure TLS (not insecure)
     let instance = make_test_instance_tls("test-instance-8", false);
 
     // Create the instance directly in the repository without creating a channel
     // This avoids the rustls crypto provider issue in test environment
-    let repo_instance = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo_instance = provider_repo(&infra.pool);
     repo_instance.create(&instance).await.unwrap();
 
     // Verify instance was saved with correct TLS settings
@@ -430,7 +749,7 @@ async fn scenario_tls_configuration_secure() {
 
     // Now create the manager and verify it can list the instance
     let manager = RemoteProviderManager::new(
-        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Arc::new(provider_repo(&infra.pool)),
         redis_conn,
         redis_client,
         "",
@@ -454,7 +773,7 @@ async fn scenario_tls_configuration_insecure() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance with insecure TLS. The add() eagerly connects for
@@ -471,7 +790,7 @@ async fn scenario_tls_configuration_insecure() {
 
     // If it succeeds (unlikely with port 1), verify the stored config
     if matches!(&result, Ok(Ok(()))) {
-        let repo = ProviderInstanceRepository::new(infra.pool.clone());
+        let repo = provider_repo(&infra.pool);
         let fetched = repo.get_by_name("test-instance-9").await.unwrap();
         assert!(fetched.is_some());
         let fetched = fetched.unwrap();
@@ -494,7 +813,7 @@ async fn scenario_fallback_to_local_provider() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Try to get a non-existent instance
@@ -531,7 +850,7 @@ async fn scenario_fallback_when_instance_name_none() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Test resolve_client with None instance_name (should use local)
@@ -555,7 +874,7 @@ async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     let result = manager
@@ -583,7 +902,7 @@ async fn scenario_fallback_when_channel_creation_fails() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance with invalid endpoint (will fail SSRF validation)
@@ -608,7 +927,7 @@ async fn scenario_enable_disable_instance() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create enabled instance
@@ -616,7 +935,7 @@ async fn scenario_enable_disable_instance() {
     manager.add(instance.clone()).await.unwrap();
 
     // Verify it's enabled and gettable
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let fetched = repo.get_by_name("test-instance-13").await.unwrap();
     assert!(fetched.is_some());
     assert!(fetched.unwrap().enabled);
@@ -650,14 +969,14 @@ async fn scenario_enable_with_invalid_endpoint_preserves_disabled_state() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     let mut invalid_disabled = make_test_instance("test-instance-13-invalid-enable");
     invalid_disabled.enabled = false;
     invalid_disabled.endpoint = "http://127.0.0.1:50051".to_string();
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     repo.create(&invalid_disabled).await.unwrap();
 
     let result = manager.enable("test-instance-13-invalid-enable").await;
@@ -680,6 +999,89 @@ async fn scenario_enable_with_invalid_endpoint_preserves_disabled_state() {
     );
 }
 
+async fn scenario_enable_remote_instance_requires_jwt_secret() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut instance = make_test_instance("test-instance-13-missing-secret-enable");
+    instance.enabled = false;
+    instance.jwt_secret = None;
+
+    let repo = provider_repo(&infra.pool);
+    repo.create(&instance).await.unwrap();
+
+    let result = manager.enable("test-instance-13-missing-secret-enable").await;
+    assert!(
+        result.is_err(),
+        "enabling a remote instance without jwt_secret must fail"
+    );
+
+    let persisted = repo
+        .get_by_name("test-instance-13-missing-secret-enable")
+        .await
+        .unwrap()
+        .expect("instance should still exist");
+    assert!(
+        !persisted.enabled,
+        "failed enable must not leave the DB row enabled"
+    );
+}
+
+async fn scenario_enable_already_enabled_legacy_remote_instance_without_jwt_secret_fails() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut legacy = make_test_instance("test-instance-13-legacy-already-enabled");
+    legacy.jwt_secret = None;
+    legacy.enabled = true;
+    legacy.comment = Some("legacy enabled row".to_string());
+
+    provider_repo(&infra.pool)
+        .create(&legacy)
+        .await
+        .expect("legacy enabled row should persist");
+
+    let result = manager.enable("test-instance-13-legacy-already-enabled").await;
+    assert!(
+        result.is_err(),
+        "re-enabling an already-enabled legacy row without jwt_secret must fail"
+    );
+
+    let error_message = result.expect_err("missing secret should fail").to_string();
+    assert!(
+        error_message.contains("jwt_secret"),
+        "error should explain missing jwt_secret: {error_message}"
+    );
+
+    let persisted = provider_repo(&infra.pool)
+        .get_by_name("test-instance-13-legacy-already-enabled")
+        .await
+        .expect("lookup should succeed")
+        .expect("legacy row should still exist");
+    assert!(persisted.enabled, "legacy row should remain enabled");
+    assert_eq!(persisted.jwt_secret, None);
+
+    let connection = manager.get("test-instance-13-legacy-already-enabled").await;
+    assert!(
+        connection.is_none(),
+        "legacy row without jwt_secret must not resolve to an unusable remote connection"
+    );
+}
+
 // ─── Test 14: Reconnect instance ────────────────────────────────────────────
 
 async fn scenario_reconnect_instance() {
@@ -690,7 +1092,7 @@ async fn scenario_reconnect_instance() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance
@@ -729,7 +1131,7 @@ async fn scenario_add_duplicate_instance_fails() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance
@@ -756,14 +1158,14 @@ async fn scenario_add_disabled_instance_is_not_retrievable_via_get() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     let mut disabled = make_test_instance("test-instance-15-disabled");
     disabled.enabled = false;
     manager.add(disabled).await.unwrap();
 
-    let fetched = ProviderInstanceRepository::new(infra.pool.clone())
+    let fetched = provider_repo(&infra.pool)
         .get_by_name("test-instance-15-disabled")
         .await
         .unwrap()
@@ -785,7 +1187,7 @@ async fn scenario_update_to_disabled_invalidates_cached_channel() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     let instance = make_test_instance("test-instance-15-update-disabled");
@@ -799,7 +1201,7 @@ async fn scenario_update_to_disabled_invalidates_cached_channel() {
     disabled.comment = Some("now disabled".to_string());
     manager.update(disabled).await.unwrap();
 
-    let fetched = ProviderInstanceRepository::new(infra.pool.clone())
+    let fetched = provider_repo(&infra.pool)
         .get_by_name("test-instance-15-update-disabled")
         .await
         .unwrap()
@@ -822,7 +1224,7 @@ async fn scenario_concurrent_duplicate_add_returns_one_success_and_one_already_e
     let redis_client = Some(infra.redis_client.clone());
 
     let manager = Arc::new(RemoteProviderManager::new(
-        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Arc::new(provider_repo(&infra.pool)),
         redis_conn,
         redis_client,
         "",
@@ -895,7 +1297,7 @@ async fn scenario_update_nonexistent_instance_fails() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Try to update non-existent instance
@@ -909,6 +1311,192 @@ async fn scenario_update_nonexistent_instance_fails() {
     );
 }
 
+async fn scenario_update_legacy_remote_instance_without_jwt_secret_fails() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut legacy = make_test_instance("test-instance-legacy-update");
+    legacy.jwt_secret = None;
+    legacy.comment = Some("legacy row".to_string());
+
+    provider_repo(&infra.pool)
+        .create(&legacy)
+        .await
+        .expect("legacy row should persist");
+
+    legacy.comment = Some("updated comment".to_string());
+    legacy.timeout = "2s".to_string();
+
+    let result = manager.update(legacy.clone()).await;
+    assert!(
+        result.is_err(),
+        "updating a legacy remote row without jwt_secret must fail"
+    );
+
+    let error_message = result.expect_err("missing secret should fail").to_string();
+    assert!(
+        error_message.contains("jwt_secret"),
+        "error should explain missing jwt_secret: {error_message}"
+    );
+
+    let fetched = provider_repo(&infra.pool)
+        .get_by_name(&legacy.name)
+        .await
+        .expect("lookup should succeed")
+        .expect("updated instance should exist");
+    assert_ne!(fetched.comment, legacy.comment);
+    assert_ne!(fetched.timeout, "2s");
+    assert_eq!(fetched.jwt_secret, None);
+}
+
+async fn scenario_update_local_only_instance_to_remote_requires_jwt_secret() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut instance = make_test_instance("test-instance-local-to-remote-update");
+    instance.providers = vec!["live_proxy".to_string()];
+    instance.jwt_secret = None;
+
+    provider_repo(&infra.pool)
+        .create(&instance)
+        .await
+        .expect("local-only row should persist without jwt_secret");
+
+    instance.providers = vec!["bilibili".to_string()];
+
+    let result = manager.update(instance.clone()).await;
+    assert!(
+        result.is_err(),
+        "updating a local-only instance into a remote-capable one without jwt_secret must fail"
+    );
+
+    let persisted = provider_repo(&infra.pool)
+        .get_by_name(&instance.name)
+        .await
+        .expect("lookup should succeed")
+        .expect("instance should still exist");
+    assert_eq!(
+        persisted.providers,
+        vec!["live_proxy".to_string()],
+        "failed update must not persist the remote-capable provider set"
+    );
+    assert_eq!(persisted.jwt_secret, None);
+}
+
+async fn scenario_update_existing_remote_instance_requires_jwt_secret() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut instance = make_test_instance("test-instance-remote-update-missing-secret");
+    provider_repo(&infra.pool)
+        .create(&instance)
+        .await
+        .expect("remote row with jwt_secret should persist");
+
+    instance.comment = Some("updated comment".to_string());
+    instance.jwt_secret = None;
+
+    let result = manager.update(instance.clone()).await;
+    assert!(
+        result.is_err(),
+        "updating an existing remote instance with missing jwt_secret must fail"
+    );
+
+    let error = result.expect_err("missing secret should fail");
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("jwt_secret"),
+        "error should explain missing jwt_secret: {error_message}"
+    );
+
+    let persisted = provider_repo(&infra.pool)
+        .get_by_name(&instance.name)
+        .await
+        .expect("lookup should succeed")
+        .expect("instance should still exist");
+    assert_ne!(
+        persisted.comment,
+        instance.comment,
+        "failed update must not persist other field changes"
+    );
+    assert_eq!(
+        persisted.jwt_secret.as_deref(),
+        Some("remote-provider-test-secret"),
+        "failed update must preserve the existing valid jwt_secret"
+    );
+}
+
+async fn scenario_update_local_only_instance_to_remote_rejects_invalid_jwt_secret() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut instance = make_test_instance("test-instance-local-to-remote-invalid-secret");
+    instance.providers = vec!["live_proxy".to_string()];
+    instance.jwt_secret = None;
+    instance.enabled = false;
+
+    provider_repo(&infra.pool)
+        .create(&instance)
+        .await
+        .expect("local-only row should persist without jwt_secret");
+
+    instance.providers = vec!["bilibili".to_string()];
+    instance.jwt_secret = Some("shared\nsecret".to_string());
+
+    let result = manager.update(instance.clone()).await;
+    assert!(
+        result.is_err(),
+        "updating a local-only instance into a remote-capable one with invalid jwt_secret must fail"
+    );
+
+    let error = result.expect_err("invalid secret should fail");
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("secret"),
+        "error should explain invalid jwt_secret syntax: {error_message}"
+    );
+
+    let persisted = provider_repo(&infra.pool)
+        .get_by_name(&instance.name)
+        .await
+        .expect("lookup should succeed")
+        .expect("instance should still exist");
+    assert_eq!(
+        persisted.providers,
+        vec!["live_proxy".to_string()],
+        "failed update must not persist the remote-capable provider set"
+    );
+    assert_eq!(persisted.jwt_secret, None);
+}
+
 // ─── Test 17: Delete non-existent instance fails ─────────────────────────────
 
 async fn scenario_delete_nonexistent_instance_fails() {
@@ -919,7 +1507,7 @@ async fn scenario_delete_nonexistent_instance_fails() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Try to delete non-existent instance
@@ -942,7 +1530,7 @@ async fn scenario_get_all_instances() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create multiple instances
@@ -984,7 +1572,7 @@ async fn scenario_manager_without_redis() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(
         Arc::new(repo),
         None, // No Redis
@@ -1024,7 +1612,7 @@ async fn scenario_init_pre_warms_cache() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instances before init
@@ -1045,6 +1633,51 @@ async fn scenario_init_pre_warms_cache() {
     );
 }
 
+async fn scenario_init_skips_invalid_secret_and_continues_prewarming() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut invalid = make_test_instance("test-instance-20-invalid-secret");
+    invalid.jwt_secret = Some("shared\nsecret".to_string());
+    provider_repo(&infra.pool)
+        .create(&invalid)
+        .await
+        .expect("invalid legacy row should persist for compatibility coverage");
+
+    let healthy = make_test_instance("test-instance-20-healthy");
+    manager
+        .add(healthy.clone())
+        .await
+        .expect("healthy remote instance should be added");
+
+    manager
+        .init()
+        .await
+        .expect("init should continue even if one instance has an invalid secret");
+
+    let healthy_connection = manager
+        .get(&healthy.name)
+        .await
+        .expect("healthy instance should remain available after init");
+    assert_eq!(
+        healthy_connection.auth_secret(),
+        Some("remote-provider-test-secret")
+    );
+
+    let invalid_connection = manager.get(&invalid.name).await;
+    assert!(
+        invalid_connection.is_none(),
+        "instance with invalid secret should be skipped instead of poisoning the whole prewarm pass"
+    );
+}
+
 // ─── Test 21: SSRF validation prevents internal endpoints ───────────────────
 
 async fn scenario_ssrf_validation_blocks_internal_ips() {
@@ -1055,7 +1688,7 @@ async fn scenario_ssrf_validation_blocks_internal_ips() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Try to create instance with internal IP (should fail SSRF validation)
@@ -1091,7 +1724,7 @@ async fn scenario_ssrf_validation_allows_public_endpoints() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instance with public endpoint (will fail connection, but pass SSRF)
@@ -1108,7 +1741,7 @@ async fn scenario_ssrf_validation_allows_public_endpoints() {
     );
 
     // Verify it's in the DB
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let fetched = repo.get_by_name("test-instance-22").await.unwrap();
     assert!(fetched.is_some());
 }
@@ -1123,7 +1756,7 @@ async fn scenario_resolve_client_uses_remote_when_available() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = Arc::new(RemoteProviderManager::new(
         Arc::new(repo),
         redis_conn,
@@ -1155,7 +1788,7 @@ async fn scenario_cache_respects_max_capacity() {
     )));
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
 
     // Create instances (default max is 1000, so this won't test eviction)
@@ -1194,11 +1827,11 @@ async fn scenario_redis_invalidation_respects_key_prefix() {
     invalidation2.start().await.unwrap();
 
     let manager1 = RemoteProviderManager::new_with_invalidation(
-        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Arc::new(provider_repo(&infra.pool)),
         Some(invalidation1.clone()),
     );
     let manager2 = RemoteProviderManager::new_with_invalidation(
-        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Arc::new(provider_repo(&infra.pool)),
         Some(invalidation2.clone()),
     );
 
@@ -1245,7 +1878,7 @@ async fn scenario_invalidation_listener_shutdown_is_idempotent() {
     invalidation.start().await.unwrap();
 
     let manager = RemoteProviderManager::new_with_invalidation(
-        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Arc::new(provider_repo(&infra.pool)),
         Some(invalidation.clone()),
     );
 
@@ -1285,11 +1918,11 @@ async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
     invalidation2.start().await.unwrap();
 
     let manager1 = RemoteProviderManager::new_with_invalidation(
-        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Arc::new(provider_repo(&infra.pool)),
         Some(invalidation1.clone()),
     );
     let manager2 = RemoteProviderManager::new_with_invalidation(
-        Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
+        Arc::new(provider_repo(&infra.pool)),
         Some(invalidation2.clone()),
     );
 
@@ -1357,6 +1990,152 @@ async fn scenario_provider_instance_supports_provider() {
     assert!(instance.supports_provider("emby"));
     assert!(!instance.supports_provider("direct_url"));
     assert!(!instance.supports_provider("rtmp"));
+}
+
+async fn scenario_add_remote_instance_requires_jwt_secret() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut instance = make_test_instance("test-instance-missing-secret");
+    instance.jwt_secret = None;
+
+    let result = manager.add(instance).await;
+    assert!(result.is_err(), "remote instance without jwt_secret must be rejected");
+
+    let error = result.expect_err("missing secret should fail");
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("jwt_secret"),
+        "error should explain missing jwt_secret: {error_message}"
+    );
+}
+
+async fn scenario_add_remote_instance_rejects_invalid_jwt_secret_even_when_disabled() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut instance = make_test_instance("test-instance-invalid-secret-disabled");
+    instance.enabled = false;
+    instance.jwt_secret = Some("shared\nsecret".to_string());
+
+    let result = manager.add(instance.clone()).await;
+    assert!(
+        result.is_err(),
+        "disabled remote instance with invalid jwt_secret must be rejected"
+    );
+
+    let error = result.expect_err("invalid secret should fail");
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("secret"),
+        "error should explain invalid jwt_secret syntax: {error_message}"
+    );
+
+    assert!(
+        provider_repo(&infra.pool)
+            .get_by_name(&instance.name)
+            .await
+            .expect("lookup should succeed")
+            .is_none(),
+        "failed add must not persist the invalid remote instance"
+    );
+}
+
+async fn scenario_add_local_only_instance_allows_empty_jwt_secret() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let now = Utc::now();
+    let instance = ProviderInstance {
+        name: "test-local-only-instance".to_string(),
+        endpoint: "grpc://localhost:50051".to_string(),
+        comment: Some("local-only provider instance".to_string()),
+        jwt_secret: None,
+        custom_ca: None,
+        timeout: "1s".to_string(),
+        tls: false,
+        insecure_tls: false,
+        providers: vec!["direct_url".to_string(), "rtmp".to_string()],
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+
+    manager
+        .add(instance.clone())
+        .await
+        .expect("local-only provider instance should be accepted without jwt_secret");
+
+    assert!(
+        manager.get(&instance.name).await.is_none(),
+        "local-only provider instance should not create a remote connection"
+    );
+
+    let fetched = provider_repo(&infra.pool)
+        .get_by_name(&instance.name)
+        .await
+        .expect("lookup should succeed")
+        .expect("instance should exist");
+    assert_eq!(fetched.providers, instance.providers);
+    assert_eq!(fetched.jwt_secret, None);
+}
+
+async fn scenario_legacy_remote_instance_without_jwt_secret_is_rejected_at_runtime() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut instance = make_test_instance("test-legacy-remote-instance");
+    instance.jwt_secret = None;
+
+    provider_repo(&infra.pool)
+        .create(&instance)
+        .await
+        .expect("legacy row without jwt_secret should still persist");
+
+    let connection = manager.get(&instance.name).await;
+    assert!(
+        connection.is_none(),
+        "legacy remote instance without jwt_secret must not build a runtime connection"
+    );
+
+    manager
+        .init()
+        .await
+        .expect("init should skip invalid legacy remote rows instead of failing the whole manager");
+
+    let cached = manager.get(&instance.name).await;
+    assert!(
+        cached.is_none(),
+        "pre-warm must not cache a legacy remote instance without jwt_secret"
+    );
 }
 
 // ─── Test 26: Provider instance parse_timeout ───────────────────────────────
@@ -1439,6 +2218,34 @@ async fn test_health_check_integration() {
 async fn test_health_check_respects_enabled_flag() {
     install_rustls_provider_once();
     scenario_health_check_respects_enabled_flag().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_health_check_reports_enabled_instance_with_invalid_secret_as_unhealthy() {
+    install_rustls_provider_once();
+    scenario_health_check_reports_enabled_instance_with_invalid_secret_as_unhealthy().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_health_check_reports_enabled_instance_with_missing_secret_as_unhealthy() {
+    install_rustls_provider_once();
+    scenario_health_check_reports_enabled_instance_with_missing_secret_as_unhealthy().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_health_check_reports_enabled_instance_with_wrong_secret_as_unhealthy() {
+    install_rustls_provider_once();
+    scenario_health_check_reports_enabled_instance_with_wrong_secret_as_unhealthy().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_health_check_reports_authenticated_provider_failure_as_unhealthy() {
+    install_rustls_provider_once();
+    scenario_health_check_reports_authenticated_provider_failure_as_unhealthy().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1618,7 +2425,84 @@ async fn test_provider_instance_supports_provider() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
+async fn test_add_remote_instance_requires_jwt_secret() {
+    install_rustls_provider_once();
+    scenario_add_remote_instance_requires_jwt_secret().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_add_remote_instance_rejects_invalid_jwt_secret_even_when_disabled() {
+    install_rustls_provider_once();
+    scenario_add_remote_instance_rejects_invalid_jwt_secret_even_when_disabled().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_add_local_only_instance_allows_empty_jwt_secret() {
+    install_rustls_provider_once();
+    scenario_add_local_only_instance_allows_empty_jwt_secret().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_legacy_remote_instance_without_jwt_secret_is_rejected_at_runtime() {
+    install_rustls_provider_once();
+    scenario_legacy_remote_instance_without_jwt_secret_is_rejected_at_runtime().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
 async fn test_provider_instance_parse_timeout() {
     install_rustls_provider_once();
     scenario_provider_instance_parse_timeout().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_enable_remote_instance_requires_jwt_secret() {
+    install_rustls_provider_once();
+    scenario_enable_remote_instance_requires_jwt_secret().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_enable_already_enabled_legacy_remote_instance_without_jwt_secret_fails() {
+    install_rustls_provider_once();
+    scenario_enable_already_enabled_legacy_remote_instance_without_jwt_secret_fails().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_update_legacy_remote_instance_without_jwt_secret_fails() {
+    install_rustls_provider_once();
+    scenario_update_legacy_remote_instance_without_jwt_secret_fails().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_update_local_only_instance_to_remote_requires_jwt_secret() {
+    install_rustls_provider_once();
+    scenario_update_local_only_instance_to_remote_requires_jwt_secret().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_update_existing_remote_instance_requires_jwt_secret() {
+    install_rustls_provider_once();
+    scenario_update_existing_remote_instance_requires_jwt_secret().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_update_local_only_instance_to_remote_rejects_invalid_jwt_secret() {
+    install_rustls_provider_once();
+    scenario_update_local_only_instance_to_remote_rejects_invalid_jwt_secret().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_init_skips_invalid_secret_and_continues_prewarming() {
+    install_rustls_provider_once();
+    scenario_init_skips_invalid_secret_and_continues_prewarming().await;
 }

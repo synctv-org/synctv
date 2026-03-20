@@ -16,12 +16,20 @@
 
 use crate::cache::{CacheInvalidationService, InvalidationMessage};
 use crate::models::ProviderInstance;
+use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConnection};
 use crate::provider::ProviderError;
 use crate::repository::ProviderInstanceRepository;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use synctv_media_providers::grpc::{
+    alist::{alist_client::AlistClient, MeReq as AlistMeReq},
+    bilibili::{bilibili_client::BilibiliClient, UserInfoReq},
+    emby::{emby_client::EmbyClient, MeReq as EmbyMeReq},
+};
 use tokio::task::JoinHandle;
+use tonic::{Request, Status};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Uri};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
 
@@ -33,6 +41,12 @@ const MAX_CACHED_CHANNELS: u64 = 1_000;
 
 /// Maximum time to wait for the first durable invalidation subscription to become active.
 const INVALIDATION_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RemoteConfigValidationMode {
+    RequireAuthSecret,
+    AllowMissingAuthSecret,
+}
 
 /// Remote Provider Manager
 ///
@@ -47,7 +61,7 @@ const INVALIDATION_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// - A background subscriber listens for invalidation messages and evicts stale entries
 pub struct RemoteProviderManager {
     /// Lazily-populated channel cache with TTL (indexed by instance name)
-    channel_cache: Arc<moka::future::Cache<String, Channel>>,
+    channel_cache: Arc<moka::future::Cache<String, RemoteProviderConnection>>,
 
     /// Repository for database operations
     repository: Arc<ProviderInstanceRepository>,
@@ -60,6 +74,10 @@ pub struct RemoteProviderManager {
 
     /// Provider invalidation listener task handle.
     invalidation_listener_task: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>,
+
+    /// Exact-host address overrides used by tests to route synthetic hostnames
+    /// to in-process servers without weakening the production SSRF policy.
+    address_overrides: Arc<HashMap<String, SocketAddr>>,
 }
 
 impl std::fmt::Debug for RemoteProviderManager {
@@ -91,6 +109,14 @@ impl RemoteProviderManager {
         repository: Arc<ProviderInstanceRepository>,
         cache_invalidation: Option<CacheInvalidationService>,
     ) -> Self {
+        Self::new_with_options(repository, cache_invalidation, HashMap::new())
+    }
+
+    fn new_with_options(
+        repository: Arc<ProviderInstanceRepository>,
+        cache_invalidation: Option<CacheInvalidationService>,
+        address_overrides: HashMap<String, SocketAddr>,
+    ) -> Self {
         if cache_invalidation.is_none() {
             tracing::warn!(
                 "RemoteProviderManager using local-only cache invalidation. \
@@ -108,7 +134,19 @@ impl RemoteProviderManager {
             cache_invalidation,
             invalidation_cancel: tokio_util::sync::CancellationToken::new(),
             invalidation_listener_task: Arc::new(tokio::sync::Mutex::new(None)),
+            address_overrides: Arc::new(address_overrides),
         }
+    }
+
+    #[cfg(debug_assertions)]
+    #[must_use]
+    #[doc(hidden)]
+    pub fn new_with_test_address_overrides(
+        repository: Arc<ProviderInstanceRepository>,
+        cache_invalidation: Option<CacheInvalidationService>,
+        address_overrides: HashMap<String, SocketAddr>,
+    ) -> Self {
+        Self::new_with_options(repository, cache_invalidation, address_overrides)
     }
 
     /// Initialize manager by pre-warming the cache with all enabled instances from database.
@@ -124,13 +162,33 @@ impl RemoteProviderManager {
         let mut error_count = 0;
 
         for config in configs {
-            match Self::create_grpc_channel(&config).await {
+            if !Self::requires_remote_connection(&config) {
+                tracing::debug!(
+                    "Skipping remote channel pre-warm for local-only provider instance: {}",
+                    config.name
+                );
+                continue;
+            }
+
+            match self.create_grpc_channel(&config).await {
                 Ok(channel) => {
-                    self.channel_cache
-                        .insert(config.name.clone(), channel)
-                        .await;
-                    tracing::info!("Pre-warmed provider instance cache: {}", config.name);
-                    success_count += 1;
+                    match Self::build_remote_connection(&config, channel) {
+                        Ok(connection) => {
+                            self.channel_cache
+                                .insert(config.name.clone(), connection)
+                                .await;
+                            tracing::info!("Pre-warmed provider instance cache: {}", config.name);
+                            success_count += 1;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to pre-warm provider instance {}: {}",
+                                config.name,
+                                e
+                            );
+                            error_count += 1;
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::error!(
@@ -306,16 +364,136 @@ impl RemoteProviderManager {
     }
 
     /// Validate endpoint and timeout without creating or connecting a channel.
-    fn validate_config(config: &ProviderInstance) -> crate::Result<()> {
-        Self::validate_endpoint_ssrf(&config.endpoint)?;
+    fn validate_config(
+        config: &ProviderInstance,
+        mode: RemoteConfigValidationMode,
+    ) -> crate::Result<()> {
         config.parse_timeout().map_err(crate::Error::Internal)?;
+        if Self::requires_remote_connection(config) {
+            Self::validate_endpoint_ssrf(&config.endpoint)?;
+            match mode {
+                RemoteConfigValidationMode::RequireAuthSecret => {
+                    validate_auth_secret(Some(Self::required_auth_secret(config)?))
+                        .map_err(|e| crate::Error::InvalidInput(e.to_string()))?;
+                }
+                RemoteConfigValidationMode::AllowMissingAuthSecret => {
+                    validate_auth_secret(config.jwt_secret.as_deref())
+                        .map_err(|e| crate::Error::InvalidInput(e.to_string()))?;
+                }
+            }
+        }
         Ok(())
+    }
+
+    fn requires_remote_connection(config: &ProviderInstance) -> bool {
+        config
+            .providers
+            .iter()
+            .any(|provider| matches!(provider.as_str(), "bilibili" | "alist" | "emby"))
+    }
+
+    fn required_auth_secret(config: &ProviderInstance) -> crate::Result<&str> {
+        let secret = config.jwt_secret.as_deref().ok_or_else(|| {
+            crate::Error::InvalidInput(format!(
+                "Remote provider instance '{}' requires a non-empty jwt_secret",
+                config.name
+            ))
+        })?;
+        let trimmed = secret.trim();
+        if trimmed.is_empty() {
+            return Err(crate::Error::InvalidInput(format!(
+                "Remote provider instance '{}' requires a non-empty jwt_secret",
+                config.name
+            )));
+        }
+        Ok(trimmed)
+    }
+
+    fn build_remote_connection(
+        config: &ProviderInstance,
+        channel: Channel,
+    ) -> crate::Result<RemoteProviderConnection> {
+        Ok(RemoteProviderConnection::new(
+            channel,
+            Some(Self::required_auth_secret(config)?),
+        ))
+    }
+
+    fn resolve_ssrf_validated_address(
+        address_overrides: Arc<HashMap<String, SocketAddr>>,
+        uri: &Uri,
+        guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> impl std::future::Future<Output = std::io::Result<(String, std::net::SocketAddr)>> + Send
+    {
+        let address_overrides = address_overrides.clone();
+        let uri = uri.clone();
+        let guard = guard.clone();
+        async move {
+            let host = uri.host().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing host")
+            })?;
+
+            if let Some(address) = address_overrides.get(host).copied() {
+                tracing::debug!(
+                    host,
+                    ip = %address.ip(),
+                    port = address.port(),
+                    "Connecting to remote provider via explicit test address override"
+                );
+                return Ok((host.to_string(), address));
+            }
+
+            if guard.is_host_blocked(host) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("SSRF validation: host '{host}' is blocked at connection time"),
+                ));
+            }
+
+            let port = uri.port_u16().unwrap_or_else(|| {
+                if uri.scheme_str() == Some("https") {
+                    443
+                } else {
+                    80
+                }
+            });
+
+            let mut resolved = tokio::net::lookup_host((host, port)).await?;
+            let address = resolved.find_map(|addr| {
+                if guard.is_ip_blocked(&addr.ip()) {
+                    tracing::warn!(
+                        host,
+                        ip = %addr.ip(),
+                        "Blocked remote provider connection due to SSRF policy during DNS resolution"
+                    );
+                    None
+                } else {
+                    Some(addr)
+                }
+            });
+
+            let address = address.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("SSRF validation: all resolved addresses for '{host}' are blocked"),
+                )
+            })?;
+
+            tracing::debug!(
+                host,
+                ip = %address.ip(),
+                port = address.port(),
+                "Connecting to remote provider after SSRF DNS validation"
+            );
+
+            Ok((host.to_string(), address))
+        }
     }
 
     /// Create a gRPC channel for the given provider instance
     ///
     /// Establishes gRPC connection with configured TLS settings, timeout, and middleware.
-    async fn create_grpc_channel(config: &ProviderInstance) -> crate::Result<Channel> {
+    async fn create_grpc_channel(&self, config: &ProviderInstance) -> crate::Result<Channel> {
         // SSRF validation: block internal/private IPs and reserved hostnames
         Self::validate_endpoint_ssrf(&config.endpoint)?;
 
@@ -343,7 +521,7 @@ impl RemoteProviderManager {
                 // tonic's ClientTlsConfig doesn't expose this, so we build a raw
                 // rustls ClientConfig with a no-op verifier and wrap it in a
                 // tower::Service<Uri> that tonic can use.
-                let channel = Self::connect_insecure_tls(endpoint).await.map_err(|e| {
+                let channel = self.connect_insecure_tls(endpoint).await.map_err(|e| {
                     crate::Error::Internal(format!("insecure TLS connect failed: {e}"))
                 })?;
 
@@ -372,10 +550,23 @@ impl RemoteProviderManager {
                 .map_err(|e| crate::Error::Internal(format!("TLS config error: {e}")))?;
         }
 
-        // Create lazy gRPC channel (connects on first use, not eagerly)
-        // Lazy connection allows storing the channel even if the remote server
-        // is temporarily unavailable. Health checks detect unreachable servers.
-        let channel = endpoint.connect_lazy();
+        let guard = synctv_common::ssrf::SsrfGuard::default_policy();
+        let address_overrides = Arc::clone(&self.address_overrides);
+        let connector = tower::service_fn(move |uri: Uri| {
+            let guard = guard.clone();
+            let address_overrides = address_overrides.clone();
+            async move {
+                let (_, address) =
+                    Self::resolve_ssrf_validated_address(address_overrides, &uri, &guard).await?;
+                let stream = tokio::net::TcpStream::connect(address).await?;
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+            }
+        });
+
+        // Create lazy gRPC channel (connects on first use, not eagerly).
+        // The custom connector re-validates DNS resolution at connection time to
+        // block hostname-based SSRF and DNS rebinding.
+        let channel = endpoint.connect_with_connector_lazy(connector);
 
         tracing::info!(
             "Established gRPC connection to {} (timeout: {:?}, TLS: {})",
@@ -392,6 +583,7 @@ impl RemoteProviderManager {
     /// This builds a custom `tower::Service<Uri>` connector that uses a rustls
     /// `ClientConfig` with a no-op certificate verifier. Only for dev/testing.
     async fn connect_insecure_tls(
+        &self,
         endpoint: Endpoint,
     ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
         use rustls::client::danger::{
@@ -454,6 +646,8 @@ impl RemoteProviderManager {
         let provider = rustls::crypto::CryptoProvider::get_default()
             .cloned()
             .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+        let guard = synctv_common::ssrf::SsrfGuard::default_policy();
+        let address_overrides = Arc::clone(&self.address_overrides);
 
         let tls_config = ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
@@ -464,10 +658,12 @@ impl RemoteProviderManager {
 
         let connector = tower::service_fn(move |uri: Uri| {
             let tls_config = tls_config.clone();
+            let guard = guard.clone();
+            let address_overrides = address_overrides.clone();
             async move {
-                let host = uri.host().unwrap_or("localhost").to_string();
-                let port = uri.port_u16().unwrap_or(443);
-                let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
+                let (host, address) =
+                    Self::resolve_ssrf_validated_address(address_overrides, &uri, &guard).await?;
+                let tcp = tokio::net::TcpStream::connect(address).await?;
                 let server_name = rustls::pki_types::ServerName::try_from(host)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
                 let tls = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
@@ -490,27 +686,46 @@ impl RemoteProviderManager {
     /// Returns:
     /// - `Some(channel)` if the instance exists and is enabled
     /// - `None` if not found or disabled (caller should fallback to singleton local client)
-    pub async fn get(&self, name: &str) -> Option<Channel> {
+    pub async fn get(&self, name: &str) -> Option<RemoteProviderConnection> {
         // Fast path: check cache
-        if let Some(channel) = self.channel_cache.get(name).await {
-            return Some(channel);
+        if let Some(connection) = self.channel_cache.get(name).await {
+            return Some(connection);
         }
 
         // Cache miss: try to load from database and create channel lazily
         match self.repository.get_by_name(name).await {
-            Ok(Some(config)) if config.enabled => match Self::create_grpc_channel(&config).await {
-                Ok(channel) => {
-                    self.channel_cache
-                        .insert(name.to_string(), channel.clone())
-                        .await;
-                    tracing::debug!("Lazily created and cached channel for instance '{}'", name);
-                    Some(channel)
+            Ok(Some(config)) if config.enabled => {
+                if !Self::requires_remote_connection(&config) {
+                    return None;
                 }
-                Err(e) => {
-                    tracing::error!("Failed to create channel for instance '{}': {}", name, e);
-                    None
+
+                match self.create_grpc_channel(&config).await {
+                    Ok(channel) => match Self::build_remote_connection(&config, channel) {
+                        Ok(connection) => {
+                            self.channel_cache
+                                .insert(name.to_string(), connection.clone())
+                                .await;
+                            tracing::debug!(
+                                "Lazily created and cached channel for instance '{}'",
+                                name
+                            );
+                            Some(connection)
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to build authenticated connection for instance '{}': {}",
+                                name,
+                                e
+                            );
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!("Failed to create channel for instance '{}': {}", name, e);
+                        None
+                    }
                 }
-            },
+            }
             Ok(_) => {
                 // Instance not found or disabled
                 None
@@ -530,12 +745,12 @@ impl RemoteProviderManager {
     pub async fn resolve_client<T>(
         &self,
         instance_name: Option<&str>,
-        create_remote: impl FnOnce(Channel) -> T,
+        create_remote: impl FnOnce(RemoteProviderConnection) -> T,
         load_local: impl FnOnce() -> T,
     ) -> T {
         if let Some(name) = instance_name {
-            if let Some(channel) = self.get(name).await {
-                return create_remote(channel);
+            if let Some(connection) = self.get(name).await {
+                return create_remote(connection);
             }
         }
         load_local()
@@ -553,7 +768,7 @@ impl RemoteProviderManager {
     pub async fn resolve_client_required<T>(
         &self,
         instance_name: Option<&str>,
-        create_remote: impl FnOnce(Channel) -> T,
+        create_remote: impl FnOnce(RemoteProviderConnection) -> T,
         load_local: impl FnOnce() -> T,
     ) -> std::result::Result<T, ProviderError> {
         match instance_name {
@@ -592,10 +807,13 @@ impl RemoteProviderManager {
     /// 3. Caches the channel locally
     /// 4. Notifies other replicas via Redis
     pub async fn add(&self, config: ProviderInstance) -> crate::Result<()> {
-        Self::validate_config(&config)?;
+        Self::validate_config(&config, RemoteConfigValidationMode::RequireAuthSecret)?;
 
-        let channel = if config.enabled {
-            Some(Self::create_grpc_channel(&config).await?)
+        let connection = if config.enabled && Self::requires_remote_connection(&config) {
+            Some(Self::build_remote_connection(
+                &config,
+                self.create_grpc_channel(&config).await?,
+            )?)
         } else {
             None
         };
@@ -603,9 +821,9 @@ impl RemoteProviderManager {
         // Save to database
         self.repository.create(&config).await?;
 
-        if let Some(channel) = channel {
+        if let Some(connection) = connection {
             self.channel_cache
-                .insert(config.name.clone(), channel)
+                .insert(config.name.clone(), connection)
                 .await;
         } else {
             self.channel_cache.invalidate(&config.name).await;
@@ -625,10 +843,24 @@ impl RemoteProviderManager {
     /// 3. Replaces cached channel
     /// 4. Notifies other replicas via Redis
     pub async fn update(&self, config: ProviderInstance) -> crate::Result<()> {
-        Self::validate_config(&config)?;
+        self.repository
+            .get_by_name(&config.name)
+            .await?
+            .ok_or_else(|| crate::Error::NotFound(format!("Instance '{}' not found", config.name)))?;
 
-        let channel = if config.enabled {
-            Some(Self::create_grpc_channel(&config).await?)
+        let validation_mode = if Self::requires_remote_connection(&config) {
+            RemoteConfigValidationMode::RequireAuthSecret
+        } else {
+            RemoteConfigValidationMode::AllowMissingAuthSecret
+        };
+
+        Self::validate_config(&config, validation_mode)?;
+
+        let connection = if config.enabled && Self::requires_remote_connection(&config) {
+            Some(Self::build_remote_connection(
+                &config,
+                self.create_grpc_channel(&config).await?,
+            )?)
         } else {
             None
         };
@@ -636,9 +868,9 @@ impl RemoteProviderManager {
         // Update database
         self.repository.update(&config).await?;
 
-        if let Some(channel) = channel {
+        if let Some(connection) = connection {
             self.channel_cache
-                .insert(config.name.clone(), channel)
+                .insert(config.name.clone(), connection)
                 .await;
         } else {
             self.channel_cache.invalidate(&config.name).await;
@@ -681,29 +913,42 @@ impl RemoteProviderManager {
             .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
 
         if config.enabled {
-            if let Some(channel) = self.get(&config.name).await {
-                self.channel_cache
-                    .insert(config.name.clone(), channel)
-                    .await;
+            if Self::requires_remote_connection(&config) {
+                if let Some(connection) = self.get(&config.name).await {
+                    self.channel_cache
+                        .insert(config.name.clone(), connection)
+                        .await;
+                } else {
+                    let channel = self.create_grpc_channel(&config).await?;
+                    let connection = Self::build_remote_connection(&config, channel)?;
+                    self.channel_cache
+                        .insert(config.name.clone(), connection)
+                        .await;
+                }
             } else {
-                let channel = Self::create_grpc_channel(&config).await?;
-                self.channel_cache
-                    .insert(config.name.clone(), channel)
-                    .await;
+                self.channel_cache.invalidate(&config.name).await;
             }
             self.notify_change(name).await;
             tracing::info!("Enabled provider instance: {}", name);
             return Ok(());
         }
 
-        config.enabled = true;
-        let channel = Self::create_grpc_channel(&config).await?;
+        Self::validate_config(&config, RemoteConfigValidationMode::RequireAuthSecret)?;
 
-        // Persist only after a valid channel can be constructed.
-        self.repository.enable(name).await?;
-        self.channel_cache
-            .insert(config.name.clone(), channel)
-            .await;
+        config.enabled = true;
+        if Self::requires_remote_connection(&config) {
+            let channel = self.create_grpc_channel(&config).await?;
+            let connection = Self::build_remote_connection(&config, channel)?;
+
+            // Persist only after a valid channel can be constructed.
+            self.repository.enable(name).await?;
+            self.channel_cache
+                .insert(config.name.clone(), connection)
+                .await;
+        } else {
+            self.repository.enable(name).await?;
+            self.channel_cache.invalidate(&config.name).await;
+        }
 
         // Notify other replicas
         self.notify_change(name).await;
@@ -751,9 +996,16 @@ impl RemoteProviderManager {
             )));
         }
 
-        let channel = Self::create_grpc_channel(&config).await?;
+        if !Self::requires_remote_connection(&config) {
+            return Err(crate::Error::InvalidInput(format!(
+                "Instance '{name}' is local-only and does not support remote reconnect"
+            )));
+        }
+
+        let channel = self.create_grpc_channel(&config).await?;
+        let connection = Self::build_remote_connection(&config, channel)?;
         self.channel_cache
-            .insert(config.name.clone(), channel)
+            .insert(config.name.clone(), connection)
             .await;
 
         // Notify other replicas
@@ -782,13 +1034,31 @@ impl RemoteProviderManager {
         };
 
         for config in configs {
+            if !Self::requires_remote_connection(&config) {
+                continue;
+            }
+
+            if validate_auth_secret(config.jwt_secret.as_deref()).is_err() {
+                tracing::warn!(
+                    "Health check reporting provider instance '{}' unhealthy: missing or invalid jwt_secret for remote-capable configuration",
+                    config.name
+                );
+                results.insert(config.name, false);
+                continue;
+            }
+
             // Try to get channel from cache or create it
-            let channel = match self.get(&config.name).await {
-                Some(ch) => ch,
-                None => continue,
+            let connection = match self.get(&config.name).await {
+                Some(connection) => connection,
+                None => {
+                    results.insert(config.name, false);
+                    continue;
+                }
             };
 
-            let is_healthy = self.check_instance_health(&config.name, channel).await;
+            let is_healthy = self
+                .check_instance_health(&config.name, &config, &connection)
+                .await;
             results.insert(config.name, is_healthy);
         }
 
@@ -798,13 +1068,16 @@ impl RemoteProviderManager {
     /// Check health of a single remote instance
     ///
     /// Calls gRPC Health Check RPC with 5-second timeout.
-    async fn check_instance_health(&self, name: &str, channel: Channel) -> bool {
-        // Create health check client
-        let mut client = HealthClient::new(channel);
+    async fn check_instance_health(
+        &self,
+        name: &str,
+        config: &ProviderInstance,
+        connection: &RemoteProviderConnection,
+    ) -> bool {
+        let mut client = HealthClient::new(connection.channel());
 
-        // Create health check request (empty service name checks overall health)
         let request = tonic::Request::new(HealthCheckRequest {
-            service: String::new(), // Empty string = overall server health
+            service: String::new(),
         });
 
         // Set timeout for health check (5 seconds)
@@ -812,21 +1085,23 @@ impl RemoteProviderManager {
 
         match tokio::time::timeout(timeout, client.check(request)).await {
             Ok(Ok(response)) => {
-                // Check if status is SERVING (1)
                 let status = response.into_inner().status;
-                let is_serving = status == 1; // tonic_health::ServingStatus::Serving
+                let is_serving = status == 1;
 
                 if is_serving {
-                    tracing::debug!("Provider instance '{}' is healthy", name);
+                    let auth_ok = self.check_authenticated_provider_health(config, connection).await;
+                    if auth_ok {
+                        tracing::debug!("Provider instance '{}' is healthy", name);
+                    }
+                    auth_ok
                 } else {
                     tracing::warn!(
                         "Provider instance '{}' is not serving (status: {})",
                         name,
                         status
                     );
+                    false
                 }
-
-                is_serving
             }
             Ok(Err(e)) => {
                 tracing::error!("Health check failed for instance '{}': {}", name, e);
@@ -834,6 +1109,162 @@ impl RemoteProviderManager {
             }
             Err(_) => {
                 tracing::error!("Health check timeout for instance '{}' (5s)", name);
+                false
+            }
+        }
+    }
+
+    async fn check_authenticated_provider_health(
+        &self,
+        config: &ProviderInstance,
+        connection: &RemoteProviderConnection,
+    ) -> bool {
+        let timeout = Duration::from_secs(5);
+        let probe = async {
+            if config.providers.iter().any(|provider| provider == "alist") {
+                return Self::probe_alist_auth(config, connection).await;
+            }
+            if config.providers.iter().any(|provider| provider == "emby") {
+                return Self::probe_emby_auth(config, connection).await;
+            }
+            if config.providers.iter().any(|provider| provider == "bilibili") {
+                return Self::probe_bilibili_auth(connection).await;
+            }
+            false
+        };
+
+        match tokio::time::timeout(timeout, probe).await {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::error!(
+                    "Authenticated provider health probe timeout for instance '{}' (5s)",
+                    config.name
+                );
+                false
+            }
+        }
+    }
+
+    async fn probe_alist_auth(
+        config: &ProviderInstance,
+        connection: &RemoteProviderConnection,
+    ) -> bool {
+        let mut client = AlistClient::new(connection.channel());
+        let request = match Self::build_authenticated_request(
+            connection,
+            AlistMeReq {
+                host: config.endpoint.clone(),
+                token: "health-check-token".to_string(),
+            },
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                tracing::warn!(
+                    "Authenticated Alist health probe request build failed for '{}': {}",
+                    config.name,
+                    error
+                );
+                return false;
+            }
+        };
+
+        Self::probe_reports_authenticated_health(
+            "alist",
+            &config.name,
+            client.me(request).await,
+        )
+    }
+
+    async fn probe_emby_auth(
+        config: &ProviderInstance,
+        connection: &RemoteProviderConnection,
+    ) -> bool {
+        let mut client = EmbyClient::new(connection.channel());
+        let request = match Self::build_authenticated_request(
+            connection,
+            EmbyMeReq {
+                host: config.endpoint.clone(),
+                token: "health-check-token".to_string(),
+                user_id: "health-check-user".to_string(),
+            },
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                tracing::warn!(
+                    "Authenticated Emby health probe request build failed for '{}': {}",
+                    config.name,
+                    error
+                );
+                return false;
+            }
+        };
+
+        Self::probe_reports_authenticated_health(
+            "emby",
+            &config.name,
+            client.me(request).await,
+        )
+    }
+
+    async fn probe_bilibili_auth(connection: &RemoteProviderConnection) -> bool {
+        let mut client = BilibiliClient::new(connection.channel());
+        let request = match Self::build_authenticated_request(
+            connection,
+            UserInfoReq {
+                cookies: HashMap::from([(
+                    "SESSDATA".to_string(),
+                    "health-check".to_string(),
+                )]),
+            },
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                tracing::warn!(
+                    "Authenticated Bilibili health probe request build failed: {}",
+                    error
+                );
+                return false;
+            }
+        };
+
+        Self::probe_reports_authenticated_health("bilibili", "<bilibili>", client.user_info(request).await)
+    }
+
+    fn build_authenticated_request<T>(
+        connection: &RemoteProviderConnection,
+        payload: T,
+    ) -> crate::Result<Request<T>> {
+        let mut request = Request::new(payload);
+        let secret = connection.auth_secret().ok_or_else(|| {
+            crate::Error::InvalidInput(
+                "remote provider auth secret is required for authenticated probes".to_string(),
+            )
+        })?;
+        let metadata_value = secret.parse().map_err(|e| {
+            crate::Error::InvalidInput(format!(
+                "remote provider auth secret must be valid ASCII gRPC metadata: {e}"
+            ))
+        })?;
+        request
+            .metadata_mut()
+            .insert("x-provider-secret", metadata_value);
+        Ok(request)
+    }
+
+    fn probe_reports_authenticated_health<T>(
+        provider: &str,
+        instance_name: &str,
+        result: Result<tonic::Response<T>, Status>,
+    ) -> bool {
+        match result {
+            Ok(_) => true,
+            Err(status) => {
+                tracing::warn!(
+                    "Authenticated {} health probe failed for '{}': {}",
+                    provider,
+                    instance_name,
+                    status
+                );
                 false
             }
         }

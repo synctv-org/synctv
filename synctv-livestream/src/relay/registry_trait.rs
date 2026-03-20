@@ -6,6 +6,12 @@ use super::registry::{PublisherInfo, StreamRegistry};
 use anyhow::Result;
 use async_trait::async_trait;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublisherRefreshOutcome {
+    Refreshed,
+    Missing,
+}
+
 /// `StreamRegistry` trait for publisher registration
 #[async_trait]
 pub trait StreamRegistryTrait: Send + Sync {
@@ -40,10 +46,18 @@ pub trait StreamRegistryTrait: Send + Sync {
         room_id: &str,
         media_id: &str,
         user_id: &str,
-    ) -> Result<()>;
+    ) -> Result<PublisherRefreshOutcome>;
 
-    /// Unregister a publisher
+    /// Unregister a publisher unconditionally.
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()>;
+
+    /// Unregister a publisher only if the stored epoch matches `expected_epoch`.
+    async fn unregister_publisher_if_epoch_matches(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        expected_epoch: u64,
+    ) -> Result<()>;
 
     /// Get publisher info for a media in a room
     async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>>;
@@ -121,12 +135,21 @@ impl StreamRegistryTrait for StreamRegistry {
         room_id: &str,
         media_id: &str,
         user_id: &str,
-    ) -> Result<()> {
+    ) -> Result<PublisherRefreshOutcome> {
         Self::refresh_publisher_ttl_with_user(self, room_id, media_id, user_id).await
     }
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
         Self::unregister_publisher_immut(self, room_id, media_id).await
+    }
+
+    async fn unregister_publisher_if_epoch_matches(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        expected_epoch: u64,
+    ) -> Result<()> {
+        Self::unregister_publisher_with_epoch(self, room_id, media_id, Some(expected_epoch)).await
     }
 
     async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {

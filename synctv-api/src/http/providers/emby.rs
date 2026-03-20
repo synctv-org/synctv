@@ -128,39 +128,32 @@ async fn logout(
 async fn binds(
     auth: crate::http::middleware::AuthUser,
     State(state): State<AppState>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     tracing::info!("Emby binds request for user: {}", auth.user_id);
 
-    match get_provider_binds(
+    let provider_binds = get_provider_binds(
         &state.user_provider_credential_repository,
         &auth.user_id.to_string(),
         synctv_core::provider::EmbyProvider::NAME,
         "emby_user_id",
     )
     .await
-    {
-        Ok(provider_binds) => {
-            let emby_binds: Vec<_> = provider_binds
-                .into_iter()
-                .map(|b| {
-                    json!({
-                        "id": b.id,
-                        "host": b.host,
-                        "user_id": b.label_value,
-                        "created_at": b.created_at_str,
-                    })
-                })
-                .collect();
+    .map_err(|e| {
+        tracing::error!("Failed to query credentials: {}", e);
+        AppError::internal_server_error("Failed to query credentials")
+    })?;
 
-            (StatusCode::OK, Json(json!({"binds": emby_binds}))).into_response()
-        }
-        Err(e) => {
-            tracing::error!("Failed to query credentials: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to query credentials"})),
-            )
-                .into_response()
-        }
-    }
+    let emby_binds: Vec<_> = provider_binds
+        .into_iter()
+        .map(|b| {
+            json!({
+                "id": b.id,
+                "host": b.host,
+                "user_id": b.label_value,
+                "created_at": b.created_at_str,
+            })
+        })
+        .collect();
+
+    Ok((StatusCode::OK, Json(json!({"binds": emby_binds}))).into_response())
 }

@@ -7,6 +7,8 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
+use super::registry_trait::PublisherRefreshOutcome;
+
 /// Heartbeat interval in seconds for publisher liveness.
 /// The publisher manager sends a heartbeat every this many seconds.
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 60;
@@ -345,7 +347,11 @@ impl StreamRegistry {
     }
 
     /// Refresh TTL for a publisher (called by heartbeat)
-    pub async fn refresh_publisher_ttl(&self, room_id: &str, media_id: &str) -> Result<()> {
+    pub async fn refresh_publisher_ttl(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Result<PublisherRefreshOutcome> {
         self.refresh_publisher_ttl_with_user(room_id, media_id, "")
             .await
     }
@@ -356,18 +362,22 @@ impl StreamRegistry {
         room_id: &str,
         media_id: &str,
         user_id: &str,
-    ) -> Result<()> {
+    ) -> Result<PublisherRefreshOutcome> {
         let key = self.publisher_key(room_id, media_id);
 
         // Refresh publisher key TTL with timeout protection
         with_redis_timeout(|| async {
             let mut conn = self.conn().await;
-            let _: () = redis::cmd("EXPIRE")
+            let refreshed: bool = redis::cmd("EXPIRE")
                 .arg(&key)
                 .arg(PUBLISHER_TTL_SECS)
                 .query_async(&mut conn)
                 .await
                 .map_err(anyhow::Error::from)?;
+
+            if !refreshed {
+                return Ok(PublisherRefreshOutcome::Missing);
+            }
 
             // Also refresh user reverse-index TTL if user_id is provided
             if !user_id.is_empty() {
@@ -380,7 +390,7 @@ impl StreamRegistry {
                     .map_err(anyhow::Error::from)?;
             }
 
-            Ok(())
+            Ok(PublisherRefreshOutcome::Refreshed)
         })
         .await
     }

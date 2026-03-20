@@ -139,3 +139,10 @@ fn test_security_pipeline_failures_use_generic_grpc_message() {
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
     assert_eq!(err.message(), "Authentication failed");
 }
+
+#[test]
+fn test_security_pipeline_service_unavailable_maps_to_unavailable() {
+    let err = tonic::Status::unavailable("Authentication service unavailable");
+    assert_eq!(err.code(), tonic::Code::Unavailable);
+    assert_eq!(err.message(), "Authentication service unavailable");
+}

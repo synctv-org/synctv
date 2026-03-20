@@ -24,6 +24,14 @@ where
     assert!(check(), "condition was not satisfied within {timeout:?}");
 }
 
+async fn await_server_shutdown(
+    shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    server_handle: tokio::task::JoinHandle<()>,
+) {
+    let _ = shutdown_tx.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
+}
+
 // ============================================================================
 // Module: WsQuery deserialization
 // ============================================================================
@@ -630,6 +638,7 @@ mod websocket_e2e {
     use prost::Message;
     use std::sync::Arc;
     use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
     use tokio_tungstenite::tungstenite;
 
     use synctv_api::http::websocket::websocket_handler;
@@ -684,6 +693,7 @@ mod websocket_e2e {
 
         #[allow(dead_code)]
         async fn cleanup(mut self) {
+            self.pool.close().await;
             if let Some(redis) = self.redis.take() {
                 redis.cleanup().await;
             }
@@ -702,6 +712,32 @@ mod websocket_e2e {
         connection_manager: Arc<ConnectionManager>,
         cluster_manager: Arc<ClusterManager>,
         ws_ticket_service: Arc<synctv_core::service::WsTicketService>,
+        server_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+        server_handle: Option<JoinHandle<()>>,
+    }
+
+    impl E2EServer {
+        async fn shutdown(&mut self) {
+            if let Some(shutdown_tx) = self.server_shutdown_tx.take() {
+                if let Some(server_handle) = self.server_handle.take() {
+                    super::await_server_shutdown(shutdown_tx, server_handle).await;
+                }
+            }
+
+            self.connection_manager.shutdown().await;
+            self.cluster_manager.shutdown().await;
+        }
+    }
+
+    impl Drop for E2EServer {
+        fn drop(&mut self) {
+            if let Some(shutdown_tx) = self.server_shutdown_tx.take() {
+                let _ = shutdown_tx.send(());
+            }
+            if let Some(server_handle) = self.server_handle.take() {
+                server_handle.abort();
+            }
+        }
     }
 
     /// Create a minimal `ChatService` for tests.
@@ -1076,13 +1112,17 @@ mod websocket_e2e {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local_addr");
         let addr_str = format!("127.0.0.1:{}", addr.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         // Spawn server
-        tokio::spawn(async move {
+        let server_handle = tokio::spawn(async move {
             axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
             .await
             .expect("server error");
         });
@@ -1095,6 +1135,8 @@ mod websocket_e2e {
             connection_manager: connection_manager_ret,
             cluster_manager,
             ws_ticket_service,
+            server_shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
         }
     }
 
@@ -1461,7 +1503,7 @@ mod websocket_e2e {
     #[ignore = "Requires Docker"]
     async fn test_ws_non_member_rejected() {
         let infra = TestInfra::new().await;
-        let server = setup_e2e_server(&infra).await;
+        let mut server = setup_e2e_server(&infra).await;
 
         // Create owner and room
         let (owner_id, _owner_token) =
@@ -1487,9 +1529,34 @@ mod websocket_e2e {
             .header("Host", &*server.addr)
             .body(())
             .unwrap();
-        let result = tokio_tungstenite::connect_async(request).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio_tungstenite::connect_async(request),
+        )
+        .await
+        .expect("non-member websocket handshake should fail promptly");
 
-        assert!(result.is_err(), "Non-member should be rejected with 403");
+        match result {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(
+                    response.status(),
+                    tungstenite::http::StatusCode::FORBIDDEN,
+                    "non-member websocket should be rejected with HTTP 403"
+                );
+            }
+            Err(other) => {
+                panic!("expected HTTP 403 rejection for non-member websocket, got: {other:?}");
+            }
+            Ok((_ws, response)) => {
+                panic!(
+                    "non-member websocket must not upgrade successfully, got status {}",
+                    response.status()
+                );
+            }
+        }
+
+        server.shutdown().await;
+        infra.cleanup().await;
     }
 
     #[tokio::test]
@@ -1559,7 +1626,7 @@ mod websocket_e2e {
     #[ignore = "Requires Docker"]
     async fn test_ws_multi_client_room_sync() {
         let infra = TestInfra::new().await;
-        let server = setup_e2e_server(&infra).await;
+        let mut server = setup_e2e_server(&infra).await;
 
         // Create room owner (user1)
         let (user1_id, user1_token) =
@@ -1614,6 +1681,8 @@ mod websocket_e2e {
         // Clean up
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
+        server.shutdown().await;
+        infra.cleanup().await;
     }
 
     // ========================================================================
@@ -2451,7 +2520,7 @@ mod websocket_e2e {
     #[ignore = "Requires Docker"]
     async fn test_ws_rate_limiter_blocks_excess_chat() {
         let infra = TestInfra::new().await;
-        let server = setup_e2e_server_with_chat_rate_limit(
+        let mut server = setup_e2e_server_with_chat_rate_limit(
             &infra,
             synctv_core::service::RateLimitConfig {
                 chat_per_second: 2,
@@ -2520,6 +2589,8 @@ mod websocket_e2e {
         );
 
         ws.close(None).await.expect("close");
+        server.shutdown().await;
+        infra.cleanup().await;
     }
 
     // ========================================================================
@@ -3026,7 +3097,7 @@ mod websocket_e2e {
     #[ignore = "Requires Docker"]
     async fn test_ws_same_user_one_of_multiple_connections_disconnect_does_not_emit_user_left() {
         let infra = TestInfra::new().await;
-        let server = setup_e2e_server(&infra).await;
+        let mut server = setup_e2e_server(&infra).await;
 
         let (owner_id, owner_token) = register_test_user(
             &server.user_service,
@@ -3124,6 +3195,8 @@ mod websocket_e2e {
             .close(None)
             .await
             .expect("close second user2 connection");
+        server.shutdown().await;
+        infra.cleanup().await;
     }
 
     // ========================================================================
@@ -3909,6 +3982,7 @@ mod websocket_connection_limit_timing {
 
         #[allow(dead_code)]
         async fn cleanup(mut self) {
+            self.pool.close().await;
             if let Some(redis) = self.redis.take() {
                 redis.cleanup().await;
             }
@@ -3924,6 +3998,31 @@ mod websocket_connection_limit_timing {
         room_service: Arc<RoomService>,
         user_service: Arc<UserService>,
         connection_manager: Arc<ConnectionManager>,
+        server_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+        server_handle: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    impl LimitTestServer {
+        async fn shutdown(&mut self) {
+            if let Some(shutdown_tx) = self.server_shutdown_tx.take() {
+                if let Some(server_handle) = self.server_handle.take() {
+                    super::await_server_shutdown(shutdown_tx, server_handle).await;
+                }
+            }
+
+            self.connection_manager.shutdown().await;
+        }
+    }
+
+    impl Drop for LimitTestServer {
+        fn drop(&mut self) {
+            if let Some(shutdown_tx) = self.server_shutdown_tx.take() {
+                let _ = shutdown_tx.send(());
+            }
+            if let Some(server_handle) = self.server_handle.take() {
+                server_handle.abort();
+            }
+        }
     }
 
     /// Build a server with a very low `max_per_user` limit (1 connection per user)
@@ -4187,12 +4286,16 @@ mod websocket_connection_limit_timing {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local_addr");
         let addr_str = format!("127.0.0.1:{}", addr.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-        tokio::spawn(async move {
+        let server_handle = tokio::spawn(async move {
             axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
             .await
             .expect("server error");
         });
@@ -4203,6 +4306,8 @@ mod websocket_connection_limit_timing {
             room_service,
             user_service,
             connection_manager: connection_manager_ret,
+            server_shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
         }
     }
 
@@ -4281,7 +4386,7 @@ mod websocket_connection_limit_timing {
     #[ignore = "Requires Docker"]
     async fn test_ws_connection_limit_returns_429_before_upgrade() {
         let infra = TestInfra::new().await;
-        let server = setup_server_with_low_user_limit(&infra).await;
+        let mut server = setup_server_with_low_user_limit(&infra).await;
 
         // Create a user and room
         let (user_id, token) =
@@ -4333,6 +4438,8 @@ mod websocket_connection_limit_timing {
 
         // Clean up first connection
         drop(ws1);
+        server.shutdown().await;
+        infra.cleanup().await;
     }
 
     // ========================================================================
@@ -4347,7 +4454,7 @@ mod websocket_connection_limit_timing {
     #[ignore = "Requires Docker"]
     async fn test_ws_normal_connection_within_limits() {
         let infra = TestInfra::new().await;
-        let server = setup_server_with_low_user_limit(&infra).await;
+        let mut server = setup_server_with_low_user_limit(&infra).await;
 
         // Create a user and room
         let (user_id, token) =
@@ -4370,6 +4477,8 @@ mod websocket_connection_limit_timing {
             server.connection_manager.user_connection_count(&user_id) == 1
         })
         .await;
+        server.shutdown().await;
+        infra.cleanup().await;
     }
 
     // ========================================================================
@@ -4380,7 +4489,7 @@ mod websocket_connection_limit_timing {
     #[ignore = "Requires Docker"]
     async fn test_ws_different_users_can_connect_within_limits() {
         let infra = TestInfra::new().await;
-        let server = setup_server_with_low_user_limit(&infra).await;
+        let mut server = setup_server_with_low_user_limit(&infra).await;
 
         // Create two different users
         let (user1_id, user1_token) =
@@ -4427,6 +4536,8 @@ mod websocket_connection_limit_timing {
                 && server.connection_manager.user_connection_count(&user2_id) == 1
         })
         .await;
+        server.shutdown().await;
+        infra.cleanup().await;
     }
 
     // ========================================================================
@@ -4437,7 +4548,7 @@ mod websocket_connection_limit_timing {
     #[ignore = "Requires Docker"]
     async fn test_ws_can_reconnect_after_disconnect() {
         let infra = TestInfra::new().await;
-        let server = setup_server_with_low_user_limit(&infra).await;
+        let mut server = setup_server_with_low_user_limit(&infra).await;
 
         // Create a user and room
         let (user_id, token) =
@@ -4486,6 +4597,8 @@ mod websocket_connection_limit_timing {
         .await;
 
         drop(ws2);
+        server.shutdown().await;
+        infra.cleanup().await;
     }
 }
 

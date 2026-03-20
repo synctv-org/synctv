@@ -32,6 +32,19 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     hash_a.ct_eq(&hash_b).into()
 }
 
+fn authorization_metadata_looks_like_bearer<T: Debug>(request: &Request<T>) -> bool {
+    request
+        .metadata()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .trim_start()
+                .get(..7)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Bearer "))
+        })
+}
+
 /// User context - contains `user_id` and `iat` extracted from JWT
 /// Used by `UserService` and `AdminService` methods
 #[derive(Debug, Clone)]
@@ -171,7 +184,7 @@ impl AuthInterceptor {
             return Ok(authenticated_token.clone());
         }
 
-        if request.metadata().get("authorization").is_some() {
+        if authorization_metadata_looks_like_bearer(request) {
             tracing::error!(
                 "AuthInterceptor called with authorization metadata but without AuthenticatedToken. \
                  BlacklistCheckLayer must propagate authenticated identity before AuthInterceptor."
@@ -509,6 +522,26 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.code(), tonic::Code::Internal);
         assert!(err.message().contains("authenticated token missing"));
+    }
+
+    #[test]
+    fn test_inject_user_treats_non_bearer_authorization_as_missing_auth() {
+        let jwt_service =
+            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
+                .expect("Should create JwtService");
+
+        let mut request = tonic::Request::new(());
+        request.extensions_mut().insert(SecurityCheckPassed);
+        request
+            .metadata_mut()
+            .insert("authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
+
+        let interceptor = AuthInterceptor::new(jwt_service);
+        let result = interceptor.inject_user(request);
+        assert!(result.is_err(), "Non-bearer authorization should not look authenticated");
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+        assert_eq!(err.message(), "Missing authorization header");
     }
 
     #[test]

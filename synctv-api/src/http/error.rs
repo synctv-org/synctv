@@ -702,6 +702,18 @@ mod tests {
     }
 
     #[test]
+    fn test_from_core_auth_service_unavailable_stays_service_unavailable() {
+        let core_err =
+            synctv_core::Error::ServiceUnavailable("Authentication service unavailable".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            app_err.message.contains("temporarily unavailable"),
+            "auth backend outages should surface as HTTP 503, not 401"
+        );
+    }
+
+    #[test]
     fn test_from_core_optimistic_lock() {
         let core_err = synctv_core::Error::OptimisticLockConflict;
         let app_err = AppError::from(core_err);

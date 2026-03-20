@@ -28,7 +28,13 @@ use tonic::body::Body as TonicBody;
 use tower::{Layer, Service};
 
 use super::interceptors::SecurityCheckPassed;
-use synctv_core::service::{auth::JwtService, AuthenticatedToken, SecurityPipeline};
+use synctv_core::{
+    service::{
+        auth::{AuthErrorCategory, JwtService},
+        AuthenticatedToken, SecurityPipeline,
+    },
+    Error as CoreError,
+};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -71,13 +77,48 @@ pub struct BlacklistCheckService<S> {
 
 /// Extract a bearer token from the HTTP Authorization header value.
 ///
-/// Returns `Some(token)` for `"Bearer <token>"` (case-insensitive prefix per RFC 7235),
-/// or `None` if the header is absent, not a bearer token, or malformed.
-fn extract_bearer_token(headers: &http::HeaderMap) -> Option<String> {
-    let auth_value = headers.get(http::header::AUTHORIZATION)?;
-    let auth_str = auth_value.to_str().ok()?;
-    let trimmed = auth_str.trim();
-    synctv_core::service::auth::JwtValidator::extract_bearer_token(trimmed).ok()
+/// Returns:
+/// - `Missing` when the header is absent
+/// - `Present(token)` for `"Bearer <token>"` (case-insensitive prefix per RFC 7235)
+/// - `Malformed` when the header exists but is not a valid Bearer token
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BearerTokenState {
+    Missing,
+    Present(String),
+    NonBearer,
+    Malformed,
+}
+
+fn extract_bearer_token(headers: &http::HeaderMap) -> BearerTokenState {
+    let Some(auth_value) = headers.get(http::header::AUTHORIZATION) else {
+        return BearerTokenState::Missing;
+    };
+
+    let Ok(auth_str) = auth_value.to_str() else {
+        return BearerTokenState::Malformed;
+    };
+
+    let trimmed_start = auth_str.trim_start();
+    if !trimmed_start
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Bearer "))
+    {
+        return BearerTokenState::NonBearer;
+    }
+
+    match synctv_core::service::auth::JwtValidator::extract_bearer_token(trimmed_start.trim_end()) {
+        Ok(token) => BearerTokenState::Present(token),
+        Err(_) => BearerTokenState::Malformed,
+    }
+}
+
+fn security_pipeline_error_status(err: &CoreError) -> tonic::Status {
+    match SecurityPipeline::classify_auth_error(err) {
+        AuthErrorCategory::Authentication => tonic::Status::unauthenticated("Authentication failed"),
+        AuthErrorCategory::Authorization => tonic::Status::permission_denied("Permission denied"),
+        AuthErrorCategory::Unavailable => tonic::Status::unavailable("Authentication service unavailable"),
+        AuthErrorCategory::Internal => tonic::Status::internal("Internal error"),
+    }
 }
 
 impl<S> Service<http::Request<TonicBody>> for BlacklistCheckService<S>
@@ -110,7 +151,18 @@ where
         let security_pipeline = self.security_pipeline.clone();
 
         Box::pin(async move {
-            if let Some(token) = raw_token {
+            match raw_token {
+                BearerTokenState::Missing => {}
+                BearerTokenState::NonBearer => {}
+                BearerTokenState::Malformed => {
+                    tracing::warn!(
+                        "gRPC request rejected: malformed bearer authorization metadata"
+                    );
+                    let response = tonic::Status::unauthenticated("Invalid authorization header")
+                        .into_http();
+                    return Ok(response);
+                }
+                BearerTokenState::Present(token) => {
                 // Security check order (matches HTTP AuthUser extractor):
                 // 1. JWT verification  2. Password invalidation  3. Banned/deleted user
 
@@ -131,8 +183,7 @@ where
                         Ok(authenticated_token) => authenticated_token,
                         Err(e) => {
                             tracing::warn!("gRPC request rejected by security pipeline: {e}");
-                            let response =
-                                tonic::Status::unauthenticated("Authentication failed").into_http();
+                            let response = security_pipeline_error_status(&e).into_http();
                             return Ok(response);
                         }
                     };
@@ -141,6 +192,7 @@ where
                 // interceptors and handlers can reuse it without re-running
                 // JWT verification or the security pipeline.
                 req.extensions_mut().insert(authenticated_token);
+            }
             }
 
             // Inject SecurityCheckPassed marker into request extensions.
@@ -168,7 +220,10 @@ mod tests {
             http::HeaderValue::from_static("Bearer eyJhbGciOiJIUzI1NiJ9.test.sig"),
         );
         let token = extract_bearer_token(&headers);
-        assert_eq!(token.as_deref(), Some("eyJhbGciOiJIUzI1NiJ9.test.sig"));
+        assert_eq!(
+            token,
+            BearerTokenState::Present("eyJhbGciOiJIUzI1NiJ9.test.sig".to_string())
+        );
     }
 
     #[test]
@@ -179,13 +234,13 @@ mod tests {
             http::HeaderValue::from_static("bearer my_jwt_token"),
         );
         let token = extract_bearer_token(&headers);
-        assert_eq!(token.as_deref(), Some("my_jwt_token"));
+        assert_eq!(token, BearerTokenState::Present("my_jwt_token".to_string()));
     }
 
     #[test]
     fn test_extract_bearer_token_missing_header() {
         let headers = http::HeaderMap::new();
-        assert!(extract_bearer_token(&headers).is_none());
+        assert_eq!(extract_bearer_token(&headers), BearerTokenState::Missing);
     }
 
     #[test]
@@ -195,7 +250,7 @@ mod tests {
             http::header::AUTHORIZATION,
             http::HeaderValue::from_static("Basic dXNlcjpwYXNz"),
         );
-        assert!(extract_bearer_token(&headers).is_none());
+        assert_eq!(extract_bearer_token(&headers), BearerTokenState::NonBearer);
     }
 
     #[test]
@@ -205,9 +260,7 @@ mod tests {
             http::header::AUTHORIZATION,
             http::HeaderValue::from_static("Bearer "),
         );
-        // "Bearer " has length 7, and the check is `trimmed.len() > 7`
-        // so "Bearer " (len=7) should return None (no actual token content)
-        assert!(extract_bearer_token(&headers).is_none());
+        assert_eq!(extract_bearer_token(&headers), BearerTokenState::Malformed);
     }
 
     #[test]
@@ -218,9 +271,29 @@ mod tests {
             http::HeaderValue::from_static("  Bearer my_token  "),
         );
         let token = extract_bearer_token(&headers);
-        // The function trims the entire auth string, so "  Bearer my_token  "
-        // becomes "Bearer my_token" -> extracts "my_token"
-        assert_eq!(token.as_deref(), Some("my_token"));
+        assert_eq!(token, BearerTokenState::Present("my_token".to_string()));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_invalid_utf8_is_malformed() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_bytes(b"Bearer \xff").expect("header value"),
+        );
+
+        assert_eq!(extract_bearer_token(&headers), BearerTokenState::Malformed);
+    }
+
+    #[test]
+    fn test_extract_bearer_token_whitespace_only_token_is_malformed() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer    "),
+        );
+
+        assert_eq!(extract_bearer_token(&headers), BearerTokenState::Malformed);
     }
 
     // ========== BlacklistCheckLayer Construction ==========
@@ -240,18 +313,24 @@ mod tests {
             http::header::AUTHORIZATION,
             http::HeaderValue::from_static("Bearer token123"),
         );
-        assert_eq!(extract_bearer_token(&headers).as_deref(), Some("token123"));
+        assert_eq!(
+            extract_bearer_token(&headers),
+            BearerTokenState::Present("token123".to_string())
+        );
 
         // Lowercase (both HTTP and gRPC should accept)
         headers.insert(
             http::header::AUTHORIZATION,
             http::HeaderValue::from_static("bearer token456"),
         );
-        assert_eq!(extract_bearer_token(&headers).as_deref(), Some("token456"));
+        assert_eq!(
+            extract_bearer_token(&headers),
+            BearerTokenState::Present("token456".to_string())
+        );
 
         // No auth header (public endpoint -- both layers should pass through)
         let empty_headers = http::HeaderMap::new();
-        assert!(extract_bearer_token(&empty_headers).is_none());
+        assert_eq!(extract_bearer_token(&empty_headers), BearerTokenState::Missing);
     }
 
     // ========== SecurityCheckPassed Marker Tests ==========

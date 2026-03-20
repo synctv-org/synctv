@@ -11,7 +11,7 @@ use axum::{
 };
 use std::sync::Arc;
 use synctv_core::models::id::UserId;
-use synctv_core::service::auth::JwtValidator;
+use synctv_core::service::auth::{AuthErrorCategory, JwtValidator, SecurityPipeline};
 
 use super::{AppError, AppResult, AppState};
 use crate::proto::admin;
@@ -58,7 +58,11 @@ async fn validate_auth_user(
         .security_pipeline
         .check(&claims)
         .await
-        .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+        .map_err(|e| match SecurityPipeline::classify_auth_error(&e) {
+            AuthErrorCategory::Authentication => AppError::unauthorized(format!("{e}")),
+            AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
+            AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
+        })?;
 
     let user_id = UserId::from_string(claims.sub);
 

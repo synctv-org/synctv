@@ -9,7 +9,10 @@ use axum::{
 use std::sync::LazyLock;
 use synctv_core::{
     models::{id::UserId, RoomId},
-    service::{auth::JwtValidator, rate_limit::RateLimitError},
+    service::{
+        auth::{AuthErrorCategory, JwtValidator, SecurityPipeline},
+        rate_limit::RateLimitError,
+    },
 };
 
 use super::{AppError, AppState};
@@ -144,7 +147,11 @@ where
             .security_pipeline
             .check(&claims)
             .await
-            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+            .map_err(|e| match SecurityPipeline::classify_auth_error(&e) {
+                AuthErrorCategory::Authentication => AppError::unauthorized(format!("{e}")),
+                AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
+                AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
+            })?;
 
         // Extract password version from claims, defaulting to 0 for legacy tokens
         let password_version = authenticated.claims.pv;

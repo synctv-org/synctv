@@ -48,6 +48,8 @@ use tower_http::trace::TraceLayer;
 
 pub use error::{AppError, AppResult};
 
+const HTTP_REQUEST_TIMEOUT: std::time::Duration = synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
+
 /// Configuration for creating the HTTP router
 #[derive(Clone)]
 pub struct RouterConfig {
@@ -178,9 +180,9 @@ pub fn create_router_from_config(config: RouterConfig) -> axum::Router {
 /// Create the HTTP router and the shared application state from configuration.
 pub fn create_router_with_state_from_config(config: RouterConfig) -> (axum::Router, AppState) {
     let state = build_app_state(config);
-    let (timeout_router, upgrade_router) = register_all_routes(state.clone());
+    let (timeout_router, no_timeout_router, upgrade_router) = register_all_routes(state.clone());
     (
-        apply_global_layers(timeout_router, upgrade_router, &state),
+        apply_global_layers(timeout_router, no_timeout_router, upgrade_router, &state),
         state,
     )
 }
@@ -628,11 +630,11 @@ fn register_websocket_routes(state: &AppState) -> Router<AppState> {
 
 #[cfg(test)]
 fn register_all_routes_for_test(state: AppState) -> Router<AppState> {
-    let (timeout_router, upgrade_router) = register_all_routes(state);
-    timeout_router.merge(upgrade_router)
+    let (timeout_router, no_timeout_router, upgrade_router) = register_all_routes(state);
+    timeout_router.merge(no_timeout_router).merge(upgrade_router)
 }
 
-fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>) {
+fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, Router<AppState>) {
     let health_router = if state.config.server.metrics_enabled {
         health::create_health_router_with_metrics()
     } else {
@@ -673,13 +675,20 @@ fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>) 
         // Provider routes
         .merge(
             Router::new()
-                .nest("/api/provider", provider_common::register_common_routes())
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::read_rate_limit,
-                ))
-                .merge(register_provider_routes(&state)),
+                .merge(register_provider_management_routes(&state))
+                .merge(
+                    Router::new()
+                        .nest("/api/provider", provider_common::register_common_routes())
+                        .route_layer(axum_middleware::from_fn_with_state(
+                            state.clone(),
+                            middleware::read_rate_limit,
+                        )),
+                )
         );
+
+    timeout_router = timeout_router.merge(register_provider_proxy_routes(&state));
+
+    let no_timeout_router = register_provider_streaming_routes(&state);
 
     if state.notification_api.is_some() {
         timeout_router = timeout_router
@@ -725,11 +734,26 @@ fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>) 
 
     let upgrade_router = register_websocket_routes(&state);
 
-    (timeout_router, upgrade_router)
+    if state.live_streaming_infrastructure.is_some() {
+        timeout_router = timeout_router.merge(
+            Router::new()
+                .nest("/api/providers/rtmp", providers::live::rtmp_routes())
+                .nest(
+                    "/api/providers/live_proxy",
+                    providers::live::live_proxy_routes(),
+                )
+                .route_layer(axum_middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::read_rate_limit,
+                )),
+        );
+    }
+
+    (timeout_router, no_timeout_router, upgrade_router)
 }
 
-fn register_provider_routes(state: &AppState) -> Router<AppState> {
-    let mut router = Router::new()
+fn register_provider_management_routes(state: &AppState) -> Router<AppState> {
+    Router::new()
         .merge(
             Router::new()
                 .nest(
@@ -762,37 +786,34 @@ fn register_provider_routes(state: &AppState) -> Router<AppState> {
                     middleware::read_rate_limit,
                 )),
         )
-        .merge(
-            Router::new()
-                // Unified proxy route for all providers — each provider internally
-                // parses its sub_path (version/m3u8, room_id/media_id, thumbnail, danmu, etc.)
-                .route(
-                    "/api/providers/proxy/{provider_name}/{*sub_path}",
-                    get(providers::unified_proxy_handler)
-                        .options(providers::proxy_options_preflight),
-                )
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::streaming_rate_limit,
-                )),
-        );
+}
 
-    if state.live_streaming_infrastructure.is_some() {
-        router = router.merge(
-            Router::new()
-                .nest("/api/providers/rtmp", providers::live::rtmp_routes())
-                .nest(
-                    "/api/providers/live_proxy",
-                    providers::live::live_proxy_routes(),
-                )
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::read_rate_limit,
-                )),
-        );
-    }
+fn register_provider_proxy_routes(state: &AppState) -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/providers/proxy/{provider_name}/{*sub_path}",
+            get(providers::unified_proxy_handler).options(providers::proxy_options_preflight),
+        )
+        .route_layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            middleware::streaming_rate_limit,
+        ))
+}
 
-    router
+fn register_provider_streaming_routes(state: &AppState) -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/providers/proxy/rtmp/{*sub_path}",
+            get(providers::unified_proxy_handler).options(providers::proxy_options_preflight),
+        )
+        .route(
+            "/api/providers/proxy/live_proxy/{*sub_path}",
+            get(providers::unified_proxy_handler).options(providers::proxy_options_preflight),
+        )
+        .route_layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            middleware::streaming_rate_limit,
+        ))
 }
 
 /// Build CORS layer based on configuration.
@@ -909,8 +930,25 @@ fn apply_shared_http_layers(
 
 fn apply_global_layers(
     timeout_router: Router<AppState>,
+    no_timeout_router: Router<AppState>,
     upgrade_router: Router<AppState>,
     state: &AppState,
+) -> axum::Router {
+    apply_global_layers_with_timeout(
+        timeout_router,
+        no_timeout_router,
+        upgrade_router,
+        state,
+        HTTP_REQUEST_TIMEOUT,
+    )
+}
+
+fn apply_global_layers_with_timeout(
+    timeout_router: Router<AppState>,
+    no_timeout_router: Router<AppState>,
+    upgrade_router: Router<AppState>,
+    state: &AppState,
+    request_timeout: std::time::Duration,
 ) -> axum::Router {
     let cors = build_cors_layer(&state.config);
     let trusted_proxies = state.config.server.trusted_proxies.clone();
@@ -923,13 +961,21 @@ fn apply_global_layers(
     )
     .layer(TimeoutLayer::with_status_code(
         axum::http::StatusCode::REQUEST_TIMEOUT,
-        std::time::Duration::from_secs(30),
+        request_timeout,
     ));
+
+    let no_timeout_router = apply_shared_http_layers(
+        no_timeout_router,
+        cors.clone(),
+        trusted_proxies.clone(),
+        hsts_value.clone(),
+    );
 
     let upgrade_router =
         apply_shared_http_layers(upgrade_router, cors, trusted_proxies, hsts_value);
 
     timeout_router
+        .merge(no_timeout_router)
         .merge(upgrade_router)
         .layer(axum_middleware::from_fn(
             crate::observability::metrics_middleware::metrics_layer,
@@ -941,10 +987,12 @@ fn apply_global_layers(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_app_state, register_all_routes_for_test, start_proxy_cache_lifecycle, RouterConfig,
+        apply_global_layers_with_timeout, build_app_state, register_all_routes_for_test,
+        start_proxy_cache_lifecycle, RouterConfig, HTTP_REQUEST_TIMEOUT,
     };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::{routing::get, Router};
     use bytes::Bytes;
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
@@ -1498,6 +1546,230 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_global_timeout_applies_only_to_timeout_router() {
+        let state = test_app_state();
+
+        let timeout_router = Router::new().route(
+            "/timeout",
+            get(|| async {
+                tokio::time::sleep(HTTP_REQUEST_TIMEOUT + Duration::from_millis(50)).await;
+                "too slow"
+            }),
+        );
+        let no_timeout_router = Router::new().route(
+            "/streaming",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                "stream survives"
+            }),
+        );
+
+        let app = apply_global_layers_with_timeout(
+            timeout_router,
+            no_timeout_router,
+            Router::new(),
+            &state,
+            Duration::from_millis(10),
+        );
+
+        let timeout_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/timeout")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            timeout_response.status(),
+            StatusCode::REQUEST_TIMEOUT,
+            "ordinary HTTP routes must still respect the global timeout budget"
+        );
+
+        let streaming_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/streaming")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            streaming_response.status(),
+            StatusCode::OK,
+            "streaming/provider proxy routes must not be cut off by the unary HTTP timeout layer"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_live_metadata_routes_stay_on_timeout_router() {
+        let state = test_app_state();
+
+        let timeout_router = Router::new().route(
+            "/api/providers/rtmp/info/{media_id}",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                "metadata too slow"
+            }),
+        );
+        let no_timeout_router = Router::new().route(
+            "/api/providers/proxy/{provider_name}/{*sub_path}",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                "stream survives"
+            }),
+        );
+
+        let app = apply_global_layers_with_timeout(
+            timeout_router,
+            no_timeout_router,
+            Router::new(),
+            &state,
+            Duration::from_millis(10),
+        );
+
+        let metadata_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/providers/rtmp/info/media123")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            metadata_response.status(),
+            StatusCode::REQUEST_TIMEOUT,
+            "live metadata routes must remain protected by the unary HTTP timeout"
+        );
+
+        let streaming_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/providers/proxy/rtmp/ver1/playlist.m3u8")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            streaming_response.status(),
+            StatusCode::OK,
+            "actual streaming proxy routes must remain outside the unary HTTP timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_proxy_routes_preserve_options_preflight() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let rtmp_preflight = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/providers/proxy/rtmp/ver1/playlist.m3u8")
+                    .header(axum::http::header::ORIGIN, "https://example.com")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_ne!(
+            rtmp_preflight.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "RTMP proxy routes must continue handling browser preflight through the generic proxy route"
+        );
+
+        let live_proxy_preflight = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/providers/proxy/live_proxy/ver1/playlist.m3u8")
+                    .header(axum::http::header::ORIGIN, "https://example.com")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_ne!(
+            live_proxy_preflight.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "live_proxy proxy routes must continue handling browser preflight through the generic proxy route"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_finite_provider_proxy_routes_stay_on_timeout_router() {
+        let state = test_app_state();
+
+        let timeout_router = Router::new().route(
+            "/api/providers/proxy/{provider_name}/{*sub_path}",
+            get(|| async {
+                tokio::time::sleep(HTTP_REQUEST_TIMEOUT + Duration::from_millis(50)).await;
+                "finite proxy too slow"
+            }),
+        );
+        let no_timeout_router = Router::new().route(
+            "/api/providers/proxy/rtmp/{*sub_path}",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                "stream survives"
+            }),
+        );
+
+        let app = apply_global_layers_with_timeout(
+            timeout_router,
+            no_timeout_router,
+            Router::new(),
+            &state,
+            Duration::from_millis(10),
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/providers/proxy/bilibili/ver1/playlist.m3u8")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            response.status(),
+            StatusCode::REQUEST_TIMEOUT,
+            "finite provider proxy routes must remain protected by the unary HTTP timeout"
+        );
+
+        let streaming_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/providers/proxy/rtmp/ver1/playlist.m3u8")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            streaming_response.status(),
+            StatusCode::OK,
+            "live provider proxy routes must remain outside the unary HTTP timeout"
+        );
+    }
+
+    #[tokio::test]
     async fn test_provider_common_routes_use_read_rate_limit_tier() {
         let state = test_app_state_with_rate_limits(
             synctv_core::HttpRateLimitConfig {
@@ -1544,6 +1816,57 @@ mod tests {
             second.status(),
             StatusCode::TOO_MANY_REQUESTS,
             "provider common routes must share the read rate-limit bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_provider_management_routes_do_not_consume_outer_read_bucket() {
+        let state = test_app_state_with_rate_limits(
+            synctv_core::HttpRateLimitConfig {
+                read_max_requests: 1,
+                read_window_seconds: 60,
+                auth_max_requests: 100,
+                auth_window_seconds: 60,
+                ..synctv_core::HttpRateLimitConfig::default()
+            },
+            synctv_core::GrpcRateLimitConfig::default(),
+        );
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let management = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/alist/login")
+                    .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"username":"demo","password":"demo"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            management.status(),
+            StatusCode::UNAUTHORIZED,
+            "provider auth routes should hit their own auth limiter without consuming the outer read bucket"
+        );
+
+        let common = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/provider/instances")
+                    .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            common.status(),
+            StatusCode::UNAUTHORIZED,
+            "provider management traffic must not drain the provider-common read bucket"
         );
     }
 

@@ -1261,6 +1261,7 @@ mod tests {
             error.to_string().contains("no active administrator exists"),
             "unexpected error: {error}"
         );
+        pool.close().await;
     }
 
     #[tokio::test]
@@ -1300,6 +1301,7 @@ mod tests {
         )
         .await
         .expect("existing active admin should satisfy startup precondition");
+        pool.close().await;
     }
 
     #[test]

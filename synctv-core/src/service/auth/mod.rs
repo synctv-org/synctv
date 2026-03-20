@@ -11,8 +11,8 @@ pub use guest_validator::GuestTokenValidator;
 pub use jwt::{Claims, GuestClaims, JwtService, TokenType};
 pub use password::{dummy_password_hash, hash_password, verify_password};
 pub use security_pipeline::{
-    AuthenticatedToken, BlacklistEnforcement, SecurityPipeline, SecurityPipelineBuildError,
-    SecurityPipelineBuilder,
+    AuthErrorCategory, AuthenticatedToken, BlacklistEnforcement, SecurityPipeline,
+    SecurityPipelineBuildError, SecurityPipelineBuilder,
 };
 pub use token_blacklist::TokenBlacklistStore;
 pub use validator::JwtValidator;

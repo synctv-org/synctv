@@ -1,7 +1,7 @@
 // Mock StreamRegistry for testing without Redis
 
 use super::registry::PublisherInfo;
-use super::registry_trait::StreamRegistryTrait;
+use super::registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -19,10 +19,23 @@ pub struct MockStreamRegistry {
     register_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Counter for TTL refresh calls (for heartbeat lifecycle tests)
     refresh_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Counter for epoch-fenced unregister calls.
+    unregister_if_epoch_matches_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Counter for list_active_streams calls (for periodic sync lifecycle tests)
     list_active_streams_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// When true, `get_publisher` returns an error (simulates Redis failure)
     fail_get_publisher: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// When true, `refresh_publisher_ttl` returns a Redis-like connectivity error.
+    fail_refresh_publisher_ttl: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// When true, `refresh_publisher_ttl` returns the wrapped timeout error shape
+    /// used by the real Redis-backed registry helper.
+    fail_refresh_publisher_ttl_with_wrapped_timeout:
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// When true, `refresh_publisher_ttl` returns a persistent non-I/O registry error.
+    fail_refresh_publisher_ttl_with_response_error:
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Number of upcoming epoch-fenced unregister calls that should fail.
+    fail_unregister_if_epoch_matches_times: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl MockStreamRegistry {
@@ -37,10 +50,23 @@ impl MockStreamRegistry {
             )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             refresh_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            unregister_if_epoch_matches_call_count: std::sync::Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
             list_active_streams_call_count: std::sync::Arc::new(
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fail_refresh_publisher_ttl: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fail_refresh_publisher_ttl_with_wrapped_timeout: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
+            fail_refresh_publisher_ttl_with_response_error: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
+            fail_unregister_if_epoch_matches_times: std::sync::Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
         }
     }
 
@@ -55,10 +81,23 @@ impl MockStreamRegistry {
             )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             refresh_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            unregister_if_epoch_matches_call_count: std::sync::Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
             list_active_streams_call_count: std::sync::Arc::new(
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fail_refresh_publisher_ttl: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fail_refresh_publisher_ttl_with_wrapped_timeout: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
+            fail_refresh_publisher_ttl_with_response_error: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
+            fail_unregister_if_epoch_matches_times: std::sync::Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
         }
     }
 
@@ -76,6 +115,13 @@ impl MockStreamRegistry {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Get the count of `unregister_publisher_if_epoch_matches` calls.
+    #[must_use]
+    pub fn unregister_if_epoch_matches_call_count(&self) -> usize {
+        self.unregister_if_epoch_matches_call_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Get the count of `list_active_streams` calls.
     #[must_use]
     pub fn list_active_streams_call_count(&self) -> usize {
@@ -87,6 +133,31 @@ impl MockStreamRegistry {
     pub fn set_fail_get_publisher(&self, fail: bool) {
         self.fail_get_publisher
             .store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Set whether `refresh_publisher_ttl` should fail with a Redis I/O error.
+    pub fn set_fail_refresh_publisher_ttl(&self, fail: bool) {
+        self.fail_refresh_publisher_ttl
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Set whether `refresh_publisher_ttl` should fail with the wrapped timeout
+    /// error shape returned by `with_redis_timeout(...)`.
+    pub fn set_fail_refresh_publisher_ttl_with_wrapped_timeout(&self, fail: bool) {
+        self.fail_refresh_publisher_ttl_with_wrapped_timeout
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Set whether `refresh_publisher_ttl` should fail with a non-I/O Redis error.
+    pub fn set_fail_refresh_publisher_ttl_with_response_error(&self, fail: bool) {
+        self.fail_refresh_publisher_ttl_with_response_error
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Fail the next `times` epoch-fenced unregister calls.
+    pub fn set_fail_unregister_if_epoch_matches_times(&self, times: usize) {
+        self.fail_unregister_if_epoch_matches_times
+            .store(times, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -166,19 +237,84 @@ impl StreamRegistryTrait for MockStreamRegistry {
 
     async fn refresh_publisher_ttl(
         &self,
-        _room_id: &str,
-        _media_id: &str,
+        room_id: &str,
+        media_id: &str,
         _user_id: &str,
-    ) -> Result<()> {
+    ) -> Result<PublisherRefreshOutcome> {
         self.refresh_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        // No-op for mock
-        Ok(())
+        if self
+            .fail_refresh_publisher_ttl
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            let redis_error = redis::RedisError::from((
+                redis::ErrorKind::Io,
+                "simulated Redis failure in refresh_publisher_ttl",
+            ));
+            return Err(anyhow::Error::new(redis_error));
+        }
+        if self
+            .fail_refresh_publisher_ttl_with_wrapped_timeout
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(anyhow::anyhow!("Redis operation timed out after 5s"));
+        }
+        if self
+            .fail_refresh_publisher_ttl_with_response_error
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            let redis_error = redis::RedisError::from((
+                redis::ErrorKind::Client,
+                "simulated Redis client error in refresh_publisher_ttl",
+            ));
+            return Err(anyhow::Error::new(redis_error));
+        }
+        let publishers = self.publishers.lock().await;
+        Ok(
+            if publishers.contains_key(&(room_id.to_string(), media_id.to_string())) {
+                PublisherRefreshOutcome::Refreshed
+            } else {
+                PublisherRefreshOutcome::Missing
+            },
+        )
     }
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
         let mut publishers = self.publishers.lock().await;
         publishers.remove(&(room_id.to_string(), media_id.to_string()));
+        Ok(())
+    }
+
+    async fn unregister_publisher_if_epoch_matches(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        expected_epoch: u64,
+    ) -> Result<()> {
+        self.unregister_if_epoch_matches_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let remaining_failures = self
+            .fail_unregister_if_epoch_matches_times
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if remaining_failures > 0 {
+            self.fail_unregister_if_epoch_matches_times.fetch_sub(
+                1,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            let redis_error = redis::RedisError::from((
+                redis::ErrorKind::Io,
+                "simulated Redis failure in unregister_publisher_if_epoch_matches",
+            ));
+            return Err(anyhow::Error::new(redis_error));
+        }
+        let mut publishers = self.publishers.lock().await;
+        let key = (room_id.to_string(), media_id.to_string());
+        if publishers
+            .get(&key)
+            .is_some_and(|publisher| publisher.epoch == expected_epoch)
+        {
+            publishers.remove(&key);
+        }
         Ok(())
     }
 

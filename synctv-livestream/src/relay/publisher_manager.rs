@@ -12,7 +12,7 @@
 // Based on design doc 17-数据流设计.md § 11.1
 
 use super::registry::HEARTBEAT_INTERVAL_SECS;
-use super::registry_trait::StreamRegistryTrait;
+use super::registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -27,6 +27,11 @@ use tracing::{debug, error, info, trace, warn};
 const MAX_HEARTBEAT_RETRIES: u32 = 3;
 /// Delay between heartbeat retries (exponential backoff base)
 const HEARTBEAT_RETRY_BASE_DELAY_MS: u64 = 100;
+/// Cleanup-time unregister uses a longer retry budget because stale fenced keys
+/// block rapid republish even after Redis recovers.
+const UNREGISTER_RETRY_ATTEMPTS: u32 = 3;
+/// Retry envelope matches the previous background cleanup behavior.
+const UNREGISTER_RETRY_DELAYS_MS: [u64; 2] = [2_000, 4_000];
 /// Number of consecutive heartbeat *cycles* where Redis **confirms the publisher is gone**
 /// before cleaning up. This prevents killing active streams during transient Redis timeouts
 /// or maintenance windows.
@@ -74,6 +79,13 @@ const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 60;
 /// Reconciliation also runs on broadcast lag events, so this is a safety net.
 const PERIODIC_SYNC_INTERVAL_SECS: u64 = 300;
 
+#[derive(Clone, Debug)]
+struct PublisherCleanupContext {
+    room_id: String,
+    media_id: String,
+    epoch: u64,
+}
+
 /// Tracked publisher state including activity timestamp and registration info.
 struct PublisherEntry {
     /// Unix timestamp (seconds) of last observed data activity.
@@ -96,6 +108,8 @@ struct PublisherEntry {
     redis_unreachable_cycles: std::sync::atomic::AtomicU32,
     /// User ID from the publisher registration (L-01: for reverse-index TTL refresh).
     user_id: String,
+    /// Publisher epoch captured from the registry when tracking started.
+    epoch: u64,
 }
 
 impl PublisherEntry {
@@ -107,15 +121,31 @@ impl PublisherEntry {
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
             redis_unreachable_cycles: std::sync::atomic::AtomicU32::new(0),
             user_id: String::new(),
+            epoch: 0,
         }
     }
 
-    fn with_user_id(user_id: String) -> Self {
+    fn with_registration(user_id: String, epoch: u64) -> Self {
         Self {
             last_active_secs: AtomicU64::new(Self::now_secs()),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
             redis_unreachable_cycles: std::sync::atomic::AtomicU32::new(0),
             user_id,
+            epoch,
+        }
+    }
+
+    fn clone_with_registration(&self, user_id: String, epoch: u64) -> Self {
+        Self {
+            last_active_secs: AtomicU64::new(self.last_active_secs.load(Ordering::Acquire)),
+            consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(
+                self.consecutive_heartbeat_failures.load(Ordering::Acquire),
+            ),
+            redis_unreachable_cycles: std::sync::atomic::AtomicU32::new(
+                self.redis_unreachable_cycles.load(Ordering::Acquire),
+            ),
+            user_id,
+            epoch,
         }
     }
 
@@ -133,6 +163,22 @@ impl PublisherEntry {
     fn idle_secs(&self) -> u64 {
         Self::now_secs().saturating_sub(self.last_active_secs.load(Ordering::Acquire))
     }
+}
+
+fn is_redis_unreachable_error(error: &anyhow::Error) -> bool {
+    if let Some(redis_err) = error.downcast_ref::<redis::RedisError>() {
+        return matches!(
+            redis_err.kind(),
+            redis::ErrorKind::Io | redis::ErrorKind::ClusterConnectionNotFound
+        );
+    }
+
+    if error.downcast_ref::<std::io::Error>().is_some() {
+        return true;
+    }
+
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("redis operation timed out") || message.contains("redis timeout")
 }
 
 /// Publisher manager that listens to `StreamHub` events
@@ -427,10 +473,10 @@ impl PublisherManager {
         let entry = match self.registry.get_publisher(&room_id, &media_id).await {
             Ok(Some(info)) => {
                 debug!(
-                    "Retrieved publisher info for heartbeat tracking: room={}, media={}, user_id={}",
-                    room_id, media_id, info.user_id
+                    "Retrieved publisher info for heartbeat tracking: room={}, media={}, user_id={}, epoch={}",
+                    room_id, media_id, info.user_id, info.epoch
                 );
-                Arc::new(PublisherEntry::with_user_id(info.user_id))
+                Arc::new(PublisherEntry::with_registration(info.user_id, info.epoch))
             }
             Ok(None) => {
                 // Publisher not in registry (was never registered or already expired).
@@ -610,7 +656,7 @@ impl PublisherManager {
                         "Reconcile (reverse): adding missing publisher room={} media={} to local tracking",
                         room_id, media_id
                     );
-                    let entry = Arc::new(PublisherEntry::with_user_id(info.user_id));
+                    let entry = Arc::new(PublisherEntry::with_registration(info.user_id, info.epoch));
                     self.active_publishers.insert(publisher_key, entry);
                     added += 1;
                 }
@@ -644,6 +690,122 @@ impl PublisherManager {
     async fn run_periodic_sync_once(&self) {
         self.reconcile_with_registry().await;
         self.reconcile_missing_from_registry().await;
+    }
+
+    async fn refresh_tracked_registration_after_reregister(
+        &self,
+        publisher_key: &str,
+        tracked_entry: &Arc<PublisherEntry>,
+        room_id: &str,
+        media_id: &str,
+    ) {
+        match self.registry.get_publisher(room_id, media_id).await {
+            Ok(Some(info)) if info.node_id == self.local_node_id => {
+                if let Some(mut current) = self.active_publishers.get_mut(publisher_key) {
+                    if Arc::ptr_eq(current.value(), tracked_entry) {
+                        *current.value_mut() = Arc::new(
+                            tracked_entry.clone_with_registration(info.user_id, info.epoch),
+                        );
+                    } else {
+                        debug!(
+                            "Skipped tracked registration refresh for room={} media={} because local entry changed during re-registration",
+                            room_id, media_id
+                        );
+                    }
+                } else {
+                    debug!(
+                        "Skipped tracked registration refresh for room={} media={} because it is no longer tracked",
+                        room_id, media_id
+                    );
+                }
+            }
+            Ok(Some(info)) => {
+                warn!(
+                    "Re-registered publisher for room {} / media {} but registry ownership moved to node {} before local epoch refresh",
+                    room_id, media_id, info.node_id
+                );
+            }
+            Ok(None) => {
+                warn!(
+                    "Re-registered publisher for room {} / media {} but registry entry disappeared before local epoch refresh",
+                    room_id, media_id
+                );
+            }
+            Err(e) => {
+                error!(
+                    "Re-registered publisher for room {} / media {} but failed to refresh local epoch from registry: {}",
+                    room_id, media_id, e
+                );
+            }
+        }
+    }
+
+    async fn try_reregister_after_missing_refresh(
+        &self,
+        publisher_key: &str,
+        entry: &Arc<PublisherEntry>,
+        room_id: &str,
+        media_id: &str,
+    ) {
+        match self
+            .registry
+            .try_register_publisher(
+                room_id,
+                media_id,
+                &self.local_node_id,
+                &entry.user_id,
+                &self.local_grpc_address,
+            )
+            .await
+        {
+            Ok(true) => {
+                self.refresh_tracked_registration_after_reregister(
+                    publisher_key,
+                    entry,
+                    room_id,
+                    media_id,
+                )
+                .await;
+                info!(
+                    "Re-created missing publisher registration for room {} / media {} after TTL-refresh race",
+                    room_id, media_id
+                );
+            }
+            Ok(false) => {
+                self.refresh_tracked_registration_after_reregister(
+                    publisher_key,
+                    entry,
+                    room_id,
+                    media_id,
+                )
+                .await;
+                info!(
+                    "Publisher room {} / media {} was re-created by another flow during restart recovery",
+                    room_id, media_id
+                );
+            }
+            Err(e) => {
+                error!(
+                    "Failed to re-create missing publisher registration for room {} / media {} after TTL-refresh race: {}",
+                    room_id, media_id, e
+                );
+            }
+        }
+    }
+
+    fn spawn_cleanup_publisher(
+        self: &Arc<Self>,
+        room_id: String,
+        media_id: String,
+        expected_epoch: u64,
+        reason: String,
+    ) {
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            manager
+                .cleanup_publisher(&room_id, &media_id, expected_epoch, &reason)
+                .await;
+        });
     }
 
     /// Force re-registration of all tracked active publishers in Redis.
@@ -709,6 +871,13 @@ impl PublisherManager {
                     .await
                 {
                     Ok(true) => {
+                        self.refresh_tracked_registration_after_reregister(
+                            publisher_key,
+                            entry,
+                            room_id,
+                            media_id,
+                        )
+                        .await;
                         info!(
                             "Re-registered publisher for room {} / media {}",
                             room_id, media_id
@@ -721,11 +890,31 @@ impl PublisherManager {
                             .refresh_publisher_ttl(room_id, media_id, &entry.user_id)
                             .await
                         {
-                            Ok(()) => {
+                            Ok(PublisherRefreshOutcome::Refreshed) => {
+                                self.refresh_tracked_registration_after_reregister(
+                                    publisher_key,
+                                    entry,
+                                    room_id,
+                                    media_id,
+                                )
+                                .await;
                                 info!(
                                     "Refreshed TTL for publisher room {} / media {}",
                                     room_id, media_id
                                 );
+                            }
+                            Ok(PublisherRefreshOutcome::Missing) => {
+                                warn!(
+                                    "Publisher room {} / media {} disappeared from registry during re-register TTL refresh",
+                                    room_id, media_id
+                                );
+                                self.try_reregister_after_missing_refresh(
+                                    publisher_key,
+                                    entry,
+                                    room_id,
+                                    media_id,
+                                )
+                                .await;
                             }
                             Err(e) => {
                                 error!(
@@ -750,55 +939,95 @@ impl PublisherManager {
     /// Cleanup a publisher: remove from local tracking, unregister from Redis,
     /// and notify `StreamHub`. Used by both heartbeat failure and silent publisher
     /// timeout paths.
-    async fn cleanup_publisher(&self, room_id: &str, media_id: &str, reason: &str) {
+    async fn cleanup_publisher(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        expected_epoch: u64,
+        reason: &str,
+    ) {
         let publisher_key = format!("{room_id}:{media_id}");
         info!(
-            "Cleaning up publisher room={} media={}: {}",
-            room_id, media_id, reason
+            "Cleaning up publisher room={} media={} epoch={}: {}",
+            room_id, media_id, expected_epoch, reason
         );
 
-        // 1. Remove from local tracking
-        self.active_publishers.remove(&publisher_key);
-
-        // 2. Unregister from Redis immediately (don't wait for TTL)
-        if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
-            warn!(
-                "Failed to unregister publisher from Redis for room {} / media {}: {}. \
-                 Spawning background retry task for best-effort cleanup.",
-                room_id, media_id, e
+        // 1. Remove from local tracking only if the current entry is still the
+        // same epoch observed when cleanup was scheduled.
+        let Some(entry) = self.active_publishers.get(&publisher_key) else {
+            debug!(
+                "Cleanup skipped for room={} media={} because it is no longer tracked",
+                room_id, media_id
             );
-            // Best-effort retry: spawn background task with 2 retries + exponential backoff
-            let registry = Arc::clone(&self.registry);
-            let room_id_owned = room_id.to_string();
-            let media_id_owned = media_id.to_string();
-            tokio::spawn(async move {
-                for attempt in 1..=2u32 {
-                    let delay = Duration::from_secs(2u64.pow(attempt)); // 2s, 4s
-                    sleep(delay).await;
-                    match registry
-                        .unregister_publisher(&room_id_owned, &media_id_owned)
-                        .await
-                    {
-                        Ok(()) => {
-                            info!(
-                                "Background retry #{attempt} succeeded: unregistered publisher \
-                                 room={room_id_owned} media={media_id_owned} from Redis"
-                            );
-                            return;
-                        }
-                        Err(retry_err) => {
-                            warn!(
-                                "Background retry #{attempt} failed to unregister publisher \
-                                 room={room_id_owned} media={media_id_owned}: {retry_err}"
-                            );
-                        }
-                    }
+            return;
+        };
+        if entry.epoch != expected_epoch {
+            debug!(
+                "Cleanup skipped for room={} media={} because local owner advanced from epoch {} to {}",
+                room_id, media_id, expected_epoch, entry.epoch
+            );
+            return;
+        }
+        let tracked_entry = Arc::clone(entry.value());
+        drop(entry);
+        let Some((_, removed_entry)) = self.active_publishers.remove_if(&publisher_key, |_, current| {
+            Arc::ptr_eq(current, &tracked_entry) && current.epoch == expected_epoch
+        }) else {
+            debug!(
+                "Cleanup skipped for room={} media={} because local owner changed before removal",
+                room_id, media_id
+            );
+            return;
+        };
+        let cleanup = PublisherCleanupContext {
+            room_id: room_id.to_string(),
+            media_id: media_id.to_string(),
+            epoch: removed_entry.epoch,
+        };
+
+        // 2. Unregister from Redis immediately (don't wait for TTL), retrying
+        // transient failures to avoid leaving a stale epoch fenced key that
+        // blocks rapid republish.
+        for attempt in 0..UNREGISTER_RETRY_ATTEMPTS {
+            match self
+                .registry
+                .unregister_publisher_if_epoch_matches(
+                    &cleanup.room_id,
+                    &cleanup.media_id,
+                    cleanup.epoch,
+                )
+                .await
+            {
+                Ok(()) => {
+                    break;
                 }
-                error!(
-                    "All background retries exhausted for unregistering publisher \
-                     room={room_id_owned} media={media_id_owned}; Redis key will expire via TTL"
-                );
-            });
+                Err(e) if attempt < UNREGISTER_RETRY_ATTEMPTS - 1 => {
+                    let delay_ms = UNREGISTER_RETRY_DELAYS_MS[attempt as usize];
+                    warn!(
+                        "Failed to unregister publisher from Redis for room {} / media {} with epoch {} on attempt {}/{}: {}. Retrying in {}ms",
+                        cleanup.room_id,
+                        cleanup.media_id,
+                        cleanup.epoch,
+                        attempt + 1,
+                        UNREGISTER_RETRY_ATTEMPTS,
+                        e,
+                        delay_ms
+                    );
+                    sleep(Duration::from_millis(delay_ms)).await;
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to unregister publisher from Redis for room {} / media {} with epoch {} after {} attempts: {}. \
+                         Leaving Redis cleanup to later reconciliation/TTL expiry.",
+                        cleanup.room_id,
+                        cleanup.media_id,
+                        cleanup.epoch,
+                        UNREGISTER_RETRY_ATTEMPTS,
+                        e
+                    );
+                    break;
+                }
+            }
         }
 
         // 3. Send UnPublish to StreamHub so subscribers are notified.
@@ -806,8 +1035,8 @@ impl PublisherManager {
         // Wait briefly for backpressure to clear, then log a hard failure if even
         // the bounded timeout cannot deliver it.
         let identifier = StreamIdentifier::Rtmp {
-            app_name: room_id.to_string(),
-            stream_name: media_id.to_string(),
+            app_name: cleanup.room_id.clone(),
+            stream_name: cleanup.media_id.clone(),
         };
         match tokio::time::timeout(
             UNPUBLISH_SEND_TIMEOUT,
@@ -820,7 +1049,7 @@ impl PublisherManager {
             Ok(Ok(())) => {
                 info!(
                     "Sent UnPublish event for room {} / media {} ({})",
-                    room_id, media_id, reason
+                    cleanup.room_id, cleanup.media_id, reason
                 );
             }
             Ok(Err(e)) => {
@@ -843,7 +1072,7 @@ impl PublisherManager {
     /// 2. Silent publisher detection (LS-5): if no media data has been received
     ///    for `silent_timeout_secs`, the publisher is considered dead even though
     ///    the TCP connection may still be alive.
-    async fn run_heartbeat_cycle(&self) {
+    async fn run_heartbeat_cycle(self: &Arc<Self>) {
         // M-8: Snapshot keys first to avoid holding DashMap read guard during async Redis ops.
         let snapshot: Vec<(String, Arc<PublisherEntry>)> = self
             .active_publishers
@@ -866,12 +1095,12 @@ impl PublisherManager {
                     "Silent publisher detected: room={} media={} (no data for {}s, threshold={}s)",
                     room_id, media_id, idle_secs, self.silent_timeout_secs
                 );
-                self.cleanup_publisher(
-                    room_id,
-                    media_id,
-                    &format!("silent publisher timeout ({idle_secs}s idle)"),
-                )
-                .await;
+                self.spawn_cleanup_publisher(
+                    room_id.to_string(),
+                    media_id.to_string(),
+                    entry.epoch,
+                    format!("silent publisher timeout ({idle_secs}s idle)"),
+                );
                 continue;
             }
 
@@ -898,6 +1127,7 @@ impl PublisherManager {
             // from Redis reachability issues.  Slow Redis increments this counter;
             // only when it reaches the max do we conclude the publisher is dead.
             let mut cycle_succeeded = false;
+            let mut publisher_missing = false;
             let mut last_error: Option<anyhow::Error> = None;
             for attempt in 0..MAX_HEARTBEAT_RETRIES {
                 match self
@@ -905,8 +1135,15 @@ impl PublisherManager {
                     .refresh_publisher_ttl(room_id, media_id, user_id)
                     .await
                 {
-                    Ok(()) => {
+                    Ok(PublisherRefreshOutcome::Refreshed) => {
                         cycle_succeeded = true;
+                        break;
+                    }
+                    Ok(PublisherRefreshOutcome::Missing) => {
+                        publisher_missing = true;
+                        last_error = Some(anyhow::anyhow!(
+                            "publisher registration missing from registry"
+                        ));
                         break;
                     }
                     Err(e) => {
@@ -956,21 +1193,16 @@ impl PublisherManager {
                 //
                 // Use structured redis::ErrorKind matching instead of string comparison
                 // to avoid brittle matching against error message text.
-                let is_redis_unreachable = last_error.as_ref().is_some_and(|e| {
-                    if let Some(redis_err) = e.downcast_ref::<redis::RedisError>() {
-                        matches!(
-                            redis_err.kind(),
-                            redis::ErrorKind::Io | redis::ErrorKind::ClusterConnectionNotFound
-                        )
-                    } else {
-                        // Fallback for non-redis errors: check for I/O error source
-                        e.downcast_ref::<std::io::Error>().is_some()
-                    }
-                });
+                let is_redis_unreachable = last_error
+                    .as_ref()
+                    .is_some_and(is_redis_unreachable_error);
 
                 if is_redis_unreachable {
                     // Redis itself is unreachable — do NOT count toward publisher cleanup threshold.
                     // Use a separate (higher) counter to eventually clean up if Redis stays down.
+                    entry
+                        .consecutive_heartbeat_failures
+                        .store(0, Ordering::Release);
                     let redis_failures = entry
                         .redis_unreachable_cycles
                         .fetch_add(1, Ordering::AcqRel)
@@ -981,12 +1213,14 @@ impl PublisherManager {
                              Cleaning up publisher as last resort (Redis may be permanently down).",
                             redis_failures, room_id, media_id
                         );
-                        self.cleanup_publisher(
-                            room_id,
-                            media_id,
-                            &format!("Redis unreachable for {redis_failures} consecutive cycles"),
-                        )
-                        .await;
+                        self.spawn_cleanup_publisher(
+                            room_id.to_string(),
+                            media_id.to_string(),
+                            entry.epoch,
+                            format!(
+                                "Redis unreachable for {redis_failures} consecutive cycles"
+                            ),
+                        );
                     } else {
                         warn!(
                             "Redis unreachable for heartbeat room={} media={} ({}/{} consecutive). \
@@ -994,27 +1228,60 @@ impl PublisherManager {
                             room_id, media_id, redis_failures, MAX_CONSECUTIVE_REDIS_UNREACHABLE
                         );
                     }
-                } else {
-                    // Redis reachable but publisher heartbeat failed (possible publisher expiry).
+                } else if publisher_missing {
+                    // Redis reachable and explicitly reported that the publisher entry is gone.
+                    entry.redis_unreachable_cycles.store(0, Ordering::Release);
                     let failures = entry
                         .consecutive_heartbeat_failures
                         .fetch_add(1, Ordering::AcqRel)
                         + 1;
                     if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
                         error!(
-                            "Publisher room={} media={} failed {} consecutive heartbeat cycles, cleaning up",
+                            "Publisher room={} media={} missing from registry for {} consecutive heartbeat cycles, cleaning up",
                             room_id, media_id, failures
                         );
-                        self.cleanup_publisher(
-                            room_id,
-                            media_id,
-                            &format!("heartbeat failed {failures} consecutive cycles"),
-                        )
-                        .await;
+                        self.spawn_cleanup_publisher(
+                            room_id.to_string(),
+                            media_id.to_string(),
+                            entry.epoch,
+                            format!(
+                                "publisher missing from registry for {failures} consecutive cycles"
+                            ),
+                        );
                     } else {
                         warn!(
-                            "Heartbeat cycle failed for room={} media={} ({}/{} consecutive failures)",
+                            "Publisher room={} media={} missing from registry ({}/{} consecutive cycles)",
                             room_id, media_id, failures, MAX_CONSECUTIVE_HEARTBEAT_FAILURES
+                        );
+                    }
+                } else {
+                    let failures = entry
+                        .consecutive_heartbeat_failures
+                        .fetch_add(1, Ordering::AcqRel)
+                        + 1;
+                    entry.redis_unreachable_cycles.store(0, Ordering::Release);
+                    warn!(
+                        "Heartbeat cycle failed for room={} media={} due to persistent registry error (counting toward cleanup threshold) ({}/{} consecutive): {}",
+                        room_id,
+                        media_id,
+                        failures,
+                        MAX_CONSECUTIVE_HEARTBEAT_FAILURES,
+                        last_error
+                            .as_ref()
+                            .map_or_else(|| "unknown error".to_string(), ToString::to_string)
+                    );
+                    if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
+                        error!(
+                            "Publisher room={} media={} failed heartbeat with persistent registry error for {} consecutive cycles, cleaning up",
+                            room_id, media_id, failures
+                        );
+                        self.spawn_cleanup_publisher(
+                            room_id.to_string(),
+                            media_id.to_string(),
+                            entry.epoch,
+                            format!(
+                                "persistent registry heartbeat failure for {failures} consecutive cycles"
+                            ),
                         );
                     }
                 }
@@ -1034,6 +1301,7 @@ impl PublisherManager {
 mod tests {
     use super::super::MockStreamRegistry;
     use super::*;
+    use anyhow::Result;
     use crate::relay::PublisherInfo;
     use chrono::Utc;
 
@@ -1044,11 +1312,14 @@ mod tests {
         registry: Arc<dyn StreamRegistryTrait>,
         node_id: &str,
     ) -> (
-        PublisherManager,
+        Arc<PublisherManager>,
         synctv_xiu::streamhub::define::StreamHubEventReceiver,
     ) {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        (PublisherManager::new(registry, node_id.to_string(), tx), rx)
+        (
+            Arc::new(PublisherManager::new(registry, node_id.to_string(), tx)),
+            rx,
+        )
     }
 
     #[tokio::test]
@@ -1143,6 +1414,210 @@ mod tests {
             .insert(key.to_string(), Arc::new(PublisherEntry::new()));
     }
 
+    struct RecreateOnReregisterRegistry {
+        publisher: tokio::sync::Mutex<Option<PublisherInfo>>,
+        next_epoch: AtomicU64,
+        expire_before_next_try_register: AtomicBool,
+        replace_before_next_try_register: AtomicBool,
+        expire_before_next_refresh: AtomicBool,
+    }
+
+    impl RecreateOnReregisterRegistry {
+        fn new() -> Self {
+            Self {
+                publisher: tokio::sync::Mutex::new(Some(PublisherInfo {
+                    node_id: "test-node".to_string(),
+                    grpc_address: "addr1".to_string(),
+                    app_name: "live".to_string(),
+                    user_id: "user1".to_string(),
+                    started_at: Utc::now(),
+                    epoch: 1,
+                })),
+                next_epoch: AtomicU64::new(2),
+                expire_before_next_try_register: AtomicBool::new(false),
+                replace_before_next_try_register: AtomicBool::new(false),
+                expire_before_next_refresh: AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StreamRegistryTrait for RecreateOnReregisterRegistry {
+        async fn register_publisher(
+            &self,
+            room_id: &str,
+            media_id: &str,
+            node_id: &str,
+            _app_name: &str,
+            grpc_address: &str,
+        ) -> Result<bool> {
+            self.try_register_publisher(room_id, media_id, node_id, "", grpc_address)
+                .await
+        }
+
+        async fn try_register_publisher(
+            &self,
+            _room_id: &str,
+            _media_id: &str,
+            node_id: &str,
+            user_id: &str,
+            grpc_address: &str,
+        ) -> Result<bool> {
+            let mut publisher = self.publisher.lock().await;
+            if self
+                .expire_before_next_try_register
+                .swap(false, Ordering::AcqRel)
+            {
+                publisher.take();
+            }
+            if self
+                .replace_before_next_try_register
+                .swap(false, Ordering::AcqRel)
+            {
+                let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
+                *publisher = Some(PublisherInfo {
+                    node_id: node_id.to_string(),
+                    grpc_address: grpc_address.to_string(),
+                    app_name: "live".to_string(),
+                    user_id: user_id.to_string(),
+                    started_at: Utc::now(),
+                    epoch,
+                });
+                return Ok(false);
+            }
+
+            if publisher.is_some() {
+                return Ok(false);
+            }
+
+            let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
+            *publisher = Some(PublisherInfo {
+                node_id: node_id.to_string(),
+                grpc_address: grpc_address.to_string(),
+                app_name: "live".to_string(),
+                user_id: user_id.to_string(),
+                started_at: Utc::now(),
+                epoch,
+            });
+            Ok(true)
+        }
+
+        async fn refresh_publisher_ttl(
+            &self,
+            _room_id: &str,
+            _media_id: &str,
+            _user_id: &str,
+        ) -> Result<PublisherRefreshOutcome> {
+            let mut publisher = self.publisher.lock().await;
+            if self
+                .expire_before_next_refresh
+                .swap(false, Ordering::AcqRel)
+            {
+                publisher.take();
+            }
+            Ok(if publisher.is_some() {
+                PublisherRefreshOutcome::Refreshed
+            } else {
+                PublisherRefreshOutcome::Missing
+            })
+        }
+
+        async fn unregister_publisher(&self, _room_id: &str, _media_id: &str) -> Result<()> {
+            let mut publisher = self.publisher.lock().await;
+            publisher.take();
+            Ok(())
+        }
+
+        async fn unregister_publisher_if_epoch_matches(
+            &self,
+            _room_id: &str,
+            _media_id: &str,
+            expected_epoch: u64,
+        ) -> Result<()> {
+            let mut publisher = self.publisher.lock().await;
+            if publisher
+                .as_ref()
+                .is_some_and(|current| current.epoch == expected_epoch)
+            {
+                publisher.take();
+            }
+            Ok(())
+        }
+
+        async fn get_publisher(
+            &self,
+            _room_id: &str,
+            _media_id: &str,
+        ) -> Result<Option<PublisherInfo>> {
+            let publisher = self.publisher.lock().await;
+            if publisher.is_some() {
+                self.expire_before_next_try_register
+                    .store(true, Ordering::Release);
+            }
+            Ok(publisher.clone())
+        }
+
+        async fn is_stream_active(&self, _room_id: &str, _media_id: &str) -> Result<bool> {
+            Ok(self.publisher.lock().await.is_some())
+        }
+
+        async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {
+            Ok(if self.publisher.lock().await.is_some() {
+                vec![("room-reregister".to_string(), "media-reregister".to_string())]
+            } else {
+                Vec::new()
+            })
+        }
+
+        async fn get_user_publishers(&self, user_id: &str) -> Result<Vec<(String, String)>> {
+            let publisher = self.publisher.lock().await;
+            Ok(if publisher
+                .as_ref()
+                .is_some_and(|current| current.user_id == user_id)
+            {
+                vec![("room-reregister".to_string(), "media-reregister".to_string())]
+            } else {
+                Vec::new()
+            })
+        }
+
+        async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()> {
+            let mut publisher = self.publisher.lock().await;
+            if publisher
+                .as_ref()
+                .is_some_and(|current| current.user_id == user_id)
+            {
+                publisher.take();
+            }
+            Ok(())
+        }
+
+        async fn validate_epoch(
+            &self,
+            _room_id: &str,
+            _media_id: &str,
+            epoch: u64,
+        ) -> Result<bool> {
+            Ok(self
+                .publisher
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|current| current.epoch == epoch))
+        }
+
+        async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()> {
+            let mut publisher = self.publisher.lock().await;
+            if publisher
+                .as_ref()
+                .is_some_and(|current| current.node_id == node_id)
+            {
+                publisher.take();
+            }
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn test_reconcile_removes_stale_entries() {
         // Registry has room1:media1 on our node, but NOT room2:media2
@@ -1220,6 +1695,117 @@ mod tests {
         // Should not panic with empty active_publishers
         manager.reconcile_with_registry().await;
         assert!(manager.active_publishers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reregister_refreshes_local_epoch_after_registry_recreate() {
+        let registry = Arc::new(RecreateOnReregisterRegistry::new());
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        let manager = PublisherManager::new(registry.clone(), "test-node".to_string(), tx)
+            .with_grpc_address("addr1".to_string());
+        manager.active_publishers.insert(
+            "room-reregister:media-reregister".to_string(),
+            Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
+        );
+
+        manager.reregister_all_publishers().await;
+
+        let active_entry = manager
+            .active_publishers
+            .get("room-reregister:media-reregister")
+            .expect("publisher should still be tracked after re-registration");
+        assert_eq!(
+            active_entry.epoch, 2,
+            "successful re-registration should refresh the locally tracked epoch"
+        );
+        drop(active_entry);
+
+        manager
+            .cleanup_publisher("room-reregister", "media-reregister", 2, "test cleanup")
+            .await;
+
+        assert!(
+            registry
+                .get_publisher("room-reregister", "media-reregister")
+                .await
+                .unwrap()
+                .is_none(),
+            "cleanup should remove the recreated registry entry using the refreshed epoch"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reregister_refreshes_local_epoch_after_ttl_only_recovery() {
+        let registry = Arc::new(RecreateOnReregisterRegistry::new());
+        registry
+            .replace_before_next_try_register
+            .store(true, Ordering::Release);
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        let manager = PublisherManager::new(registry.clone(), "test-node".to_string(), tx)
+            .with_grpc_address("addr1".to_string());
+        manager.active_publishers.insert(
+            "room-reregister:media-reregister".to_string(),
+            Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
+        );
+
+        manager.reregister_all_publishers().await;
+
+        let active_entry = manager
+            .active_publishers
+            .get("room-reregister:media-reregister")
+            .expect("publisher should still be tracked after TTL-only re-registration");
+        assert_eq!(
+            active_entry.epoch, 2,
+            "TTL-only recovery should still refresh the locally tracked epoch"
+        );
+        drop(active_entry);
+
+        manager
+            .cleanup_publisher("room-reregister", "media-reregister", 2, "test cleanup")
+            .await;
+
+        assert!(
+            registry
+                .get_publisher("room-reregister", "media-reregister")
+                .await
+                .unwrap()
+                .is_none(),
+            "cleanup should remove the live registry entry after TTL-only recovery"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reregister_recreates_entry_when_ttl_refresh_reports_missing() {
+        let registry = Arc::new(RecreateOnReregisterRegistry::new());
+        registry
+            .expire_before_next_refresh
+            .store(true, Ordering::Release);
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        let manager = PublisherManager::new(registry.clone(), "test-node".to_string(), tx)
+            .with_grpc_address("addr1".to_string());
+        manager.active_publishers.insert(
+            "room-reregister:media-reregister".to_string(),
+            Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
+        );
+
+        manager.reregister_all_publishers().await;
+
+        let recreated = registry
+            .get_publisher("room-reregister", "media-reregister")
+            .await
+            .unwrap()
+            .expect("restart recovery should recreate the missing registry entry");
+        assert_eq!(recreated.node_id, "test-node");
+        assert_eq!(recreated.epoch, 2);
+
+        let active_entry = manager
+            .active_publishers
+            .get("room-reregister:media-reregister")
+            .expect("publisher should still be tracked after recovery");
+        assert_eq!(
+            active_entry.epoch, 2,
+            "recovery should refresh the tracked epoch after recreating a missing entry"
+        );
     }
 
     #[tokio::test]
@@ -1357,7 +1943,7 @@ mod tests {
             .unwrap();
         manager.active_publishers.insert(
             "room-backpressure:media-backpressure".to_string(),
-            Arc::new(PublisherEntry::with_user_id("user1".to_string())),
+            Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
         );
 
         manager
@@ -1370,7 +1956,7 @@ mod tests {
             })
             .expect("fill channel to create backpressure");
 
-        let cleanup = manager.cleanup_publisher("room-backpressure", "media-backpressure", "test");
+        let cleanup = manager.cleanup_publisher("room-backpressure", "media-backpressure", 1, "test");
         let delayed_recv = async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
             let _ = rx.recv().await;
@@ -1388,6 +1974,575 @@ mod tests {
                 app_name: "room-backpressure".to_string(),
                 stream_name: "media-backpressure".to_string(),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_publisher_uses_epoch_fenced_unregister() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, mut rx) = test_manager(registry.clone(), "test-node");
+
+        registry
+            .try_register_publisher("room-fence", "media-fence", "test-node", "user1", "addr1")
+            .await
+            .unwrap();
+        let original = registry
+            .get_publisher("room-fence", "media-fence")
+            .await
+            .unwrap()
+            .unwrap();
+
+        manager.active_publishers.insert(
+            "room-fence:media-fence".to_string(),
+            Arc::new(PublisherEntry::with_registration(
+                "user1".to_string(),
+                original.epoch,
+            )),
+        );
+
+        registry
+            .unregister_publisher("room-fence", "media-fence")
+            .await
+            .unwrap();
+        registry
+            .try_register_publisher("room-fence", "media-fence", "other-node", "user2", "addr2")
+            .await
+            .unwrap();
+        let replacement = registry
+            .get_publisher("room-fence", "media-fence")
+            .await
+            .unwrap()
+            .expect("replacement owner should exist");
+        manager.active_publishers.insert(
+            "room-fence:media-fence".to_string(),
+            Arc::new(PublisherEntry::with_registration(
+                "user2".to_string(),
+                replacement.epoch,
+            )),
+        );
+
+        manager
+            .cleanup_publisher(
+                "room-fence",
+                "media-fence",
+                original.epoch,
+                "stale local owner",
+            )
+            .await;
+
+        let current = registry
+            .get_publisher("room-fence", "media-fence")
+            .await
+            .unwrap()
+            .expect("new owner should still exist");
+        assert_eq!(current.node_id, "other-node");
+        assert_eq!(current.epoch, replacement.epoch);
+        let active_entry = manager
+            .active_publishers
+            .get("room-fence:media-fence")
+            .expect("replacement publisher should still be tracked");
+        assert_eq!(active_entry.epoch, replacement.epoch);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "cleanup must not unpublish a replacement publisher"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_cleanup_publisher_retries_epoch_fenced_unregister() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, mut rx) = test_manager(registry.clone(), "test-node");
+
+        registry
+            .try_register_publisher("room-retry", "media-retry", "test-node", "user1", "addr1")
+            .await
+            .unwrap();
+        let original = registry
+            .get_publisher("room-retry", "media-retry")
+            .await
+            .unwrap()
+            .unwrap();
+        manager.active_publishers.insert(
+            "room-retry:media-retry".to_string(),
+            Arc::new(PublisherEntry::with_registration(
+                "user1".to_string(),
+                original.epoch,
+            )),
+        );
+        registry.set_fail_unregister_if_epoch_matches_times(2);
+
+        manager
+            .cleanup_publisher("room-retry", "media-retry", original.epoch, "retry cleanup")
+            .await;
+
+        assert!(
+            !manager.active_publishers.contains_key("room-retry:media-retry"),
+            "cleanup should remove the local publisher entry"
+        );
+
+        let event = rx.recv().await.expect("cleanup should emit unpublish");
+        let StreamHubEvent::UnPublish { identifier } = event else {
+            panic!("expected unpublish event");
+        };
+        assert_eq!(
+            identifier,
+            StreamIdentifier::Rtmp {
+                app_name: "room-retry".to_string(),
+                stream_name: "media-retry".to_string(),
+            }
+        );
+
+        assert_eq!(registry.unregister_if_epoch_matches_call_count(), 3);
+        assert!(
+            registry
+                .get_publisher("room-retry", "media-retry")
+                .await
+                .unwrap()
+                .is_none(),
+            "cleanup should clear the stale registry entry after retrying"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_cleanup_publisher_survives_brief_extended_redis_outage() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, mut rx) = test_manager(registry.clone(), "test-node");
+
+        registry
+            .try_register_publisher("room-recover", "media-recover", "test-node", "user1", "addr1")
+            .await
+            .unwrap();
+        let original = registry
+            .get_publisher("room-recover", "media-recover")
+            .await
+            .unwrap()
+            .unwrap();
+        manager.active_publishers.insert(
+            "room-recover:media-recover".to_string(),
+            Arc::new(PublisherEntry::with_registration(
+                "user1".to_string(),
+                original.epoch,
+            )),
+        );
+        registry.set_fail_unregister_if_epoch_matches_times(2);
+
+        manager
+            .cleanup_publisher(
+                "room-recover",
+                "media-recover",
+                original.epoch,
+                "temporary redis outage",
+            )
+            .await;
+
+        let event = rx.recv().await.expect("cleanup should emit unpublish");
+        let StreamHubEvent::UnPublish { identifier } = event else {
+            panic!("expected unpublish event");
+        };
+        assert_eq!(
+            identifier,
+            StreamIdentifier::Rtmp {
+                app_name: "room-recover".to_string(),
+                stream_name: "media-recover".to_string(),
+            }
+        );
+
+        assert_eq!(registry.unregister_if_epoch_matches_call_count(), 3);
+        assert!(
+            registry
+                .get_publisher("room-recover", "media-recover")
+                .await
+                .unwrap()
+                .is_none(),
+            "cleanup should eventually clear the stale registry entry after Redis recovers"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_heartbeat_cleanup_runs_in_background_without_blocking_cycle() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        registry
+            .try_register_publisher("room-bg", "media-bg", "test-node", "user1", "addr1")
+            .await
+            .unwrap();
+        let current = registry
+            .get_publisher("room-bg", "media-bg")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (manager, mut rx) = test_manager(registry.clone(), "test-node");
+        let entry = Arc::new(PublisherEntry::with_registration(
+            "user1".to_string(),
+            current.epoch,
+        ));
+        entry
+            .consecutive_heartbeat_failures
+            .store(MAX_CONSECUTIVE_HEARTBEAT_FAILURES - 1, Ordering::Release);
+        manager
+            .active_publishers
+            .insert("room-bg:media-bg".to_string(), Arc::clone(&entry));
+
+        registry.set_fail_refresh_publisher_ttl_with_response_error(true);
+        registry.set_fail_unregister_if_epoch_matches_times(2);
+
+        let heartbeat = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move {
+                manager.run_heartbeat_cycle().await;
+            }
+        });
+        let observe = async {
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_millis(HEARTBEAT_RETRY_BASE_DELAY_MS + 1)).await;
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_millis(
+                (HEARTBEAT_RETRY_BASE_DELAY_MS * 2) + 1,
+            ))
+            .await;
+            tokio::task::yield_now().await;
+            assert!(
+                heartbeat.is_finished(),
+                "heartbeat cycle should finish after the small heartbeat retry budget without waiting for cleanup retry backoff"
+            );
+            tokio::time::advance(Duration::from_millis(UNREGISTER_RETRY_DELAYS_MS[0] + 1)).await;
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_millis(UNREGISTER_RETRY_DELAYS_MS[1] + 1)).await;
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+            let event = rx.recv().await.expect("heartbeat cleanup should emit unpublish");
+            let StreamHubEvent::UnPublish { identifier } = event else {
+                panic!("expected unpublish event");
+            };
+            assert_eq!(
+                identifier,
+                StreamIdentifier::Rtmp {
+                    app_name: "room-bg".to_string(),
+                    stream_name: "media-bg".to_string(),
+                }
+            );
+            assert!(
+                !manager.active_publishers.contains_key("room-bg:media-bg"),
+                "background cleanup should eventually remove local state"
+            );
+            assert_eq!(registry.unregister_if_epoch_matches_call_count(), 3);
+        };
+
+        observe.await;
+        heartbeat.await.expect("heartbeat task should complete successfully");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_redis_unreachable_does_not_cleanup_active_publisher() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        registry
+            .try_register_publisher("room-redis", "media-redis", "test-node", "user1", "addr1")
+            .await
+            .unwrap();
+        let current = registry
+            .get_publisher("room-redis", "media-redis")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (manager, mut rx) = test_manager(registry.clone(), "test-node");
+        manager.active_publishers.insert(
+            "room-redis:media-redis".to_string(),
+            Arc::new(PublisherEntry::with_registration(
+                "user1".to_string(),
+                current.epoch,
+            )),
+        );
+
+        registry.set_fail_refresh_publisher_ttl(true);
+
+        for _ in 0..MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
+            manager.run_heartbeat_cycle().await;
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            manager.active_publishers.contains_key("room-redis:media-redis"),
+            "Redis connectivity failures must not clear active publishers"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "Redis connectivity failures must not emit unpublish events"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_wrapped_redis_timeout_counts_as_unreachable_cycle() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        registry
+            .try_register_publisher("room-timeout", "media-timeout", "test-node", "user1", "addr1")
+            .await
+            .unwrap();
+        let current = registry
+            .get_publisher("room-timeout", "media-timeout")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (manager, mut rx) = test_manager(registry.clone(), "test-node");
+        let entry = Arc::new(PublisherEntry::with_registration(
+            "user1".to_string(),
+            current.epoch,
+        ));
+        manager
+            .active_publishers
+            .insert("room-timeout:media-timeout".to_string(), Arc::clone(&entry));
+
+        let timeout_error = anyhow::anyhow!("Redis operation timed out after 5s");
+        assert!(
+            is_redis_unreachable_error(&timeout_error),
+            "wrapped Redis timeout errors should classify as registry-unreachable"
+        );
+
+        registry.set_fail_refresh_publisher_ttl_with_wrapped_timeout(true);
+        manager.run_heartbeat_cycle().await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            entry.redis_unreachable_cycles.load(Ordering::Acquire),
+            1,
+            "wrapped Redis timeouts should increment redis_unreachable_cycles"
+        );
+        assert_eq!(
+            entry.consecutive_heartbeat_failures.load(Ordering::Acquire),
+            0,
+            "wrapped Redis timeouts must not count as publisher-missing failures"
+        );
+        assert!(
+            manager.active_publishers.contains_key("room-timeout:media-timeout"),
+            "last-resort cleanup must not trigger before the redis-unreachable threshold"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "wrapped Redis timeouts must not emit unpublish before threshold"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_redis_outage_last_resort_cleanup_runs_in_background() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        registry
+            .try_register_publisher("room-outage", "media-outage", "test-node", "user1", "addr1")
+            .await
+            .unwrap();
+        let current = registry
+            .get_publisher("room-outage", "media-outage")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (manager, mut rx) = test_manager(registry.clone(), "test-node");
+        let entry = Arc::new(PublisherEntry::with_registration(
+            "user1".to_string(),
+            current.epoch,
+        ));
+        manager
+            .active_publishers
+            .insert("room-outage:media-outage".to_string(), Arc::clone(&entry));
+
+        registry.set_fail_refresh_publisher_ttl(true);
+        registry.set_fail_unregister_if_epoch_matches_times(2);
+
+        for _ in 1..MAX_CONSECUTIVE_REDIS_UNREACHABLE {
+            manager.run_heartbeat_cycle().await;
+            tokio::task::yield_now().await;
+        }
+
+        let heartbeat = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move {
+                manager.run_heartbeat_cycle().await;
+            }
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(HEARTBEAT_RETRY_BASE_DELAY_MS + 1)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis((HEARTBEAT_RETRY_BASE_DELAY_MS * 2) + 1)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            heartbeat.is_finished(),
+            "redis-outage last-resort cleanup should not block the heartbeat loop on unregister retry backoff"
+        );
+        heartbeat
+            .await
+            .expect("heartbeat task should complete successfully");
+
+        tokio::time::advance(Duration::from_millis(UNREGISTER_RETRY_DELAYS_MS[0] + 1)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(UNREGISTER_RETRY_DELAYS_MS[1] + 1)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let event = rx
+            .recv()
+            .await
+            .expect("background cleanup should eventually emit unpublish");
+        let StreamHubEvent::UnPublish { identifier } = event else {
+            panic!("expected unpublish event");
+        };
+        assert_eq!(
+            identifier,
+            StreamIdentifier::Rtmp {
+                app_name: "room-outage".to_string(),
+                stream_name: "media-outage".to_string(),
+            }
+        );
+        assert!(
+            !manager.active_publishers.contains_key("room-outage:media-outage"),
+            "background cleanup should eventually remove local state after redis outage threshold"
+        );
+        assert_eq!(registry.unregister_if_epoch_matches_call_count(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_persistent_non_io_registry_failures_still_trigger_cleanup() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        registry
+            .try_register_publisher("room-response", "media-response", "test-node", "user1", "addr1")
+            .await
+            .unwrap();
+        let current = registry
+            .get_publisher("room-response", "media-response")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (manager, mut rx) = test_manager(registry.clone(), "test-node");
+        let entry = Arc::new(PublisherEntry::with_registration(
+            "user1".to_string(),
+            current.epoch,
+        ));
+        manager
+            .active_publishers
+            .insert("room-response:media-response".to_string(), Arc::clone(&entry));
+
+        registry.set_fail_refresh_publisher_ttl_with_response_error(true);
+
+        for expected_failures in 1..MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
+            manager.run_heartbeat_cycle().await;
+            tokio::task::yield_now().await;
+
+            assert_eq!(
+                entry.consecutive_heartbeat_failures.load(Ordering::Acquire),
+                expected_failures,
+                "persistent non-I/O registry failures should count toward cleanup threshold"
+            );
+            assert_eq!(
+                entry.redis_unreachable_cycles.load(Ordering::Acquire),
+                0,
+                "persistent non-I/O registry failures must not increment redis_unreachable_cycles"
+            );
+            assert!(
+                manager.active_publishers.contains_key("room-response:media-response"),
+                "cleanup should wait until the heartbeat-failure threshold is reached"
+            );
+            assert!(
+                rx.try_recv().is_err(),
+                "cleanup must not emit unpublish before the threshold is reached"
+            );
+        }
+
+        manager.run_heartbeat_cycle().await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !manager.active_publishers.contains_key("room-response:media-response"),
+            "persistent non-I/O registry failures should eventually trigger cleanup"
+        );
+        let event = rx.recv().await.expect("cleanup should emit unpublish at threshold");
+        let StreamHubEvent::UnPublish { identifier } = event else {
+            panic!("expected unpublish event");
+        };
+        assert_eq!(
+            identifier,
+            StreamIdentifier::Rtmp {
+                app_name: "room-response".to_string(),
+                stream_name: "media-response".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_switching_between_failure_classes_resets_consecutive_counters() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        registry
+            .try_register_publisher("room-switch", "media-switch", "test-node", "user1", "addr1")
+            .await
+            .unwrap();
+        let current = registry
+            .get_publisher("room-switch", "media-switch")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (manager, mut rx) = test_manager(registry.clone(), "test-node");
+        let entry = Arc::new(PublisherEntry::with_registration(
+            "user1".to_string(),
+            current.epoch,
+        ));
+        manager
+            .active_publishers
+            .insert("room-switch:media-switch".to_string(), Arc::clone(&entry));
+
+        registry
+            .unregister_publisher("room-switch", "media-switch")
+            .await
+            .unwrap();
+        manager.run_heartbeat_cycle().await;
+        tokio::task::yield_now().await;
+        manager.run_heartbeat_cycle().await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            entry.consecutive_heartbeat_failures.load(Ordering::Acquire),
+            2,
+            "publisher-missing failures should count consecutively"
+        );
+
+        registry.set_fail_refresh_publisher_ttl(true);
+        manager.run_heartbeat_cycle().await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            entry.consecutive_heartbeat_failures.load(Ordering::Acquire),
+            0,
+            "redis-unreachable failure must reset publisher-missing streak"
+        );
+        assert_eq!(
+            entry.redis_unreachable_cycles.load(Ordering::Acquire),
+            1,
+            "redis-unreachable failure should start its own consecutive streak"
+        );
+
+        registry.set_fail_refresh_publisher_ttl(false);
+        manager.run_heartbeat_cycle().await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            entry.consecutive_heartbeat_failures.load(Ordering::Acquire),
+            1,
+            "publisher-missing streak should restart after a different failure class"
+        );
+        assert_eq!(
+            entry.redis_unreachable_cycles.load(Ordering::Acquire),
+            0,
+            "publisher-missing failure must reset redis-unreachable streak"
+        );
+        assert!(
+            manager.active_publishers.contains_key("room-switch:media-switch"),
+            "mixed failure classes must not trigger premature cleanup"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "mixed failure classes must not emit unpublish"
         );
     }
 
@@ -1415,7 +2570,7 @@ mod tests {
 
         manager.active_publishers.insert(
             "room1:media1".to_string(),
-            Arc::new(PublisherEntry::with_user_id("user1".to_string())),
+            Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
         );
 
         let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel(16);

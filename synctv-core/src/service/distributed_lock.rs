@@ -111,8 +111,11 @@ impl MigrationLock for DistributedLock {
 
 /// `PostgreSQL` advisory lock-based `MigrationLock`.
 ///
-/// Used as a fallback when the Redis lock fails. Uses `pg_try_advisory_lock`
-/// with a retry loop, mirroring the existing behaviour in `migrations.rs`.
+/// Used as a fallback when the Redis lock fails. This implementation performs
+/// a single non-blocking `pg_try_advisory_lock` attempt and reports
+/// contention via `Ok(None)`, matching the `MigrationLock` contract. Waiting
+/// and retry orchestration stays in the migration runner so all lock
+/// implementations share the same state machine.
 ///
 /// The advisory lock is session-scoped, so we must release it on the same
 /// connection that acquired it. The `lock_conn` field holds that connection.
@@ -136,42 +139,23 @@ impl PgAdvisoryMigrationLock {
 
 #[async_trait::async_trait]
 impl MigrationLock for PgAdvisoryMigrationLock {
-    async fn acquire(&self, _key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>> {
-        let max_wait = std::time::Duration::from_secs(ttl_secs);
-        let retry_interval = std::time::Duration::from_secs(5);
-        let start = tokio::time::Instant::now();
-
+    async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
         let mut conn = self.pool.acquire().await.map_err(|e| {
             anyhow::anyhow!("Failed to acquire DB connection for PG advisory lock: {e}")
         })?;
 
-        loop {
-            let acquired: (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock($1)")
-                .bind(PG_ADVISORY_LOCK_KEY)
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to attempt PostgreSQL advisory lock: {e}"))?;
+        let acquired: (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock($1)")
+            .bind(PG_ADVISORY_LOCK_KEY)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to attempt PostgreSQL advisory lock: {e}"))?;
 
-            if acquired.0 {
-                // Store the connection so release() can use the same session.
-                *self.lock_conn.lock().await = Some(conn);
-                return Ok(Some("pg_advisory".to_string()));
-            }
-
-            if start.elapsed() >= max_wait {
-                return Err(anyhow::anyhow!(
-                    "Timed out waiting for PostgreSQL advisory lock after {}s",
-                    max_wait.as_secs()
-                ));
-            }
-
-            tracing::info!(
-                "PostgreSQL advisory lock held by another connection, retrying in {}s (elapsed: {}s / {}s)...",
-                retry_interval.as_secs(),
-                start.elapsed().as_secs(),
-                max_wait.as_secs()
-            );
-            tokio::time::sleep(retry_interval).await;
+        if acquired.0 {
+            // Store the connection so release() can use the same session.
+            *self.lock_conn.lock().await = Some(conn);
+            Ok(Some("pg_advisory".to_string()))
+        } else {
+            Ok(None)
         }
     }
 
@@ -1487,6 +1471,39 @@ mod tests {
         assert!(
             result.is_ok(),
             "RedlockGuard::drop must not panic without a Tokio runtime"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn pg_advisory_migration_lock_acquire_returns_none_when_lock_is_held() {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let lock1 = PgAdvisoryMigrationLock::new(pool.clone());
+        let lock2 = PgAdvisoryMigrationLock::new(pool);
+
+        let first = MigrationLock::acquire(&lock1, "migration", 30)
+            .await
+            .expect("first advisory lock acquisition should succeed")
+            .expect("first advisory lock acquisition should own the lock");
+
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            MigrationLock::acquire(&lock2, "migration", 30),
+        )
+        .await
+        .expect("second acquire should not block waiting for the advisory lock")
+        .expect("second acquire should not error while the advisory lock is held");
+
+        assert!(
+            second.is_none(),
+            "held advisory lock must report contention via Ok(None), not wait or error"
+        );
+
+        assert!(
+            MigrationLock::release(&lock1, "migration", &first)
+                .await
+                .expect("first advisory lock should release cleanly"),
+            "first advisory lock release should report success"
         );
     }
 }

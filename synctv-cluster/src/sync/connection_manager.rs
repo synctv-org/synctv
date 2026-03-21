@@ -2,12 +2,18 @@ use dashmap::DashMap;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
+
+#[cfg(test)]
+type AsyncTestHook = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
+>;
 
 /// Disconnect signal for forcing connections to close
 #[derive(Debug, Clone)]
@@ -47,6 +53,12 @@ struct ConnectionInfoPersistent {
     message_count: u64,
     rtc_joined: bool,
     rtc_joined_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RoomTransition {
+    previous_room_id: Option<RoomId>,
+    room_id: RoomId,
 }
 
 fn system_time_to_unix_secs(now: SystemTime) -> u64 {
@@ -320,6 +332,17 @@ pub struct ConnectionManager {
     /// Without this, any retry enqueued before Redis is configured would fail
     /// silently because the channel would be closed.
     pending_retries_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<PendingRedisOp>>>>,
+
+    #[cfg(test)]
+    join_room_before_commit_hook: Option<AsyncTestHook>,
+    #[cfg(test)]
+    join_room_before_capacity_check_hook: Option<AsyncTestHook>,
+    #[cfg(test)]
+    register_after_lifecycle_lock_hook: Option<AsyncTestHook>,
+
+    /// Striped async mutexes that serialize lifecycle mutations for a single
+    /// connection ID across register/join_room/unregister operations.
+    connection_lifecycle_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// Maximum capacity of the pending retry queue for failed Redis counter operations.
@@ -333,6 +356,7 @@ const PENDING_RETRY_QUEUE_CAPACITY: usize = 10_000;
 /// are stored here for retry. This ensures kick/ban operations are not lost
 /// even under high load.
 const PENDING_DISCONNECT_QUEUE_CAPACITY: usize = 10_000;
+const CONNECTION_LIFECYCLE_LOCK_STRIPES: usize = 256;
 
 impl ConnectionManager {
     /// Create a new `ConnectionManager`.
@@ -381,6 +405,17 @@ impl ConnectionManager {
             pending_retries_handle: Arc::new(std::sync::Mutex::new(None)),
             pending_retries_tx,
             pending_retries_rx: Arc::new(tokio::sync::Mutex::new(Some(pending_retries_rx))),
+            #[cfg(test)]
+            join_room_before_commit_hook: None,
+            #[cfg(test)]
+            join_room_before_capacity_check_hook: None,
+            #[cfg(test)]
+            register_after_lifecycle_lock_hook: None,
+            connection_lifecycle_locks: Arc::new(
+                (0..CONNECTION_LIFECYCLE_LOCK_STRIPES)
+                    .map(|_| Arc::new(tokio::sync::Mutex::new(())))
+                    .collect(),
+            ),
         }
     }
 
@@ -404,6 +439,34 @@ impl ConnectionManager {
     #[cfg(test)]
     fn disconnect_retry_task_started(&self) -> bool {
         self.disconnect_retry_started.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    fn with_join_room_before_commit_hook(mut self, hook: AsyncTestHook) -> Self {
+        self.join_room_before_commit_hook = Some(hook);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_join_room_before_capacity_check_hook(mut self, hook: AsyncTestHook) -> Self {
+        self.join_room_before_capacity_check_hook = Some(hook);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_register_after_lifecycle_lock_hook(mut self, hook: AsyncTestHook) -> Self {
+        self.register_after_lifecycle_lock_hook = Some(hook);
+        self
+    }
+
+    fn connection_lifecycle_lock(
+        &self,
+        connection_id: &str,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        connection_id.hash(&mut hasher);
+        let index = (hasher.finish() as usize) % self.connection_lifecycle_locks.len();
+        Arc::clone(&self.connection_lifecycle_locks[index])
     }
 
     #[cfg(test)]
@@ -668,6 +731,116 @@ impl ConnectionManager {
                 "Failed to roll back distributed Redis counter; enqueueing retry"
             );
             self.enqueue_retry(PendingRedisOp::Decr(key));
+        }
+    }
+
+    async fn persist_registration_metadata_best_effort(
+        &self,
+        connection_id: &str,
+        user_id: &UserId,
+    ) {
+        let Some(conn_info) = self.get_connection(connection_id) else {
+            return;
+        };
+
+        let Some(mut conn) = self.redis_conn_snapshot().await else {
+            return;
+        };
+
+        let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
+        let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id.as_str());
+
+        let persistent = ConnectionInfoPersistent::from(&conn_info);
+        match serde_json::to_string(&persistent) {
+            Ok(json) => {
+                let result: Result<(), _> = redis::cmd("SET")
+                    .arg(&conn_key)
+                    .arg(&json)
+                    .arg("EX")
+                    .arg(CONNECTION_METADATA_TTL_SECONDS)
+                    .query_async(&mut conn)
+                    .await;
+                if let Err(e) = result {
+                    warn!("Failed to persist connection metadata to Redis: {e}");
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize connection metadata for Redis: {e}");
+            }
+        }
+
+        if let Err(e) = conn.sadd::<_, _, ()>(&user_index_key, connection_id).await {
+            warn!("Failed to add connection to user index: {e}");
+        }
+        let _: Result<(), _> = conn
+            .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
+            .await;
+    }
+
+    async fn persist_room_membership_metadata_best_effort(
+        &self,
+        connection_id: &str,
+        transition: &RoomTransition,
+    ) {
+        let Some(conn_info) = self.get_connection(connection_id) else {
+            return;
+        };
+
+        if conn_info.room_id.as_ref() != Some(&transition.room_id) {
+            return;
+        }
+
+        let Some(mut conn) = self.redis_conn_snapshot().await else {
+            return;
+        };
+
+        let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
+        let room_index_key = format!(
+            "{}conn_mgr:room:{}",
+            self.redis_key_prefix,
+            transition.room_id.as_str()
+        );
+        let previous_room_index_key = transition.previous_room_id.as_ref().map(|room_id| {
+            format!("{}conn_mgr:room:{}", self.redis_key_prefix, room_id.as_str())
+        });
+
+        let persistent = ConnectionInfoPersistent::from(&conn_info);
+        match serde_json::to_string(&persistent) {
+            Ok(json) => {
+                let result: Result<(), _> = redis::cmd("SET")
+                    .arg(&conn_key)
+                    .arg(&json)
+                    .arg("EX")
+                    .arg(CONNECTION_METADATA_TTL_SECONDS)
+                    .query_async(&mut conn)
+                    .await;
+                if let Err(e) = result {
+                    warn!("Failed to update connection metadata in Redis: {e}");
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize updated connection metadata for Redis: {e}");
+            }
+        }
+
+        if let Err(e) = conn.sadd::<_, _, ()>(&room_index_key, connection_id).await {
+            warn!("Failed to add connection to room index: {e}");
+        }
+        if let Some(previous_room_index_key) = previous_room_index_key.as_ref() {
+            if let Err(e) = conn
+                .srem::<_, _, ()>(previous_room_index_key, connection_id)
+                .await
+            {
+                warn!("Failed to remove connection from previous room index: {e}");
+            }
+        }
+        let _: Result<(), _> = conn
+            .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
+            .await;
+        if let Some(previous_room_index_key) = previous_room_index_key.as_ref() {
+            let _: Result<(), _> = conn
+                .expire(previous_room_index_key, CONNECTION_METADATA_TTL_SECONDS)
+                .await;
         }
     }
 
@@ -1181,6 +1354,12 @@ impl ConnectionManager {
     /// oversubscribe the same user concurrently.
     pub async fn register(&self, connection_id: String, user_id: UserId) -> Result<(), String> {
         let claim = self.try_claim_connection_id(&connection_id)?;
+        let lifecycle_lock = self.connection_lifecycle_lock(&connection_id);
+        let lifecycle_guard = lifecycle_lock.lock().await;
+        #[cfg(test)]
+        if let Some(hook) = &self.register_after_lifecycle_lock_hook {
+            hook().await;
+        }
 
         // Atomically reserve a slot in the total connection count.
         // fetch_add returns the previous value; if it was already at the limit,
@@ -1298,46 +1477,11 @@ impl ConnectionManager {
         let conn_info = ConnectionInfo::new(connection_id.clone(), user_id.clone());
         self.connections
             .insert(connection_id.clone(), conn_info.clone());
+        drop(lifecycle_guard);
 
         // Persist connection metadata to Redis (best-effort)
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
-            let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
-            let user_index_key = format!(
-                "{}conn_mgr:user:{}",
-                self.redis_key_prefix,
-                user_id.as_str()
-            );
-
-            let persistent = ConnectionInfoPersistent::from(&conn_info);
-            let connection_id_clone = connection_id.clone();
-            match serde_json::to_string(&persistent) {
-                Ok(json) => {
-                    let result: Result<(), _> = redis::cmd("SET")
-                        .arg(&conn_key)
-                        .arg(&json)
-                        .arg("EX")
-                        .arg(CONNECTION_METADATA_TTL_SECONDS)
-                        .query_async(&mut conn)
-                        .await;
-                    if let Err(e) = result {
-                        warn!("Failed to persist connection metadata to Redis: {e}");
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to serialize connection metadata for Redis: {e}");
-                }
-            }
-
-            if let Err(e) = conn
-                .sadd::<_, _, ()>(&user_index_key, &connection_id_clone)
-                .await
-            {
-                warn!("Failed to add connection to user index: {e}");
-            }
-            let _: Result<(), _> = conn
-                .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
-                .await;
-        }
+        self.persist_registration_metadata_best_effort(&connection_id, &user_id)
+            .await;
 
         // Update metrics
         self.total_connections_ever.fetch_add(1, Ordering::Relaxed);
@@ -1369,19 +1513,21 @@ impl ConnectionManager {
     /// committed after the target room passes all capacity checks. This avoids
     /// dropping the existing room membership when the new room rejects the move.
     pub async fn join_room(&self, connection_id: &str, room_id: RoomId) -> Result<(), String> {
-        let old_room_id: Option<RoomId> = {
-            let old = self
-                .connections
-                .get(connection_id)
-                .and_then(|c| c.room_id.clone());
+        #[cfg(test)]
+        if let Some(hook) = &self.join_room_before_commit_hook {
+            hook().await;
+        }
 
-            if let Some(ref old_room) = old {
-                if old_room == &room_id {
-                    return Ok(());
-                }
+        let old_room_id: Option<RoomId> = self
+            .connections
+            .get(connection_id)
+            .and_then(|c| c.room_id.clone());
+
+        if let Some(ref old_room) = old_room_id {
+            if old_room == &room_id {
+                return Ok(());
             }
-            old
-        };
+        }
 
         // Check distributed per-room capacity first when Redis is enabled,
         // then commit the local room index update. In local mode, the room
@@ -1392,6 +1538,10 @@ impl ConnectionManager {
         // In local mode we enforce the room limit inside the commit step below
         // under the room shard lock, which closes the TOCTOU race for
         // concurrent same-room joins.
+        #[cfg(test)]
+        if let Some(hook) = &self.join_room_before_capacity_check_hook {
+            hook().await;
+        }
         let redis_room_incremented = if self.redis_enabled() {
             let redis_key = format!(
                 "{}connections:room:{}",
@@ -1422,13 +1572,64 @@ impl ConnectionManager {
             false
         };
 
-        // Step 2: Update connection info first. If the connection disappeared,
-        // roll back the distributed increment and leave prior room membership intact.
-        let conn_info_updated = if let Some(mut conn) = self.connections.get_mut(connection_id) {
+        let lifecycle_lock = self.connection_lifecycle_lock(connection_id);
+        let lifecycle_guard = lifecycle_lock.lock().await;
+        let transition = if let Some(mut conn) = self.connections.get_mut(connection_id) {
+            let current_room_id = conn.room_id.clone();
+            if current_room_id.as_ref() == Some(&room_id) {
+                drop(lifecycle_guard);
+                if redis_room_incremented {
+                    let redis_key = format!(
+                        "{}connections:room:{}",
+                        self.redis_key_prefix,
+                        room_id.as_str()
+                    );
+                    self.rollback_distributed_counter(redis_key).await;
+                }
+                return Ok(());
+            }
+
+            // Step 3: Commit the room move locally after all checks have passed.
+            // Without Redis, enforce the room limit under the same shard lock as
+            // the insert so concurrent local joins cannot oversubscribe the room.
+            {
+                let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
+                if !self.redis_enabled() && room_entry.len() >= self.limits.max_per_room {
+                    drop(lifecycle_guard);
+                    if redis_room_incremented {
+                        let redis_key = format!(
+                            "{}connections:room:{}",
+                            self.redis_key_prefix,
+                            room_id.as_str()
+                        );
+                        self.rollback_distributed_counter(redis_key).await;
+                    }
+                    return Err(format!(
+                        "Room at capacity ({} connections)",
+                        self.limits.max_per_room
+                    ));
+                }
+                room_entry.push(connection_id.to_string());
+            }
+
+            if let Some(ref old_room) = current_room_id {
+                if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
+                    old_room_conns.retain(|id| id != connection_id);
+                    if old_room_conns.is_empty() {
+                        drop(old_room_conns);
+                        self.room_connections.remove(old_room);
+                    }
+                }
+            }
+
             conn.room_id = Some(room_id.clone());
             conn.last_activity = Instant::now();
-            Some(conn.clone())
+            Some(RoomTransition {
+                previous_room_id: current_room_id,
+                room_id: room_id.clone(),
+            })
         } else {
+            drop(lifecycle_guard);
             if redis_room_incremented {
                 let redis_key = format!(
                     "{}connections:room:{}",
@@ -1439,46 +1640,15 @@ impl ConnectionManager {
             }
             return Err("Connection not found".to_string());
         };
-
-        // Step 3: Commit the room move locally after all checks have passed.
-        // Without Redis, enforce the room limit under the same shard lock as
-        // the insert so concurrent local joins cannot oversubscribe the room.
-        {
-            let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
-            if !self.redis_enabled() && room_entry.len() >= self.limits.max_per_room {
-                if let Some(mut conn) = self.connections.get_mut(connection_id) {
-                    conn.room_id = old_room_id.clone();
-                }
-                if redis_room_incremented {
-                    let redis_key = format!(
-                        "{}connections:room:{}",
-                        self.redis_key_prefix,
-                        room_id.as_str()
-                    );
-                    self.rollback_distributed_counter(redis_key).await;
-                }
-                return Err(format!(
-                    "Room at capacity ({} connections)",
-                    self.limits.max_per_room
-                ));
-            }
-            room_entry.push(connection_id.to_string());
-        }
-
-        if let Some(ref old_room) = old_room_id {
-            if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
-                old_room_conns.retain(|id| id != connection_id);
-                if old_room_conns.is_empty() {
-                    drop(old_room_conns);
-                    self.room_connections.remove(old_room);
-                }
-            }
-        }
+        drop(lifecycle_guard);
 
         // Step 4: Decrement the old room's distributed counter only after the
         // move succeeds. If it fails, enqueue a retry so Redis eventually matches
         // the in-memory truth.
-        if let Some(old_room) = &old_room_id {
+        if let Some(old_room) = transition
+            .as_ref()
+            .and_then(|transition| transition.previous_room_id.as_ref())
+        {
             let old_key = format!(
                 "{}connections:room:{}",
                 self.redis_key_prefix,
@@ -1488,65 +1658,9 @@ impl ConnectionManager {
         }
 
         // Update Redis metadata with new room_id (best-effort)
-        if let Some(info) = conn_info_updated {
-            if let Some(mut conn) = self.redis_conn_snapshot().await {
-                let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
-                let room_index_key = format!(
-                    "{}conn_mgr:room:{}",
-                    self.redis_key_prefix,
-                    room_id.as_str()
-                );
-                let old_room_index_key = old_room_id.as_ref().map(|old_room| {
-                    format!(
-                        "{}conn_mgr:room:{}",
-                        self.redis_key_prefix,
-                        old_room.as_str()
-                    )
-                });
-
-                let persistent = ConnectionInfoPersistent::from(&info);
-                let connection_id_clone = connection_id.to_string();
-                match serde_json::to_string(&persistent) {
-                    Ok(json) => {
-                        let result: Result<(), _> = redis::cmd("SET")
-                            .arg(&conn_key)
-                            .arg(&json)
-                            .arg("EX")
-                            .arg(CONNECTION_METADATA_TTL_SECONDS)
-                            .query_async(&mut conn)
-                            .await;
-                        if let Err(e) = result {
-                            warn!("Failed to update connection metadata in Redis: {e}");
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to serialize updated connection metadata for Redis: {e}");
-                    }
-                }
-
-                if let Err(e) = conn
-                    .sadd::<_, _, ()>(&room_index_key, &connection_id_clone)
-                    .await
-                {
-                    warn!("Failed to add connection to room index: {e}");
-                }
-                if let Some(old_room_index_key) = old_room_index_key.as_ref() {
-                    if let Err(e) = conn
-                        .srem::<_, _, ()>(old_room_index_key, &connection_id_clone)
-                        .await
-                    {
-                        warn!("Failed to remove connection from previous room index: {e}");
-                    }
-                }
-                let _: Result<(), _> = conn
-                    .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
-                    .await;
-                if let Some(old_room_index_key) = old_room_index_key.as_ref() {
-                    let _: Result<(), _> = conn
-                        .expire(old_room_index_key, CONNECTION_METADATA_TTL_SECONDS)
-                        .await;
-                }
-            }
+        if let Some(transition) = transition.as_ref() {
+            self.persist_room_membership_metadata_best_effort(connection_id, transition)
+                .await;
         }
 
         synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS.set(self.room_connections.len() as i64);
@@ -1573,7 +1687,9 @@ impl ConnectionManager {
     ///
     /// Decrements both local and distributed (Redis) connection counters.
     pub async fn unregister(&self, connection_id: &str) {
-        if let Some((_, conn_info)) = self.connections.remove(connection_id) {
+        let lifecycle_lock = self.connection_lifecycle_lock(connection_id);
+        let lifecycle_guard = lifecycle_lock.lock().await;
+        let removed = if let Some((_, conn_info)) = self.connections.remove(connection_id) {
             // Decrement the atomic total connection count
             self.total_connections.fetch_sub(1, Ordering::AcqRel);
             let mut user_went_offline = false;
@@ -1704,7 +1820,14 @@ impl ConnectionManager {
                     });
                 }
             }
+            self.release_connection_id_claim(connection_id);
+            Some((conn_info, user_went_offline))
+        } else {
+            None
+        };
+        drop(lifecycle_guard);
 
+        if let Some((conn_info, user_went_offline)) = removed {
             synctv_core::metrics::ACTIVE_CONNECTIONS.dec();
             if user_went_offline {
                 synctv_core::metrics::http::USERS_ONLINE.dec();
@@ -1721,8 +1844,6 @@ impl ConnectionManager {
                 message_count = conn_info.message_count,
                 "Connection unregistered"
             );
-
-            self.release_connection_id_claim(connection_id);
         }
     }
 
@@ -3345,6 +3466,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_duplicate_register_fails_fast_while_first_attempt_holds_lifecycle_lock() {
+        let first_entered = Arc::new(tokio::sync::Notify::new());
+        let release_first = Arc::new(tokio::sync::Notify::new());
+        let manager = Arc::new(ConnectionManager::default().with_register_after_lifecycle_lock_hook(
+            {
+                let first_entered = Arc::clone(&first_entered);
+                let release_first = Arc::clone(&release_first);
+                Arc::new(move || {
+                    let first_entered = Arc::clone(&first_entered);
+                    let release_first = Arc::clone(&release_first);
+                    Box::pin(async move {
+                        first_entered.notify_waiters();
+                        release_first.notified().await;
+                    })
+                })
+            },
+        ));
+        let user_id = UserId::from_string("dup-fast-user".to_string());
+
+        let first = {
+            let manager = Arc::clone(&manager);
+            let user_id = user_id.clone();
+            tokio::spawn(async move { manager.register("dup-fast".to_string(), user_id).await })
+        };
+
+        first_entered.notified().await;
+
+        let duplicate = tokio::time::timeout(
+            Duration::from_millis(100),
+            manager.register("dup-fast".to_string(), user_id.clone()),
+        )
+        .await
+        .expect("duplicate registration must fail fast instead of waiting on lifecycle lock");
+        let duplicate_err = duplicate.expect_err("duplicate registration must be rejected");
+        assert!(
+            duplicate_err.contains("already registered"),
+            "duplicate registration should surface the existing claim error: {duplicate_err}"
+        );
+
+        release_first.notify_waiters();
+        first
+            .await
+            .expect("first registration join")
+            .expect("first registration should complete");
+        assert_eq!(manager.connection_count(), 1);
+        assert_eq!(manager.user_connection_count(&user_id), 1);
+    }
+
+    #[tokio::test]
     async fn test_connection_id_claim_rejects_concurrent_duplicate_attempts() {
         let manager = Arc::new(ConnectionManager::default());
         let claimed = Arc::new(tokio::sync::Notify::new());
@@ -3763,6 +3933,157 @@ mod tests {
             "only one concurrent room join should succeed when max_per_room=1"
         );
         assert_eq!(manager.room_connection_count(&room_id), 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_room_switch_for_same_connection_keeps_single_room_membership() {
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let manager = Arc::new(
+            ConnectionManager::default().with_join_room_before_commit_hook({
+                let barrier = Arc::clone(&barrier);
+                Arc::new(move || {
+                    let barrier = Arc::clone(&barrier);
+                    Box::pin(async move {
+                        barrier.wait().await;
+                    })
+                })
+            }),
+        );
+        let user_id = UserId::from_string("user-room-switch".to_string());
+        let room_a = RoomId::from_string("room-a".to_string());
+        let room_b = RoomId::from_string("room-b".to_string());
+
+        manager
+            .register("conn-switch".to_string(), user_id)
+            .await
+            .expect("registration");
+
+        let join_a = {
+            let manager = Arc::clone(&manager);
+            let room_a = room_a.clone();
+            tokio::spawn(async move { manager.join_room("conn-switch", room_a).await })
+        };
+        let join_b = {
+            let manager = Arc::clone(&manager);
+            let room_b = room_b.clone();
+            tokio::spawn(async move { manager.join_room("conn-switch", room_b).await })
+        };
+
+        barrier.wait().await;
+
+        join_a.await.expect("join_a task").expect("join_a");
+        join_b.await.expect("join_b task").expect("join_b");
+
+        let conn = manager
+            .get_connection("conn-switch")
+            .expect("connection should exist after room switch race");
+        let final_room = conn
+            .room_id
+            .clone()
+            .expect("connection should belong to one room");
+
+        let room_a_connections = manager.get_room_connections(&room_a);
+        let room_b_connections = manager.get_room_connections(&room_b);
+        let rooms_with_connection = usize::from(
+            room_a_connections
+                .iter()
+                .any(|info| info.connection_id == "conn-switch"),
+        ) + usize::from(
+            room_b_connections
+                .iter()
+                .any(|info| info.connection_id == "conn-switch"),
+        );
+
+        assert_eq!(
+            rooms_with_connection, 1,
+            "same connection_id must not remain indexed in multiple rooms after concurrent switches"
+        );
+
+        if final_room == room_a {
+            assert_eq!(
+                room_a_connections.len(),
+                1,
+                "final room must retain the connection exactly once"
+            );
+            assert!(
+                room_b_connections.is_empty(),
+                "non-final room must not retain a stale connection index"
+            );
+        } else {
+            assert_eq!(
+                final_room, room_b,
+                "final room must be one of the two concurrently requested rooms"
+            );
+            assert_eq!(
+                room_b_connections.len(),
+                1,
+                "final room must retain the connection exactly once"
+            );
+            assert!(
+                room_a_connections.is_empty(),
+                "non-final room must not retain a stale connection index"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unregister_is_not_blocked_by_join_room_waiting_on_capacity_check() {
+        let join_entered = Arc::new(tokio::sync::Notify::new());
+        let release_join = Arc::new(tokio::sync::Notify::new());
+        let manager = Arc::new(
+            ConnectionManager::default().with_join_room_before_capacity_check_hook({
+                let join_entered = Arc::clone(&join_entered);
+                let release_join = Arc::clone(&release_join);
+                Arc::new(move || {
+                    let join_entered = Arc::clone(&join_entered);
+                    let release_join = Arc::clone(&release_join);
+                    Box::pin(async move {
+                        join_entered.notify_waiters();
+                        release_join.notified().await;
+                    })
+                })
+            }),
+        );
+        let user_id = UserId::from_string("unregister-race-user".to_string());
+        let room_id = RoomId::from_string("unregister-race-room".to_string());
+
+        manager
+            .register("conn-unregister-race".to_string(), user_id.clone())
+            .await
+            .expect("registration should succeed");
+
+        let join_task = {
+            let manager = Arc::clone(&manager);
+            let room_id = room_id.clone();
+            tokio::spawn(async move { manager.join_room("conn-unregister-race", room_id).await })
+        };
+
+        join_entered.notified().await;
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            manager.unregister("conn-unregister-race"),
+        )
+        .await
+        .expect("unregister must not wait behind join_room capacity checks");
+
+        assert!(
+            manager.get_connection("conn-unregister-race").is_none(),
+            "unregister should remove the connection immediately"
+        );
+        assert_eq!(
+            manager.user_connection_count(&user_id),
+            0,
+            "unregister should free the per-user slot immediately"
+        );
+
+        release_join.notify_waiters();
+        let join_err = join_task
+            .await
+            .expect("join task join")
+            .expect_err("join_room should observe that the connection was unregistered");
+        assert_eq!(join_err, "Connection not found");
+        assert_eq!(manager.room_connection_count(&room_id), 0);
     }
 
     #[tokio::test]

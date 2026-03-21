@@ -809,9 +809,11 @@ impl ConnectionManager {
     /// Cancel the auto-spawned background tasks.
     ///
     /// Should be called during graceful shutdown to stop the background tasks.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> ShutdownReport {
         self.ttl_refresh_cancel.cancel();
         self.disconnect_retry_cancel.cancel();
+
+        let mut report = ShutdownReport::new();
 
         let ttl_refresh_handle = self
             .ttl_refresh_handle
@@ -819,7 +821,9 @@ impl ConnectionManager {
             .expect("ttl refresh handle mutex poisoned")
             .take();
         if let Some(handle) = ttl_refresh_handle {
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+            report.ttl_refresh = Some(
+                Self::await_shutdown_task("ttl refresh", Duration::from_secs(5), handle).await,
+            );
         }
 
         let pending_retries_handle = self
@@ -828,7 +832,10 @@ impl ConnectionManager {
             .expect("pending retries handle mutex poisoned")
             .take();
         if let Some(handle) = pending_retries_handle {
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+            report.pending_retries = Some(
+                Self::await_shutdown_task("pending Redis retries", Duration::from_secs(5), handle)
+                    .await,
+            );
         }
 
         let disconnect_retry_handle = self
@@ -837,8 +844,21 @@ impl ConnectionManager {
             .expect("disconnect retry handle mutex poisoned")
             .take();
         if let Some(handle) = disconnect_retry_handle {
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+            report.disconnect_retry = Some(
+                Self::await_shutdown_task(
+                    "disconnect retry",
+                    Duration::from_secs(5),
+                    handle,
+                )
+                .await,
+            );
         }
+
+        if !report.all_clean() {
+            warn!(?report, "ConnectionManager shutdown observed background task failures");
+        }
+
+        report
     }
 
     pub(crate) fn abort_background_tasks(&self) {
@@ -870,6 +890,40 @@ impl ConnectionManager {
             .take()
         {
             handle.abort();
+        }
+    }
+
+    async fn await_shutdown_task(
+        task_name: &'static str,
+        timeout_budget: Duration,
+        handle: tokio::task::JoinHandle<()>,
+    ) -> ShutdownTaskOutcome {
+        match tokio::time::timeout(timeout_budget, handle).await {
+            Ok(Ok(())) => {
+                debug!(task = task_name, "ConnectionManager background task stopped");
+                ShutdownTaskOutcome::Completed
+            }
+            Ok(Err(error)) if error.is_cancelled() => {
+                debug!(task = task_name, "ConnectionManager background task cancelled");
+                ShutdownTaskOutcome::Cancelled
+            }
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                warn!(
+                    task = task_name,
+                    error = %message,
+                    "ConnectionManager background task ended with join error during shutdown"
+                );
+                ShutdownTaskOutcome::Failed(message)
+            }
+            Err(_) => {
+                warn!(
+                    task = task_name,
+                    timeout_secs = timeout_budget.as_secs(),
+                    "ConnectionManager background task did not stop before shutdown timeout"
+                );
+                ShutdownTaskOutcome::TimedOut
+            }
         }
     }
 
@@ -3161,6 +3215,48 @@ pub struct DisconnectSignalMetrics {
     pub retried_count: u64,
 }
 
+/// Outcome of awaiting a single background task during shutdown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShutdownTaskOutcome {
+    Completed,
+    Cancelled,
+    TimedOut,
+    Failed(String),
+}
+
+/// Aggregated outcomes for all `ConnectionManager` background tasks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShutdownReport {
+    pub ttl_refresh: Option<ShutdownTaskOutcome>,
+    pub pending_retries: Option<ShutdownTaskOutcome>,
+    pub disconnect_retry: Option<ShutdownTaskOutcome>,
+}
+
+impl ShutdownReport {
+    const fn new() -> Self {
+        Self {
+            ttl_refresh: None,
+            pending_retries: None,
+            disconnect_retry: None,
+        }
+    }
+
+    const fn all_clean(&self) -> bool {
+        matches!(
+            (
+                self.ttl_refresh.as_ref(),
+                self.pending_retries.as_ref(),
+                self.disconnect_retry.as_ref(),
+            ),
+            (
+                None | Some(ShutdownTaskOutcome::Completed) | Some(ShutdownTaskOutcome::Cancelled),
+                None | Some(ShutdownTaskOutcome::Completed) | Some(ShutdownTaskOutcome::Cancelled),
+                None | Some(ShutdownTaskOutcome::Completed) | Some(ShutdownTaskOutcome::Cancelled),
+            )
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3188,6 +3284,21 @@ mod tests {
             self.pending_retries_tx
                 .try_send(op)
                 .expect("test should enqueue pending retry");
+        }
+
+        fn test_set_disconnect_retry_handle(&self, handle: tokio::task::JoinHandle<()>) {
+            *self
+                .disconnect_retry_handle
+                .lock()
+                .expect("disconnect retry handle mutex poisoned") = Some(handle);
+            self.disconnect_retry_started.store(true, Ordering::Release);
+        }
+
+        fn test_set_ttl_refresh_handle(&self, handle: tokio::task::JoinHandle<()>) {
+            *self
+                .ttl_refresh_handle
+                .lock()
+                .expect("ttl refresh handle mutex poisoned") = Some(handle);
         }
     }
 
@@ -4620,7 +4731,12 @@ mod tests {
         // Give the spawned task a moment to initialize
         tokio::time::sleep(Duration::from_millis(10)).await;
         // Shutdown should cancel the retry task cleanly
-        manager.shutdown().await;
+        let report = manager.shutdown().await;
+        assert_eq!(
+            report.disconnect_retry,
+            Some(ShutdownTaskOutcome::Completed),
+            "shutdown should await the disconnect retry task to completion"
+        );
     }
 
     #[tokio::test]
@@ -4646,7 +4762,12 @@ mod tests {
             "duplicate start() calls must be a no-op"
         );
 
-        manager.shutdown().await;
+        let report = manager.shutdown().await;
+        assert_eq!(
+            report.disconnect_retry,
+            Some(ShutdownTaskOutcome::Completed),
+            "shutdown should report a clean disconnect retry task exit"
+        );
     }
 
     #[tokio::test]
@@ -4656,7 +4777,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        manager.shutdown().await;
+        let report = manager.shutdown().await;
 
         assert!(
             manager
@@ -4665,6 +4786,49 @@ mod tests {
                 .expect("disconnect retry handle mutex poisoned")
                 .is_none(),
             "shutdown must drain the disconnect retry task handle"
+        );
+        assert_eq!(
+            report.disconnect_retry,
+            Some(ShutdownTaskOutcome::Completed),
+            "shutdown should return the disconnect retry task outcome"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_reports_background_task_panic() {
+        let manager = ConnectionManager::new(ConnectionLimits::default());
+        manager.test_set_disconnect_retry_handle(tokio::spawn(async {
+            panic!("disconnect retry panic");
+        }));
+
+        let report = manager.shutdown().await;
+
+        match report.disconnect_retry {
+            Some(ShutdownTaskOutcome::Failed(message)) => {
+                assert!(
+                    message.contains("panic"),
+                    "panic outcome should surface join error details: {message}"
+                );
+            }
+            other => panic!("expected panic failure outcome, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_reports_cancelled_background_task() {
+        let manager = ConnectionManager::new(ConnectionLimits::default());
+        let handle = tokio::spawn(async {
+            futures::future::pending::<()>().await;
+        });
+        handle.abort();
+        manager.test_set_ttl_refresh_handle(handle);
+
+        let report = manager.shutdown().await;
+
+        assert_eq!(
+            report.ttl_refresh,
+            Some(ShutdownTaskOutcome::Cancelled),
+            "aborted background tasks must not be silently swallowed during shutdown"
         );
     }
 

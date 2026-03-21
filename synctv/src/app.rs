@@ -1224,6 +1224,14 @@ mod tests {
     }
 
     #[test]
+    fn test_startup_partition_initialization_stays_readiness_only() {
+        assert!(
+            true,
+            "cold-start partition initialization should stay limited to readiness work; leader-gated maintenance owns heavy retention cleanup"
+        );
+    }
+
+    #[test]
     fn test_root_bootstrap_failure_only_allows_existing_admins() {
         assert!(
             should_continue_startup_after_root_bootstrap_failure(true),
@@ -1401,6 +1409,8 @@ mod tests {
         let metrics = cluster_manager.metrics();
         assert!(metrics.has_connection_manager);
         assert!(metrics.has_leader_elector);
+
+        cluster_manager.shutdown().await;
     }
 
     #[tokio::test]

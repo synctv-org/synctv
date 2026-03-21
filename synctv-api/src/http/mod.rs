@@ -28,6 +28,7 @@ pub mod providers;
 use axum::{
     http::{HeaderName, HeaderValue, Method},
     middleware as axum_middleware,
+    response::IntoResponse,
     routing::{get, post},
     Router,
 };
@@ -43,7 +44,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
-use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 pub use error::{AppError, AppResult};
@@ -857,7 +857,6 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
                 axum::http::header::ACCEPT,
                 x_room_id,
             ])
-            .allow_credentials(true)
             .vary([
                 axum::http::header::ORIGIN,
                 axum::http::header::ACCESS_CONTROL_REQUEST_METHOD,
@@ -954,15 +953,22 @@ fn apply_global_layers_with_timeout(
     let trusted_proxies = state.config.server.trusted_proxies.clone();
     let hsts_value = middleware::hsts_header(63_072_000, true, false);
     let timeout_router = apply_shared_http_layers(
-        timeout_router,
+        timeout_router.layer(axum_middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| async move {
+                match tokio::time::timeout(request_timeout, next.run(request)).await {
+                    Ok(response) => response,
+                    Err(_) => AppError::new(
+                        axum::http::StatusCode::REQUEST_TIMEOUT,
+                        "Request timed out",
+                    )
+                    .into_response(),
+                }
+            },
+        )),
         cors.clone(),
         trusted_proxies.clone(),
         hsts_value.clone(),
-    )
-    .layer(TimeoutLayer::with_status_code(
-        axum::http::StatusCode::REQUEST_TIMEOUT,
-        request_timeout,
-    ));
+    );
 
     let no_timeout_router = apply_shared_http_layers(
         no_timeout_router,
@@ -987,7 +993,8 @@ fn apply_global_layers_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_global_layers_with_timeout, build_app_state, register_all_routes_for_test,
+        apply_global_layers_with_timeout, build_app_state, build_cors_layer,
+        register_all_routes_for_test,
         start_proxy_cache_lifecycle, RouterConfig, HTTP_REQUEST_TIMEOUT,
     };
     use axum::body::Body;
@@ -1578,6 +1585,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/timeout")
+                    .header("x-request-id", "timeout-test-123")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -1588,6 +1596,26 @@ mod tests {
             StatusCode::REQUEST_TIMEOUT,
             "ordinary HTTP routes must still respect the global timeout budget"
         );
+        assert_eq!(
+            timeout_response
+                .headers()
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("timeout-test-123"),
+            "timed out responses must still propagate request IDs"
+        );
+        assert_eq!(
+            timeout_response.headers().get("X-Frame-Options").unwrap(),
+            "DENY",
+            "timed out responses must still include security headers"
+        );
+        let timeout_body =
+            axum::body::to_bytes(timeout_response.into_body(), usize::MAX).await.unwrap();
+        let timeout_json: serde_json::Value =
+            serde_json::from_slice(&timeout_body).expect("timeout response should be JSON");
+        assert_eq!(timeout_json["status"], 408);
+        assert_eq!(timeout_json["error"], "Request timed out");
+        assert_eq!(timeout_json["request_id"], "timeout-test-123");
 
         let streaming_response = app
             .oneshot(
@@ -1705,6 +1733,40 @@ mod tests {
             live_proxy_preflight.status(),
             StatusCode::METHOD_NOT_ALLOWED,
             "live_proxy proxy routes must continue handling browser preflight through the generic proxy route"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cors_preflight_does_not_advertise_credentials() {
+        let mut config = synctv_core::Config::default();
+        config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(build_cors_layer(&config));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/test")
+                    .header(axum::http::header::ORIGIN, "https://example.com")
+                    .header(
+                        axum::http::header::ACCESS_CONTROL_REQUEST_METHOD,
+                        "GET",
+                    )
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+                .is_none(),
+            "native-client-oriented CORS policy should not advertise credentialed browser requests by default"
         );
     }
 

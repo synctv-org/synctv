@@ -1,5 +1,4 @@
 -- Create playlists table (supporting tree structure and dynamic folders)
--- Design reference: /Volumes/workspace/rust/design/04-数据库设计.md §2.4
 
 CREATE TABLE playlists (
     id CHAR(12) PRIMARY KEY,
@@ -235,4 +234,3 @@ CREATE TRIGGER trigger_validate_parent_same_room
 
 COMMENT ON TRIGGER trigger_validate_parent_same_room ON playlists IS
 'Prevent cross-room parent_id references. Ensures parent playlist belongs to the same room as child.';
-

@@ -271,10 +271,6 @@ impl OAuth2Service for OAuth2GrpcService {
                 map_api_error(e)
             })?;
 
-        if !result.success {
-            return Err(Status::not_found("No binding found for this provider"));
-        }
-
         info!(
             "User {} unlinked OAuth2 provider: {}",
             user_id.as_str(),
@@ -350,5 +346,15 @@ mod tests {
             .expect_err("overlong provider_user_id must be rejected");
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("provider_user_id"));
+    }
+
+    #[test]
+    fn test_unlink_missing_binding_maps_to_grpc_not_found() {
+        let status = map_api_error(crate::impls::ApiError::NotFound(
+            "No binding found for this provider".to_string(),
+        ));
+
+        assert_eq!(status.code(), Code::NotFound);
+        assert_eq!(status.message(), "No binding found for this provider");
     }
 }

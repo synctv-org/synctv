@@ -51,7 +51,7 @@ async fn run_migrations_with_mode(
         lock,
         key_prefix,
         cluster_mode,
-        !cluster_mode,
+        true,
         &|pool| Box::pin(run_migrate(pool)),
     )
     .await
@@ -196,14 +196,15 @@ async fn run_migrations_with_lock(
             wait_for_lock_and_migrate(pool, lock, &migration_lock_key, cluster_mode, migrate).await
         }
         Err(e) => {
-            if cluster_mode {
-                return Err(anyhow::anyhow!(
-                    "cluster.enabled=true requires Redis migration locking; refusing PostgreSQL advisory lock fallback after Redis lock failure: {e}"
-                ));
-            }
             if !allow_pg_fallback {
                 return Err(anyhow::anyhow!(
                     "Migration lock acquisition failed without Redis fallback enabled: {e}"
+                ));
+            }
+            if cluster_mode {
+                return Err(anyhow::anyhow!(
+                    "cluster.enabled=true requires the Redis migration lock to remain healthy; \
+                     refusing PostgreSQL advisory lock fallback after Redis lock acquisition error: {e}"
                 ));
             }
             warn!(
@@ -584,12 +585,15 @@ mod tests {
 
         let err = run_migrations_with_mode(&pool, Arc::new(lock.clone()), "test:", true)
             .await
-            .expect_err("cluster mode must refuse PG advisory fallback");
+            .expect_err("cluster mode must refuse PG advisory fallback after Redis lock errors");
 
         assert!(lock.acquire_called.load(Ordering::SeqCst));
         assert!(
             err.to_string()
-                .contains("cluster.enabled=true requires Redis migration locking"),
+                .contains("requires the Redis migration lock to remain healthy")
+                || err
+                    .to_string()
+                    .contains("refusing PostgreSQL advisory lock fallback"),
             "unexpected error: {err}"
         );
     }

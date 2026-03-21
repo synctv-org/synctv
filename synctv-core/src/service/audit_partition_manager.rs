@@ -18,6 +18,7 @@ const MAX_PARTITION_RETRIES: u32 = 3;
 const PARTITION_RETRY_BASE_MS: u64 = 1_000;
 /// Default number of months of audit log partitions to retain
 const DEFAULT_RETENTION_MONTHS: i32 = 12;
+const INITIAL_LEADER_RETRY_INTERVAL_SECS: u64 = 5;
 
 /// Health check result for audit log partitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -325,9 +326,25 @@ impl AuditPartitionManager {
         let manager = self.clone();
 
         crate::spawn::spawn_monitored("audit_partition_manager", async move {
+            if !wait_for_initial_leader(
+                manager.leader_check.clone(),
+                cancel.clone(),
+                "audit partition management",
+            )
+            .await
+            {
+                info!(
+                    "Audit partition management task cancelled before leadership was established"
+                );
+                return;
+            }
+
+            run_audit_partition_maintenance(&manager).await;
+
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
                 check_interval_hours * 3600,
             ));
+            interval.tick().await;
 
             loop {
                 tokio::select! {
@@ -344,36 +361,7 @@ impl AuditPartitionManager {
                     continue;
                 }
 
-                // Check health status
-                match manager.check_health().await {
-                    Ok(health) => {
-                        // Create missing partitions if any (with retry)
-                        if health.missing_count > 0 {
-                            warn!(
-                                "Found {} missing partitions, creating now",
-                                health.missing_count
-                            );
-                            if let Err(e) = manager.ensure_future_partitions_with_retry(6).await {
-                                tracing::error!(
-                                    error = %e,
-                                    "Failed to create missing partitions after {} retries",
-                                    MAX_PARTITION_RETRIES
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to check partition health: {}", e);
-                    }
-                }
-
-                // Drop partitions older than the retention period
-                if let Err(e) = manager.drop_old_partitions(DEFAULT_RETENTION_MONTHS).await {
-                    tracing::error!(
-                        error = %e,
-                        "Failed to drop old audit log partitions"
-                    );
-                }
+                run_audit_partition_maintenance(&manager).await;
             }
         })
     }
@@ -388,16 +376,62 @@ impl Clone for AuditPartitionManager {
     }
 }
 
-/// Ensure audit partitions exist on application startup
-///
-/// Should be called during application bootstrap.
-/// Uses exponential backoff retry for partition creation.
-///
-/// Note: Startup partition initialization runs on every node (not leader-gated)
-/// because partitions must exist before any node can insert data. Only the
-/// periodic `start_auto_management` task is leader-gated.
-pub async fn ensure_audit_partitions_on_startup(pool: &PgPool) -> Result<()> {
-    // Startup uses AlwaysLeader since this is initialization, not periodic management
+async fn run_audit_partition_maintenance(manager: &AuditPartitionManager) {
+    match manager.check_health().await {
+        Ok(health) => {
+            if health.missing_count > 0 {
+                warn!("Found {} missing partitions, creating now", health.missing_count);
+                if let Err(e) = manager.ensure_future_partitions_with_retry(6).await {
+                    tracing::error!(
+                        error = %e,
+                        "Failed to create missing partitions after {} retries",
+                        MAX_PARTITION_RETRIES
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to check partition health: {}", e);
+        }
+    }
+
+    if let Err(e) = manager.drop_old_partitions(DEFAULT_RETENTION_MONTHS).await {
+        tracing::error!(error = %e, "Failed to drop old audit log partitions");
+    }
+}
+
+async fn wait_for_initial_leader(
+    leader_check: Arc<dyn LeaderCheck>,
+    cancel: CancellationToken,
+    task_name: &'static str,
+) -> bool {
+    let mut logged_wait = false;
+
+    loop {
+        if leader_check.is_leader() {
+            return true;
+        }
+
+        if !logged_wait {
+            info!(
+                "Delaying initial {task_name} run until cluster leadership is established"
+            );
+            logged_wait = true;
+        }
+
+        tokio::select! {
+            () = cancel.cancelled() => return false,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(INITIAL_LEADER_RETRY_INTERVAL_SECS)) => {}
+        }
+    }
+}
+
+const STARTUP_RUNS_RETENTION_CLEANUP: bool = false;
+
+async fn initialize_audit_partitions_on_startup(
+    pool: &PgPool,
+    run_retention_cleanup: bool,
+) -> Result<()> {
     let manager = AuditPartitionManager::new(pool.clone(), Arc::new(super::AlwaysLeader));
 
     // Step 1: Ensure existing partitions have indexes (idempotent)
@@ -412,19 +446,80 @@ pub async fn ensure_audit_partitions_on_startup(pool: &PgPool) -> Result<()> {
         warn!("Partition health check: {}", health.health_status);
     }
 
-    // Step 4: Drop partitions older than the retention period
-    manager
-        .drop_old_partitions(DEFAULT_RETENTION_MONTHS)
-        .await?;
+    // Startup initialization is per-replica readiness work only. Retention cleanup
+    // stays leader-gated in the background task to avoid duplicate startup DDL.
+    if run_retention_cleanup {
+        manager
+            .drop_old_partitions(DEFAULT_RETENTION_MONTHS)
+            .await?;
+    }
 
     info!("Audit log partition initialization completed");
 
     Ok(())
 }
 
+/// Ensure audit partitions exist on application startup
+///
+/// Should be called during application bootstrap.
+/// Uses exponential backoff retry for partition creation.
+///
+/// Startup initialization runs on every node because partitions must exist
+/// before any node can insert data. Retention cleanup remains leader-gated in
+/// the background task, which performs an initial run as soon as leadership is
+/// established instead of waiting a full check interval.
+pub async fn ensure_audit_partitions_on_startup(pool: &PgPool) -> Result<()> {
+    initialize_audit_partitions_on_startup(pool, STARTUP_RUNS_RETENTION_CLEANUP).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_startup_initialization_mode_excludes_retention_cleanup_by_default() {
+        assert!(
+            !STARTUP_RUNS_RETENTION_CLEANUP,
+            "per-replica startup initialization must avoid retention cleanup DDL"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_wait_for_initial_leader_completes_before_full_check_interval() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct ToggleLeader(AtomicBool);
+        impl LeaderCheck for ToggleLeader {
+            fn is_leader(&self) -> bool {
+                self.0.load(Ordering::SeqCst)
+            }
+        }
+
+        let leader = Arc::new(ToggleLeader(AtomicBool::new(false)));
+        let cancel = CancellationToken::new();
+        let wait_task = tokio::spawn(wait_for_initial_leader(
+            leader.clone(),
+            cancel,
+            "audit partition management",
+        ));
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(
+            INITIAL_LEADER_RETRY_INTERVAL_SECS - 1,
+        ))
+        .await;
+        assert!(
+            !wait_task.is_finished(),
+            "initial maintenance should still be waiting for leadership"
+        );
+
+        leader.0.store(true, Ordering::SeqCst);
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        assert!(
+            wait_task.await.expect("wait task should complete"),
+            "leader election should trigger the initial maintenance wait to finish"
+        );
+    }
 
     #[test]
     fn test_partition_health_deserialization() {

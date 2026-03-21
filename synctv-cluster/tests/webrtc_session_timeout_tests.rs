@@ -14,6 +14,10 @@ use std::time::Duration;
 use synctv_cluster::ConnectionManager;
 use synctv_core::models::id::{RoomId, UserId};
 
+const SHORT_WEBRTC_TIMEOUT: Duration = Duration::from_millis(60);
+const WEBRTC_TIMEOUT_BUFFER: Duration = Duration::from_millis(25);
+const ACTIVE_SESSION_CHECK_DELAY: Duration = Duration::from_millis(10);
+
 fn uid(s: &str) -> UserId {
     UserId::from_string(s.to_string())
 }
@@ -31,7 +35,7 @@ async fn test_webrtc_session_timeout_after_inactivity() {
     use synctv_cluster::sync::ConnectionLimits;
 
     // Create a ConnectionManager with short timeout for testing
-    let timeout = Duration::from_secs(2); // 2 second timeout for fast test
+    let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
         max_per_room: 10,
@@ -68,7 +72,7 @@ async fn test_webrtc_session_timeout_after_inactivity() {
     );
 
     // Wait for timeout to expire
-    tokio::time::sleep(timeout + Duration::from_millis(100)).await;
+    tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts - this should clean up the WebRTC session
     let stale = mgr.check_timeouts();
@@ -114,7 +118,7 @@ async fn test_active_webrtc_session_not_cleaned_up() {
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
 
     // Wait a short time (less than timeout)
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(ACTIVE_SESSION_CHECK_DELAY).await;
 
     // Check for timeouts - this should NOT clean up active sessions
     let stale = mgr.check_timeouts();
@@ -139,7 +143,7 @@ async fn test_webrtc_leave_clears_timeout_tracking() {
     use synctv_cluster::sync::ConnectionLimits;
 
     // Create a ConnectionManager with short timeout
-    let timeout = Duration::from_secs(1);
+    let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
         max_per_room: 10,
@@ -166,7 +170,7 @@ async fn test_webrtc_leave_clears_timeout_tracking() {
     mgr.mark_rtc_joined(&room, &user, "conn1", false);
 
     // Wait for timeout to expire
-    tokio::time::sleep(timeout + Duration::from_millis(100)).await;
+    tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts - this should NOT find any sessions (already left)
     let stale = mgr.check_timeouts();
@@ -191,7 +195,7 @@ async fn test_multiple_webrtc_sessions_timeout() {
     use synctv_cluster::sync::ConnectionLimits;
 
     // Create a ConnectionManager with short timeout
-    let timeout = Duration::from_secs(1);
+    let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
         max_per_room: 10,
@@ -223,7 +227,7 @@ async fn test_multiple_webrtc_sessions_timeout() {
     );
 
     // Wait for timeout to expire
-    tokio::time::sleep(timeout + Duration::from_millis(100)).await;
+    tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts - this should clean up all expired sessions
     let stale = mgr.check_timeouts();
@@ -245,7 +249,7 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
     use synctv_cluster::sync::ConnectionLimits;
 
     // Create a ConnectionManager with short timeout
-    let timeout = Duration::from_secs(2);
+    let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
         max_per_room: 10,
@@ -267,7 +271,7 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
 
     // Wait for timeout to expire
-    tokio::time::sleep(timeout + Duration::from_millis(100)).await;
+    tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts
     let stale = mgr.check_timeouts();
@@ -319,7 +323,7 @@ async fn test_default_webrtc_session_timeout() {
 
     // Default timeout should be 2 hours - we won't wait that long in tests
     // Just verify the connection is still RTC-joined after a short wait
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(ACTIVE_SESSION_CHECK_DELAY).await;
 
     let stale = mgr.check_timeouts();
     assert!(

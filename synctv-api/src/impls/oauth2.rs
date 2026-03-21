@@ -412,9 +412,15 @@ impl OAuth2ApiImpl {
                 .map_err(ApiError::from)?
         };
 
+        if !removed {
+            return Err(ApiError::NotFound(
+                "No binding found for this provider".to_string(),
+            ));
+        }
+
         Ok(UnlinkResult {
-            success: removed,
-            removed_count: i32::from(removed),
+            success: true,
+            removed_count: 1,
         })
     }
 
@@ -522,6 +528,8 @@ impl From<LinkedProviderInfo> for LinkedProvider {
 
 #[cfg(test)]
 mod tests {
+    use crate::impls::ApiError;
+
     /// Test that the unlink provider safety check uses `has_usable_password()`
     /// instead of just checking `signup_method`.
     ///
@@ -577,5 +585,13 @@ mod tests {
             email_user.has_usable_password(),
             "Email signup user should always have usable password"
         );
+    }
+
+    #[test]
+    fn test_unlink_provider_missing_binding_maps_to_not_found_api_error() {
+        let err = ApiError::NotFound("No binding found for this provider".to_string());
+
+        assert!(matches!(err.classify(), crate::impls::ErrorKind::NotFound));
+        assert_eq!(err.code(), crate::impls::error_codes::NOT_FOUND);
     }
 }

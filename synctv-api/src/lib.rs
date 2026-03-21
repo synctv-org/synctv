@@ -3,6 +3,7 @@
 // Provides gRPC and HTTP API services for SyncTV
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod client_ip;
 pub mod grpc;
 pub mod http;
 pub mod impls;

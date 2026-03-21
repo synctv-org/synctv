@@ -46,6 +46,16 @@ impl ClusterAuthInterceptor {
     /// Validate the shared secret from request metadata
     #[allow(clippy::result_large_err)]
     pub fn validate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
+        self.validate_metadata(request.metadata())?;
+        Ok(request)
+    }
+
+    /// Validate the shared secret directly from request metadata.
+    #[allow(clippy::result_large_err)]
+    pub fn validate_metadata(
+        &self,
+        metadata: &tonic::metadata::MetadataMap,
+    ) -> Result<(), Status> {
         if self.secret.is_empty() {
             tracing::error!(
                 "Cluster gRPC auth interceptor is misconfigured: shared secret is empty"
@@ -55,8 +65,7 @@ impl ClusterAuthInterceptor {
             ));
         }
 
-        let token = request
-            .metadata()
+        let token = metadata
             .get("x-cluster-secret")
             .ok_or_else(|| Status::unauthenticated("Missing x-cluster-secret header"))?
             .to_str()
@@ -67,7 +76,7 @@ impl ClusterAuthInterceptor {
             return Err(Status::unauthenticated("Invalid cluster secret"));
         }
 
-        Ok(request)
+        Ok(())
     }
 }
 

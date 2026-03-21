@@ -1,8 +1,9 @@
 //! Shared validation utilities for gRPC server layers
 //!
 //! Provides common field validators for gRPC request/response handling.
-//! SSRF protection is handled at the HTTP client DNS resolver level,
-//! not at the gRPC validation layer.
+//! Runtime SSRF protection is enforced at the HTTP client layer during
+//! connection establishment; the gRPC layer only performs structural request
+//! validation and must remain compatible with self-hosted/private deployments.
 
 use tonic::Status;
 
@@ -58,6 +59,16 @@ pub fn validate_host(host: &str) -> Result<(), Status> {
     }
 
     Ok(())
+}
+
+/// Validate a provider host URL for gRPC request input.
+///
+/// This intentionally preserves the same URL semantics as [`validate_host`].
+/// Self-hosted/private endpoints are supported and rely on transport-time SSRF
+/// protection instead of static gRPC-layer blocking.
+#[allow(clippy::result_large_err)] // tonic::Status is inherently large; boxing would break gRPC API
+pub fn validate_provider_grpc_host(host: &str) -> Result<(), Status> {
+    validate_host(host)
 }
 
 /// Validate that a required string field is non-empty.
@@ -141,6 +152,39 @@ mod tests {
             assert!(
                 validate_host(host).is_ok(),
                 "transport-level SSRF controls should handle host blocking: {host}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_provider_grpc_host_preserves_self_hosted_targets() {
+        for host in [
+            "http://127.0.0.1:5244",
+            "http://192.168.1.100:5244",
+            "http://10.0.0.1:5244",
+            "http://169.254.169.254",
+            "http://localhost:8096",
+            "http://metadata.google.internal",
+            "http://[::1]:5244",
+            "http://[::ffff:127.0.0.1]",
+        ] {
+            assert!(
+                validate_provider_grpc_host(host).is_ok(),
+                "gRPC validation should stay compatible with self-hosted/private targets: {host}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_provider_grpc_host_allows_public_targets() {
+        for host in [
+            "https://example.com",
+            "https://emby.myserver.org/emby",
+            "http://93.184.216.34:5244",
+        ] {
+            assert!(
+                validate_provider_grpc_host(host).is_ok(),
+                "expected public host to pass gRPC validation: {host}"
             );
         }
     }

@@ -413,9 +413,11 @@ impl RemoteProviderManager {
         config: &ProviderInstance,
         channel: Channel,
     ) -> crate::Result<RemoteProviderConnection> {
+        let auth_secret = validate_auth_secret(Some(Self::required_auth_secret(config)?))
+            .map_err(|e| crate::Error::InvalidInput(e.to_string()))?;
         Ok(RemoteProviderConnection::new(
             channel,
-            Some(Self::required_auth_secret(config)?),
+            auth_secret,
         ))
     }
 

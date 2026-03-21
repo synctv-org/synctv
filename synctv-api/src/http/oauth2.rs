@@ -116,24 +116,9 @@ pub async fn exchange_authorization_code(
 
     let current_user_id = maybe_auth.as_ref().map(|a| &a.user_id);
 
-    // Extract client IP for brute-force protection (Issue #24)
-    let socket_ip = connect_info.0.ip();
-    let client_ip = if state.config.server.is_trusted_proxy(&socket_ip) {
-        headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-            .or_else(|| {
-                headers
-                    .get("x-real-ip")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-            })
-            .unwrap_or(socket_ip)
-    } else {
-        socket_ip
-    };
+    // Extract client IP for brute-force protection (Issue #24).
+    let client_ip =
+        crate::client_ip::extract_client_ip_from_headers(&state.config, connect_info.0.ip(), &headers);
 
     let result = oauth2_api
         .exchange_authorization_code(
@@ -232,12 +217,6 @@ pub async fn unlink_provider(
             map_api_error(e)
         })?;
 
-    if !result.success {
-        return Err(super::AppError::bad_request(
-            "No binding found for this provider",
-        ));
-    }
-
     info!(
         "User {} unlinked OAuth2 provider: {}",
         auth.user_id.as_str(),
@@ -314,6 +293,7 @@ pub async fn get_linked_providers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
 
     #[test]
     fn test_validate_oauth2_redirect_url() {
@@ -447,5 +427,15 @@ mod tests {
             result.unwrap(),
             Some("https://example.com/callback".to_string())
         );
+    }
+
+    #[test]
+    fn test_unlink_missing_binding_maps_to_http_not_found() {
+        let err = map_api_error(crate::impls::ApiError::NotFound(
+            "No binding found for this provider".to_string(),
+        ));
+
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+        assert_eq!(err.message, "No binding found for this provider");
     }
 }

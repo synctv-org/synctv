@@ -1,5 +1,4 @@
 -- Create media table (media files in playlists)
--- Design reference: /Volumes/workspace/rust/design/04-数据库设计.md §2.4.2
 
 CREATE TABLE IF NOT EXISTS media (
     id CHAR(12) PRIMARY KEY,
@@ -87,4 +86,3 @@ CREATE TRIGGER trigger_media_updated_at
     BEFORE UPDATE ON media
     FOR EACH ROW
     EXECUTE FUNCTION update_media_updated_at();
-

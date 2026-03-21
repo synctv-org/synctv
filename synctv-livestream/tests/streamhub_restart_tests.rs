@@ -13,6 +13,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(250);
+const LEGACY_STOP_TIMEOUT: Duration = Duration::from_millis(100);
+const RELAXED_STOP_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// Simulates the two-phase cleanup protocol used during `StreamHub` restart.
 ///
 /// Phase 1: Send stop request with oneshot sender
@@ -30,8 +34,6 @@ async fn test_two_phase_cleanup_normal_completion() {
         let mut stop_count = 0;
         while let Some(stop_done_tx) = stop_streams_rx.recv().await {
             stop_count += 1;
-            // Simulate stop_all() work
-            tokio::time::sleep(Duration::from_millis(10)).await;
             // Signal completion
             let _ = stop_done_tx.send(());
         }
@@ -43,7 +45,7 @@ async fn test_two_phase_cleanup_normal_completion() {
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
     // Wait for completion with timeout
-    let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
+    let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, stop_done_rx).await;
     assert!(result.is_ok(), "Stop should complete within timeout");
     assert!(
         result.unwrap().is_ok(),
@@ -63,13 +65,15 @@ async fn test_two_phase_cleanup_normal_completion() {
 #[tokio::test]
 async fn test_two_phase_cleanup_timeout() {
     let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
+    let (stop_started_tx, stop_started_rx) = oneshot::channel::<()>();
+    let (allow_finish_tx, allow_finish_rx) = oneshot::channel::<()>();
 
-    // Spawn a receiver that intentionally delays longer than the timeout
+    // Spawn a receiver that blocks until explicitly released. This avoids
+    // relying on wall-clock sleeps while still exercising the timeout path.
     let receiver_handle = tokio::spawn(async move {
-        while let Some(stop_done_tx) = stop_streams_rx.recv().await {
-            // Simulate a very slow stop_all() (200ms > 100ms timeout)
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            // Even though we're late, we still send the response
+        if let Some(stop_done_tx) = stop_streams_rx.recv().await {
+            let _ = stop_started_tx.send(());
+            let _ = allow_finish_rx.await;
             let _ = stop_done_tx.send(());
         }
     });
@@ -77,12 +81,16 @@ async fn test_two_phase_cleanup_timeout() {
     // Send stop request
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
+    stop_started_rx
+        .await
+        .expect("receiver should observe the stop request");
 
     // Wait with short timeout (should timeout)
-    let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
+    let result = tokio::time::timeout(LEGACY_STOP_TIMEOUT, stop_done_rx).await;
     assert!(result.is_err(), "Should timeout when stop takes too long");
 
     // Clean up
+    let _ = allow_finish_tx.send(());
     drop(stop_streams_tx);
     let _ = receiver_handle.await;
 }
@@ -99,7 +107,6 @@ async fn test_two_phase_cleanup_rapid_restarts() {
     let receiver_handle = tokio::spawn(async move {
         while let Some(stop_done_tx) = stop_streams_rx.recv().await {
             stop_count_clone.fetch_add(1, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis(5)).await;
             let _ = stop_done_tx.send(());
         }
     });
@@ -109,7 +116,7 @@ async fn test_two_phase_cleanup_rapid_restarts() {
         let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
         stop_streams_tx.send(stop_done_tx).await.unwrap();
 
-        let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
+        let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, stop_done_rx).await;
         assert!(result.is_ok(), "Restart {i} should complete within timeout");
     }
 
@@ -167,7 +174,6 @@ async fn test_restart_sequence_ordering() {
     let receiver_handle = tokio::spawn(async move {
         while let Some(stop_done_tx) = stop_streams_rx.recv().await {
             // Stop all streams
-            tokio::time::sleep(Duration::from_millis(10)).await;
             // Signal completion
             let _ = stop_done_tx.send(());
         }
@@ -176,8 +182,6 @@ async fn test_restart_sequence_ordering() {
     // Spawn the re-registration listener
     let reregister_handle = tokio::spawn(async move {
         reregister_clone.notified().await;
-        // Simulate re-registration
-        tokio::time::sleep(Duration::from_millis(5)).await;
         // Clear restarting flag after re-registration
         is_restarting_clone.store(false, Ordering::Release);
     });
@@ -190,14 +194,14 @@ async fn test_restart_sequence_ordering() {
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
-    let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
+    let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, stop_done_rx).await;
     assert!(result.is_ok(), "Stop should complete within timeout");
 
     // 3. Only AFTER stop completes, notify re-registration
     reregister_notify.notify_one();
 
     // Wait for re-registration to complete
-    tokio::time::timeout(Duration::from_millis(100), reregister_handle)
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, reregister_handle)
         .await
         .unwrap()
         .unwrap();
@@ -220,7 +224,6 @@ async fn test_try_send_with_oneshot_response() {
 
     let receiver_handle = tokio::spawn(async move {
         while let Some(stop_done_tx) = stop_streams_rx.recv().await {
-            tokio::time::sleep(Duration::from_millis(5)).await;
             let _ = stop_done_tx.send(());
         }
     });
@@ -229,7 +232,7 @@ async fn test_try_send_with_oneshot_response() {
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     match stop_streams_tx.try_send(stop_done_tx) {
         Ok(()) => {
-            let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
+            let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, stop_done_rx).await;
             assert!(result.is_ok(), "Stop should complete within timeout");
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
@@ -294,7 +297,6 @@ async fn test_restarting_flag_set_before_stop_request() {
     let receiver_handle = tokio::spawn(async move {
         while let Some(stop_done_tx) = stop_streams_rx.recv().await {
             events_clone.lock().unwrap().push("stop_received");
-            tokio::time::sleep(Duration::from_millis(5)).await;
             events_clone.lock().unwrap().push("stop_completed");
             let _ = stop_done_tx.send(());
         }
@@ -309,7 +311,7 @@ async fn test_restarting_flag_set_before_stop_request() {
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
     // Wait for completion
-    tokio::time::timeout(Duration::from_millis(100), stop_done_rx)
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, stop_done_rx)
         .await
         .unwrap()
         .unwrap();
@@ -339,7 +341,8 @@ async fn test_restarting_flag_set_before_stop_request() {
 // D5: Verify stop_all timeout is sufficient (5 seconds, not 100ms)
 // ============================================================================
 
-/// D5 fix verification: The two-phase cleanup timeout should be 5 seconds, not 100ms.
+/// D5 fix verification: the cleanup timeout must comfortably exceed the legacy
+/// 100ms window, without making the regression test itself slow.
 ///
 /// The original 100ms timeout was too short for streams that need to cleanly
 /// disconnect from remote servers. This test verifies that a slow stop_all()
@@ -348,25 +351,24 @@ async fn test_restarting_flag_set_before_stop_request() {
 async fn test_stop_all_timeout_sufficient_for_slow_cleanup() {
     let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
 
-    // Spawn a receiver that simulates a slow stop_all() (takes ~2 seconds)
+    // Spawn a receiver that is slower than the legacy 100ms timeout but still
+    // comfortably within the relaxed timeout.
     let receiver_handle = tokio::spawn(async move {
         while let Some(stop_done_tx) = stop_streams_rx.recv().await {
-            // Simulate slow stream cleanup (2 seconds)
-            // This would have timed out with the old 100ms timeout
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_millis(150)).await;
             let _ = stop_done_tx.send(());
         }
     });
 
-    // Simulate the restart path with the new 5-second timeout
+    // Simulate the restart path with the relaxed timeout.
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
-    let result = tokio::time::timeout(Duration::from_secs(5), stop_done_rx).await;
+    let result = tokio::time::timeout(RELAXED_STOP_TIMEOUT, stop_done_rx).await;
 
     assert!(
         result.is_ok(),
-        "stop_all() with 2s cleanup should complete within the 5s timeout (D5 fix)"
+        "cleanup slower than the legacy timeout should complete within the relaxed timeout"
     );
 
     // Clean up
@@ -374,18 +376,16 @@ async fn test_stop_all_timeout_sufficient_for_slow_cleanup() {
     let _ = receiver_handle.await;
 }
 
-/// D5: The old 100ms timeout would fail for cleanup taking > 100ms.
-///
-/// This test verifies that the scenario that previously failed (cleanup > 100ms)
-/// now succeeds with the 5-second timeout.
+/// D5: the old 100ms timeout would fail for cleanup taking slightly longer
+/// than 100ms. Keep the regression fast by using a 120ms cleanup.
 #[tokio::test]
 async fn test_stop_all_handles_moderate_cleanup_time() {
     let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
 
-    // Spawn a receiver with 500ms cleanup (would fail with 100ms timeout)
+    // Spawn a receiver with 120ms cleanup (would fail with 100ms timeout).
     let receiver_handle = tokio::spawn(async move {
         while let Some(stop_done_tx) = stop_streams_rx.recv().await {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(120)).await;
             let _ = stop_done_tx.send(());
         }
     });
@@ -393,11 +393,11 @@ async fn test_stop_all_handles_moderate_cleanup_time() {
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
-    let result = tokio::time::timeout(Duration::from_secs(5), stop_done_rx).await;
+    let result = tokio::time::timeout(RELAXED_STOP_TIMEOUT, stop_done_rx).await;
 
     assert!(
         result.is_ok(),
-        "stop_all() with 500ms cleanup should succeed with 5s timeout (previously failed with 100ms)"
+        "cleanup just above the legacy timeout should succeed with the relaxed timeout"
     );
 
     drop(stop_streams_tx);
@@ -420,6 +420,7 @@ async fn test_stop_all_handles_moderate_cleanup_time() {
 async fn test_restart_mutex_serializes_concurrent_attempts() {
     use tokio::sync::Mutex;
 
+    let start_barrier = Arc::new(tokio::sync::Barrier::new(6));
     let restart_mutex = Arc::new(Mutex::new(()));
     let restart_count = Arc::new(AtomicUsize::new(0));
     let concurrent_count = Arc::new(AtomicUsize::new(0));
@@ -428,26 +429,28 @@ async fn test_restart_mutex_serializes_concurrent_attempts() {
     // Spawn multiple tasks that try to restart concurrently
     let mut handles = vec![];
     for _ in 0..5 {
+        let barrier = Arc::clone(&start_barrier);
         let mutex = Arc::clone(&restart_mutex);
         let count = Arc::clone(&restart_count);
         let concurrent = Arc::clone(&concurrent_count);
         let max = Arc::clone(&max_concurrent);
 
         let handle = tokio::spawn(async move {
+            barrier.wait().await;
             let _guard = mutex.lock().await;
 
             // Track concurrent executions
             let current = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
             max.fetch_max(current, Ordering::SeqCst);
 
-            // Simulate restart work
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::task::yield_now().await;
 
             count.fetch_add(1, Ordering::SeqCst);
             concurrent.fetch_sub(1, Ordering::SeqCst);
         });
         handles.push(handle);
     }
+    start_barrier.wait().await;
 
     // Wait for all restarts to complete
     for handle in handles {
@@ -503,8 +506,6 @@ async fn test_restarting_flag_set_before_hub_exit() {
     );
 
     // 3. Hub exits, cleanup happens
-    tokio::time::sleep(Duration::from_millis(10)).await;
-
     // 4. New hub starts, re-registration completes
     publications_allowed.store(true, Ordering::Release);
     is_restarting.store(false, Ordering::Release);
@@ -661,7 +662,6 @@ async fn test_complete_restart_flow_with_mutex() {
     // Spawn the stop receiver task
     let receiver_handle = tokio::spawn(async move {
         while let Some(stop_done_tx) = stop_streams_rx.recv().await {
-            tokio::time::sleep(Duration::from_millis(10)).await;
             let _ = stop_done_tx.send(());
         }
     });
@@ -683,21 +683,18 @@ async fn test_complete_restart_flow_with_mutex() {
         let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
         tx.send(stop_done_tx).await.unwrap();
 
-        let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
+        let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, stop_done_rx).await;
         assert!(result.is_ok(), "Stop should complete");
 
-        // 4. Simulate cleanup
-        tokio::time::sleep(Duration::from_millis(5)).await;
-
-        // 5. Notify re-registration
+        // 4. Notify re-registration
         notify.notify_one();
 
-        // 6. Clear restarting flag
+        // 5. Clear restarting flag
         restarting.store(false, Ordering::Release);
     });
 
     // Wait for restart to complete
-    tokio::time::timeout(Duration::from_millis(500), restart_handle)
+    tokio::time::timeout(Duration::from_secs(1), restart_handle)
         .await
         .unwrap()
         .unwrap();
@@ -723,29 +720,33 @@ async fn test_complete_restart_flow_with_mutex() {
 async fn test_publication_during_restart_handles_gracefully() {
     let is_restarting = Arc::new(AtomicBool::new(true));
     let publication_result = Arc::new(std::sync::Mutex::new(None::<Result<(), &'static str>>));
+    let restart_complete = Arc::new(tokio::sync::Notify::new());
 
     // Try to publish while restarting
     let flag = Arc::clone(&is_restarting);
     let result = Arc::clone(&publication_result);
+    let notify = Arc::clone(&restart_complete);
 
     let pub_handle = tokio::spawn(async move {
-        // Check flag with a small retry loop
-        for _ in 0..10 {
-            if !flag.load(Ordering::Acquire) {
-                *result.lock().unwrap() = Some(Ok(()));
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        if flag.load(Ordering::Acquire) {
+            tokio::time::timeout(HANDSHAKE_TIMEOUT, notify.notified())
+                .await
+                .expect("restart should complete promptly");
         }
-        // Timed out waiting for restart to complete
-        *result.lock().unwrap() = Some(Err("StreamHub restarting timeout"));
+        if flag.load(Ordering::Acquire) {
+            *result.lock().unwrap() = Some(Err("StreamHub restarting timeout"));
+        } else {
+            *result.lock().unwrap() = Some(Ok(()));
+        }
     });
 
-    // Simulate restart completing after 20ms
+    // Simulate restart completing asynchronously.
     let flag = Arc::clone(&is_restarting);
+    let notify = Arc::clone(&restart_complete);
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::task::yield_now().await;
         flag.store(false, Ordering::Release);
+        notify.notify_waiters();
     });
 
     pub_handle.await.unwrap();

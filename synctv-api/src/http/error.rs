@@ -305,7 +305,7 @@ impl From<crate::impls::ApiError> for AppError {
     fn from(err: crate::impls::ApiError) -> Self {
         use crate::impls::ErrorKind;
         let error_code = err.code();
-        let msg = err.to_string();
+        let msg = err.message().to_string();
         let mut app_err = match err.classify() {
             ErrorKind::NotFound => Self::not_found(msg),
             ErrorKind::Unauthenticated => Self::unauthorized(msg),

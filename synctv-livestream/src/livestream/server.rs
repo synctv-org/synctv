@@ -109,6 +109,9 @@ pub struct LivestreamHandle {
     reregister_task_handle: JoinHandle<()>,
     /// Cancellation token for the inner re-registration task.
     reregister_cancel_token: CancellationToken,
+    /// Listener for StreamHub restart stop-all notifications.
+    /// Must be owned by the handle so shutdown/drop can terminate it explicitly.
+    stop_streams_listener_handle: JoinHandle<()>,
     pull_manager_cleanup: JoinHandle<()>,
     external_publish_cleanup: JoinHandle<()>,
     hls_shutdown_token: CancellationToken,
@@ -180,6 +183,7 @@ impl LivestreamHandle {
     pub fn shutdown(&self) {
         self.external_publish_cleanup.abort();
         self.pull_manager_cleanup.abort();
+        self.stop_streams_listener_handle.abort();
         // Cancel the inner re-registration task first
         self.reregister_cancel_token.cancel();
         self.reregister_task_handle.abort();
@@ -239,6 +243,11 @@ impl LivestreamHandle {
         info!("Pull manager cleanup stopped");
 
         // 4. Stop the inner re-registration task gracefully via cancellation token
+        self.stop_streams_listener_handle.abort();
+        let _ = (&mut self.stop_streams_listener_handle).await;
+        info!("Stop-stream listener stopped");
+
+        // 5. Stop the inner re-registration task gracefully via cancellation token
         self.reregister_cancel_token.cancel();
         if timeout(timeout_duration, &mut self.reregister_task_handle)
             .await
@@ -251,12 +260,12 @@ impl LivestreamHandle {
             all_graceful = false;
         }
 
-        // 5. Abort publisher manager event loop (no graceful signal)
+        // 6. Abort publisher manager event loop (no graceful signal)
         self.publisher_manager_handle.abort();
         let _ = (&mut self.publisher_manager_handle).await;
         info!("Publisher manager stopped");
 
-        // 6. Stop HLS tasks gracefully: first cancel the token, then await both
+        // 7. Stop HLS tasks gracefully: first cancel the token, then await both
         // the remuxer and the cleanup task.
         self.hls_shutdown_token.cancel();
         if timeout(timeout_duration, &mut self.hls_remuxer_handle)
@@ -283,14 +292,14 @@ impl LivestreamHandle {
             all_graceful = false;
         }
 
-        // 7. Abort StreamHub (last, as other components depend on it).
+        // 8. Abort StreamHub (last, as other components depend on it).
         // The RTMP server is managed inside the hub loop and will be
         // cancelled automatically when the hub task is aborted.
         self.hub_handle.abort();
         let _ = (&mut self.hub_handle).await;
         info!("StreamHub stopped");
 
-        // 8. Final local publisher cleanup. Shutdown may interrupt the normal
+        // 9. Final local publisher cleanup. Shutdown may interrupt the normal
         // on_unpublish -> PublisherManager cleanup chain, so clear local tracker
         // and remove this node's publisher registrations explicitly.
         self.cleanup_local_publishers_on_shutdown().await;
@@ -337,6 +346,7 @@ impl Drop for LivestreamHandle {
 
         // Abort all task handles to ensure they terminate immediately
         // (in case they don't respond to cancellation tokens)
+        self.stop_streams_listener_handle.abort();
         self.reregister_task_handle.abort();
         self.publisher_manager_handle.abort();
         self.hls_cleanup_handle.abort();
@@ -840,7 +850,7 @@ impl LivestreamServer {
         // 2. Call stop_all() on both managers
         // 3. Send confirmation via oneshot sender
         // This allows the restart loop to wait for completion before re-registration.
-        {
+        let stop_streams_listener_handle = {
             let pm = Arc::clone(&pull_manager);
             let epm = Arc::clone(&external_publish_manager);
             tokio::spawn(async move {
@@ -853,8 +863,8 @@ impl LivestreamServer {
                     // Signal completion to the restart loop
                     let _ = stop_done_tx.send(());
                 }
-            });
-        }
+            })
+        };
 
         // 7. Start PublisherManager -- listens to StreamHub broadcast events
         // and registers/unregisters publishers in Redis for multi-node relay
@@ -934,6 +944,7 @@ impl LivestreamServer {
             publisher_manager_handle,
             reregister_task_handle,
             reregister_cancel_token,
+            stop_streams_listener_handle,
             pull_manager_cleanup,
             external_publish_cleanup,
             hls_shutdown_token,
@@ -1081,6 +1092,10 @@ mod tests {
             handle.reregister_task_handle.is_finished(),
             "reregister_task_handle should be finished after shutdown - task leak detected!"
         );
+        assert!(
+            handle.stop_streams_listener_handle.is_finished(),
+            "stop_streams_listener_handle should be finished after shutdown"
+        );
     }
 
     /// Test that the re-registration task stops when cancelled via `CancellationToken`.
@@ -1116,6 +1131,10 @@ mod tests {
         assert!(
             handle.reregister_task_handle.is_finished(),
             "reregister_task_handle should be finished after graceful shutdown"
+        );
+        assert!(
+            handle.stop_streams_listener_handle.is_finished(),
+            "stop_streams_listener_handle should be finished after graceful shutdown"
         );
     }
 
@@ -1197,6 +1216,10 @@ mod tests {
             handle.reregister_task_handle.is_finished(),
             "reregister_task_handle should be finished after shutdown"
         );
+        assert!(
+            handle.stop_streams_listener_handle.is_finished(),
+            "stop_streams_listener_handle should be finished after shutdown"
+        );
 
         // Verify no new register calls happen after shutdown
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1240,12 +1263,22 @@ mod tests {
             !reregister_finished,
             "reregister_task_handle should be running before drop"
         );
+        let stop_streams_listener_abort_handle = handle.stop_streams_listener_handle.abort_handle();
+        assert!(
+            !stop_streams_listener_abort_handle.is_finished(),
+            "stop_streams_listener_handle should be running before drop"
+        );
 
         // Drop the handle WITHOUT calling shutdown
         drop(handle);
 
         // Give tasks time to abort due to Drop
         tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            stop_streams_listener_abort_handle.is_finished(),
+            "stop_streams_listener_handle should be aborted when handle is dropped"
+        );
 
         // After drop, all background tasks should have been cancelled.
         // We can't check is_finished() on the JoinHandles because they've been dropped,

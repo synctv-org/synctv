@@ -20,7 +20,6 @@ FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column();
 
 -- Function to notify all replicas when settings change (for hot reload)
--- Design reference: /Volumes/workspace/rust/synctv-rs-design/19-配置管理系统.md §6.2
 CREATE OR REPLACE FUNCTION notify_settings_change()
 RETURNS TRIGGER AS $$
 BEGIN

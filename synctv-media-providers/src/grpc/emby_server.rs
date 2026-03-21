@@ -9,7 +9,7 @@ use super::emby::{
     ReportPlaybackStopReq, SystemInfoReq, SystemInfoResp,
 };
 use super::error_mapper::map_provider_error;
-use super::validation::{validate_host, validate_required};
+use super::validation::{validate_provider_grpc_host, validate_required};
 use crate::emby::error::EmbyError;
 use crate::emby::{EmbyInterface, EmbyService as EmbyServiceImpl};
 use tonic::{Request, Response, Status};
@@ -45,7 +45,7 @@ impl Default for EmbyService {
 impl Emby for EmbyService {
     async fn login(&self, request: Request<LoginReq>) -> Result<Response<LoginResp>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("username", &req.username)?;
         validate_required("password", &req.password)?;
         let resp = self
@@ -58,7 +58,7 @@ impl Emby for EmbyService {
 
     async fn me(&self, request: Request<MeReq>) -> Result<Response<MeResp>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         validate_required("user_id", &req.user_id)?;
         let resp = self
@@ -74,7 +74,7 @@ impl Emby for EmbyService {
         request: Request<GetItemsReq>,
     ) -> Result<Response<GetItemsResp>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         validate_required("user_id", &req.user_id)?;
         let resp = self
@@ -87,7 +87,7 @@ impl Emby for EmbyService {
 
     async fn get_item(&self, request: Request<GetItemReq>) -> Result<Response<Item>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         validate_required("user_id", &req.user_id)?;
         validate_required("item_id", &req.item_id)?;
@@ -104,7 +104,7 @@ impl Emby for EmbyService {
         request: Request<SystemInfoReq>,
     ) -> Result<Response<SystemInfoResp>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         let resp = self
             .service
@@ -116,7 +116,7 @@ impl Emby for EmbyService {
 
     async fn fs_list(&self, request: Request<FsListReq>) -> Result<Response<FsListResp>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         validate_required("user_id", &req.user_id)?;
         let resp = self
@@ -129,7 +129,7 @@ impl Emby for EmbyService {
 
     async fn logout(&self, request: Request<LogoutReq>) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         let resp = self
             .service
@@ -144,7 +144,7 @@ impl Emby for EmbyService {
         request: Request<PlaybackInfoReq>,
     ) -> Result<Response<PlaybackInfoResp>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         validate_required("user_id", &req.user_id)?;
         validate_required("item_id", &req.item_id)?;
@@ -161,7 +161,7 @@ impl Emby for EmbyService {
         request: Request<DeleteActiveEncodingsReq>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         let resp = self
             .service
@@ -176,7 +176,7 @@ impl Emby for EmbyService {
         request: Request<ReportPlaybackStartReq>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         validate_required("item_id", &req.item_id)?;
         let resp = self
@@ -192,7 +192,7 @@ impl Emby for EmbyService {
         request: Request<ReportPlaybackStopReq>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         validate_required("item_id", &req.item_id)?;
         let resp = self
@@ -208,7 +208,7 @@ impl Emby for EmbyService {
         request: Request<ReportPlaybackProgressReq>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
-        validate_host(&req.host)?;
+        validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
         validate_required("item_id", &req.item_id)?;
         let resp = self

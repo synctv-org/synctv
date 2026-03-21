@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+use super::ClusterAuthInterceptor;
 use super::synctv::cluster::cluster_service_server::ClusterService;
 use super::synctv::cluster::{
     DeregisterNodeRequest, DeregisterNodeResponse, GetNodesRequest, GetNodesResponse,
@@ -38,6 +39,7 @@ pub struct ClusterServer {
     node_registry: Arc<NodeRegistry>,
     connection_manager: Option<Arc<ConnectionManager>>,
     node_id: String,
+    auth: Option<ClusterAuthInterceptor>,
 }
 
 #[allow(clippy::result_large_err)] // tonic::Status is inherently large; required by gRPC API
@@ -49,6 +51,7 @@ impl ClusterServer {
             node_registry,
             connection_manager: None,
             node_id,
+            auth: None,
         }
     }
 
@@ -56,6 +59,17 @@ impl ClusterServer {
     #[must_use]
     pub fn with_connection_manager(mut self, cm: Arc<ConnectionManager>) -> Self {
         self.connection_manager = Some(cm);
+        self
+    }
+
+    /// Enable shared-secret authentication for cluster RPC handlers.
+    ///
+    /// Cluster RPCs are internal-only and must never be exposed without an
+    /// application-layer shared secret. `ClusterServer::new()` defaults to
+    /// fail-closed until a secret is provided here.
+    #[must_use]
+    pub fn with_cluster_secret(mut self, secret: String) -> Self {
+        self.auth = Some(ClusterAuthInterceptor::new(secret));
         self
     }
 
@@ -103,6 +117,19 @@ impl ClusterServer {
             metrics: None,
         }
     }
+
+    fn authorize<T>(&self, request: &Request<T>) -> std::result::Result<(), Status> {
+        let Some(auth) = &self.auth else {
+            tracing::error!(
+                "ClusterServer called without configured shared-secret auth; refusing request"
+            );
+            return Err(Status::unauthenticated(
+                "Cluster authentication secret is not configured",
+            ));
+        };
+
+        auth.validate_metadata(request.metadata())
+    }
 }
 
 #[tonic::async_trait]
@@ -111,8 +138,9 @@ impl ClusterService for ClusterServer {
     /// Get all nodes in the cluster
     async fn get_nodes(
         &self,
-        _request: Request<GetNodesRequest>,
+        request: Request<GetNodesRequest>,
     ) -> std::result::Result<Response<GetNodesResponse>, Status> {
+        self.authorize(&request)?;
         let start = std::time::Instant::now();
         let result = self.node_registry.get_all_nodes().await;
 
@@ -151,6 +179,7 @@ impl ClusterService for ClusterServer {
         &self,
         request: Request<DeregisterNodeRequest>,
     ) -> std::result::Result<Response<DeregisterNodeResponse>, Status> {
+        self.authorize(&request)?;
         let start = std::time::Instant::now();
         let req = request.into_inner();
 
@@ -213,6 +242,7 @@ impl ClusterService for ClusterServer {
         &self,
         request: Request<GetUserOnlineStatusRequest>,
     ) -> std::result::Result<Response<GetUserOnlineStatusResponse>, Status> {
+        self.authorize(&request)?;
         let start = std::time::Instant::now();
         let req = request.into_inner();
 
@@ -270,6 +300,7 @@ impl ClusterService for ClusterServer {
         &self,
         request: Request<GetRoomConnectionsRequest>,
     ) -> std::result::Result<Response<GetRoomConnectionsResponse>, Status> {
+        self.authorize(&request)?;
         let start = std::time::Instant::now();
         let req = request.into_inner();
 

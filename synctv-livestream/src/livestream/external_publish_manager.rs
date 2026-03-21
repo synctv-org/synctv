@@ -135,10 +135,9 @@ impl ExternalPublishManager {
         // Build a shared reqwest::Client with TLS (rustls) support and SSRF protection.
         // Reused across all HTTP-FLV pull streams to amortize TLS setup.
         // Uses SSRF-safe DNS resolver to prevent SSRF attacks via external publish URLs.
-        let http_client = reqwest::Client::builder()
-            .dns_resolver(synctv_common::ssrf::ssrf_dns_resolver())
-            .connect_timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
+        let http_client = synctv_common::http::SsrfSafeClientBuilder::proxy()
+            .disable_request_timeout()
+            .disable_read_timeout()
             .build()
             .map_err(|e| {
                 crate::error::StreamError::Internal(format!(
@@ -684,6 +683,31 @@ mod tests {
 
         let manager = ExternalPublishManager::new(registry, "node-1".to_string(), sender).unwrap();
         assert_eq!(manager.pool.streams.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_external_publish_manager_shared_http_client_disables_inherited_read_timeout() {
+        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+
+        let manager = ExternalPublishManager::new(registry, "node-1".to_string(), sender).unwrap();
+        let request = manager
+            .http_client
+            .get("http://192.168.1.10:8080/stream.flv")
+            .build()
+            .expect("request should build");
+
+        assert_eq!(
+            request.timeout(),
+            None,
+            "shared HTTP-FLV client must not inherit a total request timeout"
+        );
+
+        let debug_repr = format!("{:?}", manager.http_client);
+        assert!(
+            !debug_repr.contains("read_timeout: Some(30s)"),
+            "shared HTTP-FLV client must not inherit the proxy preset read timeout: {debug_repr}"
+        );
     }
 
     #[tokio::test]

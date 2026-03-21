@@ -259,6 +259,101 @@ fn process_is_alive(pid: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+fn handle_cleanup_result<F>(
+    cleaned_up: &mut bool,
+    container_name: &str,
+    result: Result<(), String>,
+    kind: &str,
+    fallback_remove: F,
+) -> Option<String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    match result {
+        Ok(()) => {
+            *cleaned_up = true;
+            None
+        }
+        Err(err) if cleanup_error_indicates_missing_container(&err) => {
+            *cleaned_up = true;
+            Some(format!(
+                "warning: {kind} test container {container_name} was already removed before explicit cleanup completed: {err}"
+            ))
+        }
+        Err(err) => match fallback_remove(container_name) {
+            Ok(()) => {
+                *cleaned_up = true;
+                Some(format!(
+                    "warning: explicit removal for {kind} test container {container_name} failed; fallback `docker rm -f` succeeded: {err}"
+                ))
+            }
+            Err(fallback_err) if cleanup_error_indicates_missing_container(&fallback_err) => {
+                *cleaned_up = true;
+                Some(format!(
+                    "warning: explicit removal for {kind} test container {container_name} reported an error, but fallback confirmed it was already gone: {err}; fallback: {fallback_err}"
+                ))
+            }
+            Err(fallback_err) => Some(format!(
+                "warning: failed to remove {kind} test container {container_name} during explicit cleanup: {err}; fallback `docker rm -f` also failed: {fallback_err}"
+            )),
+        }
+    }
+}
+
+fn log_cleanup_warning_if_needed(warning: Option<String>) {
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
+    }
+}
+
+fn cleanup_error_indicates_missing_container(err: &str) -> bool {
+    let err = err.to_ascii_lowercase();
+    err.contains("no such container") || err.contains("not found")
+}
+
+fn docker_rm_force(container_ref: &str) -> Result<(), String> {
+    docker_rm_force_with_program("docker", container_ref)
+}
+
+fn docker_rm_force_with_program(program: &str, container_ref: &str) -> Result<(), String> {
+    let args = ["rm", "-f", container_ref];
+    let output = Command::new(program).args(args).output().map_err(|err| {
+        format!("failed to spawn `{program}` for `{container_ref}` cleanup: {err}")
+    })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(format_command_failure(program, &args, &output))
+}
+
+fn format_command_failure(program: &str, args: &[&str], output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let mut details = Vec::new();
+    if !stdout.is_empty() {
+        details.push(format!("stdout={stdout}"));
+    }
+    if !stderr.is_empty() {
+        details.push(format!("stderr={stderr}"));
+    }
+    let details = if details.is_empty() {
+        "no command output".to_string()
+    } else {
+        details.join(" ")
+    };
+
+    format!(
+        "command `{}` exited with status {}: {details}",
+        std::iter::once(program)
+            .chain(args.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" "),
+        output.status
+    )
+}
+
 fn cleanup_orphaned_testcontainers(prefix: &str) {
     let output = Command::new("docker")
         .args([
@@ -301,11 +396,11 @@ fn cleanup_orphaned_testcontainers(prefix: &str) {
             continue;
         }
 
-        let _ = Command::new("docker")
-            .args(["rm", "-f", container_id])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        if let Err(err) = docker_rm_force(container_id) {
+            eprintln!(
+                "warning: failed to remove orphaned redis test container {container_id}: {err}"
+            );
+        }
     }
 }
 
@@ -328,9 +423,16 @@ impl RedisContainer {
 
     pub async fn cleanup(mut self) {
         if let Some(container) = self.inner.take() {
-            let _ = container.rm().await;
+            log_cleanup_warning_if_needed(handle_cleanup_result(
+                &mut self.cleaned_up,
+                &self.name,
+                container.rm().await.map_err(|err| err.to_string()),
+                "redis",
+                docker_rm_force,
+            ));
+        } else {
+            self.cleaned_up = true;
         }
-        self.cleaned_up = true;
     }
 
     pub const fn raw(&self) -> &ContainerAsync<Redis> {
@@ -350,11 +452,6 @@ impl RedisContainer {
     pub async fn host_port(&self, internal_port: u16) -> (String, u16) {
         resolve_host_port(self.raw(), internal_port).await
     }
-
-    #[cfg(test)]
-    const fn is_cleaned_up(&self) -> bool {
-        self.cleaned_up
-    }
 }
 
 impl std::ops::Deref for RedisContainer {
@@ -371,11 +468,12 @@ impl Drop for RedisContainer {
             drop(container);
         }
         if !self.cleaned_up {
-            let _ = Command::new("docker")
-                .args(["rm", "-f", self.name.as_str()])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
+            if let Err(err) = docker_rm_force(&self.name) {
+                eprintln!(
+                    "warning: failed to force-remove redis test container {} during Drop: {err}",
+                    self.name
+                );
+            }
         }
     }
 }
@@ -563,27 +661,109 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_marks_container_as_cleaned_up() {
-        let container = RedisContainer {
-            inner: None,
-            name: "synctv-redis-test".to_string(),
-            cleaned_up: false,
-            _slot_guard: None,
-        };
+    fn cleanup_marks_container_as_cleaned_up_on_success() {
+        let mut cleaned_up = false;
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let container = runtime.block_on(async move {
-            let mut container = container;
-            if let Some(inner) = container.inner.take() {
-                let _ = inner.rm().await;
-            }
-            container.cleaned_up = true;
-            container
-        });
+        let warning = handle_cleanup_result(
+            &mut cleaned_up,
+            "synctv-redis-test",
+            Ok(()),
+            "redis",
+            |_| Ok(()),
+        );
+
+        assert!(warning.is_none());
+        assert!(cleaned_up);
+    }
+
+    #[test]
+    fn cleanup_uses_fallback_when_explicit_container_removal_fails() {
+        let mut cleaned_up = false;
+        let mut fallback_called = false;
+        let warning = handle_cleanup_result(
+            &mut cleaned_up,
+            "synctv-redis-test",
+            Err("docker rm failed".to_string()),
+            "redis",
+            |_| {
+                fallback_called = true;
+                Ok(())
+            },
+        )
+        .expect("fallback success should emit a warning");
 
         assert!(
-            container.is_cleaned_up(),
-            "explicit cleanup must suppress the Drop-time docker rm fallback"
+            warning.contains("fallback `docker rm -f` succeeded"),
+            "warning should explain that cleanup fell back to force remove: {warning}"
+        );
+        assert!(fallback_called, "explicit cleanup failure must try fallback removal");
+        assert!(cleaned_up, "successful fallback should mark the container as cleaned up");
+    }
+
+    #[test]
+    fn cleanup_treats_missing_container_as_already_cleaned_up() {
+        let mut cleaned_up = false;
+
+        let warning = handle_cleanup_result(
+            &mut cleaned_up,
+            "synctv-redis-test",
+            Err("Error response from daemon: No such container: synctv-redis-test".to_string()),
+            "redis",
+            |_| panic!("fallback should not run when the container is already gone"),
+        )
+        .expect("missing container should still surface a warning");
+
+        assert!(
+            warning.contains("already removed"),
+            "warning should explain that the container was already gone: {warning}"
+        );
+        assert!(cleaned_up, "missing container should still be treated as cleaned up");
+    }
+
+    #[test]
+    fn cleanup_leaves_container_uncleaned_when_explicit_and_fallback_removal_fail() {
+        let mut cleaned_up = false;
+        let warning = handle_cleanup_result(
+            &mut cleaned_up,
+            "synctv-redis-test",
+            Err("docker rm failed".to_string()),
+            "redis",
+            |_| Err("docker rm -f failed".to_string()),
+        )
+        .expect("double failure should emit a warning");
+
+        assert!(
+            warning.contains("fallback `docker rm -f` also failed"),
+            "warning should include the fallback failure: {warning}"
+        );
+        assert!(
+            !cleaned_up,
+            "cleanup should leave Drop fallback enabled when both removal attempts fail"
+        );
+    }
+
+    #[test]
+    fn docker_rm_force_reports_command_failure() {
+        let err = docker_rm_force_with_program("false", "synctv-redis-test")
+            .expect_err("failed command must surface as an error");
+
+        assert!(
+            err.contains("command `false rm -f synctv-redis-test` exited with status"),
+            "error should include the failing command line: {err}"
+        );
+    }
+
+    #[test]
+    fn docker_rm_force_reports_spawn_failure() {
+        let err = docker_rm_force_with_program(
+            "synctv-command-that-should-not-exist",
+            "synctv-redis-test",
+        )
+        .expect_err("spawn failure must surface as an error");
+
+        assert!(
+            err.contains("failed to spawn `synctv-command-that-should-not-exist`"),
+            "error should include the missing program: {err}"
         );
     }
 
@@ -649,5 +829,15 @@ mod tests {
             candidate_endpoints_for_host("localhost", Some(6379), Some(16380)),
             vec![("::1".to_string(), 16380), ("127.0.0.1".to_string(), 6379)]
         );
+    }
+
+    fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+        if let Some(message) = payload.downcast_ref::<String>() {
+            return message.clone();
+        }
+        if let Some(message) = payload.downcast_ref::<&str>() {
+            return (*message).to_string();
+        }
+        "<non-string panic payload>".to_string()
     }
 }

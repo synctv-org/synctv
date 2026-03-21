@@ -91,7 +91,7 @@ pub(crate) fn internal_err(context: &str, err: impl std::fmt::Display) -> tonic:
 /// message is returned to the client to avoid leaking sensitive information.
 pub(crate) fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
     use crate::impls::ErrorKind;
-    let msg = err.to_string();
+    let msg = err.message().to_string();
     match err.classify() {
         ErrorKind::NotFound => tonic::Status::not_found(msg),
         ErrorKind::Unauthenticated => tonic::Status::unauthenticated(msg),
@@ -165,27 +165,20 @@ pub(crate) fn extract_client_ip<T>(
         .and_then(tonic::transport::server::TcpConnectInfo::remote_addr)
         .map(|addr| addr.ip());
 
-    let should_trust_headers = remote_addr.is_some_and(|ip| config.server.is_trusted_proxy(&ip));
-    if should_trust_headers {
-        if let Some(ip) = request
-            .metadata()
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .map(str::trim)
-            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
-        {
-            return Some(ip);
+    if let Some(peer_ip) = remote_addr {
+        let mut headers = axum::http::HeaderMap::new();
+        for header_name in ["x-forwarded-for", "x-real-ip"] {
+            if let Some(value) = request.metadata().get(header_name).and_then(|v| {
+                v.to_str()
+                    .ok()
+                    .and_then(|s| s.parse::<axum::http::HeaderValue>().ok())
+            }) {
+                headers.insert(header_name, value);
+            }
         }
-        if let Some(ip) = request
-            .metadata()
-            .get("x-real-ip")
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim)
-            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
-        {
-            return Some(ip);
-        }
+        return Some(crate::client_ip::extract_client_ip_from_headers(
+            config, peer_ip, &headers,
+        ));
     }
 
     remote_addr
@@ -1109,16 +1102,13 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             .expect("node_registry presence checked by should_register_cluster_grpc_service");
         let cluster_server =
             synctv_cluster::grpc::ClusterServer::new(nr.clone(), cluster_node_id.clone())
+                .with_cluster_secret(config.server.cluster_secret.clone())
                 .with_connection_manager(std::sync::Arc::new(
                     connection_manager_for_provider.clone(),
                 ));
-        let cluster_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
-        router = router.add_service(
-            synctv_cluster::grpc::ClusterServiceServer::with_interceptor(
-                cluster_server,
-                move |req| cluster_interceptor.validate(req),
-            ),
-        );
+        router = router.add_service(synctv_cluster::grpc::ClusterServiceServer::new(
+            cluster_server,
+        ));
         tracing::info!(
             "Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)"
         );

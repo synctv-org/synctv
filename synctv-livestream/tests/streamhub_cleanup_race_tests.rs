@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_livestream::relay::StreamRegistryTrait;
-use tokio::sync::{oneshot, Barrier};
+use tokio::sync::{oneshot, Barrier, Notify};
 
 /// Simulates the cleanup sequence during `StreamHub` restart with concurrent
 /// stream disconnections.
@@ -50,12 +50,17 @@ async fn test_cleanup_during_concurrent_unregistration() {
 
     // Task 1: Simulate streams unregistering concurrently
     let barrier_clone = barrier.clone();
+    let unregister_started = Arc::new(Notify::new());
+    let unregister_started_clone = Arc::clone(&unregister_started);
     let unregister_handle = tokio::spawn(async move {
         // Wait for both tasks to be ready
         barrier_clone.wait().await;
 
         // Unregister some streams concurrently with cleanup
         for i in 0..3 {
+            if i == 0 {
+                unregister_started_clone.notify_one();
+            }
             registry_clone
                 .unregister_publisher(&format!("room{i}"), &format!("media{i}"))
                 .await
@@ -70,8 +75,7 @@ async fn test_cleanup_during_concurrent_unregistration() {
         // Wait for both tasks to be ready
         barrier_clone.wait().await;
 
-        // Small delay to ensure concurrency
-        tokio::time::sleep(Duration::from_micros(100)).await;
+        unregister_started.notified().await;
 
         // Cleanup should be safe even with concurrent unregistrations
         registry_for_cleanup
@@ -293,15 +297,21 @@ async fn test_stop_then_cleanup_with_delayed_unregistration() {
 
     // Simulate the two-phase stop protocol
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
+    let (begin_unregister_tx, begin_unregister_rx) = oneshot::channel::<()>();
+    let unregister_started = Arc::new(Notify::new());
+    let unregister_started_clone = Arc::clone(&unregister_started);
 
     let registry_clone = registry.clone();
     let unregister_handle = tokio::spawn(async move {
-        // Simulate slow stream shutdown that happens AFTER stop signal
-        // but BEFORE cleanup starts
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        begin_unregister_rx
+            .await
+            .expect("cleanup path should signal unregister start");
 
         // Streams are still unregistering during the cleanup window
         for i in 0..3 {
+            if i == 0 {
+                unregister_started_clone.notify_one();
+            }
             let _ = registry_clone
                 .unregister_publisher(&format!("room{i}"), &format!("media{i}"))
                 .await;
@@ -313,6 +323,9 @@ async fn test_stop_then_cleanup_with_delayed_unregistration() {
 
     // Wait for stop_done with timeout (simulates the 100ms timeout in server.rs)
     let _ = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
+
+    let _ = begin_unregister_tx.send(());
+    unregister_started.notified().await;
 
     // Immediately call cleanup (this is where the race occurs)
     // Cleanup should handle the case where unregister is in progress
@@ -356,29 +369,40 @@ async fn test_stop_delay_then_cleanup_prevents_race() {
     let registry_clone = registry.clone();
     let unregister_started = Arc::new(AtomicUsize::new(0));
     let unregister_completed = Arc::new(AtomicUsize::new(0));
+    let started_notify = Arc::new(Notify::new());
+    let completed_notify = Arc::new(Notify::new());
 
     let unregister_started_clone = unregister_started.clone();
     let unregister_completed_clone = unregister_completed.clone();
+    let started_notify_clone = Arc::clone(&started_notify);
+    let completed_notify_clone = Arc::clone(&completed_notify);
 
     // Spawn unregister task that takes some time
     let unregister_handle = tokio::spawn(async move {
         for i in 0..3 {
-            unregister_started_clone.fetch_add(1, Ordering::SeqCst);
+            if unregister_started_clone.fetch_add(1, Ordering::SeqCst) == 0 {
+                started_notify_clone.notify_one();
+            }
             registry_clone
                 .unregister_publisher(&format!("room{i}"), &format!("media{i}"))
                 .await
                 .unwrap();
-            unregister_completed_clone.fetch_add(1, Ordering::SeqCst);
+            if unregister_completed_clone.fetch_add(1, Ordering::SeqCst) + 1 == 3 {
+                completed_notify_clone.notify_one();
+            }
         }
     });
 
     // Wait for unregistrations to start
-    while unregister_started.load(Ordering::SeqCst) == 0 {
-        tokio::time::sleep(Duration::from_micros(10)).await;
+    if unregister_started.load(Ordering::SeqCst) == 0 {
+        started_notify.notified().await;
     }
 
-    // Add delay (proposed fix)
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for the in-flight unregister sequence to complete before cleanup,
+    // which is what the grace period is intended to achieve.
+    if unregister_completed.load(Ordering::SeqCst) < 3 {
+        completed_notify.notified().await;
+    }
 
     // Now cleanup
     registry
@@ -550,22 +574,32 @@ async fn test_complete_restart_sequence_with_delay_fix() {
     let registry_clone = registry.clone();
     let unregister_completed = Arc::new(AtomicUsize::new(0));
     let unregister_completed_clone = unregister_completed.clone();
+    let (allow_unregister_tx, allow_unregister_rx) = oneshot::channel::<()>();
+    let completed_notify = Arc::new(Notify::new());
+    let completed_notify_clone = Arc::clone(&completed_notify);
 
     // Phase 2: Stop signal sent, streams start disconnecting async
     let unregister_handle = tokio::spawn(async move {
-        // Simulate streams taking some time to disconnect after stop signal
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        allow_unregister_rx
+            .await
+            .expect("restart flow should release unregister task");
 
         for i in 0..5 {
             let _ = registry_clone
                 .unregister_publisher(&format!("room{i}"), &format!("media{i}"))
                 .await;
-            unregister_completed_clone.fetch_add(1, Ordering::SeqCst);
+            if unregister_completed_clone.fetch_add(1, Ordering::SeqCst) + 1 == 5 {
+                completed_notify_clone.notify_one();
+            }
         }
     });
 
-    // Phase 3: 500ms delay (the fix) - allows unregistrations to complete
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Phase 3: grace period (the fix) - modeled by waiting for the in-flight
+    // unregister sequence to complete instead of a wall-clock sleep.
+    let _ = allow_unregister_tx.send(());
+    if unregister_completed.load(Ordering::SeqCst) < 5 {
+        completed_notify.notified().await;
+    }
 
     // Phase 4: Cleanup (should find most/all streams already unregistered)
     registry

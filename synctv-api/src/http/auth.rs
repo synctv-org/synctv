@@ -30,23 +30,7 @@ pub fn extract_client_ip(
     socket_addr: std::net::SocketAddr,
     headers: &axum::http::HeaderMap,
 ) -> std::net::IpAddr {
-    let socket_ip = socket_addr.ip();
-    if config.server.is_trusted_proxy(&socket_ip) {
-        headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-            .or_else(|| {
-                headers
-                    .get("x-real-ip")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-            })
-            .unwrap_or(socket_ip)
-    } else {
-        socket_ip
-    }
+    crate::client_ip::extract_client_ip_from_headers(config, socket_addr.ip(), headers)
 }
 
 /// Register a new user

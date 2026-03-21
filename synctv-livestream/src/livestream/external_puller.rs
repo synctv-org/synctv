@@ -48,6 +48,13 @@ const INITIAL_BACKOFF_MS: u64 = 1000;
 const MAX_BACKOFF_MS: u64 = 30_000;
 /// Maximum total FLV buffer size (50 MB) to prevent unbounded memory growth
 const MAX_FLV_BUFFER_SIZE: usize = 50 * 1024 * 1024;
+/// Maximum time to establish the HTTP request and receive response headers.
+///
+/// Live HTTP-FLV streams can run indefinitely, so this timeout only covers the
+/// startup phase. Ongoing liveness is enforced by the per-chunk read timeout.
+const HTTP_FLV_REQUEST_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Per-chunk read timeout: if no data arrives for 30s, the stream is dead.
+const HTTP_FLV_CHUNK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 // FLV format constants
 const FLV_HEADER_SIZE: usize = 9;
@@ -624,11 +631,9 @@ impl ExternalStreamPuller {
 
         let client = build_http_flv_client(&self.source_url, addr, self.http_client.as_ref())?;
 
-        let mut response = client
-            .get(&self.source_url)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?;
+        let mut response =
+            send_http_flv_request(&client, &self.source_url, HTTP_FLV_REQUEST_START_TIMEOUT)
+                .await?;
 
         if !response.status().is_success() {
             return Err(anyhow::anyhow!("HTTP error: {}", response.status()));
@@ -638,9 +643,6 @@ impl ExternalStreamPuller {
         let mut header_parsed = false;
         let mut dropped_frames: u64 = 0;
         const DROP_LOG_INTERVAL: u64 = 100;
-        /// Per-chunk read timeout: if no data arrives for 30s, the stream is dead.
-        const CHUNK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
         // Read response body in chunks and parse FLV tags.
         // Use per-chunk timeout instead of total request timeout so live streams
         // can run indefinitely as long as data keeps flowing.
@@ -655,7 +657,7 @@ impl ExternalStreamPuller {
                     );
                     return Ok(());
                 }
-                result = tokio::time::timeout(CHUNK_READ_TIMEOUT, response.chunk()) => {
+                result = tokio::time::timeout(HTTP_FLV_CHUNK_READ_TIMEOUT, response.chunk()) => {
                     match result {
                         Ok(Ok(Some(c))) => c,
                         Ok(Ok(None)) => {
@@ -672,7 +674,7 @@ impl ExternalStreamPuller {
                             break; // Stream ended normally
                         }
                         Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to read HTTP chunk: {e}")),
-                        Err(_) => return Err(anyhow::anyhow!("No data received for {}s, stream appears dead", CHUNK_READ_TIMEOUT.as_secs())),
+                        Err(_) => return Err(anyhow::anyhow!("No data received for {}s, stream appears dead", HTTP_FLV_CHUNK_READ_TIMEOUT.as_secs())),
                     }
                 }
             };
@@ -911,18 +913,33 @@ fn build_http_flv_client(
         }
     }
 
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .dns_resolver(synctv_common::ssrf::ssrf_dns_resolver());
+    let mut builder = synctv_common::http::SsrfSafeClientBuilder::proxy()
+        .disable_request_timeout()
+        .disable_read_timeout();
 
     if host.parse::<std::net::IpAddr>().is_err() {
-        builder = builder.resolve(host, resolved_addr);
+        builder = builder.resolve(host.to_string(), resolved_addr);
     }
 
     builder
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))
+}
+
+async fn send_http_flv_request(
+    client: &reqwest::Client,
+    source_url: &str,
+    timeout: std::time::Duration,
+) -> Result<reqwest::Response> {
+    tokio::time::timeout(timeout, client.get(source_url).send())
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "HTTP-FLV source did not respond within {}s",
+                timeout.as_secs()
+            )
+        })?
+        .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))
 }
 
 /// Drop guard that sends UnPublish to StreamHub when dropped.
@@ -1027,6 +1044,7 @@ pub fn validate_source_url(url: &str) -> Result<ExternalSourceType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration as StdDuration;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
@@ -1112,6 +1130,22 @@ mod tests {
         let addr = listener.local_addr()?;
         let handle = tokio::spawn(async move {
             if let Ok((mut stream, _)) = listener.accept().await {
+                let _ = stream.write_all(&response).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        Ok((addr, handle))
+    }
+
+    async fn spawn_delayed_http_response_server(
+        delay: StdDuration,
+        response: Vec<u8>,
+    ) -> anyhow::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let handle = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                tokio::time::sleep(delay).await;
                 let _ = stream.write_all(&response).await;
                 let _ = stream.shutdown().await;
             }
@@ -1388,6 +1422,59 @@ mod tests {
             .expect("request should return first-hop redirect");
 
         assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        server_handle.abort();
+    }
+
+    #[test]
+    fn test_build_http_flv_client_disables_inherited_reqwest_timeouts_for_live_streams() {
+        let client = build_http_flv_client(
+            "http://example.com:8080/stream.flv",
+            std::net::SocketAddr::from(([203, 0, 113, 10], 8080)),
+            None,
+        )
+        .expect("HTTP-FLV client should build");
+
+        let request = client
+            .get("http://example.com:8080/stream.flv")
+            .build()
+            .expect("request should build");
+        assert_eq!(
+            request.timeout(),
+            None,
+            "live HTTP-FLV requests must not inherit a total request timeout"
+        );
+
+        let debug_repr = format!("{client:?}");
+        assert!(
+            !debug_repr.contains("read_timeout: Some(30s)"),
+            "live HTTP-FLV client must not inherit the proxy preset read timeout: {debug_repr}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_http_flv_request_times_out_before_headers() {
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+        let (addr, server_handle) =
+            spawn_delayed_http_response_server(StdDuration::from_millis(200), response)
+                .await
+                .expect("test server should start");
+
+        let client = build_http_flv_client(&format!("http://{addr}/stream.flv"), addr, None)
+            .expect("HTTP-FLV client should build");
+
+        let err = send_http_flv_request(
+            &client,
+            &format!("http://{addr}/stream.flv"),
+            StdDuration::from_millis(50),
+        )
+        .await
+        .expect_err("request should time out before response headers arrive");
+
+        assert!(
+            err.to_string().contains("did not respond within"),
+            "unexpected error: {err}"
+        );
         server_handle.abort();
     }
 

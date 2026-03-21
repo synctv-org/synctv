@@ -55,43 +55,43 @@ fn main() {
         });
 
     if let Some(ref path) = config_path {
-        println!("📁 Loading configuration from: {path}");
+        println!("INFO: loading configuration from: {path}");
     } else {
-        println!("📁 No config file found, will validate environment variables");
+        println!("INFO: no config file found, validating environment variables");
     }
     println!();
 
     // Load and parse configuration
     let config = match load_config_for_validation(&config_path) {
         Ok(cfg) => {
-            println!("✅ Configuration parsed successfully\n");
+            println!("OK: configuration parsed successfully\n");
             cfg
         }
         Err(e) => {
-            eprintln!("❌ Failed to parse configuration: {e}\n");
+            eprintln!("ERROR: failed to parse configuration: {e}\n");
             eprintln!("Please check the configuration file format and syntax.");
             process::exit(2);
         }
     };
 
     // Run validation
-    println!("🔍 Running validation checks...\n");
+    println!("INFO: running validation checks...\n");
     match config.validate() {
         Ok(()) => {
-            println!("✅ All validation checks passed!\n");
+            println!("OK: all validation checks passed\n");
             print_config_summary(&config);
-            println!("\n✨ Configuration is ready for deployment");
+            println!("\nOK: configuration is ready for deployment");
             process::exit(0);
         }
         Err(errors) => {
             eprintln!(
-                "❌ Configuration validation failed with {} error(s):\n",
+                "ERROR: configuration validation failed with {} error(s):\n",
                 errors.len()
             );
             for (i, error) in errors.iter().enumerate() {
                 eprintln!("  {}. {}", i + 1, error);
             }
-            eprintln!("\n💡 Please fix these issues before deploying.");
+            eprintln!("\nPlease fix these issues before deploying.");
             process::exit(1);
         }
     }
@@ -115,38 +115,38 @@ fn load_config_for_validation_with_env(
 
 /// Print a summary of key configuration settings
 fn print_config_summary(config: &Config) {
-    println!("📋 Configuration Summary");
-    println!("   ─────────────────────");
-    println!("   Server:");
-    println!("     • gRPC: {}", config.grpc_address());
-    println!("     • HTTP: {}", config.http_address());
+    println!("Configuration Summary");
+    println!("---------------------");
+    println!("  Server:");
+    println!("    - gRPC: {}", config.grpc_address());
+    println!("    - HTTP: {}", config.http_address());
     if config.cluster.enabled {
-        println!("     • Cluster mode: enabled");
+        println!("    - Cluster mode: enabled");
     }
 
-    println!("   Database:");
-    println!("     • URL: {}", mask_sensitive(&config.database.url));
+    println!("  Database:");
+    println!("    - URL: {}", mask_sensitive(&config.database.url));
 
     if !config.redis.url.is_empty() {
-        println!("   Redis:");
-        println!("     • URL: {}", mask_sensitive(&config.redis.url));
+        println!("  Redis:");
+        println!("    - URL: {}", mask_sensitive(&config.redis.url));
     }
 
-    println!("   WebRTC:");
-    println!("     • Mode: {:?}", config.webrtc.mode);
+    println!("  WebRTC:");
+    println!("    - Mode: {:?}", config.webrtc.mode);
     if config.webrtc.enable_builtin_stun {
-        println!("     • STUN port: {}", config.webrtc.stun_port);
+        println!("    - STUN port: {}", config.webrtc.stun_port);
     }
 
-    println!("   Livestream:");
-    println!("     • RTMP port: {}", config.livestream.rtmp_port);
+    println!("  Livestream:");
+    println!("    - RTMP port: {}", config.livestream.rtmp_port);
 
     // OAuth2 providers
     if let Some(providers) = config.oauth2.providers.as_object() {
         if !providers.is_empty() {
-            println!("   OAuth2:");
+            println!("  OAuth2:");
             for provider_name in providers.keys() {
-                println!("     • {provider_name}");
+                println!("    - {provider_name}");
             }
         }
     }

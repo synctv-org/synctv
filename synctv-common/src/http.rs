@@ -23,6 +23,7 @@ pub struct SsrfSafeClientBuilder {
     pool_max_idle_per_host: usize,
     pool_idle_timeout: Option<Duration>,
     user_agent: Option<String>,
+    resolves: Vec<(String, std::net::SocketAddr)>,
 }
 
 impl SsrfSafeClientBuilder {
@@ -38,6 +39,7 @@ impl SsrfSafeClientBuilder {
             pool_max_idle_per_host: 10,
             pool_idle_timeout: None,
             user_agent: None,
+            resolves: Vec::new(),
         }
     }
 
@@ -53,6 +55,7 @@ impl SsrfSafeClientBuilder {
             pool_max_idle_per_host: 100,
             pool_idle_timeout: Some(Duration::from_secs(30)),
             user_agent: None,
+            resolves: Vec::new(),
         }
     }
 
@@ -67,6 +70,13 @@ impl SsrfSafeClientBuilder {
     #[must_use]
     pub const fn disable_request_timeout(mut self) -> Self {
         self.request_timeout = None;
+        self
+    }
+
+    /// Disable the body-read timeout.
+    #[must_use]
+    pub const fn disable_read_timeout(mut self) -> Self {
+        self.read_timeout = None;
         self
     }
 
@@ -105,6 +115,17 @@ impl SsrfSafeClientBuilder {
         self
     }
 
+    /// Pin a hostname to a resolved socket address.
+    ///
+    /// This is useful when the caller has already performed SSRF-checked DNS
+    /// resolution and wants to prevent DNS rebinding between validation and
+    /// connect time.
+    #[must_use]
+    pub fn resolve(mut self, host: impl Into<String>, addr: std::net::SocketAddr) -> Self {
+        self.resolves.push((host.into(), addr));
+        self
+    }
+
     /// Build the [`reqwest::Client`].
     pub fn build(self) -> Result<reqwest::Client, reqwest::Error> {
         let mut builder = reqwest::Client::builder()
@@ -124,6 +145,9 @@ impl SsrfSafeClientBuilder {
         }
         if let Some(ua) = self.user_agent {
             builder = builder.user_agent(ua);
+        }
+        for (host, addr) in self.resolves {
+            builder = builder.resolve(&host, addr);
         }
 
         builder.build()
@@ -185,6 +209,15 @@ mod tests {
         assert_eq!(b.pool_max_idle_per_host, 50);
         assert_eq!(b.pool_idle_timeout, Some(Duration::from_secs(90)));
         assert_eq!(b.user_agent.as_deref(), Some("test-agent"));
+        assert!(b.resolves.is_empty());
+    }
+
+    #[test]
+    fn test_builder_resolve_override() {
+        let addr = std::net::SocketAddr::from(([203, 0, 113, 10], 443));
+        let b = SsrfSafeClientBuilder::proxy().resolve("example.com", addr);
+
+        assert_eq!(b.resolves, vec![("example.com".to_string(), addr)]);
     }
 
     #[test]
@@ -209,5 +242,11 @@ mod tests {
     fn test_disable_request_timeout() {
         let builder = SsrfSafeClientBuilder::provider().disable_request_timeout();
         assert_eq!(builder.request_timeout, None);
+    }
+
+    #[test]
+    fn test_disable_read_timeout() {
+        let builder = SsrfSafeClientBuilder::proxy().disable_read_timeout();
+        assert_eq!(builder.read_timeout, None);
     }
 }

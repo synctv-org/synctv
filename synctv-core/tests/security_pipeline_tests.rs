@@ -750,8 +750,8 @@ async fn test_blacklist_store_error_rejects_request_fail_closed() {
     );
     let err = result.unwrap_err();
     assert!(
-        matches!(&err, Error::Authentication(msg) if msg.contains("temporarily unavailable")),
-        "Error should indicate temporary unavailability, got: {err}"
+        matches!(&err, Error::ServiceUnavailable(msg) if msg.contains("temporarily unavailable")),
+        "Error should indicate temporary unavailability via ServiceUnavailable, got: {err}"
     );
 }
 

@@ -858,16 +858,20 @@ mod grpc_validation_tests {
     fn test_validate_host_cloud_metadata() {
         assert!(validate_host("http://169.254.169.254").is_ok());
         assert!(validate_host("http://metadata.google.internal").is_ok());
+        assert!(validate_provider_grpc_host("http://169.254.169.254").is_ok());
+        assert!(validate_provider_grpc_host("http://metadata.google.internal").is_ok());
     }
 
     #[test]
     fn test_validate_host_ipv4_mapped_ipv6() {
         assert!(validate_host("http://[::ffff:127.0.0.1]").is_ok());
+        assert!(validate_provider_grpc_host("http://[::ffff:127.0.0.1]").is_ok());
     }
 
     #[test]
     fn test_validate_host_kubernetes_service() {
         assert!(validate_host("http://localhost").is_ok());
+        assert!(validate_provider_grpc_host("http://localhost").is_ok());
     }
 }
 

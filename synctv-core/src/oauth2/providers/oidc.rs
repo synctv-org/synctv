@@ -1,5 +1,6 @@
 //! Generic OIDC provider
 
+use super::{build_oauth2_http_client, build_provider_http_client, map_provider_http_error};
 use crate::oauth2::{OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
@@ -52,6 +53,7 @@ pub struct OidcProvider {
     resolved: OnceCell<ResolvedOidc>,
     /// Stored config for lazy initialization (only used in issuer-only mode)
     init_config: OidcInitConfig,
+    oauth2_http_client: Arc<oauth2::reqwest::Client>,
     http_client: Arc<Client>,
 }
 
@@ -85,13 +87,6 @@ impl OidcProvider {
         redirect_url: String,
         issuer: &str,
     ) -> Result<Self, Error> {
-        let http_client = Arc::new(
-            Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .internal_with_err("Failed to build HTTP client")?,
-        );
-
         Ok(Self {
             resolved: OnceCell::new(),
             init_config: OidcInitConfig {
@@ -101,7 +96,8 @@ impl OidcProvider {
                 issuer: issuer.trim_end_matches('/').to_string(),
                 static_endpoints: None,
             },
-            http_client,
+            oauth2_http_client: build_oauth2_http_client()?,
+            http_client: build_provider_http_client()?,
         })
     }
 
@@ -119,13 +115,6 @@ impl OidcProvider {
         userinfo_url: Option<String>,
     ) -> Result<Self, Error> {
         let issuer_trimmed = issuer.trim_end_matches('/');
-        let http_client = Arc::new(
-            Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .internal_with_err("Failed to build HTTP client")?,
-        );
-
         Ok(Self {
             resolved: OnceCell::new(),
             init_config: OidcInitConfig {
@@ -139,7 +128,8 @@ impl OidcProvider {
                     userinfo_url,
                 }),
             },
-            http_client,
+            oauth2_http_client: build_oauth2_http_client()?,
+            http_client: build_provider_http_client()?,
         })
     }
 
@@ -168,10 +158,13 @@ impl OidcProvider {
                         .get(&discovery_url)
                         .send()
                         .await
-                        .map_err(|e| {
-                            Error::Internal(format!(
-                                "Failed to fetch OIDC discovery document from {discovery_url}: {e}"
-                            ))
+                        .map_err(|err| {
+                            map_provider_http_error(
+                                &format!(
+                                    "Failed to fetch OIDC discovery document from {discovery_url}"
+                                ),
+                                err,
+                            )
                         })?
                         .error_for_status()
                         .map_err(|e| {
@@ -248,9 +241,9 @@ impl Provider for OidcProvider {
             .client
             .exchange_code(oauth2::AuthorizationCode::new(code.to_string()))
             .set_pkce_verifier(verifier)
-            .request_async(&oauth2::reqwest::Client::new())
+            .request_async(self.oauth2_http_client.as_ref())
             .await
-            .internal_with_err("Failed to exchange code")?;
+            .map_err(|err| map_provider_http_error("Failed to exchange code", err))?;
 
         // Fetch user info from userinfo endpoint
         let userinfo_url = resolved.userinfo_url.as_ref().ok_or_else(|| {
@@ -268,7 +261,7 @@ impl Provider for OidcProvider {
             )
             .send()
             .await
-            .internal_with_err("Failed to fetch user info")?
+            .map_err(|err| map_provider_http_error("Failed to fetch user info", err))?
             .error_for_status()
             .internal_with_err("OIDC API error")?;
 

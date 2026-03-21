@@ -21,11 +21,16 @@
 
 use super::ProviderError;
 use async_trait::async_trait;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_media_providers::alist::{AlistError, AlistInterface};
 use synctv_media_providers::grpc::alist::{FsGetResp, FsListResp, FsOtherResp};
 use tonic::{Code, Request, Status};
+
+#[cfg(test)]
+static PROVIDER_CLIENT_MANAGER_MARKER_SEQ: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Clone, Debug)]
 pub struct RemoteProviderConnection {
@@ -35,10 +40,7 @@ pub struct RemoteProviderConnection {
 
 impl RemoteProviderConnection {
     #[must_use]
-    pub fn new(
-        channel: tonic::transport::Channel,
-        auth_secret: Option<impl Into<String>>,
-    ) -> Self {
+    pub fn new(channel: tonic::transport::Channel, auth_secret: Option<impl Into<String>>) -> Self {
         Self {
             channel,
             auth_secret: auth_secret.map(|secret| Arc::<str>::from(secret.into())),
@@ -92,19 +94,16 @@ macro_rules! impl_grpc_method {
                 let mut client = _client_mod::$client_name::new(self.connection.channel());
                 let request = build_grpc_request(self.connection.auth_secret(), request)
                     .map_err(<$error>::from)?;
-                let response = tokio::time::timeout(
-                    GRPC_REQUEST_TIMEOUT,
-                    client.$method(request),
-                )
-                .await
-                .map_err(|_| {
-                    <$error>::Network(format!(
-                        "gRPC request timeout ({}s) for {}",
-                        GRPC_REQUEST_TIMEOUT.as_secs(),
-                        stringify!($method),
-                    ))
-                })?
-                .map_err(|e| <$error>::from(map_grpc_status(stringify!($method), e)))?;
+                let response = tokio::time::timeout(GRPC_REQUEST_TIMEOUT, client.$method(request))
+                    .await
+                    .map_err(|_| {
+                        <$error>::Network(format!(
+                            "gRPC request timeout ({}s) for {}",
+                            GRPC_REQUEST_TIMEOUT.as_secs(),
+                            stringify!($method),
+                        ))
+                    })?
+                    .map_err(|e| <$error>::from(map_grpc_status(stringify!($method), e)))?;
                 Ok(response.into_inner())
             })
         }
@@ -116,7 +115,10 @@ fn build_grpc_request<T>(
     payload: T,
 ) -> Result<Request<T>, synctv_media_providers::ProviderClientError> {
     let mut request = Request::new(payload);
-    let Some(auth_secret) = auth_secret.map(str::trim).filter(|secret| !secret.is_empty()) else {
+    let Some(auth_secret) = auth_secret
+        .map(str::trim)
+        .filter(|secret| !secret.is_empty())
+    else {
         return Ok(request);
     };
 
@@ -132,7 +134,9 @@ fn build_grpc_request<T>(
     Ok(request)
 }
 
-pub(crate) fn validate_auth_secret(auth_secret: Option<&str>) -> Result<Option<&str>, ProviderError> {
+pub(crate) fn validate_auth_secret(
+    auth_secret: Option<&str>,
+) -> Result<Option<&str>, ProviderError> {
     match auth_secret.map(str::trim) {
         Some("") => Err(ProviderError::InvalidConfig(
             "remote provider auth secret must not be empty".to_string(),
@@ -164,10 +168,7 @@ fn grpc_status_to_http_status(code: Code) -> Option<reqwest::StatusCode> {
     }
 }
 
-fn map_grpc_status(
-    context: &str,
-    status: Status,
-) -> synctv_media_providers::ProviderClientError {
+fn map_grpc_status(context: &str, status: Status) -> synctv_media_providers::ProviderClientError {
     let message = status.message().to_string();
     match status.code() {
         Code::Unauthenticated => synctv_media_providers::ProviderClientError::Auth(message),
@@ -238,6 +239,8 @@ pub struct ProviderClientManager {
     local_bilibili: BilibiliClientArc,
     /// Local Emby client (singleton within this manager)
     local_emby: EmbyClientArc,
+    #[cfg(test)]
+    marker: usize,
 }
 
 impl std::fmt::Debug for ProviderClientManager {
@@ -278,6 +281,8 @@ impl ProviderClientManager {
             local_emby: Arc::new(synctv_media_providers::emby::EmbyService::with_client(
                 client,
             )),
+            #[cfg(test)]
+            marker: PROVIDER_CLIENT_MANAGER_MARKER_SEQ.fetch_add(1, AtomicOrdering::Relaxed),
         }
     }
 
@@ -292,6 +297,8 @@ impl ProviderClientManager {
             local_alist: Arc::new(alist),
             local_bilibili: Arc::new(bilibili),
             local_emby: Arc::new(emby),
+            #[cfg(test)]
+            marker: PROVIDER_CLIENT_MANAGER_MARKER_SEQ.fetch_add(1, AtomicOrdering::Relaxed),
         }
     }
 
@@ -308,6 +315,8 @@ impl ProviderClientManager {
             local_alist,
             local_bilibili,
             local_emby,
+            #[cfg(test)]
+            marker: PROVIDER_CLIENT_MANAGER_MARKER_SEQ.fetch_add(1, AtomicOrdering::Relaxed),
         }
     }
 
@@ -369,6 +378,11 @@ impl ProviderClientManager {
             Some(connection) => create_remote_emby_client(connection),
             None => self.local_emby_client(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn marker(&self) -> usize {
+        self.marker
     }
 }
 
@@ -450,18 +464,15 @@ impl AlistInterface for GrpcAlistClient {
         use synctv_media_providers::grpc::alist::alist_client::AlistClient;
         let mut client = AlistClient::new(self.connection.channel());
         let request = build_grpc_request(self.connection.auth_secret(), request)?;
-        let response = tokio::time::timeout(
-            GRPC_REQUEST_TIMEOUT,
-            client.login(request),
-        )
-        .await
-        .map_err(|_| {
-            AlistError::Network(format!(
-                "gRPC request timeout ({}s) for login",
-                GRPC_REQUEST_TIMEOUT.as_secs(),
-            ))
-        })?
-        .map_err(|e| AlistError::from(map_grpc_status("login", e)))?;
+        let response = tokio::time::timeout(GRPC_REQUEST_TIMEOUT, client.login(request))
+            .await
+            .map_err(|_| {
+                AlistError::Network(format!(
+                    "gRPC request timeout ({}s) for login",
+                    GRPC_REQUEST_TIMEOUT.as_secs(),
+                ))
+            })?
+            .map_err(|e| AlistError::from(map_grpc_status("login", e)))?;
         Ok(response.into_inner().token)
     }
 }
@@ -1068,10 +1079,7 @@ mod tests {
 
     #[test]
     fn test_map_grpc_status_unauthenticated_to_auth() {
-        let error = map_grpc_status(
-            "login",
-            Status::unauthenticated("Invalid provider secret"),
-        );
+        let error = map_grpc_status("login", Status::unauthenticated("Invalid provider secret"));
         assert!(matches!(
             error,
             ProviderClientError::Auth(message) if message == "Invalid provider secret"
@@ -1080,8 +1088,7 @@ mod tests {
 
     #[test]
     fn test_map_grpc_status_invalid_argument_to_invalid_config() {
-        let error =
-            map_grpc_status("fs_get", Status::invalid_argument("missing host parameter"));
+        let error = map_grpc_status("fs_get", Status::invalid_argument("missing host parameter"));
         assert!(matches!(
             error,
             ProviderClientError::InvalidConfig(message) if message == "missing host parameter"

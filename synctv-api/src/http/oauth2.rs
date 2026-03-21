@@ -117,8 +117,11 @@ pub async fn exchange_authorization_code(
     let current_user_id = maybe_auth.as_ref().map(|a| &a.user_id);
 
     // Extract client IP for brute-force protection (Issue #24).
-    let client_ip =
-        crate::client_ip::extract_client_ip_from_headers(&state.config, connect_info.0.ip(), &headers);
+    let client_ip = crate::client_ip::extract_client_ip_from_headers(
+        &state.config,
+        connect_info.0.ip(),
+        &headers,
+    );
 
     let result = oauth2_api
         .exchange_authorization_code(

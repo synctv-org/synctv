@@ -97,6 +97,51 @@ impl UserService {
         }
     }
 
+    pub(crate) fn oauth2_username_candidates(
+        &self,
+        provider_user_id: &str,
+        username: &str,
+    ) -> Result<(String, Vec<String>)> {
+        let sanitized_username = username
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+            .collect::<String>()
+            .trim()
+            .to_string();
+
+        let base_username = if sanitized_username.is_empty() {
+            format!(
+                "user_{}",
+                &provider_user_id[..provider_user_id.len().min(20)]
+            )
+        } else {
+            sanitized_username
+        };
+
+        self.validate_username(&base_username)?;
+
+        let max_attempts = 10;
+        let mut candidates = Vec::with_capacity(max_attempts);
+        candidates.push(base_username.clone());
+        for _ in 1..max_attempts {
+            let max_base_len = 42;
+            let base = if base_username.chars().count() > max_base_len {
+                base_username.chars().take(max_base_len).collect::<String>()
+            } else {
+                base_username.clone()
+            };
+            let suffix = nanoid::nanoid!(6);
+            candidates.push(format!("{base}_{suffix}"));
+        }
+
+        Ok((base_username, candidates))
+    }
+
+    pub(crate) async fn cache_oauth2_username_best_effort(&self, user_id: &UserId, username: &str) {
+        self.cache_username_best_effort(user_id, username, "create_or_load_by_oauth2")
+            .await;
+    }
+
     async fn invalidate_username_cache_best_effort(
         &self,
         user_id: &UserId,
@@ -1249,73 +1294,26 @@ impl UserService {
         username: &str,
         email: Option<&str>,
     ) -> Result<User> {
-        // Sanitize OAuth2 username: remove invalid characters and trim
-        let sanitized_username = username
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-            .collect::<String>()
-            .trim()
-            .to_string();
-
-        // If sanitization resulted in empty username, use provider user ID
-        let base_username = if sanitized_username.is_empty() {
-            format!(
-                "user_{}",
-                &provider_user_id[..provider_user_id.len().min(20)]
-            )
-        } else {
-            sanitized_username
-        };
-
-        // Validate the sanitized username
-        self.validate_username(&base_username)?;
-
+        let (base_username, candidates) =
+            self.oauth2_username_candidates(provider_user_id, username)?;
         // Generate a random password (OAuth2 users don't need password login)
         let random_password = nanoid::nanoid!(32);
-
-        // Use provided email, or None if not provided
         let user_email = email.map(std::string::ToString::to_string);
-
         // Hash password
         let password_hash = hash_password(&random_password).await?;
 
-        // Try to create user with the desired username first. If the DB UNIQUE
-        // constraint rejects it, fall back to random-suffixed variants. Using
-        // random suffixes (instead of sequential) avoids thundering herd under
-        // concurrent OAuth2 signups with the same base username.
-        let max_attempts = 10;
-        let mut candidates = Vec::with_capacity(max_attempts);
-        candidates.push(base_username.clone());
-        for _ in 1..max_attempts {
-            // Cap the base to leave room for the suffix within the 50-char limit
-            let max_base_len = 42;
-            // Use character count instead of byte length to avoid panics on multi-byte UTF-8
-            let base = if base_username.chars().count() > max_base_len {
-                base_username.chars().take(max_base_len).collect::<String>()
-            } else {
-                base_username.clone()
-            };
-            // Random 6-char alphanumeric suffix
-            let suffix = nanoid::nanoid!(6);
-            candidates.push(format!("{base}_{suffix}"));
-        }
-
         for candidate in &candidates {
-            let user = User::new(
+            let user = User::new_with_status(
                 candidate.clone(),
                 user_email.clone(),
                 password_hash.clone(),
                 SignupMethod::OAuth2,
+                crate::models::UserStatus::Active,
             );
             match self.repository.create(&user).await {
                 Ok(created_user) => {
-                    // Populate username cache
-                    self.cache_username_best_effort(
-                        &created_user.id,
-                        candidate,
-                        "create_or_load_by_oauth2",
-                    )
-                    .await;
+                    self.cache_oauth2_username_best_effort(&created_user.id, candidate)
+                        .await;
 
                     if candidate == &base_username {
                         tracing::info!(
@@ -1343,7 +1341,6 @@ impl UserService {
                 Err(Error::AlreadyExists(ref msg))
                     if msg.contains("username") || msg.contains("Username") =>
                 {
-                    // Username conflict -- try next candidate
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -1351,7 +1348,8 @@ impl UserService {
         }
 
         Err(Error::Internal(format!(
-            "Could not generate a unique username for base '{username}' after {max_attempts} attempts"
+            "Could not generate a unique username for base '{username}' after {} attempts",
+            candidates.len()
         )))
     }
 

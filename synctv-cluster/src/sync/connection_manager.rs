@@ -11,9 +11,8 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
 #[cfg(test)]
-type AsyncTestHook = Arc<
-    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
->;
+type AsyncTestHook =
+    Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Disconnect signal for forcing connections to close
 #[derive(Debug, Clone)]
@@ -459,10 +458,7 @@ impl ConnectionManager {
         self
     }
 
-    fn connection_lifecycle_lock(
-        &self,
-        connection_id: &str,
-    ) -> Arc<tokio::sync::Mutex<()>> {
+    fn connection_lifecycle_lock(&self, connection_id: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         connection_id.hash(&mut hasher);
         let index = (hasher.finish() as usize) % self.connection_lifecycle_locks.len();
@@ -748,7 +744,11 @@ impl ConnectionManager {
         };
 
         let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
-        let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id.as_str());
+        let user_index_key = format!(
+            "{}conn_mgr:user:{}",
+            self.redis_key_prefix,
+            user_id.as_str()
+        );
 
         let persistent = ConnectionInfoPersistent::from(&conn_info);
         match serde_json::to_string(&persistent) {
@@ -801,7 +801,11 @@ impl ConnectionManager {
             transition.room_id.as_str()
         );
         let previous_room_index_key = transition.previous_room_id.as_ref().map(|room_id| {
-            format!("{}conn_mgr:room:{}", self.redis_key_prefix, room_id.as_str())
+            format!(
+                "{}conn_mgr:room:{}",
+                self.redis_key_prefix,
+                room_id.as_str()
+            )
         });
 
         let persistent = ConnectionInfoPersistent::from(&conn_info);
@@ -1018,17 +1022,15 @@ impl ConnectionManager {
             .take();
         if let Some(handle) = disconnect_retry_handle {
             report.disconnect_retry = Some(
-                Self::await_shutdown_task(
-                    "disconnect retry",
-                    Duration::from_secs(5),
-                    handle,
-                )
-                .await,
+                Self::await_shutdown_task("disconnect retry", Duration::from_secs(5), handle).await,
             );
         }
 
         if !report.all_clean() {
-            warn!(?report, "ConnectionManager shutdown observed background task failures");
+            warn!(
+                ?report,
+                "ConnectionManager shutdown observed background task failures"
+            );
         }
 
         report
@@ -1073,11 +1075,17 @@ impl ConnectionManager {
     ) -> ShutdownTaskOutcome {
         match tokio::time::timeout(timeout_budget, handle).await {
             Ok(Ok(())) => {
-                debug!(task = task_name, "ConnectionManager background task stopped");
+                debug!(
+                    task = task_name,
+                    "ConnectionManager background task stopped"
+                );
                 ShutdownTaskOutcome::Completed
             }
             Ok(Err(error)) if error.is_cancelled() => {
-                debug!(task = task_name, "ConnectionManager background task cancelled");
+                debug!(
+                    task = task_name,
+                    "ConnectionManager background task cancelled"
+                );
                 ShutdownTaskOutcome::Cancelled
             }
             Ok(Err(error)) => {
@@ -3469,8 +3477,8 @@ mod tests {
     async fn test_duplicate_register_fails_fast_while_first_attempt_holds_lifecycle_lock() {
         let first_entered = Arc::new(tokio::sync::Notify::new());
         let release_first = Arc::new(tokio::sync::Notify::new());
-        let manager = Arc::new(ConnectionManager::default().with_register_after_lifecycle_lock_hook(
-            {
+        let manager = Arc::new(
+            ConnectionManager::default().with_register_after_lifecycle_lock_hook({
                 let first_entered = Arc::clone(&first_entered);
                 let release_first = Arc::clone(&release_first);
                 Arc::new(move || {
@@ -3481,8 +3489,8 @@ mod tests {
                         release_first.notified().await;
                     })
                 })
-            },
-        ));
+            }),
+        );
         let user_id = UserId::from_string("dup-fast-user".to_string());
 
         let first = {

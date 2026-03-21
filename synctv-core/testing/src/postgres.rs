@@ -886,8 +886,14 @@ mod tests {
             warning.contains("fallback `docker rm -f` succeeded"),
             "warning should explain that cleanup fell back to force remove: {warning}"
         );
-        assert!(fallback_called, "explicit cleanup failure must try fallback removal");
-        assert!(cleaned_up, "successful fallback should mark the container as cleaned up");
+        assert!(
+            fallback_called,
+            "explicit cleanup failure must try fallback removal"
+        );
+        assert!(
+            cleaned_up,
+            "successful fallback should mark the container as cleaned up"
+        );
     }
 
     #[test]
@@ -907,7 +913,10 @@ mod tests {
             warning.contains("already removed"),
             "warning should explain that the container was already gone: {warning}"
         );
-        assert!(cleaned_up, "missing container should still be treated as cleaned up");
+        assert!(
+            cleaned_up,
+            "missing container should still be treated as cleaned up"
+        );
     }
 
     #[test]
@@ -945,11 +954,9 @@ mod tests {
 
     #[test]
     fn docker_rm_force_reports_spawn_failure() {
-        let err = docker_rm_force_with_program(
-            "synctv-command-that-should-not-exist",
-            "synctv-pg-test",
-        )
-        .expect_err("spawn failure must surface as an error");
+        let err =
+            docker_rm_force_with_program("synctv-command-that-should-not-exist", "synctv-pg-test")
+                .expect_err("spawn failure must surface as an error");
 
         assert!(
             err.contains("failed to spawn `synctv-command-that-should-not-exist`"),

@@ -5,7 +5,7 @@
 
 use crate::provider::{
     AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
-    MediaProvider, RtmpProvider,
+    MediaProvider, ProviderClientManager, RtmpProvider,
 };
 use crate::service::RemoteProviderManager;
 use crate::Config;
@@ -78,6 +78,9 @@ pub struct ProvidersManager {
 
     /// Provider instance manager (for local/remote dispatch)
     instance_manager: Arc<RemoteProviderManager>,
+    /// Default injected local provider clients used by provider instances
+    /// when they do not specify a per-instance HTTP transport override.
+    default_client_manager: Arc<ProviderClientManager>,
     /// Default connect timeout used when building per-instance override clients.
     default_provider_connect_timeout: std::time::Duration,
 }
@@ -99,13 +102,17 @@ impl ProvidersManager {
     #[must_use]
     pub fn new_with_provider_http_client(
         instance_manager: Arc<RemoteProviderManager>,
-        _default_provider_http_client: reqwest::Client,
+        default_provider_http_client: reqwest::Client,
         default_provider_connect_timeout: std::time::Duration,
     ) -> Self {
+        let default_client_manager = Arc::new(
+            ProviderClientManager::new_with_provider_http_client(default_provider_http_client),
+        );
         let mut manager = Self {
             factories: HashMap::new(),
             instances: Arc::new(RwLock::new(HashMap::new())),
             instance_manager,
+            default_client_manager,
             default_provider_connect_timeout,
         };
 
@@ -123,6 +130,7 @@ impl ProvidersManager {
 
     /// Register all built-in provider factories
     fn register_builtin_providers(&mut self) {
+        let default_client_manager = Arc::clone(&self.default_client_manager);
         let default_provider_connect_timeout = self.default_provider_connect_timeout;
         // Alist factory - reads optional timeout from config
         self.register_factory(
@@ -140,13 +148,17 @@ impl ProvidersManager {
                         ),
                     )
                 } else {
-                    AlistProvider::new(instance_manager)
+                    AlistProvider::with_client_manager(
+                        instance_manager,
+                        Arc::clone(&default_client_manager),
+                    )
                 };
                 Ok(Arc::new(provider))
             }),
         );
 
         // Bilibili factory - reads optional timeout from config
+        let default_client_manager = Arc::clone(&self.default_client_manager);
         let default_provider_connect_timeout = self.default_provider_connect_timeout;
         self.register_factory(
             "bilibili",
@@ -163,13 +175,17 @@ impl ProvidersManager {
                         ),
                     )
                 } else {
-                    BilibiliProvider::new(instance_manager)
+                    BilibiliProvider::with_client_manager(
+                        instance_manager,
+                        Arc::clone(&default_client_manager),
+                    )
                 };
                 Ok(Arc::new(provider))
             }),
         );
 
         // Emby factory - reads optional timeout from config
+        let default_client_manager = Arc::clone(&self.default_client_manager);
         let default_provider_connect_timeout = self.default_provider_connect_timeout;
         self.register_factory(
             "emby",
@@ -186,7 +202,10 @@ impl ProvidersManager {
                         ),
                     )
                 } else {
-                    EmbyProvider::new(instance_manager)
+                    EmbyProvider::with_client_manager(
+                        instance_manager,
+                        Arc::clone(&default_client_manager),
+                    )
                 };
                 Ok(Arc::new(provider))
             }),
@@ -369,6 +388,11 @@ impl ProvidersManager {
     pub fn list_types(&self) -> Vec<String> {
         self.factories.keys().cloned().collect()
     }
+
+    #[cfg(test)]
+    fn default_client_manager_marker(&self) -> usize {
+        self.default_client_manager.marker()
+    }
 }
 
 impl std::fmt::Debug for ProvidersManager {
@@ -547,6 +571,78 @@ mod tests {
         assert!(manager.has_factory("alist"));
         assert!(manager.has_factory("bilibili"));
         assert!(manager.has_factory("emby"));
+    }
+
+    #[tokio::test]
+    async fn test_default_provider_instances_use_injected_default_client_manager() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let client = synctv_common::http::SsrfSafeClientBuilder::provider()
+            .connect_timeout(std::time::Duration::from_secs(4))
+            .request_timeout(std::time::Duration::from_secs(12))
+            .build()
+            .unwrap();
+
+        let manager = ProvidersManager::new_with_provider_http_client(
+            instance_manager,
+            client,
+            std::time::Duration::from_secs(4),
+        );
+        let expected_marker = manager.default_client_manager_marker();
+
+        for provider_type in ["alist", "bilibili", "emby"] {
+            let provider = manager
+                .create_provider(
+                    provider_type,
+                    &format!("{provider_type}_default"),
+                    &serde_json::json!({}),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                provider.test_client_manager_marker(),
+                Some(expected_marker),
+                "default {provider_type} provider should reuse the injected default client manager",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_per_instance_timeout_override_keeps_dedicated_client_manager() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let client = synctv_common::http::SsrfSafeClientBuilder::provider()
+            .connect_timeout(std::time::Duration::from_secs(4))
+            .request_timeout(std::time::Duration::from_secs(12))
+            .build()
+            .unwrap();
+
+        let manager = ProvidersManager::new_with_provider_http_client(
+            instance_manager,
+            client,
+            std::time::Duration::from_secs(4),
+        );
+        let default_marker = manager.default_client_manager_marker();
+
+        let provider = manager
+            .create_provider(
+                "alist",
+                "alist_override",
+                &serde_json::json!({"timeout_seconds": 30}),
+            )
+            .await
+            .unwrap();
+
+        let actual_marker = provider
+            .test_client_manager_marker()
+            .expect("test provider should expose its client manager marker");
+        assert_ne!(
+            actual_marker, default_marker,
+            "per-instance timeout overrides should build a dedicated client manager"
+        );
     }
 
     #[tokio::test]

@@ -48,7 +48,8 @@ use tower_http::trace::TraceLayer;
 
 pub use error::{AppError, AppResult};
 
-const HTTP_REQUEST_TIMEOUT: std::time::Duration = synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
+const HTTP_REQUEST_TIMEOUT: std::time::Duration =
+    synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 /// Configuration for creating the HTTP router
 #[derive(Clone)]
@@ -631,7 +632,9 @@ fn register_websocket_routes(state: &AppState) -> Router<AppState> {
 #[cfg(test)]
 fn register_all_routes_for_test(state: AppState) -> Router<AppState> {
     let (timeout_router, no_timeout_router, upgrade_router) = register_all_routes(state);
-    timeout_router.merge(no_timeout_router).merge(upgrade_router)
+    timeout_router
+        .merge(no_timeout_router)
+        .merge(upgrade_router)
 }
 
 fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, Router<AppState>) {
@@ -683,7 +686,7 @@ fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, 
                             state.clone(),
                             middleware::read_rate_limit,
                         )),
-                )
+                ),
         );
 
     timeout_router = timeout_router.merge(register_provider_proxy_routes(&state));
@@ -957,11 +960,10 @@ fn apply_global_layers_with_timeout(
             move |request: axum::extract::Request, next: axum::middleware::Next| async move {
                 match tokio::time::timeout(request_timeout, next.run(request)).await {
                     Ok(response) => response,
-                    Err(_) => AppError::new(
-                        axum::http::StatusCode::REQUEST_TIMEOUT,
-                        "Request timed out",
-                    )
-                    .into_response(),
+                    Err(_) => {
+                        AppError::new(axum::http::StatusCode::REQUEST_TIMEOUT, "Request timed out")
+                            .into_response()
+                    }
                 }
             },
         )),
@@ -994,8 +996,8 @@ fn apply_global_layers_with_timeout(
 mod tests {
     use super::{
         apply_global_layers_with_timeout, build_app_state, build_cors_layer,
-        register_all_routes_for_test,
-        start_proxy_cache_lifecycle, RouterConfig, HTTP_REQUEST_TIMEOUT,
+        register_all_routes_for_test, start_proxy_cache_lifecycle, RouterConfig,
+        HTTP_REQUEST_TIMEOUT,
     };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -1609,8 +1611,9 @@ mod tests {
             "DENY",
             "timed out responses must still include security headers"
         );
-        let timeout_body =
-            axum::body::to_bytes(timeout_response.into_body(), usize::MAX).await.unwrap();
+        let timeout_body = axum::body::to_bytes(timeout_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let timeout_json: serde_json::Value =
             serde_json::from_slice(&timeout_body).expect("timeout response should be JSON");
         assert_eq!(timeout_json["status"], 408);
@@ -1751,10 +1754,7 @@ mod tests {
                     .method("OPTIONS")
                     .uri("/test")
                     .header(axum::http::header::ORIGIN, "https://example.com")
-                    .header(
-                        axum::http::header::ACCESS_CONTROL_REQUEST_METHOD,
-                        "GET",
-                    )
+                    .header(axum::http::header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
                     .body(Body::empty())
                     .expect("request"),
             )

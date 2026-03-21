@@ -183,9 +183,7 @@ async fn wait_for_initial_leader(
         }
 
         if !logged_wait {
-            info!(
-                "Delaying initial {task_name} run until cluster leadership is established"
-            );
+            info!("Delaying initial {task_name} run until cluster leadership is established");
             logged_wait = true;
         }
 

@@ -664,7 +664,10 @@ async fn init_oauth2_service(
     let state_store: Arc<dyn crate::service::OAuthStateStore> = match (cluster_mode, redis_conn) {
         (true, Some(conn)) => {
             info!("OAuth2 state store: Redis (cluster mode)");
-            Arc::new(crate::service::RedisOAuthStateStore::new(conn))
+            Arc::new(crate::service::RedisOAuthStateStore::new(
+                conn,
+                config.redis.key_prefix.clone(),
+            ))
         }
         (true, None) => {
             return Err(anyhow::anyhow!(
@@ -674,7 +677,10 @@ async fn init_oauth2_service(
         }
         (false, Some(conn)) => {
             info!("OAuth2 state store: Redis");
-            Arc::new(crate::service::RedisOAuthStateStore::new(conn))
+            Arc::new(crate::service::RedisOAuthStateStore::new(
+                conn,
+                config.redis.key_prefix.clone(),
+            ))
         }
         (false, None) => {
             info!("OAuth2 state store: in-memory (standalone mode)");
@@ -704,23 +710,18 @@ async fn init_oauth2_service(
             .unwrap_or(&instance_name)
             .to_string();
 
-        // Create a mutable config for adding redirect_url
-        let mut full_config = full_config.clone();
-
-        // Add redirect_url to config (merge it in)
-        // Use configured scheme (http/https) to support reverse proxy TLS termination
-        let scheme = &config.oauth2.redirect_scheme;
-        let redirect_url = format!(
-            "{}://{}/api/oauth2/{}/callback",
-            scheme,
-            config.advertise_host(),
-            instance_name
-        );
-        if let Some(mapping) = full_config.as_object_mut() {
-            mapping.insert(
-                "redirect_url".to_string(),
-                serde_json::Value::String(redirect_url.clone()),
-            );
+        let full_config = full_config.clone();
+        if full_config
+            .get("redirect_url")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(anyhow::anyhow!(
+                "OAuth2 provider '{}' is missing redirect_url. \
+                 Frontend-driven OAuth2 requires an explicit frontend/client callback URI \
+                 (for example https://app.example.com/oauth2/callback or myapp://oauth2/callback).",
+                instance_name
+            ));
         }
 
         // Use factory to create provider with full config
@@ -1433,6 +1434,47 @@ mod tests {
                 .contains("Redis is required for OAuth2 state storage in cluster mode"),
             "unexpected error: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_init_oauth2_service_requires_explicit_redirect_url_for_frontend_flow() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let mut config = Config::default();
+        config.oauth2.providers = serde_json::json!({
+            "github": {
+                "type": "github",
+                "client_id": "test-client-id",
+                "client_secret": "test-client-secret"
+            }
+        });
+
+        let error = init_oauth2_service(pool, &config, None, false)
+            .await
+            .expect_err("frontend-driven OAuth2 must require an explicit redirect_url");
+
+        assert!(
+            error.to_string().contains("redirect_url"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_init_oauth2_service_preserves_explicit_redirect_url() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let mut config = Config::default();
+        let redirect_url = "synctv://oauth2/callback".to_string();
+        config.oauth2.providers = serde_json::json!({
+            "github": {
+                "type": "github",
+                "client_id": "test-client-id",
+                "client_secret": "test-client-secret",
+                "redirect_url": redirect_url
+            }
+        });
+
+        init_oauth2_service(pool, &config, None, false)
+            .await
+            .expect("explicit frontend/client redirect_url should be accepted");
     }
 
     #[test]

@@ -346,6 +346,11 @@ impl AlistProvider {
 
 #[async_trait]
 impl MediaProvider for AlistProvider {
+    #[cfg(test)]
+    fn test_client_manager_marker(&self) -> Option<usize> {
+        Some(self.client_manager.marker())
+    }
+
     fn name(&self) -> &'static str {
         Self::NAME
     }

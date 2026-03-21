@@ -350,7 +350,7 @@ media_providers:
 # Common fields (all providers):
 #   client_id: OAuth2 client ID
 #   client_secret: OAuth2 client secret
-#   redirect_url: (optional, auto-generated if not provided)
+#   redirect_url: (required) frontend/client callback URI
 #
 # Provider-specific fields:
 #   logto:
@@ -365,11 +365,13 @@ media_providers:
 #   Use different instance names (e.g., logto1, logto2) and add 'type' field
 #   to specify the provider type.
 #
-# Callback URLs are automatically generated based on instance name:
-#   http://<server.host>/api/oauth2/<instance_name>/callback
-#   Examples:
-#     http://localhost:8080/api/oauth2/github/callback
-#     http://localhost:8080/api/oauth2/logto1/callback
+# Callback URLs must point to your frontend or native client, because SyncTV
+# uses a frontend-driven OAuth2 flow:
+#   1. Provider redirects to your frontend/client callback URI with code+state
+#   2. Frontend/client calls POST /api/oauth2/<instance_name>/exchange
+# Examples:
+#   https://app.example.com/oauth2/callback
+#   synctv://oauth2/callback
 #
 # Security Notes:
 #   - OAuth2 tokens are only used temporarily during login and then discarded
@@ -386,10 +388,12 @@ oauth2:
   #   github:
   #     client_id: "your_github_client_id"
   #     client_secret: "your_github_client_secret"
+  #     redirect_url: "https://app.example.com/oauth2/callback"
   #
   #   google:
   #     client_id: "your_google_client_id"
   #     client_secret: "your_google_client_secret"
+  #     redirect_url: "https://app.example.com/oauth2/callback"
   #
   #   # Multiple instances of same provider (requires 'type' field)
   #   logto1:
@@ -397,17 +401,20 @@ oauth2:
   #     client_id: "logto1_client_id"
   #     client_secret: "logto1_client_secret"
   #     endpoint: "https://logto1.example.com"
+  #     redirect_url: "https://app.example.com/oauth2/callback"
   #
   #   logto2:
   #     type: logto
   #     client_id: "logto2_client_id"
   #     client_secret: "logto2_client_secret"
   #     endpoint: "https://logto2.example.com"
+  #     redirect_url: "https://app.example.com/oauth2/callback"
   #
   #   # Generic OIDC provider
   #   custom_oidc:
   #     type: oidc
   #     client_id: "custom_client_id"
+  #     redirect_url: "https://app.example.com/oauth2/callback"
   #     client_secret: "custom_client_secret"
   #     issuer: "https://custom.oidc.provider.com"
   providers: ""

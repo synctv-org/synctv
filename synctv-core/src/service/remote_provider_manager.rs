@@ -29,8 +29,8 @@ use synctv_media_providers::grpc::{
     emby::{emby_client::EmbyClient, MeReq as EmbyMeReq},
 };
 use tokio::task::JoinHandle;
-use tonic::{Request, Status};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Uri};
+use tonic::{Request, Status};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
 
 /// Default channel cache TTL (5 minutes)
@@ -38,9 +38,6 @@ const CHANNEL_CACHE_TTL_SECS: u64 = 300;
 
 /// Maximum number of cached channels
 const MAX_CACHED_CHANNELS: u64 = 1_000;
-
-/// Maximum time to wait for the first durable invalidation subscription to become active.
-const INVALIDATION_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RemoteConfigValidationMode {
@@ -171,25 +168,23 @@ impl RemoteProviderManager {
             }
 
             match self.create_grpc_channel(&config).await {
-                Ok(channel) => {
-                    match Self::build_remote_connection(&config, channel) {
-                        Ok(connection) => {
-                            self.channel_cache
-                                .insert(config.name.clone(), connection)
-                                .await;
-                            tracing::info!("Pre-warmed provider instance cache: {}", config.name);
-                            success_count += 1;
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to pre-warm provider instance {}: {}",
-                                config.name,
-                                e
-                            );
-                            error_count += 1;
-                        }
+                Ok(channel) => match Self::build_remote_connection(&config, channel) {
+                    Ok(connection) => {
+                        self.channel_cache
+                            .insert(config.name.clone(), connection)
+                            .await;
+                        tracing::info!("Pre-warmed provider instance cache: {}", config.name);
+                        success_count += 1;
                     }
-                }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to pre-warm provider instance {}: {}",
+                            config.name,
+                            e
+                        );
+                        error_count += 1;
+                    }
+                },
                 Err(e) => {
                     tracing::error!(
                         "Failed to pre-warm provider instance {}: {}",
@@ -269,9 +264,6 @@ impl RemoteProviderManager {
         });
         *guard = Some(handle);
         drop(guard);
-
-        tokio::time::sleep(INVALIDATION_LISTENER_READY_TIMEOUT.min(Duration::from_millis(10)))
-            .await;
 
         tracing::info!("Provider instance cache invalidation listener started (durable stream)");
         Ok(())
@@ -415,10 +407,89 @@ impl RemoteProviderManager {
     ) -> crate::Result<RemoteProviderConnection> {
         let auth_secret = validate_auth_secret(Some(Self::required_auth_secret(config)?))
             .map_err(|e| crate::Error::InvalidInput(e.to_string()))?;
-        Ok(RemoteProviderConnection::new(
-            channel,
-            auth_secret,
-        ))
+        Ok(RemoteProviderConnection::new(channel, auth_secret))
+    }
+
+    async fn build_validated_remote_connection(
+        &self,
+        config: &ProviderInstance,
+    ) -> crate::Result<RemoteProviderConnection> {
+        let channel = self.create_grpc_channel(config).await?;
+        let connection = Self::build_remote_connection(config, channel)?;
+        self.validate_remote_connection(config, &connection).await?;
+        Ok(connection)
+    }
+
+    async fn validate_remote_connection(
+        &self,
+        config: &ProviderInstance,
+        connection: &RemoteProviderConnection,
+    ) -> crate::Result<()> {
+        let mut client = HealthClient::new(connection.channel());
+        let request = tonic::Request::new(HealthCheckRequest {
+            service: String::new(),
+        });
+        let timeout = Duration::from_secs(5);
+
+        let response = tokio::time::timeout(timeout, client.check(request))
+            .await
+            .map_err(|_| {
+                crate::Error::InvalidInput(format!(
+                    "Remote provider instance '{}' connectivity validation timed out after {}s",
+                    config.name,
+                    timeout.as_secs()
+                ))
+            })?
+            .map_err(|status| {
+                crate::Error::InvalidInput(format!(
+                    "Remote provider instance '{}' health check failed: {status}",
+                    config.name
+                ))
+            })?;
+
+        let status = response.into_inner().status;
+        if status != 1 {
+            return Err(crate::Error::InvalidInput(format!(
+                "Remote provider instance '{}' is not serving (health status: {status})",
+                config.name
+            )));
+        }
+
+        self.validate_authenticated_provider_health(config, connection)
+            .await
+    }
+
+    async fn validate_authenticated_provider_health(
+        &self,
+        config: &ProviderInstance,
+        connection: &RemoteProviderConnection,
+    ) -> crate::Result<()> {
+        let timeout = Duration::from_secs(5);
+        let probe = async {
+            if config
+                .providers
+                .iter()
+                .any(|provider| provider == "bilibili")
+            {
+                Self::probe_bilibili_auth(connection).await?;
+            }
+            if config.providers.iter().any(|provider| provider == "alist") {
+                Self::probe_alist_auth(connection).await?;
+            }
+            if config.providers.iter().any(|provider| provider == "emby") {
+                Self::probe_emby_auth(connection).await?;
+            }
+
+            Ok(())
+        };
+
+        tokio::time::timeout(timeout, probe).await.map_err(|_| {
+            crate::Error::InvalidInput(format!(
+                "Authenticated provider probe timed out for instance '{}' after {}s",
+                config.name,
+                timeout.as_secs()
+            ))
+        })?
     }
 
     fn resolve_ssrf_validated_address(
@@ -812,10 +883,7 @@ impl RemoteProviderManager {
         Self::validate_config(&config, RemoteConfigValidationMode::RequireAuthSecret)?;
 
         let connection = if config.enabled && Self::requires_remote_connection(&config) {
-            Some(Self::build_remote_connection(
-                &config,
-                self.create_grpc_channel(&config).await?,
-            )?)
+            Some(self.build_validated_remote_connection(&config).await?)
         } else {
             None
         };
@@ -848,7 +916,9 @@ impl RemoteProviderManager {
         self.repository
             .get_by_name(&config.name)
             .await?
-            .ok_or_else(|| crate::Error::NotFound(format!("Instance '{}' not found", config.name)))?;
+            .ok_or_else(|| {
+                crate::Error::NotFound(format!("Instance '{}' not found", config.name))
+            })?;
 
         let validation_mode = if Self::requires_remote_connection(&config) {
             RemoteConfigValidationMode::RequireAuthSecret
@@ -859,10 +929,7 @@ impl RemoteProviderManager {
         Self::validate_config(&config, validation_mode)?;
 
         let connection = if config.enabled && Self::requires_remote_connection(&config) {
-            Some(Self::build_remote_connection(
-                &config,
-                self.create_grpc_channel(&config).await?,
-            )?)
+            Some(self.build_validated_remote_connection(&config).await?)
         } else {
             None
         };
@@ -916,17 +983,10 @@ impl RemoteProviderManager {
 
         if config.enabled {
             if Self::requires_remote_connection(&config) {
-                if let Some(connection) = self.get(&config.name).await {
-                    self.channel_cache
-                        .insert(config.name.clone(), connection)
-                        .await;
-                } else {
-                    let channel = self.create_grpc_channel(&config).await?;
-                    let connection = Self::build_remote_connection(&config, channel)?;
-                    self.channel_cache
-                        .insert(config.name.clone(), connection)
-                        .await;
-                }
+                let connection = self.build_validated_remote_connection(&config).await?;
+                self.channel_cache
+                    .insert(config.name.clone(), connection)
+                    .await;
             } else {
                 self.channel_cache.invalidate(&config.name).await;
             }
@@ -939,8 +999,7 @@ impl RemoteProviderManager {
 
         config.enabled = true;
         if Self::requires_remote_connection(&config) {
-            let channel = self.create_grpc_channel(&config).await?;
-            let connection = Self::build_remote_connection(&config, channel)?;
+            let connection = self.build_validated_remote_connection(&config).await?;
 
             // Persist only after a valid channel can be constructed.
             self.repository.enable(name).await?;
@@ -1004,8 +1063,7 @@ impl RemoteProviderManager {
             )));
         }
 
-        let channel = self.create_grpc_channel(&config).await?;
-        let connection = Self::build_remote_connection(&config, channel)?;
+        let connection = self.build_validated_remote_connection(&config).await?;
         self.channel_cache
             .insert(config.name.clone(), connection)
             .await;
@@ -1076,160 +1134,83 @@ impl RemoteProviderManager {
         config: &ProviderInstance,
         connection: &RemoteProviderConnection,
     ) -> bool {
-        let mut client = HealthClient::new(connection.channel());
-
-        let request = tonic::Request::new(HealthCheckRequest {
-            service: String::new(),
-        });
-
-        // Set timeout for health check (5 seconds)
-        let timeout = Duration::from_secs(5);
-
-        match tokio::time::timeout(timeout, client.check(request)).await {
-            Ok(Ok(response)) => {
-                let status = response.into_inner().status;
-                let is_serving = status == 1;
-
-                if is_serving {
-                    let auth_ok = self.check_authenticated_provider_health(config, connection).await;
-                    if auth_ok {
-                        tracing::debug!("Provider instance '{}' is healthy", name);
-                    }
-                    auth_ok
-                } else {
-                    tracing::warn!(
-                        "Provider instance '{}' is not serving (status: {})",
-                        name,
-                        status
-                    );
-                    false
-                }
+        match self.validate_remote_connection(config, connection).await {
+            Ok(()) => {
+                tracing::debug!("Provider instance '{}' is healthy", name);
+                true
             }
-            Ok(Err(e)) => {
-                tracing::error!("Health check failed for instance '{}': {}", name, e);
-                false
-            }
-            Err(_) => {
-                tracing::error!("Health check timeout for instance '{}' (5s)", name);
+            Err(error) => {
+                tracing::error!("Health check failed for instance '{}': {}", name, error);
                 false
             }
         }
     }
 
-    async fn check_authenticated_provider_health(
-        &self,
-        config: &ProviderInstance,
-        connection: &RemoteProviderConnection,
-    ) -> bool {
-        let timeout = Duration::from_secs(5);
-        let probe = async {
-            if config.providers.iter().any(|provider| provider == "alist") {
-                return Self::probe_alist_auth(config, connection).await;
+    async fn probe_bilibili_auth(connection: &RemoteProviderConnection) -> crate::Result<()> {
+        let mut client = BilibiliClient::new(connection.channel());
+        let request = match Self::build_authenticated_request(
+            connection,
+            UserInfoReq {
+                cookies: HashMap::from([("SESSDATA".to_string(), "health-check".to_string())]),
+            },
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                return Err(crate::Error::InvalidInput(format!(
+                    "Authenticated Bilibili probe request build failed: {}",
+                    error
+                )));
             }
-            if config.providers.iter().any(|provider| provider == "emby") {
-                return Self::probe_emby_auth(config, connection).await;
-            }
-            if config.providers.iter().any(|provider| provider == "bilibili") {
-                return Self::probe_bilibili_auth(connection).await;
-            }
-            false
         };
 
-        match tokio::time::timeout(timeout, probe).await {
-            Ok(result) => result,
-            Err(_) => {
-                tracing::error!(
-                    "Authenticated provider health probe timeout for instance '{}' (5s)",
-                    config.name
-                );
-                false
-            }
-        }
+        Self::probe_reports_authenticated_health(
+            "bilibili",
+            "<bilibili>",
+            client.user_info(request).await,
+        )
     }
 
-    async fn probe_alist_auth(
-        config: &ProviderInstance,
-        connection: &RemoteProviderConnection,
-    ) -> bool {
+    async fn probe_alist_auth(connection: &RemoteProviderConnection) -> crate::Result<()> {
         let mut client = AlistClient::new(connection.channel());
         let request = match Self::build_authenticated_request(
             connection,
             AlistMeReq {
-                host: config.endpoint.clone(),
+                host: "http://health-check.invalid".to_string(),
                 token: "health-check-token".to_string(),
             },
         ) {
             Ok(request) => request,
             Err(error) => {
-                tracing::warn!(
-                    "Authenticated Alist health probe request build failed for '{}': {}",
-                    config.name,
+                return Err(crate::Error::InvalidInput(format!(
+                    "Authenticated Alist probe request build failed: {}",
                     error
-                );
-                return false;
+                )));
             }
         };
 
-        Self::probe_reports_authenticated_health(
-            "alist",
-            &config.name,
-            client.me(request).await,
-        )
+        Self::probe_reports_authenticated_health("alist", "<alist>", client.me(request).await)
     }
 
-    async fn probe_emby_auth(
-        config: &ProviderInstance,
-        connection: &RemoteProviderConnection,
-    ) -> bool {
+    async fn probe_emby_auth(connection: &RemoteProviderConnection) -> crate::Result<()> {
         let mut client = EmbyClient::new(connection.channel());
         let request = match Self::build_authenticated_request(
             connection,
             EmbyMeReq {
-                host: config.endpoint.clone(),
+                host: "http://health-check.invalid".to_string(),
                 token: "health-check-token".to_string(),
                 user_id: "health-check-user".to_string(),
             },
         ) {
             Ok(request) => request,
             Err(error) => {
-                tracing::warn!(
-                    "Authenticated Emby health probe request build failed for '{}': {}",
-                    config.name,
+                return Err(crate::Error::InvalidInput(format!(
+                    "Authenticated Emby probe request build failed: {}",
                     error
-                );
-                return false;
+                )));
             }
         };
 
-        Self::probe_reports_authenticated_health(
-            "emby",
-            &config.name,
-            client.me(request).await,
-        )
-    }
-
-    async fn probe_bilibili_auth(connection: &RemoteProviderConnection) -> bool {
-        let mut client = BilibiliClient::new(connection.channel());
-        let request = match Self::build_authenticated_request(
-            connection,
-            UserInfoReq {
-                cookies: HashMap::from([(
-                    "SESSDATA".to_string(),
-                    "health-check".to_string(),
-                )]),
-            },
-        ) {
-            Ok(request) => request,
-            Err(error) => {
-                tracing::warn!(
-                    "Authenticated Bilibili health probe request build failed: {}",
-                    error
-                );
-                return false;
-            }
-        };
-
-        Self::probe_reports_authenticated_health("bilibili", "<bilibili>", client.user_info(request).await)
+        Self::probe_reports_authenticated_health("emby", "<emby>", client.me(request).await)
     }
 
     fn build_authenticated_request<T>(
@@ -1257,18 +1238,47 @@ impl RemoteProviderManager {
         provider: &str,
         instance_name: &str,
         result: Result<tonic::Response<T>, Status>,
-    ) -> bool {
+    ) -> crate::Result<()> {
         match result {
-            Ok(_) => true,
-            Err(status) => {
-                tracing::warn!(
-                    "Authenticated {} health probe failed for '{}': {}",
-                    provider,
-                    instance_name,
-                    status
-                );
-                false
-            }
+            Ok(_) => Ok(()),
+            Err(status) => Err(crate::Error::InvalidInput(format!(
+                "Authenticated {} probe failed for '{}': {}",
+                provider, instance_name, status
+            ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::CacheInvalidationService;
+    use crate::repository::ProviderInstanceRepository;
+
+    #[tokio::test(start_paused = true)]
+    async fn start_invalidation_listener_does_not_wait_for_fake_readiness() {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://test")
+            .expect("lazy pool should build without a live database");
+        let repository = Arc::new(ProviderInstanceRepository::new(pool));
+        let invalidation = CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "test:provider:invalidate".to_string(),
+        );
+        let manager = RemoteProviderManager::new_with_invalidation(repository, Some(invalidation));
+
+        let start = tokio::time::Instant::now();
+        manager
+            .start_invalidation_listener()
+            .await
+            .expect("listener should start");
+
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(start),
+            Duration::ZERO,
+            "listener startup should not advance time via a fake readiness sleep"
+        );
+
+        manager.shutdown().await;
     }
 }

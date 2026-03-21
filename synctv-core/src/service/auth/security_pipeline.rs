@@ -104,9 +104,10 @@ impl SecurityPipeline {
         match err {
             Error::Authentication(_) => AuthErrorCategory::Authentication,
             Error::Authorization(_) | Error::EmailNotVerified => AuthErrorCategory::Authorization,
-            Error::ServiceUnavailable(_) | Error::Database(_) | Error::Redis(_) | Error::Timeout(_) => {
-                AuthErrorCategory::Unavailable
-            }
+            Error::ServiceUnavailable(_)
+            | Error::Database(_)
+            | Error::Redis(_)
+            | Error::Timeout(_) => AuthErrorCategory::Unavailable,
             _ => AuthErrorCategory::Internal,
         }
     }
@@ -581,12 +582,8 @@ mod tests {
         let jwt_service =
             JwtService::new("test-secret-key-for-security-pipeline-unit-tests-min-32")
                 .expect("failed to create jwt service");
-        let username_cache = UsernameCache::new(
-            Arc::new(NoopCacheL2),
-            "test:username:".to_string(),
-            100,
-            0,
-        );
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 100, 0);
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
         let key_builder = KeyBuilder::new("test");
         let brute_force = BruteForceProtection::in_memory("test".to_string());

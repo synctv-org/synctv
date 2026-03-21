@@ -20,7 +20,7 @@
 //! 8. Backend returns JWT token to frontend
 
 use std::sync::Arc;
-use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
+use synctv_core::models::{User, UserId, UserRole, UserStatus};
 use synctv_core::service::{OAuth2Service, UserService};
 use synctv_proto::client::{LinkedProvider, OAuth2ProviderInstance, OAuth2UserInfo};
 
@@ -204,123 +204,16 @@ impl OAuth2ApiImpl {
                 .await
                 .map_err(ApiError::from)?
         } else {
-            // User doesn't exist, create new account and link OAuth2 provider
-            // atomically within a single transaction to prevent orphaned users.
-            //
-            // Generate a random password for the OAuth2 user. This password is never
-            // used for login (OAuth2 users authenticate via their provider), but it's
-            // required by the user model. The password is hashed with Argon2, which
-            // is a CPU-intensive operation.
-            let random_password = nanoid::nanoid!(32);
-            tracing::debug!(
-                username = %user_info.username,
-                provider = %provider_type.as_str(),
-                "Creating new OAuth2 user with random password"
-            );
-
-            let pool = self.user_service.pool();
-
-            let mut tx = pool.begin().await.map_err(|e| {
-                tracing::error!(error = %e, "Failed to begin transaction for OAuth2 user creation");
-                ApiError::Internal(format!("Failed to begin transaction: {e}"))
-            })?;
-
-            // Try registering with the provider username, retrying with suffixed
-            // usernames if there's a collision (AlreadyExists). Try up to 4 times:
-            // original, then with _<provider>, _1, _2 suffixes.
-            let suffixes = [
-                String::new(),
-                format!("_{}", provider_type.as_str()),
-                "_1".to_string(),
-                "_2".to_string(),
-            ];
-            let mut new_user = None;
-            let mut last_err = None;
-            for suffix in &suffixes {
-                let candidate = format!("{}{}", user_info.username, suffix);
-                match self
-                    .user_service
-                    .register_with_executor(
-                        candidate.clone(),
-                        user_info.email.clone(),
-                        random_password.clone(),
-                        SignupMethod::OAuth2,
-                        &mut *tx,
-                    )
-                    .await
-                {
-                    Ok(user) => {
-                        new_user = Some(user);
-                        break;
-                    }
-                    Err(synctv_core::Error::AlreadyExists(_)) => {
-                        tracing::debug!(
-                            username = %candidate,
-                            provider = %provider_type.as_str(),
-                            "OAuth2 username collision, trying next suffix"
-                        );
-                        last_err = Some(ApiError::AlreadyExists(
-                            "Username already taken".to_string(),
-                        ));
-                        continue;
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            username = %candidate,
-                            provider = %provider_type.as_str(),
-                            "Failed to create OAuth2 user"
-                        );
-                        return Err(ApiError::from(e));
-                    }
-                }
-            }
-            let new_user = match new_user {
-                Some(u) => u,
-                None => {
-                    return Err(last_err.unwrap_or_else(|| {
-                        ApiError::Internal(
-                            "Failed to create OAuth2 user after all retries".to_string(),
-                        )
-                    }))
-                }
-            };
-
-            self.oauth2_service
-                .upsert_user_provider_with_executor(
-                    &new_user.id,
-                    &provider_type,
-                    &user_info.provider_user_id,
-                    &user_info,
-                    &mut *tx,
-                )
+            let (user_id, _is_new) = self
+                .oauth2_service
+                .find_or_create_and_link(&self.user_service, &provider_type, &user_info)
                 .await
                 .map_err(ApiError::from)?;
 
-            // Set email_verified inside the transaction if the OAuth2 provider confirmed the email
-            if user_info.email_verified && user_info.email.is_some() {
-                sqlx::query(
-                    "UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1",
-                )
-                .bind(new_user.id.as_str())
-                .execute(&mut *tx)
+            self.user_service
+                .login_oauth2(&user_id, &user_info.provider_user_id, client_ip)
                 .await
-                .map_err(|e| {
-                    ApiError::Internal(format!("Failed to set email_verified in transaction: {e}"))
-                })?;
-            }
-
-            tx.commit()
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to commit transaction: {e}")))?;
-
-            let (access_token, refresh_token) = self
-                .user_service
-                .finalize_registration(&new_user)
-                .await
-                .map_err(ApiError::from)?;
-
-            (new_user, access_token, refresh_token)
+                .map_err(ApiError::from)?
         };
 
         // Get the actual access token duration from the JWT service

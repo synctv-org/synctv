@@ -46,7 +46,10 @@ mod tests {
         config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", "203.0.113.50, 70.41.3.18".parse().unwrap());
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.50, 70.41.3.18".parse().unwrap(),
+        );
 
         assert_eq!(
             extract_client_ip_from_headers(

@@ -1,5 +1,6 @@
 //! Google `OAuth2` provider
 
+use super::{build_oauth2_http_client, build_provider_http_client, map_provider_http_error};
 use crate::oauth2::{OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
@@ -23,6 +24,7 @@ pub struct GoogleConfig {
 pub struct GoogleProvider {
     client:
         Arc<BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>>,
+    oauth2_http_client: Arc<oauth2::reqwest::Client>,
     http_client: Arc<Client>,
 }
 
@@ -54,12 +56,8 @@ impl GoogleProvider {
 
         Ok(Self {
             client,
-            http_client: Arc::new(
-                Client::builder()
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()
-                    .internal_with_err("Failed to build HTTP client")?,
-            ),
+            oauth2_http_client: build_oauth2_http_client()?,
+            http_client: build_provider_http_client()?,
         })
     }
 }
@@ -91,9 +89,9 @@ impl Provider for GoogleProvider {
             .client
             .exchange_code(oauth2::AuthorizationCode::new(code.to_string()))
             .set_pkce_verifier(verifier)
-            .request_async(&oauth2::reqwest::Client::new())
+            .request_async(self.oauth2_http_client.as_ref())
             .await
-            .internal_with_err("Failed to exchange code")?;
+            .map_err(|err| map_provider_http_error("Failed to exchange code", err))?;
 
         // Fetch user info
         let resp = self
@@ -105,7 +103,7 @@ impl Provider for GoogleProvider {
             )
             .send()
             .await
-            .internal_with_err("Failed to fetch user info")?
+            .map_err(|err| map_provider_http_error("Failed to fetch user info", err))?
             .error_for_status()
             .internal_with_err("Google API error")?;
 

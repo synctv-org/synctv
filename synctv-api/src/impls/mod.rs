@@ -226,7 +226,9 @@ impl From<synctv_core::Error> for ApiError {
             synctv_core::Error::AlreadyExists(msg) => Self::AlreadyExists(msg),
             synctv_core::Error::InvalidInput(msg) => Self::InvalidInput(msg),
             synctv_core::Error::RateLimited(msg) => Self::RateLimited(msg),
-            synctv_core::Error::ServiceUnavailable(msg) => Self::ServiceUnavailable(msg),
+            synctv_core::Error::ServiceUnavailable(msg) | synctv_core::Error::Timeout(msg) => {
+                Self::ServiceUnavailable(msg)
+            }
             other => Self::Internal(other.to_string()),
         }
     }
@@ -869,6 +871,18 @@ mod tests {
         assert!(matches!(
             api_err,
             ApiError::ServiceUnavailable(ref msg) if msg == "redis unavailable"
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_api_error_from_core_timeout_maps_to_service_unavailable() {
+        let core_err = synctv_core::Error::Timeout("oauth2 provider timed out".to_string());
+        let api_err = ApiError::from(core_err);
+        assert!(matches!(
+            api_err,
+            ApiError::ServiceUnavailable(ref msg) if msg == "oauth2 provider timed out"
         ));
         assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
         assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);

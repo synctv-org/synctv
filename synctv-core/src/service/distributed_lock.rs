@@ -61,6 +61,30 @@ use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::Script;
 use std::future::Future;
 
+async fn run_distributed_lock_redis_op<T, F>(operation: impl Into<String>, future: F) -> Result<T>
+where
+    F: Future<Output = std::result::Result<T, redis::RedisError>>,
+{
+    let operation = operation.into();
+    tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
+        .await
+        .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
+        .internal_with_err(&format!("Failed to {operation}"))
+}
+
+async fn run_distributed_lock_client_op<T, F>(
+    key: &str,
+    timeout: std::time::Duration,
+    future: F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    tokio::time::timeout(timeout, future)
+        .await
+        .map_err(|_| Error::Timeout(format!("Lock operation timed out for key: {key}")))?
+}
+
 /// Abstraction over a distributed migration lock.
 ///
 /// Consumers that only need acquire/release semantics (e.g. `run_migrations`)
@@ -306,19 +330,11 @@ impl DistributedLock {
             ",
         );
 
-        tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+        run_distributed_lock_redis_op(
+            format!("generate fencing token for lock '{key}'"),
             script.key(&token_key).invoke_async::<u64>(&mut conn),
         )
         .await
-        .map_err(|_| {
-            Error::Internal(format!(
-                "Redis timeout: generate fencing token for lock '{key}'"
-            ))
-        })?
-        .internal_with_err(&format!(
-            "Failed to generate fencing token for lock '{key}'"
-        ))
     }
 
     /// Acquire a lock (using SET NX EX atomic operation)
@@ -396,8 +412,8 @@ impl DistributedLock {
         // SET key value NX EX ttl
         // NX: Only set if not exists
         // EX: Set expiration time
-        let result: Option<String> = tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+        let result: Option<String> = run_distributed_lock_redis_op(
+            "acquire lock",
             redis::cmd("SET")
                 .arg(&lock_key)
                 .arg(&lock_value)
@@ -406,9 +422,7 @@ impl DistributedLock {
                 .arg(ttl_seconds)
                 .query_async(&mut conn),
         )
-        .await
-        .map_err(|_| Error::Internal("Redis timeout: acquire lock".to_string()))?
-        .internal_with_err("Failed to acquire lock")?;
+        .await?;
 
         if result.is_some() {
             // Generate fencing token only if requested (saves Redis round-trip)
@@ -463,16 +477,14 @@ impl DistributedLock {
 
         let mut conn = self.conn().await;
 
-        let result: i32 = tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+        let result: i32 = run_distributed_lock_redis_op(
+            "release lock",
             script
                 .key(&lock_key)
                 .arg(lock_value)
                 .invoke_async::<i32>(&mut conn),
         )
-        .await
-        .map_err(|_| Error::Internal("Redis timeout: release lock".to_string()))?
-        .internal_with_err("Failed to release lock")?;
+        .await?;
 
         let released = result == 1;
         if released {
@@ -521,7 +533,7 @@ impl DistributedLock {
         // ttl_seconds, so we allow ttl + 5s for network round-trips.
         let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
 
-        tokio::time::timeout(client_timeout, async {
+        run_distributed_lock_client_op(key, client_timeout, async {
             // Try to acquire lock
             let lock_value = self
                 .acquire(key, ttl_seconds)
@@ -543,7 +555,6 @@ impl DistributedLock {
             result
         })
         .await
-        .map_err(|_| Error::Internal(format!("Lock operation timed out for key: {key}")))?
     }
 
     /// Try to acquire a lock and execute an operation
@@ -571,7 +582,7 @@ impl DistributedLock {
     {
         let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
 
-        tokio::time::timeout(client_timeout, async {
+        run_distributed_lock_client_op(key, client_timeout, async {
             // Try to acquire lock
             let lock_value = match self.acquire(key, ttl_seconds).await? {
                 Some(value) => value,
@@ -593,7 +604,6 @@ impl DistributedLock {
             result.map(Some)
         })
         .await
-        .map_err(|_| Error::Internal(format!("Lock operation timed out for key: {key}")))?
     }
 
     /// Execute an operation with automatic lock acquisition and release (with fencing token)
@@ -625,7 +635,7 @@ impl DistributedLock {
     {
         let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
 
-        tokio::time::timeout(client_timeout, async {
+        run_distributed_lock_client_op(key, client_timeout, async {
             // Try to acquire lock with token
             let (lock_value, fencing_token) = self
                 .acquire_with_token(key, ttl_seconds)
@@ -647,7 +657,6 @@ impl DistributedLock {
             result
         })
         .await
-        .map_err(|_| Error::Internal(format!("Lock operation timed out for key: {key}")))?
     }
 
     /// Try to acquire a lock and execute an operation (with fencing token)
@@ -675,7 +684,7 @@ impl DistributedLock {
     {
         let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
 
-        tokio::time::timeout(client_timeout, async {
+        run_distributed_lock_client_op(key, client_timeout, async {
             // Try to acquire lock with token
             let (lock_value, fencing_token) =
                 match self.acquire_with_token(key, ttl_seconds).await? {
@@ -698,7 +707,6 @@ impl DistributedLock {
             result.map(Some)
         })
         .await
-        .map_err(|_| Error::Internal(format!("Lock operation timed out for key: {key}")))?
     }
 
     /// Extend lock TTL (refresh expiration)
@@ -724,17 +732,15 @@ impl DistributedLock {
 
         let mut conn = self.conn().await;
 
-        let result: i32 = tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+        let result: i32 = run_distributed_lock_redis_op(
+            "extend lock",
             script
                 .key(&lock_key)
                 .arg(lock_value)
                 .arg(ttl_seconds)
                 .invoke_async::<i32>(&mut conn),
         )
-        .await
-        .map_err(|_| Error::Internal("Redis timeout: extend lock".to_string()))?
-        .internal_with_err("Failed to extend lock")?;
+        .await?;
 
         Ok(result == 1)
     }
@@ -1325,6 +1331,45 @@ mod tests {
         let ttl_seconds: u64 = 10;
         let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
         assert_eq!(client_timeout, std::time::Duration::from_secs(15));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_distributed_lock_redis_timeout_maps_to_timeout_error() {
+        let timeout_future = run_distributed_lock_redis_op("acquire lock", async {
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), redis::RedisError>(())
+        });
+
+        tokio::pin!(timeout_future);
+        tokio::task::yield_now().await;
+        tokio::time::advance(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT).await;
+
+        let err = timeout_future.await.expect_err("operation should time out");
+        assert!(matches!(
+            err,
+            Error::Timeout(ref msg) if msg == "Redis timeout: acquire lock"
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_distributed_lock_client_timeout_maps_to_timeout_error() {
+        let timeout_future =
+            run_distributed_lock_client_op("test-key", std::time::Duration::from_secs(15), async {
+                std::future::pending::<()>().await;
+                #[allow(unreachable_code)]
+                Ok::<(), Error>(())
+            });
+
+        tokio::pin!(timeout_future);
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(15)).await;
+
+        let err = timeout_future.await.expect_err("operation should time out");
+        assert!(matches!(
+            err,
+            Error::Timeout(ref msg) if msg == "Lock operation timed out for key: test-key"
+        ));
     }
 
     #[test]

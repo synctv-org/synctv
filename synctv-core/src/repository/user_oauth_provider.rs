@@ -59,17 +59,17 @@ impl UserOAuthProviderRepository {
     {
         let id = nanoid::nanoid!(12);
 
-        sqlx::query(
+        let result = sqlx::query(
             r"
             INSERT INTO oauth2_clients (id, provider, provider_user_id, user_id, username, email, avatar_url)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (provider, provider_user_id)
             DO UPDATE SET
-                user_id = EXCLUDED.user_id,
                 username = EXCLUDED.username,
                 email = EXCLUDED.email,
                 avatar_url = EXCLUDED.avatar_url,
                 updated_at = CURRENT_TIMESTAMP
+            WHERE oauth2_clients.user_id = EXCLUDED.user_id
             "
         )
         .bind(&id)
@@ -81,6 +81,12 @@ impl UserOAuthProviderRepository {
         .bind(&user_info.avatar)
         .execute(executor)
         .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(crate::Error::AlreadyExists(
+                "OAuth2 provider identity is already linked to another user".to_string(),
+            ));
+        }
 
         Ok(())
     }

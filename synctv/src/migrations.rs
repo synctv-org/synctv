@@ -46,14 +46,9 @@ async fn run_migrations_with_mode(
     key_prefix: &str,
     cluster_mode: bool,
 ) -> Result<()> {
-    run_migrations_with_runner(
-        pool,
-        lock,
-        key_prefix,
-        cluster_mode,
-        true,
-        &|pool| Box::pin(run_migrate(pool)),
-    )
+    run_migrations_with_runner(pool, lock, key_prefix, cluster_mode, true, &|pool| {
+        Box::pin(run_migrate(pool))
+    })
     .await
 }
 

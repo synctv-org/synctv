@@ -99,9 +99,16 @@ pub mod retry {
     /// Checks the error for known transient I/O error kinds, then falls back to
     /// string matching for errors that don't expose `std::io::Error` directly.
     pub fn should_retry_error(err: &(dyn std::error::Error + 'static)) -> bool {
-        // Check top-level error for std::io::Error with transient kinds
-        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
-            return is_transient_io_error(io_err);
+        // Walk the full error chain because reqwest/oauth2 often wrap the
+        // underlying timeout several layers deep.
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(candidate) = current {
+            if let Some(io_err) = candidate.downcast_ref::<std::io::Error>() {
+                if is_transient_io_error(io_err) {
+                    return true;
+                }
+            }
+            current = candidate.source();
         }
 
         // Fallback: check the display message for transient indicators.
@@ -226,5 +233,26 @@ mod tests {
 
         let not_found = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
         assert!(!retry::should_retry_error(&not_found));
+    }
+
+    #[test]
+    fn test_should_retry_error_walks_source_chain() {
+        #[derive(Debug)]
+        struct Wrapper(std::io::Error);
+
+        impl std::fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "wrapped transport error")
+            }
+        }
+
+        impl std::error::Error for Wrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let wrapped = Wrapper(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout"));
+        assert!(retry::should_retry_error(&wrapped));
     }
 }

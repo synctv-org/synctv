@@ -113,11 +113,13 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         _user_id: &str,
     ) -> Result<PublisherRefreshOutcome> {
         let publishers = self.publishers.lock().await;
-        Ok(if publishers.contains_key(&(room_id.to_string(), media_id.to_string())) {
-            PublisherRefreshOutcome::Refreshed
-        } else {
-            PublisherRefreshOutcome::Missing
-        })
+        Ok(
+            if publishers.contains_key(&(room_id.to_string(), media_id.to_string())) {
+                PublisherRefreshOutcome::Refreshed
+            } else {
+                PublisherRefreshOutcome::Missing
+            },
+        )
     }
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {

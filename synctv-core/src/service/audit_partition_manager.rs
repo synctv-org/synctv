@@ -380,7 +380,10 @@ async fn run_audit_partition_maintenance(manager: &AuditPartitionManager) {
     match manager.check_health().await {
         Ok(health) => {
             if health.missing_count > 0 {
-                warn!("Found {} missing partitions, creating now", health.missing_count);
+                warn!(
+                    "Found {} missing partitions, creating now",
+                    health.missing_count
+                );
                 if let Err(e) = manager.ensure_future_partitions_with_retry(6).await {
                     tracing::error!(
                         error = %e,
@@ -413,9 +416,7 @@ async fn wait_for_initial_leader(
         }
 
         if !logged_wait {
-            info!(
-                "Delaying initial {task_name} run until cluster leadership is established"
-            );
+            info!("Delaying initial {task_name} run until cluster leadership is established");
             logged_wait = true;
         }
 

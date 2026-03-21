@@ -10,6 +10,39 @@
 use crate::resilience::timeout::REDIS_OPERATION_TIMEOUT;
 use crate::{Error, Result};
 use async_trait::async_trait;
+use std::future::Future;
+
+enum L2RedisAttemptError {
+    Redis(redis::RedisError),
+    Timeout,
+}
+
+async fn run_l2_redis_attempt<T, F>(future: F) -> std::result::Result<T, L2RedisAttemptError>
+where
+    F: Future<Output = std::result::Result<T, redis::RedisError>>,
+{
+    match tokio::time::timeout(REDIS_OPERATION_TIMEOUT, future).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(L2RedisAttemptError::Redis(err)),
+        Err(_) => Err(L2RedisAttemptError::Timeout),
+    }
+}
+
+async fn run_l2_redis_op<T, F>(operation: impl Into<String>, future: F) -> Result<T>
+where
+    F: Future<Output = std::result::Result<T, redis::RedisError>>,
+{
+    let operation = operation.into();
+    match run_l2_redis_attempt(future).await {
+        Ok(value) => Ok(value),
+        Err(L2RedisAttemptError::Timeout) => {
+            Err(Error::Timeout(format!("L2 cache timeout: {operation}")))
+        }
+        Err(L2RedisAttemptError::Redis(err)) => {
+            Err(Error::Internal(format!("Failed to {operation}: {err}")))
+        }
+    }
+}
 
 /// Backend for the L2 (remote) cache layer in `TieredCache`.
 ///
@@ -108,10 +141,7 @@ impl CacheL2Backend for RedisCacheL2 {
         let mut conn = self.conn().await;
 
         let result =
-            tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.get::<_, Option<String>>(key))
-                .await
-                .map_err(|_| Error::Internal("L2 cache get operation timed out".to_string()))?
-                .map_err(|e| Error::Internal(format!("Failed to get from L2 cache: {e}")))?;
+            run_l2_redis_op("get from L2 cache", conn.get::<_, Option<String>>(key)).await?;
         Ok(result)
     }
 
@@ -119,13 +149,11 @@ impl CacheL2Backend for RedisCacheL2 {
         use redis::AsyncCommands;
         let mut conn = self.conn().await;
 
-        tokio::time::timeout(
-            REDIS_OPERATION_TIMEOUT,
+        run_l2_redis_op(
+            "set in L2 cache",
             conn.set_ex::<_, _, ()>(key, json, ttl_secs),
         )
-        .await
-        .map_err(|_| Error::Internal("L2 cache set operation timed out".to_string()))?
-        .map_err(|e| Error::Internal(format!("Failed to set in L2 cache: {e}")))?;
+        .await?;
         Ok(())
     }
 
@@ -133,10 +161,7 @@ impl CacheL2Backend for RedisCacheL2 {
         use redis::AsyncCommands;
         let mut conn = self.conn().await;
 
-        tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del::<_, ()>(key))
-            .await
-            .map_err(|_| Error::Internal("L2 cache delete operation timed out".to_string()))?
-            .map_err(|e| Error::Internal(format!("Failed to delete from L2 cache: {e}")))?;
+        run_l2_redis_op("delete from L2 cache", conn.del::<_, ()>(key)).await?;
         Ok(())
     }
 
@@ -144,11 +169,9 @@ impl CacheL2Backend for RedisCacheL2 {
         use redis::AsyncCommands;
         for attempt in 0..max_retries {
             let mut conn = self.conn().await;
-            let result =
-                tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del::<_, ()>(key)).await;
-            match result {
-                Ok(Ok(())) => return Ok(()),
-                Ok(Err(e)) => {
+            match run_l2_redis_attempt(conn.del::<_, ()>(key)).await {
+                Ok(()) => return Ok(()),
+                Err(L2RedisAttemptError::Redis(e)) => {
                     let is_last_attempt = attempt == max_retries - 1;
                     if is_last_attempt {
                         crate::metrics::cache::CACHE_ERRORS
@@ -178,7 +201,7 @@ impl CacheL2Backend for RedisCacheL2 {
                         tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                     }
                 }
-                Err(_) => {
+                Err(L2RedisAttemptError::Timeout) => {
                     let is_last_attempt = attempt == max_retries - 1;
                     if is_last_attempt {
                         crate::metrics::cache::CACHE_ERRORS
@@ -190,8 +213,8 @@ impl CacheL2Backend for RedisCacheL2 {
                             cache_type = %cache_type,
                             "Redis L2 cache delete timed out after retries"
                         );
-                        return Err(Error::Internal(
-                            "Failed to delete from Redis cache: operation timed out".to_string(),
+                        return Err(Error::Timeout(
+                            "L2 cache timeout: delete from Redis cache".to_string(),
                         ));
                     } else {
                         let backoff_ms = 10 * u64::pow(5, attempt);
@@ -219,10 +242,7 @@ impl CacheL2Backend for RedisCacheL2 {
         }
 
         let results: Vec<Option<String>> =
-            tokio::time::timeout(REDIS_OPERATION_TIMEOUT, pipe.query_async(&mut conn))
-                .await
-                .map_err(|_| Error::Internal("L2 cache batch get operation timed out".to_string()))?
-                .map_err(|e| Error::Internal(format!("Failed to batch get from L2: {e}")))?;
+            run_l2_redis_op("batch get from L2 cache", pipe.query_async(&mut conn)).await?;
         Ok(results)
     }
 
@@ -255,8 +275,8 @@ impl CacheL2Backend for RedisCacheL2 {
             ",
         );
 
-        let result: i64 = tokio::time::timeout(
-            REDIS_OPERATION_TIMEOUT,
+        let result: i64 = run_l2_redis_op(
+            "run set_if_newer Lua script",
             script
                 .key(key)
                 .arg(json)
@@ -264,9 +284,7 @@ impl CacheL2Backend for RedisCacheL2 {
                 .arg(new_ts_iso)
                 .invoke_async(&mut conn),
         )
-        .await
-        .map_err(|_| Error::Internal("L2 cache set_if_newer operation timed out".to_string()))?
-        .map_err(|e| Error::Internal(format!("Failed to run set_if_newer Lua script: {e}")))?;
+        .await?;
 
         Ok(result == 1)
     }
@@ -280,8 +298,8 @@ impl CacheL2Backend for RedisCacheL2 {
         let pattern = format!("{prefix}*");
         let mut cursor: u64 = 0;
         loop {
-            let scan_result: (u64, Vec<String>) = tokio::time::timeout(
-                REDIS_OPERATION_TIMEOUT,
+            let scan_result: (u64, Vec<String>) = run_l2_redis_op(
+                format!("scan L2 cache keys for prefix '{prefix}'"),
                 redis::cmd("SCAN")
                     .arg(cursor)
                     .arg("MATCH")
@@ -290,19 +308,16 @@ impl CacheL2Backend for RedisCacheL2 {
                     .arg(100u64)
                     .query_async(&mut conn),
             )
-            .await
-            .map_err(|_| Error::Internal(format!("SCAN timed out for prefix '{prefix}'")))?
-            .map_err(|e| Error::Internal(format!("SCAN failed for prefix '{prefix}': {e}")))?;
+            .await?;
 
             let (next_cursor, keys) = scan_result;
 
             if !keys.is_empty() {
-                tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del::<_, ()>(keys.as_slice()))
-                    .await
-                    .map_err(|_| Error::Internal(format!("DEL timed out for prefix '{prefix}'")))?
-                    .map_err(|e| {
-                        Error::Internal(format!("DEL failed for prefix '{prefix}': {e}"))
-                    })?;
+                run_l2_redis_op(
+                    format!("delete L2 cache keys for prefix '{prefix}'"),
+                    conn.del::<_, ()>(keys.as_slice()),
+                )
+                .await?;
             }
 
             cursor = next_cursor;
@@ -473,6 +488,43 @@ mod tests {
 
     /// Short timeout for tests — just needs to prove the timeout mechanism works.
     const TEST_TIMEOUT: Duration = Duration::from_millis(200);
+
+    #[tokio::test(start_paused = true)]
+    async fn test_l2_redis_timeout_maps_to_timeout_error() {
+        let timeout_future = run_l2_redis_op("get from L2 cache", async {
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), redis::RedisError>(())
+        });
+
+        tokio::pin!(timeout_future);
+        tokio::task::yield_now().await;
+        tokio::time::advance(REDIS_OPERATION_TIMEOUT).await;
+
+        let err = timeout_future.await.expect_err("operation should time out");
+        assert!(matches!(
+            err,
+            Error::Timeout(ref msg) if msg == "L2 cache timeout: get from L2 cache"
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_l2_redis_retry_attempt_reports_timeout() {
+        let timeout_future = run_l2_redis_attempt(async {
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), redis::RedisError>(())
+        });
+
+        tokio::pin!(timeout_future);
+        tokio::task::yield_now().await;
+        tokio::time::advance(REDIS_OPERATION_TIMEOUT).await;
+
+        let err = timeout_future
+            .await
+            .expect_err("retryable redis operation should time out");
+        assert!(matches!(err, L2RedisAttemptError::Timeout));
+    }
 
     /// Test that get() times out when operation takes too long
     #[tokio::test]

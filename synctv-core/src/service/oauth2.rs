@@ -13,6 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
@@ -70,25 +71,61 @@ pub trait OAuthStateStore: Send + Sync {
 pub struct RedisOAuthStateStore {
     /// Shared Redis connection handle that follows Sentinel failover.
     conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    key_prefix: String,
 }
 
 impl RedisOAuthStateStore {
+    async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
+    where
+        F: Future<Output = std::result::Result<T, redis::RedisError>>,
+    {
+        run_oauth_state_redis_op(operation, future).await
+    }
+
+    fn normalize_key_prefix(prefix: impl Into<String>) -> String {
+        let key_prefix = prefix.into();
+        if key_prefix.is_empty() || key_prefix.ends_with(':') {
+            key_prefix
+        } else {
+            format!("{key_prefix}:")
+        }
+    }
+
     /// Create from the shared `Arc<RwLock<ConnectionManager>>`.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: impl Into<String>,
     ) -> Self {
-        Self { conn }
+        Self {
+            conn,
+            key_prefix: Self::normalize_key_prefix(key_prefix),
+        }
     }
 
     /// Acquire a fresh ConnectionManager clone from the shared handle.
     async fn get_conn(&self) -> redis::aio::ConnectionManager {
         self.conn.read().await.clone()
     }
+
+    fn redis_key(&self, token_id: &str) -> String {
+        format!("{}{}", self.key_prefix, Self::state_key_suffix(token_id))
+    }
+
+    fn state_key_suffix(token_id: &str) -> String {
+        format!("oauth2:state:{token_id}")
+    }
 }
 
-/// Redis key prefix for `OAuth2` state tokens
-const OAUTH2_STATE_KEY_PREFIX: &str = "oauth2:state:";
+async fn run_oauth_state_redis_op<T, F>(operation: &'static str, future: F) -> Result<T>
+where
+    F: Future<Output = std::result::Result<T, redis::RedisError>>,
+{
+    tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
+        .await
+        .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
+        .internal_with_err(&format!("Failed to {operation}"))
+}
 
 #[async_trait::async_trait]
 impl OAuthStateStore for RedisOAuthStateStore {
@@ -102,19 +139,18 @@ impl OAuthStateStore for RedisOAuthStateStore {
         state: &OAuth2State,
         ttl: std::time::Duration,
     ) -> Result<()> {
-        let key = format!("{OAUTH2_STATE_KEY_PREFIX}{token_id}");
+        let key = self.redis_key(token_id);
         let value =
             serde_json::to_string(state).internal_with_err("Failed to serialize OAuth2 state")?;
 
         let mut conn = self.get_conn().await;
         use redis::AsyncCommands;
-        let _: () = tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            conn.set_ex(&key, value, ttl.as_secs()),
-        )
-        .await
-        .map_err(|_| Error::Internal("Redis timeout: store OAuth2 state".to_string()))?
-        .internal_with_err("Failed to store OAuth2 state in Redis")?;
+        let _: () = self
+            .run_redis_op(
+                "store OAuth2 state in Redis",
+                conn.set_ex(&key, value, ttl.as_secs()),
+            )
+            .await?;
 
         debug!(
             "Stored OAuth2 state in Redis for token {}",
@@ -124,7 +160,7 @@ impl OAuthStateStore for RedisOAuthStateStore {
     }
 
     async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
-        let key = format!("{OAUTH2_STATE_KEY_PREFIX}{token_id}");
+        let key = self.redis_key(token_id);
         let mut conn = self.get_conn().await;
 
         // Atomic GET + DEL via Lua script (same pattern as WsTicketService)
@@ -138,13 +174,12 @@ impl OAuthStateStore for RedisOAuthStateStore {
         "#,
         );
 
-        let value: Option<String> = tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            lua_script.key(&key).invoke_async(&mut conn),
-        )
-        .await
-        .map_err(|_| Error::Internal("Redis timeout: consume OAuth2 state".to_string()))?
-        .internal_with_err("Failed to consume OAuth2 state from Redis")?;
+        let value: Option<String> = self
+            .run_redis_op(
+                "consume OAuth2 state from Redis",
+                lua_script.key(&key).invoke_async(&mut conn),
+            )
+            .await?;
 
         match value {
             Some(json) => {
@@ -802,6 +837,20 @@ impl OAuth2Service {
         let pool = self.repository.pool();
         let mut tx = pool.begin().await?;
 
+        let advisory_lock_key = format!(
+            "oauth2:{}:{}",
+            provider.as_str(),
+            user_info.provider_user_id
+        );
+        // Serialize creation for a single external identity so concurrent logins
+        // cannot race on local username/email creation before the winning mapping
+        // becomes visible.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(&advisory_lock_key)
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to acquire OAuth2 identity advisory lock")?;
+
         // Re-check inside the transaction to guard against the race where another
         // concurrent request created the user between our initial lookup and here.
         let existing = self
@@ -815,29 +864,127 @@ impl OAuth2Service {
             return Ok((mapping.user_id, false));
         }
 
-        // Generate a random password (OAuth2 users authenticate via provider, not password).
+        let (base_username, candidates) = user_service
+            .oauth2_username_candidates(&user_info.provider_user_id, &user_info.username)?;
         let random_password = nanoid::nanoid!(32);
+        let password_hash = crate::service::auth::hash_password(&random_password).await?;
+        let user_email = user_info.email.clone();
 
-        // Create the user record inside the transaction.
-        let new_user: User = user_service
-            .register_with_executor(
-                user_info.username.clone(),
-                user_info.email.clone(),
-                random_password,
+        let mut new_user = None;
+        for (attempt, candidate) in candidates.iter().enumerate() {
+            let savepoint = format!("oauth2_user_create_{attempt}");
+            sqlx::query(&format!("SAVEPOINT {savepoint}"))
+                .execute(&mut *tx)
+                .await
+                .internal_with_err("Failed to create OAuth2 user savepoint")?;
+
+            let user = User::new_with_status(
+                candidate.clone(),
+                user_email.clone(),
+                password_hash.clone(),
                 SignupMethod::OAuth2,
-                &mut *tx,
-            )
-            .await?;
+                crate::models::UserStatus::Active,
+            );
+            match user_service
+                .repository
+                .create_with_executor(&user, &mut *tx)
+                .await
+            {
+                Ok(created_user) => {
+                    sqlx::query(&format!("RELEASE SAVEPOINT {savepoint}"))
+                        .execute(&mut *tx)
+                        .await
+                        .internal_with_err("Failed to release OAuth2 user savepoint")?;
+
+                    user_service
+                        .cache_oauth2_username_best_effort(&created_user.id, candidate)
+                        .await;
+
+                    if candidate == &base_username {
+                        tracing::info!(
+                            "Created new user {} (username='{}', sanitized from '{}') via OAuth2 provider {} (provider_user_id={})",
+                            created_user.id.as_str(),
+                            candidate,
+                            user_info.username,
+                            provider.as_str(),
+                            user_info.provider_user_id
+                        );
+                    } else {
+                        tracing::info!(
+                            "Username '{}' was taken; created user {} as '{}' (original '{}') via OAuth2 provider {} (provider_user_id={})",
+                            base_username,
+                            created_user.id.as_str(),
+                            candidate,
+                            user_info.username,
+                            provider.as_str(),
+                            user_info.provider_user_id
+                        );
+                    }
+
+                    new_user = Some(created_user);
+                    break;
+                }
+                Err(Error::AlreadyExists(ref msg))
+                    if msg.contains("username") || msg.contains("Username") =>
+                {
+                    sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
+                        .execute(&mut *tx)
+                        .await
+                        .internal_with_err(
+                            "Failed to roll back OAuth2 user savepoint after username collision",
+                        )?;
+                    continue;
+                }
+                Err(err) => {
+                    sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
+                        .execute(&mut *tx)
+                        .await
+                        .internal_with_err(
+                            "Failed to roll back OAuth2 user savepoint after create error",
+                        )?;
+                    return Err(err);
+                }
+            }
+        }
+
+        let new_user: User = new_user.ok_or_else(|| {
+            Error::Internal(format!(
+                "Could not generate a unique username for base '{}' after {} attempts",
+                user_info.username,
+                candidates.len()
+            ))
+        })?;
 
         // Link the OAuth2 provider mapping inside the same transaction.
-        self.upsert_user_provider_with_executor(
-            &new_user.id,
-            provider,
-            &user_info.provider_user_id,
-            user_info,
-            &mut *tx,
-        )
-        .await?;
+        match self
+            .upsert_user_provider_with_executor(
+                &new_user.id,
+                provider,
+                &user_info.provider_user_id,
+                user_info,
+                &mut *tx,
+            )
+            .await
+        {
+            Ok(()) => {}
+            Err(Error::AlreadyExists(_)) => {
+                // Another concurrent request bound this provider identity first.
+                // Roll back the provisional user so we do not commit an orphan row,
+                // then return the winning mapping.
+                tx.rollback().await?;
+                let existing = self
+                    .repository
+                    .find_by_provider(provider, &user_info.provider_user_id)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Internal(
+                            "OAuth2 mapping conflicted but could not be reloaded".to_string(),
+                        )
+                    })?;
+                return Ok((existing.user_id, false));
+            }
+            Err(err) => return Err(err),
+        }
 
         // Set email_verified if the provider confirmed the email.
         if user_info.email_verified && user_info.email.is_some() {
@@ -2430,5 +2577,24 @@ mod tests {
             1,
             "Exactly one consume should succeed (single-use guarantee)"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_redis_state_store_timeout_maps_to_timeout_error() {
+        let timeout_future = run_oauth_state_redis_op("store OAuth2 state in Redis", async {
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), redis::RedisError>(())
+        });
+
+        tokio::pin!(timeout_future);
+        tokio::task::yield_now().await;
+        tokio::time::advance(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT).await;
+
+        let err = timeout_future.await.expect_err("operation should time out");
+        assert!(matches!(
+            err,
+            Error::Timeout(ref msg) if msg == "Redis timeout: store OAuth2 state in Redis"
+        ));
     }
 }

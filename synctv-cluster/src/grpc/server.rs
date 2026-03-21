@@ -5,13 +5,13 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-use super::ClusterAuthInterceptor;
 use super::synctv::cluster::cluster_service_server::ClusterService;
 use super::synctv::cluster::{
     DeregisterNodeRequest, DeregisterNodeResponse, GetNodesRequest, GetNodesResponse,
     GetRoomConnectionsRequest, GetRoomConnectionsResponse, GetUserOnlineStatusRequest,
     GetUserOnlineStatusResponse, NodeInfo, NodeStatus, RoomConnection, UserOnlineStatus,
 };
+use super::ClusterAuthInterceptor;
 use crate::discovery::{NodeInfo as DiscoveryNodeInfo, NodeRegistry};
 use crate::sync::connection_manager::ConnectionManager;
 

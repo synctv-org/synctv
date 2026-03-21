@@ -703,8 +703,9 @@ mod tests {
 
     #[test]
     fn test_from_core_auth_service_unavailable_stays_service_unavailable() {
-        let core_err =
-            synctv_core::Error::ServiceUnavailable("Authentication service unavailable".to_string());
+        let core_err = synctv_core::Error::ServiceUnavailable(
+            "Authentication service unavailable".to_string(),
+        );
         let app_err = AppError::from(core_err);
         assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(

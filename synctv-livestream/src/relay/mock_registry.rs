@@ -29,11 +29,9 @@ pub struct MockStreamRegistry {
     fail_refresh_publisher_ttl: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// When true, `refresh_publisher_ttl` returns the wrapped timeout error shape
     /// used by the real Redis-backed registry helper.
-    fail_refresh_publisher_ttl_with_wrapped_timeout:
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_refresh_publisher_ttl_with_wrapped_timeout: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// When true, `refresh_publisher_ttl` returns a persistent non-I/O registry error.
-    fail_refresh_publisher_ttl_with_response_error:
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_refresh_publisher_ttl_with_response_error: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Number of upcoming epoch-fenced unregister calls that should fail.
     fail_unregister_if_epoch_matches_times: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -57,7 +55,9 @@ impl MockStreamRegistry {
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            fail_refresh_publisher_ttl: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fail_refresh_publisher_ttl: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
             fail_refresh_publisher_ttl_with_wrapped_timeout: std::sync::Arc::new(
                 std::sync::atomic::AtomicBool::new(false),
             ),
@@ -88,7 +88,9 @@ impl MockStreamRegistry {
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            fail_refresh_publisher_ttl: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fail_refresh_publisher_ttl: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
             fail_refresh_publisher_ttl_with_wrapped_timeout: std::sync::Arc::new(
                 std::sync::atomic::AtomicBool::new(false),
             ),
@@ -297,10 +299,8 @@ impl StreamRegistryTrait for MockStreamRegistry {
             .fail_unregister_if_epoch_matches_times
             .load(std::sync::atomic::Ordering::SeqCst);
         if remaining_failures > 0 {
-            self.fail_unregister_if_epoch_matches_times.fetch_sub(
-                1,
-                std::sync::atomic::Ordering::SeqCst,
-            );
+            self.fail_unregister_if_epoch_matches_times
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             let redis_error = redis::RedisError::from((
                 redis::ErrorKind::Io,
                 "simulated Redis failure in unregister_publisher_if_epoch_matches",

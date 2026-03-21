@@ -1,6 +1,6 @@
 //! `UserOAuthProviderRepository` integration tests
 //!
-//! Tests: upsert with different `user_id`, transaction executor path,
+//! Tests: upsert conflict handling, transaction executor path,
 //!        `delete_all_for_user_with_executor`.
 //!
 //! Run with: cargo test -p synctv-core --test `user_oauth_provider_repository_tests`
@@ -38,11 +38,11 @@ async fn create_user(pool: &PgPool, username: &str) -> User {
     user_repo.create(&make_user(username)).await.unwrap()
 }
 
-// ─── upsert with different user_id (OAuth identity update) ───────────
+// ─── upsert conflict handling ────────────────────────────────────────
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_upsert_different_user_id_updates_mapping() {
+async fn test_upsert_different_user_id_rejects_rebinding_and_preserves_mapping() {
     let (_container, pool) = create_test_pool().await;
     let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
 
@@ -72,9 +72,77 @@ async fn test_upsert_different_user_id_updates_mapping() {
         .unwrap();
     assert_eq!(mapping.user_id, user_a.id);
 
-    // Upsert again with user_b (re-linking the OAuth identity)
-    oauth_repo
+    // Upsert again with user_b must be rejected: external identities are stable
+    // and must never be silently reassigned to another local user.
+    let err = oauth_repo
         .upsert(&user_b.id, &provider, provider_user_id, &user_info)
+        .await
+        .expect_err("OAuth identity rebinding must be rejected");
+
+    assert!(
+        matches!(
+            err,
+            synctv_core::Error::AlreadyExists(ref msg)
+            if msg.contains("already linked to another user")
+        ),
+        "Unexpected error: {err}"
+    );
+
+    let mapping = oauth_repo
+        .find_by_provider(&provider, provider_user_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        mapping.user_id, user_a.id,
+        "Original OAuth identity binding must be preserved"
+    );
+
+    // user_a must still own the mapping
+    let user_a_mappings = oauth_repo.find_by_user(&user_a.id).await.unwrap();
+    assert_eq!(user_a_mappings.len(), 1);
+
+    // user_b must not gain the mapping
+    let user_b_mappings = oauth_repo.find_by_user(&user_b.id).await.unwrap();
+    assert!(
+        user_b_mappings.is_empty(),
+        "user_b should not receive another user's OAuth mapping"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_upsert_same_user_id_updates_profile_fields_without_rebinding() {
+    let (_container, pool) = create_test_pool().await;
+    let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
+
+    let user = create_user(&pool, "oauth_profile_user").await;
+
+    let provider = OAuth2Provider::GitHub;
+    let provider_user_id = "gh_profile_001";
+    let initial_info = OAuth2UserInfo {
+        provider: provider.clone(),
+        provider_user_id: provider_user_id.to_string(),
+        username: "oldname".to_string(),
+        email: None,
+        avatar: None,
+    };
+
+    oauth_repo
+        .upsert(&user.id, &provider, provider_user_id, &initial_info)
+        .await
+        .unwrap();
+
+    let updated_info = OAuth2UserInfo {
+        provider: provider.clone(),
+        provider_user_id: provider_user_id.to_string(),
+        username: "newname".to_string(),
+        email: Some("new@example.com".to_string()),
+        avatar: Some("https://avatar.example/new.png".to_string()),
+    };
+
+    oauth_repo
+        .upsert(&user.id, &provider, provider_user_id, &updated_info)
         .await
         .unwrap();
 
@@ -83,20 +151,67 @@ async fn test_upsert_different_user_id_updates_mapping() {
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(mapping.user_id, user.id);
+    assert_eq!(mapping.username, "newname");
+    assert_eq!(mapping.email.as_deref(), Some("new@example.com"));
     assert_eq!(
-        mapping.user_id, user_b.id,
-        "OAuth identity should now be linked to user_b"
-    );
-
-    // user_a should no longer have this mapping
-    let user_a_mappings = oauth_repo.find_by_user(&user_a.id).await.unwrap();
-    assert!(
-        user_a_mappings.is_empty(),
-        "user_a should have no OAuth mappings after re-link"
+        mapping.avatar_url.as_deref(),
+        Some("https://avatar.example/new.png")
     );
 }
 
-// ─── transaction executor path ───────────────────────────────────────
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_upsert_with_executor_rejects_rebinding_inside_transaction() {
+    let (_container, pool) = create_test_pool().await;
+    let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
+
+    let user_a = create_user(&pool, "oauth_tx_owner").await;
+    let user_b = create_user(&pool, "oauth_tx_conflict").await;
+    let provider = OAuth2Provider::Google;
+    let provider_user_id = "google_tx_conflict_001";
+    let user_info = OAuth2UserInfo {
+        provider: provider.clone(),
+        provider_user_id: provider_user_id.to_string(),
+        username: "googleuser".to_string(),
+        email: Some("tx@google.com".to_string()),
+        avatar: None,
+    };
+
+    oauth_repo
+        .upsert(&user_a.id, &provider, provider_user_id, &user_info)
+        .await
+        .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = oauth_repo
+        .upsert_with_executor(
+            &user_b.id,
+            &provider,
+            provider_user_id,
+            &user_info,
+            &mut *tx,
+        )
+        .await
+        .expect_err("Rebinding in transaction must be rejected");
+    tx.rollback().await.unwrap();
+
+    assert!(
+        matches!(
+            err,
+            synctv_core::Error::AlreadyExists(ref msg)
+            if msg.contains("already linked to another user")
+        ),
+        "Unexpected error: {err}"
+    );
+
+    let mapping = oauth_repo
+        .find_by_provider(&provider, provider_user_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(mapping.user_id, user_a.id);
+}
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -124,11 +239,13 @@ async fn test_upsert_with_executor_in_transaction() {
     tx.commit().await.unwrap();
 
     // Verify it was persisted
+    let user_mappings = oauth_repo.find_by_user(&user.id).await.unwrap();
     let mapping = oauth_repo
         .find_by_provider(&provider, provider_user_id)
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(user_mappings.len(), 1);
     assert_eq!(mapping.user_id, user.id);
     assert_eq!(mapping.email.as_deref(), Some("tx@google.com"));
 }

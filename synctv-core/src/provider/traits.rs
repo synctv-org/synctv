@@ -183,6 +183,11 @@ pub trait MediaProvider: Send + Sync {
         None
     }
 
+    #[cfg(test)]
+    fn test_client_manager_marker(&self) -> Option<usize> {
+        None
+    }
+
     // ========== Validation ==========
 
     /// Validate `source_config` before saving to database

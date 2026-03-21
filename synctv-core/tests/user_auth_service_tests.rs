@@ -15,10 +15,11 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{CacheL2Backend, KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::UserId,
+    models::{OAuth2Provider, UserId},
+    repository::{UserOAuthProviderRepository, UserRepository},
     service::{
-        auth::jwt::JwtService, BruteForceProtection, InMemoryTokenBlacklistStore, RateLimiter,
-        TokenBlacklistStore, UserService,
+        auth::jwt::JwtService, BruteForceProtection, InMemoryOAuthStateStore,
+        InMemoryTokenBlacklistStore, OAuth2Service, RateLimiter, TokenBlacklistStore, UserService,
     },
     Error,
 };
@@ -1446,6 +1447,11 @@ async fn test_create_or_load_by_oauth2_username_sanitization() {
         !result.username.contains('!'),
         "! should be stripped from username"
     );
+    assert_eq!(
+        result.status,
+        synctv_core::models::UserStatus::Active,
+        "OAuth2-created users should start active so first login succeeds"
+    );
 }
 
 #[tokio::test]
@@ -1533,6 +1539,142 @@ async fn test_create_or_load_by_oauth2_empty_username_uses_provider_id() {
         result.username.starts_with("user_"),
         "Empty sanitized username should fall back to 'user_<provider_id>': {}",
         result.username
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_oauth2_users() {
+    let (_container, pool) = create_test_pool().await;
+    let user_service = create_user_service(pool.clone());
+    let oauth_service = OAuth2Service::new(
+        UserOAuthProviderRepository::new(pool.clone()),
+        Arc::new(InMemoryOAuthStateStore::new()),
+        synctv_core::oauth2::ProviderRegistry::new(),
+        false,
+    )
+    .expect("OAuth2 service should initialize");
+
+    let provider = OAuth2Provider::Google;
+    let user_info = synctv_core::service::OAuth2UserInfo {
+        provider: provider.clone(),
+        provider_user_id: format!("oauth_concurrent_{}", nanoid::nanoid!(8)),
+        username: format!("oauth_concurrent_user_{}", nanoid::nanoid!(6)),
+        email: Some(format!("oauth_concurrent_{}@test.com", nanoid::nanoid!(6))),
+        avatar: None,
+        email_verified: true,
+    };
+
+    let first = oauth_service.find_or_create_and_link(&user_service, &provider, &user_info);
+    let second = oauth_service.find_or_create_and_link(&user_service, &provider, &user_info);
+    let (first_result, second_result) = tokio::join!(first, second);
+
+    let (first_user_id, _) = first_result.expect("first concurrent login must succeed");
+    let (second_user_id, _) = second_result.expect("second concurrent login must succeed");
+    assert_eq!(
+        first_user_id, second_user_id,
+        "Concurrent logins for the same provider identity must converge to one user"
+    );
+
+    let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
+    let mapping = oauth_repo
+        .find_by_provider(&provider, &user_info.provider_user_id)
+        .await
+        .expect("mapping lookup must succeed")
+        .expect("mapping must exist");
+    assert_eq!(mapping.user_id, first_user_id);
+
+    let user_repo = UserRepository::new(pool.clone());
+    let oauth2_user_count: i64 = sqlx::query_scalar(
+        r"
+        SELECT COUNT(*)
+        FROM users u
+        JOIN oauth2_clients oc ON oc.user_id = u.id
+        WHERE oc.provider = $1
+          AND oc.provider_user_id = $2
+          AND u.deleted_at IS NULL
+        ",
+    )
+    .bind(provider.as_str())
+    .bind(&user_info.provider_user_id)
+    .fetch_one(&pool)
+    .await
+    .expect("user count query must succeed");
+    assert_eq!(
+        oauth2_user_count, 1,
+        "Concurrent OAuth2 signups must not commit an extra orphan user row"
+    );
+
+    let persisted_user = user_repo
+        .get_by_id(&first_user_id)
+        .await
+        .expect("user lookup must succeed")
+        .expect("winning user must exist");
+    assert_eq!(persisted_user.email.as_deref(), user_info.email.as_deref());
+    assert!(persisted_user.email_verified);
+    assert_eq!(
+        persisted_user.status,
+        synctv_core::models::UserStatus::Active,
+        "OAuth2-created users must be active immediately"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collision() {
+    let (_container, pool) = create_test_pool().await;
+    let user_service = create_user_service(pool.clone());
+    let oauth_service = OAuth2Service::new(
+        UserOAuthProviderRepository::new(pool.clone()),
+        Arc::new(InMemoryOAuthStateStore::new()),
+        synctv_core::oauth2::ProviderRegistry::new(),
+        false,
+    )
+    .expect("OAuth2 service should initialize");
+
+    user_service
+        .register(
+            "oauth_collision_user".to_string(),
+            Some("local_collision@test.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("seed local user should be created");
+
+    let provider = OAuth2Provider::Google;
+    let user_info = synctv_core::service::OAuth2UserInfo {
+        provider: provider.clone(),
+        provider_user_id: format!("oauth_collision_{}", nanoid::nanoid!(8)),
+        username: "oauth_collision_user".to_string(),
+        email: Some(format!("oauth_collision_{}@test.com", nanoid::nanoid!(6))),
+        avatar: None,
+        email_verified: true,
+    };
+
+    let (created_user_id, is_new) = oauth_service
+        .find_or_create_and_link(&user_service, &provider, &user_info)
+        .await
+        .expect("OAuth2 signup should succeed by choosing a suffixed username");
+
+    assert!(is_new, "first OAuth2 login should create a new user");
+
+    let user_repo = UserRepository::new(pool.clone());
+    let created_user = user_repo
+        .get_by_id(&created_user_id)
+        .await
+        .expect("user lookup should succeed")
+        .expect("created OAuth2 user should exist");
+
+    assert_ne!(created_user.username, "oauth_collision_user");
+    assert!(
+        created_user.username.starts_with("oauth_collision_user_"),
+        "expected suffixed username, got {}",
+        created_user.username
+    );
+    assert_eq!(
+        created_user.signup_method,
+        synctv_core::models::SignupMethod::OAuth2
     );
 }
 

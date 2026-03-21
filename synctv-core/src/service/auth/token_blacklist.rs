@@ -1491,6 +1491,7 @@ impl RedisSyncableTokenBlacklistStore {
                         stats.family_synced += 1;
                     }
                     Err(e) => {
+                        stats.family_failed += 1;
                         tracing::warn!(
                             key = %key,
                             error = %e,
@@ -2191,6 +2192,28 @@ mod tests {
             fallback.get_family_revoked_at(key).await.is_none(),
             "Family revocation should expire after TTL"
         );
+    }
+
+    #[tokio::test]
+    async fn test_sync_pending_writes_counts_failed_family_syncs() {
+        let primary = Arc::new(AlwaysFailTokenBlacklistStore) as Arc<dyn TokenBlacklistStore>;
+        let store = RedisSyncableTokenBlacklistStore::with_defaults(primary);
+
+        let key = "family:pending_sync_failure";
+        let timestamp = 1_700_000_000_i64;
+
+        let result = store.set_family_revoked(key, timestamp, 3600).await;
+        assert!(result.is_err(), "initial primary write should fail");
+        assert_eq!(store.pending_family_count(), 1);
+
+        let stats = store
+            .sync_pending_writes()
+            .await
+            .expect("sync should report stats even when primary write fails");
+
+        assert_eq!(stats.family_synced, 0);
+        assert_eq!(stats.family_failed, 1);
+        assert_eq!(store.pending_family_count(), 1);
     }
 
     // ---- Hybrid/Tiered fallback scenario tests ----

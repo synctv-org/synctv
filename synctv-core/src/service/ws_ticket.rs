@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -156,6 +157,13 @@ pub struct RedisTicketStore {
 }
 
 impl RedisTicketStore {
+    async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
+    where
+        F: Future<Output = std::result::Result<T, redis::RedisError>>,
+    {
+        run_ws_ticket_redis_op(operation, future).await
+    }
+
     fn normalize_key_prefix(prefix: impl Into<String>) -> String {
         let key_prefix = prefix.into();
         if key_prefix.is_empty() || key_prefix.ends_with(':') {
@@ -190,6 +198,16 @@ impl RedisTicketStore {
     }
 }
 
+async fn run_ws_ticket_redis_op<T, F>(operation: &'static str, future: F) -> Result<T>
+where
+    F: Future<Output = std::result::Result<T, redis::RedisError>>,
+{
+    tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
+        .await
+        .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
+        .map_err(|e| Error::Internal(format!("Failed to {operation}: {e}")))
+}
+
 #[async_trait]
 impl TicketStore for RedisTicketStore {
     async fn store(&self, ticket: &str, data: &WsTicketData, ttl_secs: u64) -> Result<()> {
@@ -201,13 +219,9 @@ impl TicketStore for RedisTicketStore {
             .map_err(|e| Error::Internal(format!("Failed to serialize ticket data: {e}")))?;
 
         let mut conn = self.conn().await;
-        let _: () = tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            conn.set_ex(&key, json, ttl_secs),
-        )
-        .await
-        .map_err(|_| Error::Internal("Redis timeout: store ticket".to_string()))?
-        .map_err(|e| Error::Internal(format!("Failed to store ticket: {e}")))?;
+        let _: () = self
+            .run_redis_op("store ticket", conn.set_ex(&key, json, ttl_secs))
+            .await?;
 
         Ok(())
     }
@@ -218,13 +232,7 @@ impl TicketStore for RedisTicketStore {
         let key = self.redis_key(ticket, expected_room_id);
         let mut conn = self.conn().await;
 
-        let json: Option<String> = tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            conn.get(&key),
-        )
-        .await
-        .map_err(|_| Error::Internal("Redis timeout: load ticket".to_string()))?
-        .map_err(|e| Error::Internal(format!("Failed to load ticket: {e}")))?;
+        let json: Option<String> = self.run_redis_op("load ticket", conn.get(&key)).await?;
 
         let Some(json) = json else {
             return Ok(None);
@@ -247,10 +255,11 @@ impl TicketStore for RedisTicketStore {
         let expected_json = serde_json::to_string(expected_ticket)
             .map_err(|e| Error::Internal(format!("Failed to serialize ticket data: {e}")))?;
 
-        let deleted: i64 = tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            redis::Script::new(
-                r#"
+        let deleted: i64 = self
+            .run_redis_op(
+                "claim ticket",
+                redis::Script::new(
+                    r#"
                 local value = redis.call("GET", KEYS[1])
                 if not value then
                     return 0
@@ -261,14 +270,12 @@ impl TicketStore for RedisTicketStore {
                 redis.call("DEL", KEYS[1])
                 return 1
             "#,
+                )
+                .key(&key)
+                .arg(&expected_json)
+                .invoke_async(&mut conn),
             )
-            .key(&key)
-            .arg(&expected_json)
-            .invoke_async(&mut conn),
-        )
-        .await
-        .map_err(|_| Error::Internal("Redis timeout: claim ticket".to_string()))?
-        .map_err(|e| Error::Internal(format!("Failed to claim ticket: {e}")))?;
+            .await?;
 
         Ok(deleted > 0)
     }
@@ -292,13 +299,12 @@ impl TicketStore for RedisTicketStore {
         "#,
         );
 
-        let json: Option<String> = tokio::time::timeout(
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            lua_script.key(&key).invoke_async(&mut conn),
-        )
-        .await
-        .map_err(|_| Error::Internal("Redis timeout: validate ticket".to_string()))?
-        .map_err(|e| Error::Internal(format!("Failed to validate ticket: {e}")))?;
+        let json: Option<String> = self
+            .run_redis_op(
+                "validate ticket",
+                lua_script.key(&key).invoke_async(&mut conn),
+            )
+            .await?;
 
         let Some(json) = json else {
             return Ok(None);
@@ -1130,6 +1136,25 @@ mod tests {
         let service = WsTicketService::with_memory(Some(30));
         let debug_str = format!("{service:?}");
         assert!(debug_str.contains("memory"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_ws_ticket_redis_timeout_maps_to_timeout_error() {
+        let timeout_future = run_ws_ticket_redis_op("store ticket", async {
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), redis::RedisError>(())
+        });
+
+        tokio::pin!(timeout_future);
+        tokio::task::yield_now().await;
+        tokio::time::advance(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT).await;
+
+        let err = timeout_future.await.expect_err("operation should time out");
+        assert!(matches!(
+            err,
+            Error::Timeout(ref msg) if msg == "Redis timeout: store ticket"
+        ));
     }
 
     #[test]

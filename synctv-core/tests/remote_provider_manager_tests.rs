@@ -14,15 +14,17 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_media_providers::grpc::{
-    alist::alist_server::AlistServer, alist_server::AlistService as AlistGrpcService,
-};
 use synctv_core::{
-    cache::CacheInvalidationService, models::ProviderInstance,
+    cache::CacheInvalidationService,
+    models::ProviderInstance,
     repository::ProviderInstanceRepository,
     service::{remote_provider_manager::RemoteProviderManager, CredentialEncryption},
 };
 use synctv_core_testing::{create_test_pool_with_options_and_label, start_redis_with_client};
+use synctv_media_providers::grpc::{
+    alist::alist_server::AlistServer, alist_server::AlistService as AlistGrpcService,
+    emby::emby_server::EmbyServer, emby_server::EmbyService as EmbyGrpcService,
+};
 use tokio::sync::{Barrier, RwLock};
 use tonic::transport::Server;
 use tonic_health::ServingStatus;
@@ -118,6 +120,20 @@ fn make_test_instance(name: &str) -> ProviderInstance {
     }
 }
 
+fn make_reachable_remote_instance(name: &str, host: &str, port: u16) -> ProviderInstance {
+    let mut instance = make_test_instance(name);
+    instance.endpoint = format!("http://{host}:{port}");
+    instance.providers = vec!["alist".to_string()];
+    instance
+}
+
+fn make_test_address_overrides(host: &str, port: u16) -> HashMap<String, SocketAddr> {
+    HashMap::from([(
+        host.to_string(),
+        SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
+    )])
+}
+
 async fn spawn_authenticated_provider_server(
     auth_secret: &str,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -140,7 +156,9 @@ async fn spawn_authenticated_provider_server(
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(health_service)
-            .add_service(AlistServer::new(GrpcAuthProbeAlistService::new(auth_secret)))
+            .add_service(AlistServer::new(GrpcAuthProbeAlistService::new(
+                auth_secret,
+            )))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
             .expect("provider auth test server should run");
@@ -153,6 +171,7 @@ async fn spawn_authenticated_provider_server(
 struct GrpcAuthProbeAlistService {
     expected_secret: Arc<str>,
     fail_after_auth: bool,
+    require_real_upstream_token: bool,
 }
 
 impl GrpcAuthProbeAlistService {
@@ -160,6 +179,7 @@ impl GrpcAuthProbeAlistService {
         Self {
             expected_secret: Arc::<str>::from(expected_secret),
             fail_after_auth: false,
+            require_real_upstream_token: false,
         }
     }
 
@@ -167,6 +187,15 @@ impl GrpcAuthProbeAlistService {
         Self {
             expected_secret: Arc::<str>::from(expected_secret),
             fail_after_auth: true,
+            require_real_upstream_token: false,
+        }
+    }
+
+    fn requiring_real_upstream_token(expected_secret: String) -> Self {
+        Self {
+            expected_secret: Arc::<str>::from(expected_secret),
+            fail_after_auth: false,
+            require_real_upstream_token: true,
         }
     }
 
@@ -192,7 +221,9 @@ impl synctv_media_providers::grpc::alist::alist_server::Alist for GrpcAuthProbeA
         _request: tonic::Request<synctv_media_providers::grpc::alist::LoginReq>,
     ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::LoginResp>, tonic::Status>
     {
-        Err(tonic::Status::unimplemented("login not needed for health probe"))
+        Err(tonic::Status::unimplemented(
+            "login not needed for health probe",
+        ))
     }
 
     async fn fs_get(
@@ -200,7 +231,9 @@ impl synctv_media_providers::grpc::alist::alist_server::Alist for GrpcAuthProbeA
         _request: tonic::Request<synctv_media_providers::grpc::alist::FsGetReq>,
     ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::FsGetResp>, tonic::Status>
     {
-        Err(tonic::Status::unimplemented("fs_get not needed for health probe"))
+        Err(tonic::Status::unimplemented(
+            "fs_get not needed for health probe",
+        ))
     }
 
     async fn fs_list(
@@ -208,7 +241,9 @@ impl synctv_media_providers::grpc::alist::alist_server::Alist for GrpcAuthProbeA
         _request: tonic::Request<synctv_media_providers::grpc::alist::FsListReq>,
     ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::FsListResp>, tonic::Status>
     {
-        Err(tonic::Status::unimplemented("fs_list not needed for health probe"))
+        Err(tonic::Status::unimplemented(
+            "fs_list not needed for health probe",
+        ))
     }
 
     async fn fs_other(
@@ -216,25 +251,31 @@ impl synctv_media_providers::grpc::alist::alist_server::Alist for GrpcAuthProbeA
         _request: tonic::Request<synctv_media_providers::grpc::alist::FsOtherReq>,
     ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::FsOtherResp>, tonic::Status>
     {
-        Err(tonic::Status::unimplemented("fs_other not needed for health probe"))
+        Err(tonic::Status::unimplemented(
+            "fs_other not needed for health probe",
+        ))
     }
 
     async fn fs_search(
         &self,
         _request: tonic::Request<synctv_media_providers::grpc::alist::FsSearchReq>,
-    ) -> Result<
-        tonic::Response<synctv_media_providers::grpc::alist::FsSearchResp>,
-        tonic::Status,
-    > {
-        Err(tonic::Status::unimplemented("fs_search not needed for health probe"))
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::FsSearchResp>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented(
+            "fs_search not needed for health probe",
+        ))
     }
 
     async fn me(
         &self,
         request: tonic::Request<synctv_media_providers::grpc::alist::MeReq>,
-    ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::MeResp>, tonic::Status>
-    {
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::alist::MeResp>, tonic::Status> {
         self.validate_secret(&request)?;
+        if self.require_real_upstream_token && request.get_ref().token == "health-check-token" {
+            return Err(tonic::Status::unauthenticated(
+                "upstream provider rejected placeholder token",
+            ));
+        }
         if self.fail_after_auth {
             return Err(tonic::Status::internal(
                 "authenticated provider handler failure",
@@ -251,6 +292,161 @@ impl synctv_media_providers::grpc::alist::alist_server::Alist for GrpcAuthProbeA
                 sso_id: String::new(),
                 otp: false,
             },
+        ))
+    }
+}
+
+#[derive(Clone)]
+struct GrpcAuthProbeEmbyService {
+    expected_secret: Arc<str>,
+    fail_after_auth: bool,
+}
+
+impl GrpcAuthProbeEmbyService {
+    fn failing_after_auth(expected_secret: String) -> Self {
+        Self {
+            expected_secret: Arc::<str>::from(expected_secret),
+            fail_after_auth: true,
+        }
+    }
+
+    fn validate_secret<T>(&self, request: &tonic::Request<T>) -> Result<(), tonic::Status> {
+        let value = request
+            .metadata()
+            .get("x-provider-secret")
+            .ok_or_else(|| tonic::Status::unauthenticated("Missing x-provider-secret header"))?;
+        let provided = value
+            .to_str()
+            .map_err(|_| tonic::Status::unauthenticated("Invalid x-provider-secret header"))?;
+        if provided != self.expected_secret.as_ref() {
+            return Err(tonic::Status::unauthenticated("Invalid provider secret"));
+        }
+        Ok(())
+    }
+}
+
+#[tonic::async_trait]
+impl synctv_media_providers::grpc::emby::emby_server::Emby for GrpcAuthProbeEmbyService {
+    async fn login(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::LoginReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::LoginResp>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "login not needed for health probe",
+        ))
+    }
+
+    async fn me(
+        &self,
+        request: tonic::Request<synctv_media_providers::grpc::emby::MeReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::MeResp>, tonic::Status> {
+        self.validate_secret(&request)?;
+        if self.fail_after_auth {
+            return Err(tonic::Status::internal(
+                "authenticated emby provider handler failure",
+            ));
+        }
+        Ok(tonic::Response::new(
+            synctv_media_providers::grpc::emby::MeResp {
+                id: "health-check-user".to_string(),
+                name: "health-check".to_string(),
+                server_id: "health-check-server".to_string(),
+                policy: None,
+            },
+        ))
+    }
+
+    async fn get_items(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::GetItemsReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::GetItemsResp>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented(
+            "get_items not needed for health probe",
+        ))
+    }
+
+    async fn get_item(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::GetItemReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::Item>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "get_item not needed for health probe",
+        ))
+    }
+
+    async fn get_system_info(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::SystemInfoReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::SystemInfoResp>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented(
+            "get_system_info not needed for health probe",
+        ))
+    }
+
+    async fn fs_list(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::FsListReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::FsListResp>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented(
+            "fs_list not needed for health probe",
+        ))
+    }
+
+    async fn logout(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::LogoutReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::Empty>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "logout not needed for health probe",
+        ))
+    }
+
+    async fn playback_info(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::PlaybackInfoReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::PlaybackInfoResp>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented(
+            "playback_info not needed for health probe",
+        ))
+    }
+
+    async fn delete_active_encodings(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::DeleteActiveEncodingsReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::Empty>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "delete_active_encodings not needed for health probe",
+        ))
+    }
+
+    async fn report_playback_start(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::ReportPlaybackStartReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::Empty>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "report_playback_start not needed for health probe",
+        ))
+    }
+
+    async fn report_playback_stop(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::ReportPlaybackStopReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::Empty>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "report_playback_stop not needed for health probe",
+        ))
+    }
+
+    async fn report_playback_progress(
+        &self,
+        _request: tonic::Request<synctv_media_providers::grpc::emby::ReportPlaybackProgressReq>,
+    ) -> Result<tonic::Response<synctv_media_providers::grpc::emby::Empty>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "report_playback_progress not needed for health probe",
         ))
     }
 }
@@ -288,6 +484,94 @@ async fn spawn_authenticated_provider_server_with_handler_failure(
     (addr, handle)
 }
 
+async fn spawn_authenticated_provider_server_rejecting_placeholder_upstream_auth(
+    auth_secret: &str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("provider auth placeholder rejection server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("provider auth placeholder rejection server should expose local address");
+
+    let (reporter, health_service) = tonic_health::server::health_reporter();
+    reporter
+        .set_service_status("", ServingStatus::Serving)
+        .await;
+    reporter
+        .set_serving::<AlistServer<AlistGrpcService>>()
+        .await;
+
+    let auth_secret = auth_secret.to_string();
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(health_service)
+            .add_service(AlistServer::new(
+                GrpcAuthProbeAlistService::requiring_real_upstream_token(auth_secret),
+            ))
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+            .await
+            .expect("provider auth placeholder rejection server should run");
+    });
+
+    (addr, handle)
+}
+
+async fn spawn_authenticated_emby_provider_server_with_handler_failure(
+    auth_secret: &str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("emby auth failure test server should bind to an ephemeral port");
+    let addr = listener
+        .local_addr()
+        .expect("emby auth failure test server should expose a local address");
+
+    let (reporter, health_service) = tonic_health::server::health_reporter();
+    reporter
+        .set_service_status("", ServingStatus::Serving)
+        .await;
+    reporter.set_serving::<EmbyServer<EmbyGrpcService>>().await;
+
+    let auth_secret = auth_secret.to_string();
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(health_service)
+            .add_service(EmbyServer::new(
+                GrpcAuthProbeEmbyService::failing_after_auth(auth_secret),
+            ))
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+            .await
+            .expect("emby auth failure test server should run");
+    });
+
+    (addr, handle)
+}
+
+async fn spawn_stalling_tcp_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("stalling test server should bind to an ephemeral port");
+    let addr = listener
+        .local_addr()
+        .expect("stalling test server should expose a local address");
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("stalling test server should accept connections");
+            tokio::spawn(async move {
+                let _stream = stream;
+                std::future::pending::<()>().await;
+            });
+        }
+    });
+
+    (addr, handle)
+}
+
 /// Create a test provider instance with TLS
 fn make_test_instance_tls(name: &str, insecure: bool) -> ProviderInstance {
     let now = Utc::now();
@@ -312,28 +596,27 @@ fn make_test_instance_tls(name: &str, insecure: bool) -> ProviderInstance {
 async fn scenario_channel_creation_from_db_config() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "channel-create.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
-    // Create instance in DB
-    let instance = make_test_instance("test-instance-1");
+    // Create instance in DB through the validated management path.
+    let instance = make_reachable_remote_instance("test-instance-1", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
-    // Get channel - should create from DB config
-    // Note: The channel creation will attempt to connect. Even though there's
-    // no actual gRPC server, tonic creates lazy channels that don't connect
-    // until the first RPC call. So we expect Some(channel) here.
+    // Get channel - should load the validated/cached remote connection.
     let channel = manager.get("test-instance-1").await;
 
-    // Channel should be Some (lazy channel created, even if it will fail later)
     assert!(
         channel.is_some(),
-        "Channel should be created (lazy connection)"
+        "validated remote channel should be available"
     );
 
     // Verify instance exists in DB
@@ -341,6 +624,9 @@ async fn scenario_channel_creation_from_db_config() {
     let fetched = repo.get_by_name("test-instance-1").await.unwrap();
     assert!(fetched.is_some());
     assert_eq!(fetched.unwrap().name, "test-instance-1");
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 2: Channel cache hit (cached channel returned) ─────────────────────
@@ -348,16 +634,19 @@ async fn scenario_channel_creation_from_db_config() {
 async fn scenario_channel_cache_hit() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "cache-hit.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
-    // Create instance in DB
-    let instance = make_test_instance("test-instance-2");
+    // Create reachable instance in DB.
+    let instance = make_reachable_remote_instance("test-instance-2", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
     // First get - cache miss, attempts DB lookup
@@ -369,6 +658,9 @@ async fn scenario_channel_cache_hit() {
     // Verify DB was only queried once (cache working)
     // This is implicit - if cache wasn't working, we'd see multiple DB queries
     // in logs. For now, we just verify no panics occur.
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 3: Channel cache TTL expiration ───────────────────────────────────
@@ -376,17 +668,19 @@ async fn scenario_channel_cache_hit() {
 async fn scenario_channel_cache_ttl_expiration() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "cache-ttl.test.localhost";
 
-    // Create a manager with a very short TTL for testing
+    // Create a manager and back it with a reachable remote instance.
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
-    // Create instance in DB
-    let instance = make_test_instance("test-instance-3");
+    let instance = make_reachable_remote_instance("test-instance-3", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
     // First get - populates cache
@@ -405,6 +699,9 @@ async fn scenario_channel_cache_ttl_expiration() {
     // 2. Setting a very short TTL (e.g., 100ms)
     // 3. Waiting and verifying cache miss
     // This is left as an exercise for future enhancement
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 4: Redis invalidation on delete ───────────────────────────────────
@@ -412,6 +709,9 @@ async fn scenario_channel_cache_ttl_expiration() {
 async fn scenario_redis_invalidation_on_delete() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "redis-delete.test.localhost";
     let repo = provider_repo(&infra.pool);
     let stream_key = format!("test:provider:invalidate:{}", nanoid::nanoid!(8));
     let invalidation1 = CacheInvalidationService::new(
@@ -433,18 +733,23 @@ async fn scenario_redis_invalidation_on_delete() {
     invalidation1.start().await.unwrap();
     invalidation2.start().await.unwrap();
 
-    let manager1 = RemoteProviderManager::new_with_invalidation(
+    let address_overrides = make_test_address_overrides(host, health_addr.port());
+    let manager1 = RemoteProviderManager::new_with_test_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         Some(invalidation1.clone()),
+        address_overrides.clone(),
     );
-    let manager2 =
-        RemoteProviderManager::new_with_invalidation(Arc::new(repo), Some(invalidation2.clone()));
+    let manager2 = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        Some(invalidation2.clone()),
+        address_overrides,
+    );
 
     // Start invalidation listener
     manager2.start_invalidation_listener().await.unwrap();
 
     // Create instance via manager1
-    let instance = make_test_instance("test-instance-5");
+    let instance = make_reachable_remote_instance("test-instance-5", host, health_addr.port());
     manager1.add(instance.clone()).await.unwrap();
 
     // Pre-warm manager2's cache
@@ -479,6 +784,8 @@ async fn scenario_redis_invalidation_on_delete() {
     manager2.shutdown().await;
     invalidation1.stop().await;
     invalidation2.stop().await;
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 5: Health check integration ───────────────────────────────────────
@@ -528,16 +835,20 @@ async fn scenario_health_check_integration() {
 async fn scenario_health_check_respects_enabled_flag() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "health-enabled.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
     // Create enabled instance
-    let instance_enabled = make_test_instance("test-instance-7a");
+    let instance_enabled =
+        make_reachable_remote_instance("test-instance-7a", host, health_addr.port());
     manager.add(instance_enabled).await.unwrap();
 
     // Create disabled instance
@@ -560,6 +871,9 @@ async fn scenario_health_check_respects_enabled_flag() {
         !health_results.contains_key("test-instance-7b"),
         "Health check should skip disabled instance"
     );
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 async fn scenario_health_check_reports_enabled_instance_with_invalid_secret_as_unhealthy() {
@@ -676,10 +990,8 @@ async fn scenario_health_check_reports_authenticated_provider_failure_as_unhealt
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let (health_addr, health_handle) =
-        spawn_authenticated_provider_server_with_handler_failure(
-            "remote-provider-test-secret",
-        )
-        .await;
+        spawn_authenticated_provider_server_with_handler_failure("remote-provider-test-secret")
+            .await;
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new_with_test_address_overrides(
@@ -711,6 +1023,126 @@ async fn scenario_health_check_reports_authenticated_provider_failure_as_unhealt
     assert!(
         !health_results[&broken.name],
         "authenticated provider handler failures must be reported unhealthy"
+    );
+
+    health_handle.abort();
+    let _ = health_handle.await;
+}
+
+async fn scenario_add_alist_instance_does_not_require_fake_upstream_auth_for_management_validation()
+{
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server_rejecting_placeholder_upstream_auth(
+            "remote-provider-test-secret",
+        )
+        .await;
+    let host = "alist-management-validation.test.localhost";
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
+
+    let instance = make_reachable_remote_instance(
+        "test-instance-alist-management-validation",
+        host,
+        health_addr.port(),
+    );
+
+    manager
+        .add(instance)
+        .await
+        .expect("management validation should not depend on fake upstream Alist credentials");
+
+    health_handle.abort();
+    let _ = health_handle.await;
+}
+
+async fn scenario_health_check_reports_emby_authenticated_provider_failure_as_unhealthy() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_emby_provider_server_with_handler_failure(
+            "remote-provider-test-secret",
+        )
+        .await;
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        HashMap::from([(
+            "emby-handler-failure-health.test.localhost".to_string(),
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, health_addr.port())),
+        )]),
+    );
+
+    let mut broken = make_test_instance("test-instance-7h-emby-handler-failure");
+    broken.endpoint = format!(
+        "http://emby-handler-failure-health.test.localhost:{}",
+        health_addr.port()
+    );
+    broken.providers = vec!["emby".to_string()];
+
+    provider_repo(&infra.pool)
+        .create(&broken)
+        .await
+        .expect("emby handler-failure row should persist for health-check coverage");
+
+    let health_results = manager.health_check().await;
+    assert!(
+        health_results.contains_key(&broken.name),
+        "emby instances with authenticated provider failures should appear in health results"
+    );
+    assert!(
+        !health_results[&broken.name],
+        "authenticated emby provider handler failures must be reported unhealthy"
+    );
+
+    health_handle.abort();
+    let _ = health_handle.await;
+}
+
+async fn scenario_add_emby_instance_rejects_authenticated_handler_failure() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_emby_provider_server_with_handler_failure(
+            "remote-provider-test-secret",
+        )
+        .await;
+    let host = "emby-management-validation.test.localhost";
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
+
+    let mut instance = make_reachable_remote_instance(
+        "test-instance-emby-management-validation",
+        host,
+        health_addr.port(),
+    );
+    instance.providers = vec!["emby".to_string()];
+
+    let result = manager.add(instance.clone()).await;
+    assert!(
+        result.is_err(),
+        "management validation must reject emby instances when authenticated RPCs fail"
+    );
+    assert!(
+        provider_repo(&infra.pool)
+            .get_by_name(&instance.name)
+            .await
+            .expect("lookup should succeed")
+            .is_none(),
+        "failed add must not persist an emby instance with broken authenticated handlers"
     );
 
     health_handle.abort();
@@ -922,16 +1354,19 @@ async fn scenario_fallback_when_channel_creation_fails() {
 async fn scenario_enable_disable_instance() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "enable-disable.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
     // Create enabled instance
-    let instance = make_test_instance("test-instance-13");
+    let instance = make_reachable_remote_instance("test-instance-13", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
     // Verify it's enabled and gettable
@@ -959,6 +1394,9 @@ async fn scenario_enable_disable_instance() {
     let fetched = repo.get_by_name("test-instance-13").await.unwrap();
     assert!(fetched.is_some());
     assert!(fetched.unwrap().enabled);
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 async fn scenario_enable_with_invalid_endpoint_preserves_disabled_state() {
@@ -1017,7 +1455,9 @@ async fn scenario_enable_remote_instance_requires_jwt_secret() {
     let repo = provider_repo(&infra.pool);
     repo.create(&instance).await.unwrap();
 
-    let result = manager.enable("test-instance-13-missing-secret-enable").await;
+    let result = manager
+        .enable("test-instance-13-missing-secret-enable")
+        .await;
     assert!(
         result.is_err(),
         "enabling a remote instance without jwt_secret must fail"
@@ -1055,7 +1495,9 @@ async fn scenario_enable_already_enabled_legacy_remote_instance_without_jwt_secr
         .await
         .expect("legacy enabled row should persist");
 
-    let result = manager.enable("test-instance-13-legacy-already-enabled").await;
+    let result = manager
+        .enable("test-instance-13-legacy-already-enabled")
+        .await;
     assert!(
         result.is_err(),
         "re-enabling an already-enabled legacy row without jwt_secret must fail"
@@ -1087,27 +1529,25 @@ async fn scenario_enable_already_enabled_legacy_remote_instance_without_jwt_secr
 async fn scenario_reconnect_instance() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "reconnect.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
     // Create instance
-    let instance = make_test_instance("test-instance-14");
+    let instance = make_reachable_remote_instance("test-instance-14", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
-    // Try to reconnect - since tonic creates lazy channels, this will succeed
-    // even though there's no actual server
     let result = manager.reconnect("test-instance-14").await;
-
-    // Reconnect will succeed because tonic creates lazy channels
-    // (connection isn't established until first RPC call)
     assert!(
         result.is_ok(),
-        "Reconnect should succeed with lazy channel (even without server)"
+        "Reconnect should succeed for a reachable remote instance"
     );
 
     // Disable the instance
@@ -1119,6 +1559,9 @@ async fn scenario_reconnect_instance() {
         result.is_err(),
         "Reconnect should fail for disabled instance"
     );
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 15: Add duplicate instance fails ───────────────────────────────────
@@ -1126,16 +1569,19 @@ async fn scenario_reconnect_instance() {
 async fn scenario_add_duplicate_instance_fails() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "duplicate-add.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
     // Create instance
-    let instance = make_test_instance("test-instance-15");
+    let instance = make_reachable_remote_instance("test-instance-15", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
     // Try to add duplicate - should fail
@@ -1148,6 +1594,9 @@ async fn scenario_add_duplicate_instance_fails() {
             "Error should be AlreadyExists variant"
         );
     }
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 async fn scenario_add_disabled_instance_is_not_retrievable_via_get() {
@@ -1182,15 +1631,22 @@ async fn scenario_add_disabled_instance_is_not_retrievable_via_get() {
 async fn scenario_update_to_disabled_invalidates_cached_channel() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "update-disable.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
-    let instance = make_test_instance("test-instance-15-update-disabled");
+    let instance = make_reachable_remote_instance(
+        "test-instance-15-update-disabled",
+        host,
+        health_addr.port(),
+    );
     manager.add(instance.clone()).await.unwrap();
 
     let initial = manager.get("test-instance-15-update-disabled").await;
@@ -1213,24 +1669,26 @@ async fn scenario_update_to_disabled_invalidates_cached_channel() {
         channel.is_none(),
         "update(enabled=false) must evict any cached channel"
     );
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 async fn scenario_concurrent_duplicate_add_returns_one_success_and_one_already_exists() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "concurrent-dup.test.localhost";
 
-    let manager = Arc::new(RemoteProviderManager::new(
+    let manager = Arc::new(RemoteProviderManager::new_with_test_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
-        redis_conn,
-        redis_client,
-        "",
+        None,
+        make_test_address_overrides(host, health_addr.port()),
     ));
     let barrier = Arc::new(Barrier::new(3));
-    let instance = make_test_instance("test-instance-15-concurrent-dup");
+    let instance =
+        make_reachable_remote_instance("test-instance-15-concurrent-dup", host, health_addr.port());
 
     let task1 = {
         let manager = Arc::clone(&manager);
@@ -1285,6 +1743,9 @@ async fn scenario_concurrent_duplicate_add_returns_one_success_and_one_already_e
             .await
             .unwrap();
     assert_eq!(stored_count, 1, "only one DB row should be persisted");
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 16: Update non-existent instance fails ─────────────────────────────
@@ -1436,8 +1897,7 @@ async fn scenario_update_existing_remote_instance_requires_jwt_secret() {
         .expect("lookup should succeed")
         .expect("instance should still exist");
     assert_ne!(
-        persisted.comment,
-        instance.comment,
+        persisted.comment, instance.comment,
         "failed update must not persist other field changes"
     );
     assert_eq!(
@@ -1525,17 +1985,24 @@ async fn scenario_delete_nonexistent_instance_fails() {
 async fn scenario_get_all_instances() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "get-all.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
     // Create multiple instances
     for i in 1..=3 {
-        let instance = make_test_instance(&format!("test-instance-18a-{i}"));
+        let instance = make_reachable_remote_instance(
+            &format!("test-instance-18a-{i}"),
+            host,
+            health_addr.port(),
+        );
         manager.add(instance).await.unwrap();
     }
 
@@ -1564,6 +2031,9 @@ async fn scenario_get_all_instances() {
         disabled_count >= 1,
         "Should have at least 1 disabled instance"
     );
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 19: Manager without Redis (local-only invalidation) ───────────────
@@ -1571,13 +2041,15 @@ async fn scenario_get_all_instances() {
 async fn scenario_manager_without_redis() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "manager-no-redis.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
         Arc::new(repo),
-        None, // No Redis
-        None, // No Redis client
-        "",
+        None,
+        make_test_address_overrides(host, health_addr.port()),
     );
 
     // Start invalidation listener - should return Ok without starting
@@ -1588,7 +2060,7 @@ async fn scenario_manager_without_redis() {
     );
 
     // Create instance
-    let instance = make_test_instance("test-instance-19");
+    let instance = make_reachable_remote_instance("test-instance-19", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
     // Get should still work
@@ -1600,6 +2072,9 @@ async fn scenario_manager_without_redis() {
         instances.contains(&"test-instance-19".to_string()),
         "Should list the instance even without Redis"
     );
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 20: Init pre-warms cache ──────────────────────────────────────────
@@ -1607,17 +2082,24 @@ async fn scenario_manager_without_redis() {
 async fn scenario_init_pre_warms_cache() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "init-prewarm.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
     // Create instances before init
     for i in 1..=3 {
-        let instance = make_test_instance(&format!("test-instance-20-{i}"));
+        let instance = make_reachable_remote_instance(
+            &format!("test-instance-20-{i}"),
+            host,
+            health_addr.port(),
+        );
         manager.add(instance).await.unwrap();
     }
 
@@ -1631,18 +2113,24 @@ async fn scenario_init_pre_warms_cache() {
         instances.len() >= 3,
         "Should list at least 3 instances after init"
     );
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 async fn scenario_init_skips_invalid_secret_and_continues_prewarming() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "init-invalid-secret.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
     let mut invalid = make_test_instance("test-instance-20-invalid-secret");
     invalid.jwt_secret = Some("shared\nsecret".to_string());
@@ -1651,7 +2139,8 @@ async fn scenario_init_skips_invalid_secret_and_continues_prewarming() {
         .await
         .expect("invalid legacy row should persist for compatibility coverage");
 
-    let healthy = make_test_instance("test-instance-20-healthy");
+    let healthy =
+        make_reachable_remote_instance("test-instance-20-healthy", host, health_addr.port());
     manager
         .add(healthy.clone())
         .await
@@ -1676,6 +2165,9 @@ async fn scenario_init_skips_invalid_secret_and_continues_prewarming() {
         invalid_connection.is_none(),
         "instance with invalid secret should be skipped instead of poisoning the whole prewarm pass"
     );
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 21: SSRF validation prevents internal endpoints ───────────────────
@@ -1733,17 +2225,28 @@ async fn scenario_ssrf_validation_allows_public_endpoints() {
 
     let result = manager.add(instance.clone()).await;
 
-    // SSRF validation should pass (connection may fail, but that's different)
-    // The instance should be added to DB
+    // Public endpoints should pass static SSRF validation, but the management
+    // path now also requires real connectivity before persisting the instance.
     assert!(
-        result.is_ok(),
-        "Adding instance with public endpoint should pass SSRF validation"
+        result.is_err(),
+        "Adding an unreachable public endpoint must fail connectivity validation"
     );
 
-    // Verify it's in the DB
-    let repo = provider_repo(&infra.pool);
-    let fetched = repo.get_by_name("test-instance-22").await.unwrap();
-    assert!(fetched.is_some());
+    let error_message = result
+        .expect_err("unreachable public endpoint should fail")
+        .to_string();
+    assert!(
+        !error_message.contains("SSRF validation: host"),
+        "public host should not be rejected by static SSRF policy: {error_message}"
+    );
+    assert!(
+        provider_repo(&infra.pool)
+            .get_by_name("test-instance-22")
+            .await
+            .expect("lookup should succeed")
+            .is_none(),
+        "failed connectivity validation must not persist the instance"
+    );
 }
 
 // ─── Test 23: resolve_client with remote instance ───────────────────────────
@@ -1751,31 +2254,28 @@ async fn scenario_ssrf_validation_allows_public_endpoints() {
 async fn scenario_resolve_client_uses_remote_when_available() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "resolve-remote.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = Arc::new(RemoteProviderManager::new(
+    let manager = Arc::new(RemoteProviderManager::new_with_test_address_overrides(
         Arc::new(repo),
-        redis_conn,
-        redis_client,
-        "",
+        None,
+        make_test_address_overrides(host, health_addr.port()),
     ));
 
-    // Create instance (tonic creates lazy channel)
-    let instance = make_test_instance("test-instance-23");
+    let instance = make_reachable_remote_instance("test-instance-23", host, health_addr.port());
     manager.add(instance).await.unwrap();
 
-    // Since tonic creates lazy channels, the remote path will be taken
-    // even though there's no actual server
     let result = manager
         .resolve_client(Some("test-instance-23"), |_channel| "remote", || "local")
         .await;
 
-    // Should be "remote" because the lazy channel was created successfully
     assert_eq!(result, "remote");
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 24: Cache respects max capacity ───────────────────────────────────
@@ -1783,29 +2283,42 @@ async fn scenario_resolve_client_uses_remote_when_available() {
 async fn scenario_cache_respects_max_capacity() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let redis_client = Some(infra.redis_client.clone());
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "cache-capacity.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
 
     // Create instances (default max is 1000, so this won't test eviction)
     // This is more of a sanity check that the cache doesn't panic
     for i in 1..=10 {
-        let instance = make_test_instance(&format!("test-instance-24-{i}"));
+        let instance = make_reachable_remote_instance(
+            &format!("test-instance-24-{i}"),
+            host,
+            health_addr.port(),
+        );
         manager.add(instance).await.unwrap();
     }
 
     // All should be listable
     let instances = manager.list().await.unwrap();
     assert!(instances.len() >= 10, "Should list at least 10 instances");
+
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 async fn scenario_redis_invalidation_respects_key_prefix() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "redis-prefix.test.localhost";
     let stream_key = format!("tenant-a:test:provider:invalidate:{}", nanoid::nanoid!(8));
     let invalidation1 = CacheInvalidationService::new(
         Some(infra.redis_client.clone()),
@@ -1826,18 +2339,21 @@ async fn scenario_redis_invalidation_respects_key_prefix() {
     invalidation1.start().await.unwrap();
     invalidation2.start().await.unwrap();
 
-    let manager1 = RemoteProviderManager::new_with_invalidation(
+    let address_overrides = make_test_address_overrides(host, health_addr.port());
+    let manager1 = RemoteProviderManager::new_with_test_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         Some(invalidation1.clone()),
+        address_overrides.clone(),
     );
-    let manager2 = RemoteProviderManager::new_with_invalidation(
+    let manager2 = RemoteProviderManager::new_with_test_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         Some(invalidation2.clone()),
+        address_overrides,
     );
 
     manager2.start_invalidation_listener().await.unwrap();
 
-    let instance = make_test_instance("test-instance-prefix");
+    let instance = make_reachable_remote_instance("test-instance-prefix", host, health_addr.port());
     manager1.add(instance).await.unwrap();
     let _ = manager2.get("test-instance-prefix").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1858,6 +2374,8 @@ async fn scenario_redis_invalidation_respects_key_prefix() {
     manager2.shutdown().await;
     invalidation1.stop().await;
     invalidation2.stop().await;
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 async fn scenario_invalidation_listener_shutdown_is_idempotent() {
@@ -1896,6 +2414,9 @@ async fn scenario_invalidation_listener_shutdown_is_idempotent() {
 async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "durable-invalidation.test.localhost";
 
     let stream_key = format!("test:provider:durable:{}", nanoid::nanoid!(8));
     let invalidation1 = CacheInvalidationService::new(
@@ -1917,16 +2438,20 @@ async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
     invalidation1.start().await.unwrap();
     invalidation2.start().await.unwrap();
 
-    let manager1 = RemoteProviderManager::new_with_invalidation(
+    let address_overrides = make_test_address_overrides(host, health_addr.port());
+    let manager1 = RemoteProviderManager::new_with_test_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         Some(invalidation1.clone()),
+        address_overrides.clone(),
     );
-    let manager2 = RemoteProviderManager::new_with_invalidation(
+    let manager2 = RemoteProviderManager::new_with_test_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         Some(invalidation2.clone()),
+        address_overrides,
     );
 
-    let instance = make_test_instance("durable-provider-instance");
+    let instance =
+        make_reachable_remote_instance("durable-provider-instance", host, health_addr.port());
     manager1.add(instance).await.unwrap();
 
     let channel = manager2.get("durable-provider-instance").await;
@@ -1956,6 +2481,8 @@ async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
     manager2.shutdown().await;
     invalidation1.stop().await;
     invalidation2.stop().await;
+    health_handle.abort();
+    let _ = health_handle.await;
 }
 
 // ─── Test 25: Provider instance supports_provider ───────────────────────────
@@ -2007,7 +2534,10 @@ async fn scenario_add_remote_instance_requires_jwt_secret() {
     instance.jwt_secret = None;
 
     let result = manager.add(instance).await;
-    assert!(result.is_err(), "remote instance without jwt_secret must be rejected");
+    assert!(
+        result.is_err(),
+        "remote instance without jwt_secret must be rejected"
+    );
 
     let error = result.expect_err("missing secret should fail");
     let error_message = error.to_string();
@@ -2099,6 +2629,239 @@ async fn scenario_add_local_only_instance_allows_empty_jwt_secret() {
         .expect("instance should exist");
     assert_eq!(fetched.providers, instance.providers);
     assert_eq!(fetched.jwt_secret, None);
+}
+
+async fn scenario_add_unreachable_remote_instance_fails_connectivity_validation() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut instance = make_test_instance("test-instance-unreachable-add");
+    instance.endpoint = "http://unreachable-provider.example.invalid:50051".to_string();
+    instance.providers = vec!["alist".to_string()];
+    instance.timeout = "1s".to_string();
+
+    let result = manager.add(instance.clone()).await;
+    assert!(
+        result.is_err(),
+        "remote instance add must fail when the configured endpoint is unreachable"
+    );
+
+    assert!(
+        provider_repo(&infra.pool)
+            .get_by_name(&instance.name)
+            .await
+            .expect("lookup should succeed")
+            .is_none(),
+        "failed add must not persist an unreachable remote instance"
+    );
+}
+
+async fn scenario_add_reachable_remote_instance_succeeds_with_connectivity_validation() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        HashMap::from([(
+            "reachable-provider.test.localhost".to_string(),
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, health_addr.port())),
+        )]),
+    );
+
+    let mut instance = make_test_instance("test-instance-reachable-add");
+    instance.endpoint = format!(
+        "http://reachable-provider.test.localhost:{}",
+        health_addr.port()
+    );
+    instance.providers = vec!["alist".to_string()];
+
+    manager
+        .add(instance.clone())
+        .await
+        .expect("reachable remote instance should pass connectivity validation");
+
+    let connection = manager
+        .get(&instance.name)
+        .await
+        .expect("reachable remote instance should be cached");
+    assert_eq!(
+        connection.auth_secret(),
+        Some("remote-provider-test-secret"),
+        "validated remote instance should retain its auth secret"
+    );
+
+    let stored = provider_repo(&infra.pool)
+        .get_by_name(&instance.name)
+        .await
+        .expect("lookup should succeed")
+        .expect("reachable instance should be persisted");
+    assert_eq!(stored.endpoint, instance.endpoint);
+
+    health_handle.abort();
+    let _ = health_handle.await;
+}
+
+async fn scenario_enable_unreachable_remote_instance_preserves_disabled_state() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut instance = make_test_instance("test-instance-unreachable-enable");
+    instance.enabled = false;
+    instance.endpoint = "http://unreachable-provider.example.invalid:50051".to_string();
+    instance.providers = vec!["alist".to_string()];
+    instance.timeout = "1s".to_string();
+
+    provider_repo(&infra.pool)
+        .create(&instance)
+        .await
+        .expect("disabled instance should persist");
+
+    let result = manager.enable(&instance.name).await;
+    assert!(
+        result.is_err(),
+        "enable must fail when the remote endpoint is unreachable"
+    );
+
+    let stored = provider_repo(&infra.pool)
+        .get_by_name(&instance.name)
+        .await
+        .expect("lookup should succeed")
+        .expect("instance should still exist");
+    assert!(
+        !stored.enabled,
+        "failed enable must leave the instance disabled in the database"
+    );
+}
+
+async fn scenario_reconnect_unreachable_remote_instance_fails_connectivity_validation() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut instance = make_test_instance("test-instance-unreachable-reconnect");
+    instance.endpoint = "http://unreachable-provider.example.invalid:50051".to_string();
+    instance.providers = vec!["alist".to_string()];
+    instance.timeout = "1s".to_string();
+
+    provider_repo(&infra.pool)
+        .create(&instance)
+        .await
+        .expect("enabled instance should persist for reconnect coverage");
+
+    let result = manager.reconnect(&instance.name).await;
+    assert!(
+        result.is_err(),
+        "reconnect must fail when the remote endpoint is unreachable"
+    );
+}
+
+async fn scenario_update_unreachable_remote_instance_preserves_existing_configuration() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        HashMap::from([(
+            "update-provider.test.localhost".to_string(),
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, health_addr.port())),
+        )]),
+    );
+
+    let mut instance = make_test_instance("test-instance-unreachable-update");
+    instance.endpoint = format!(
+        "http://update-provider.test.localhost:{}",
+        health_addr.port()
+    );
+    instance.providers = vec!["alist".to_string()];
+    manager
+        .add(instance.clone())
+        .await
+        .expect("reachable instance should be added before update");
+
+    let mut updated = instance.clone();
+    updated.endpoint = "http://unreachable-provider.example.invalid:50051".to_string();
+    updated.timeout = "1s".to_string();
+
+    let result = manager.update(updated.clone()).await;
+    assert!(
+        result.is_err(),
+        "update must fail when the new remote endpoint is unreachable"
+    );
+
+    let stored = provider_repo(&infra.pool)
+        .get_by_name(&instance.name)
+        .await
+        .expect("lookup should succeed")
+        .expect("instance should still exist");
+    assert_eq!(
+        stored.endpoint, instance.endpoint,
+        "failed update must preserve the last known-good endpoint"
+    );
+
+    health_handle.abort();
+    let _ = health_handle.await;
+}
+
+async fn scenario_add_stalling_remote_instance_honors_connect_timeout() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (stall_addr, stall_handle) = spawn_stalling_tcp_server().await;
+    let host = "connect-timeout.test.localhost";
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new_with_test_address_overrides(
+        Arc::new(repo),
+        None,
+        make_test_address_overrides(host, stall_addr.port()),
+    );
+
+    let mut instance =
+        make_reachable_remote_instance("test-instance-connect-timeout", host, stall_addr.port());
+    instance.timeout = "500ms".to_string();
+
+    let start = tokio::time::Instant::now();
+    let result = manager.add(instance.clone()).await;
+    let elapsed = start.elapsed();
+
+    assert!(
+        result.is_err(),
+        "stalling remote endpoint must fail connectivity validation"
+    );
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "configured timeout should bound management-path validation latency, elapsed: {elapsed:?}"
+    );
+
+    stall_handle.abort();
+    let _ = stall_handle.await;
 }
 
 async fn scenario_legacy_remote_instance_without_jwt_secret_is_rejected_at_runtime() {
@@ -2246,6 +3009,28 @@ async fn test_health_check_reports_enabled_instance_with_wrong_secret_as_unhealt
 async fn test_health_check_reports_authenticated_provider_failure_as_unhealthy() {
     install_rustls_provider_once();
     scenario_health_check_reports_authenticated_provider_failure_as_unhealthy().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_health_check_reports_emby_authenticated_provider_failure_as_unhealthy() {
+    install_rustls_provider_once();
+    scenario_health_check_reports_emby_authenticated_provider_failure_as_unhealthy().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_add_alist_instance_does_not_require_fake_upstream_auth_for_management_validation() {
+    install_rustls_provider_once();
+    scenario_add_alist_instance_does_not_require_fake_upstream_auth_for_management_validation()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_add_emby_instance_rejects_authenticated_handler_failure() {
+    install_rustls_provider_once();
+    scenario_add_emby_instance_rejects_authenticated_handler_failure().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2442,6 +3227,48 @@ async fn test_add_remote_instance_rejects_invalid_jwt_secret_even_when_disabled(
 async fn test_add_local_only_instance_allows_empty_jwt_secret() {
     install_rustls_provider_once();
     scenario_add_local_only_instance_allows_empty_jwt_secret().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_add_unreachable_remote_instance_fails_connectivity_validation() {
+    install_rustls_provider_once();
+    scenario_add_unreachable_remote_instance_fails_connectivity_validation().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_add_reachable_remote_instance_succeeds_with_connectivity_validation() {
+    install_rustls_provider_once();
+    scenario_add_reachable_remote_instance_succeeds_with_connectivity_validation().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_enable_unreachable_remote_instance_preserves_disabled_state() {
+    install_rustls_provider_once();
+    scenario_enable_unreachable_remote_instance_preserves_disabled_state().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_reconnect_unreachable_remote_instance_fails_connectivity_validation() {
+    install_rustls_provider_once();
+    scenario_reconnect_unreachable_remote_instance_fails_connectivity_validation().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_update_unreachable_remote_instance_preserves_existing_configuration() {
+    install_rustls_provider_once();
+    scenario_update_unreachable_remote_instance_preserves_existing_configuration().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_add_stalling_remote_instance_honors_connect_timeout() {
+    install_rustls_provider_once();
+    scenario_add_stalling_remote_instance_honors_connect_timeout().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

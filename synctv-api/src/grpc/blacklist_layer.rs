@@ -114,9 +114,13 @@ fn extract_bearer_token(headers: &http::HeaderMap) -> BearerTokenState {
 
 fn security_pipeline_error_status(err: &CoreError) -> tonic::Status {
     match SecurityPipeline::classify_auth_error(err) {
-        AuthErrorCategory::Authentication => tonic::Status::unauthenticated("Authentication failed"),
+        AuthErrorCategory::Authentication => {
+            tonic::Status::unauthenticated("Authentication failed")
+        }
         AuthErrorCategory::Authorization => tonic::Status::permission_denied("Permission denied"),
-        AuthErrorCategory::Unavailable => tonic::Status::unavailable("Authentication service unavailable"),
+        AuthErrorCategory::Unavailable => {
+            tonic::Status::unavailable("Authentication service unavailable")
+        }
         AuthErrorCategory::Internal => tonic::Status::internal("Internal error"),
     }
 }
@@ -158,41 +162,42 @@ where
                     tracing::warn!(
                         "gRPC request rejected: malformed bearer authorization metadata"
                     );
-                    let response = tonic::Status::unauthenticated("Invalid authorization header")
-                        .into_http();
+                    let response =
+                        tonic::Status::unauthenticated("Invalid authorization header").into_http();
                     return Ok(response);
                 }
                 BearerTokenState::Present(token) => {
-                // Security check order (matches HTTP AuthUser extractor):
-                // 1. JWT verification  2. Password invalidation  3. Banned/deleted user
+                    // Security check order (matches HTTP AuthUser extractor):
+                    // 1. JWT verification  2. Password invalidation  3. Banned/deleted user
 
-                // Step 1: Verify JWT and extract claims
-                let claims = match jwt_service.verify_access_token(&token) {
-                    Ok(claims) => claims,
-                    Err(e) => {
-                        tracing::warn!("gRPC request rejected: JWT validation failed: {e}");
-                        let response =
-                            tonic::Status::unauthenticated("Invalid or expired token").into_http();
-                        return Ok(response);
-                    }
-                };
-
-                // Steps 2-3: Shared security pipeline (password invalidation, user status)
-                let authenticated_token: AuthenticatedToken =
-                    match security_pipeline.check(&claims).await {
-                        Ok(authenticated_token) => authenticated_token,
+                    // Step 1: Verify JWT and extract claims
+                    let claims = match jwt_service.verify_access_token(&token) {
+                        Ok(claims) => claims,
                         Err(e) => {
-                            tracing::warn!("gRPC request rejected by security pipeline: {e}");
-                            let response = security_pipeline_error_status(&e).into_http();
+                            tracing::warn!("gRPC request rejected: JWT validation failed: {e}");
+                            let response =
+                                tonic::Status::unauthenticated("Invalid or expired token")
+                                    .into_http();
                             return Ok(response);
                         }
                     };
 
-                // Preserve the authenticated identity so downstream gRPC
-                // interceptors and handlers can reuse it without re-running
-                // JWT verification or the security pipeline.
-                req.extensions_mut().insert(authenticated_token);
-            }
+                    // Steps 2-3: Shared security pipeline (password invalidation, user status)
+                    let authenticated_token: AuthenticatedToken =
+                        match security_pipeline.check(&claims).await {
+                            Ok(authenticated_token) => authenticated_token,
+                            Err(e) => {
+                                tracing::warn!("gRPC request rejected by security pipeline: {e}");
+                                let response = security_pipeline_error_status(&e).into_http();
+                                return Ok(response);
+                            }
+                        };
+
+                    // Preserve the authenticated identity so downstream gRPC
+                    // interceptors and handlers can reuse it without re-running
+                    // JWT verification or the security pipeline.
+                    req.extensions_mut().insert(authenticated_token);
+                }
             }
 
             // Inject SecurityCheckPassed marker into request extensions.
@@ -330,7 +335,10 @@ mod tests {
 
         // No auth header (public endpoint -- both layers should pass through)
         let empty_headers = http::HeaderMap::new();
-        assert_eq!(extract_bearer_token(&empty_headers), BearerTokenState::Missing);
+        assert_eq!(
+            extract_bearer_token(&empty_headers),
+            BearerTokenState::Missing
+        );
     }
 
     // ========== SecurityCheckPassed Marker Tests ==========

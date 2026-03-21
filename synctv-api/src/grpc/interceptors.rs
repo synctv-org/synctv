@@ -538,7 +538,10 @@ mod tests {
 
         let interceptor = AuthInterceptor::new(jwt_service);
         let result = interceptor.inject_user(request);
-        assert!(result.is_err(), "Non-bearer authorization should not look authenticated");
+        assert!(
+            result.is_err(),
+            "Non-bearer authorization should not look authenticated"
+        );
         let err = result.unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
         assert_eq!(err.message(), "Missing authorization header");

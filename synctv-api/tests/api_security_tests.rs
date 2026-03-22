@@ -17,6 +17,7 @@ use synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
 use synctv_core::service::auth::{
     GuestTokenValidator, JwtService, JwtValidator, TokenBlacklistStore,
 };
+use synctv_core::Error;
 
 // ============================================================================
 // B1: GuestUser extractor must check blacklist
@@ -74,6 +75,69 @@ async fn test_b1_non_blacklisted_token_passes() {
     // Not blacklisted - should pass
     let result = validator.validate_async(&token).await;
     assert!(result.is_ok(), "Non-blacklisted guest token should pass");
+}
+
+#[tokio::test]
+async fn test_b1_guest_blacklist_storage_error_surfaces_service_unavailable() {
+    struct FailingBlacklistStore;
+
+    #[async_trait::async_trait]
+    impl TokenBlacklistStore for FailingBlacklistStore {
+        async fn is_blacklisted(&self, _key: &str) -> bool {
+            false
+        }
+
+        async fn is_blacklisted_checked(&self, _key: &str) -> Result<bool, Error> {
+            Err(Error::Internal("blacklist backend unavailable".to_string()))
+        }
+
+        async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn blacklist_if_not_exists(
+            &self,
+            _key: &str,
+            _ttl_secs: u64,
+        ) -> Result<bool, Error> {
+            Ok(false)
+        }
+
+        async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
+            None
+        }
+
+        async fn get_family_revoked_at_checked(&self, _key: &str) -> Result<Option<i64>, Error> {
+            Ok(None)
+        }
+
+        async fn set_family_revoked(
+            &self,
+            _key: &str,
+            _timestamp: i64,
+            _ttl_secs: u64,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    let jwt = create_test_jwt_service();
+    let blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(FailingBlacklistStore);
+    let kb = KeyBuilder::new("test");
+    let validator = GuestTokenValidator::new(jwt.clone()).with_blacklist(blacklist, kb);
+
+    let room_id = RoomId::new();
+    let token = jwt.sign_guest_token(&room_id).unwrap();
+
+    let err = validator
+        .validate_async(&token)
+        .await
+        .expect_err("storage failures must fail closed");
+
+    assert!(
+        matches!(err, Error::ServiceUnavailable(ref msg) if msg.contains("temporarily unavailable")),
+        "guest token validator must surface service unavailability, got: {err}"
+    );
 }
 
 // ============================================================================

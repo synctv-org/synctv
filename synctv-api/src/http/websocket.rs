@@ -188,7 +188,7 @@ async fn extract_user_id(
             let pending = ws_ticket_service
                 .validate_checked(ticket, room_id, &*state.user_service)
                 .await
-                .map_err(|e| AppError::unauthorized(format!("Invalid or expired ticket: {e}")))?;
+                .map_err(map_websocket_ticket_validation_error)?;
 
             return Ok(HandshakeAuthContext {
                 user_id: pending.user_id.clone(),
@@ -211,6 +211,22 @@ async fn extract_user_id(
 fn map_security_pipeline_error(error: synctv_core::Error) -> AppError {
     match SecurityPipeline::classify_auth_error(&error) {
         AuthErrorCategory::Authentication => AppError::unauthorized(format!("{error}")),
+        AuthErrorCategory::Authorization => AppError::forbidden(format!("{error}")),
+        AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(error),
+    }
+}
+
+fn map_websocket_ticket_validation_error(error: synctv_core::Error) -> AppError {
+    if let synctv_core::Error::Authorization(message) = &error {
+        if message.eq_ignore_ascii_case("Invalid or expired ticket") {
+            return AppError::unauthorized(format!("Invalid or expired ticket: {message}"));
+        }
+    }
+
+    match synctv_core::service::auth::SecurityPipeline::classify_auth_error(&error) {
+        AuthErrorCategory::Authentication => {
+            AppError::unauthorized(format!("Invalid or expired ticket: {error}"))
+        }
         AuthErrorCategory::Authorization => AppError::forbidden(format!("{error}")),
         AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(error),
     }
@@ -1606,6 +1622,32 @@ mod tests {
         assert!(
             err.message.contains("temporarily unavailable"),
             "websocket auth backend outages should remain retryable"
+        );
+    }
+
+    #[test]
+    fn test_map_websocket_ticket_validation_error_preserves_backend_outages() {
+        let err = map_websocket_ticket_validation_error(synctv_core::Error::ServiceUnavailable(
+            "Authentication service temporarily unavailable".to_string(),
+        ));
+
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            err.message.contains("temporarily unavailable"),
+            "ticket validation outages should not be collapsed into invalid-ticket 401s"
+        );
+    }
+
+    #[test]
+    fn test_map_websocket_ticket_validation_error_keeps_invalid_ticket_as_401() {
+        let err = map_websocket_ticket_validation_error(synctv_core::Error::Authorization(
+            "Invalid or expired ticket".to_string(),
+        ));
+
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert!(
+            err.message.contains("Invalid or expired ticket"),
+            "invalid ticket message should stay user-facing"
         );
     }
 

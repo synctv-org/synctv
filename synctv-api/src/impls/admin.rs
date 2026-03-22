@@ -140,6 +140,11 @@ impl AdminApiImpl {
         .await;
     }
 
+    async fn active_room_stream_media_ids(&self, room_id: &str) -> Vec<String> {
+        active_room_stream_media_ids_for_infra(self.live_streaming_infrastructure.as_ref(), room_id)
+            .await
+    }
+
     /// Best-effort admin audit log helper.
     ///
     /// Resolves the admin username (falling back to the raw ID on lookup failure),
@@ -344,7 +349,7 @@ impl AdminApiImpl {
 
         // Kick active RTMP publishers in the deleted room (local + cluster-wide)
         if let Some(infra) = &self.live_streaming_infrastructure {
-            let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
+            let media_ids = self.active_room_stream_media_ids(rid.as_str()).await;
 
             for media_id in &media_ids {
                 self.kick_stream_cluster(rid.as_str(), media_id, "room_deleted")
@@ -1624,7 +1629,7 @@ impl AdminApiImpl {
 
         // Kick active RTMP publishers in the banned room (local + cluster-wide)
         if let Some(infra) = &self.live_streaming_infrastructure {
-            let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
+            let media_ids = self.active_room_stream_media_ids(rid.as_str()).await;
 
             for media_id in &media_ids {
                 self.kick_stream_cluster(rid.as_str(), media_id, "room_banned")
@@ -2489,7 +2494,7 @@ impl AdminApiImpl {
                     self.connection_manager.disconnect_room(&rid);
 
                     if let Some(infra) = &self.live_streaming_infrastructure {
-                        let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
+                        let media_ids = self.active_room_stream_media_ids(rid.as_str()).await;
                         for media_id in &media_ids {
                             self.kick_stream_cluster(rid.as_str(), media_id, "room_batch_banned")
                                 .await;
@@ -2583,7 +2588,7 @@ impl AdminApiImpl {
                     self.connection_manager.disconnect_room(&rid);
 
                     if let Some(infra) = &self.live_streaming_infrastructure {
-                        let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
+                        let media_ids = self.active_room_stream_media_ids(rid.as_str()).await;
                         for media_id in &media_ids {
                             self.kick_stream_cluster(rid.as_str(), media_id, "room_batch_deleted")
                                 .await;
@@ -2639,6 +2644,30 @@ impl AdminApiImpl {
             failed,
         })
     }
+}
+
+async fn active_room_stream_media_ids_for_infra(
+    live_streaming_infrastructure: Option<&Arc<LiveStreamingInfrastructure>>,
+    room_id: &str,
+) -> Vec<String> {
+    let mut media_ids = std::collections::BTreeSet::new();
+
+    if let Some(infra) = live_streaming_infrastructure {
+        media_ids.extend(infra.user_stream_tracker.get_room_streams(room_id));
+
+        match infra.registry.list_streams_for_room(room_id).await {
+            Ok(remote_media_ids) => media_ids.extend(remote_media_ids),
+            Err(error) => {
+                tracing::warn!(
+                    room_id,
+                    error = %error,
+                    "Failed to list room streams from registry; falling back to local tracker view"
+                );
+            }
+        }
+    }
+
+    media_ids.into_iter().collect()
 }
 
 // === Helper Functions ===
@@ -2799,6 +2828,12 @@ mod tests {
     use synctv_core::models::{
         MemberStatus, RoomId, RoomRole, RoomStatus, UserId, UserRole, UserStatus,
     };
+    use synctv_livestream::{
+        api::{LiveStreamingInfrastructure, StreamTracker},
+        livestream::{external_publish_manager::ExternalPublishManager, PullStreamManager},
+        relay::{in_memory_registry::InMemoryStreamRegistry, StreamRegistryTrait},
+    };
+    use tokio::sync::mpsc;
 
     // === Timeout Parsing Tests ===
 
@@ -2888,6 +2923,69 @@ mod tests {
                 synctv_proto::common::RoomStatus::from(status) as i32
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_active_room_stream_media_ids_unions_local_and_registry_streams() {
+        let tracker = Arc::new(StreamTracker::new());
+        tracker.insert(
+            "user-local".to_string(),
+            "room-1".to_string(),
+            "local-media".to_string(),
+            "rtmp-room",
+            "rtmp-stream",
+        );
+        tracker.insert(
+            "user-overlap".to_string(),
+            "room-1".to_string(),
+            "shared-media".to_string(),
+            "rtmp-room-2",
+            "rtmp-stream-2",
+        );
+
+        let registry: Arc<dyn StreamRegistryTrait> = Arc::new(InMemoryStreamRegistry::new());
+        registry
+            .try_register_publisher("room-1", "shared-media", "node-a", "user-overlap", "127.0.0.1:50051")
+            .await
+            .expect("shared publisher should register");
+        registry
+            .try_register_publisher("room-1", "remote-media", "node-b", "user-remote", "127.0.0.1:50052")
+            .await
+            .expect("remote publisher should register");
+        registry
+            .try_register_publisher("other-room", "other-media", "node-c", "user-other", "127.0.0.1:50053")
+            .await
+            .expect("other room publisher should register");
+
+        let (event_sender, _event_receiver) = mpsc::channel(64);
+        let pull_manager = Arc::new(PullStreamManager::new(registry.clone(), event_sender.clone()));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                "node-local".to_string(),
+                event_sender.clone(),
+            )
+            .expect("external publish manager should build"),
+        );
+        let infra = Arc::new(LiveStreamingInfrastructure::new(
+            registry,
+            event_sender,
+            pull_manager,
+            external_publish_manager,
+            tracker,
+        ));
+
+        let media_ids =
+            active_room_stream_media_ids_for_infra(Some(&infra), "room-1").await;
+
+        assert_eq!(
+            media_ids,
+            vec![
+                "local-media".to_string(),
+                "remote-media".to_string(),
+                "shared-media".to_string()
+            ]
+        );
     }
 
     // === Admin User Proto Conversion Tests ===

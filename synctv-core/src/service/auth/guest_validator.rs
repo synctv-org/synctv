@@ -99,7 +99,7 @@ impl GuestTokenValidator {
                         error = %e,
                         "Guest token blacklist check failed due to storage error (fail-closed)"
                     );
-                    return Err(Error::Authentication(
+                    return Err(Error::ServiceUnavailable(
                         "Authentication service temporarily unavailable".to_string(),
                     ));
                 }
@@ -360,7 +360,7 @@ mod tests {
             .expect_err("storage errors must fail closed");
 
         assert!(
-            matches!(err, Error::Authentication(msg) if msg.contains("temporarily unavailable"))
+            matches!(err, Error::ServiceUnavailable(msg) if msg.contains("temporarily unavailable"))
         );
     }
 

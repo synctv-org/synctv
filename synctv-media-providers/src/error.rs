@@ -8,6 +8,9 @@ use thiserror::Error;
 /// Prevents OOM from malicious or misconfigured upstream servers.
 pub const MAX_RESPONSE_SIZE: usize = 16 * 1024 * 1024;
 
+/// Maximum number of bytes captured from an error response body.
+const MAX_ERROR_BODY_PREVIEW_BYTES: usize = 1024;
+
 /// Shared User-Agent string for all provider HTTP clients.
 ///
 /// Using a consistent browser-like User-Agent across all providers prevents
@@ -94,19 +97,7 @@ pub async fn check_response(
             None
         };
         let url = resp.url().to_string();
-        // Read response body for debugging; truncate to 1 KB to avoid OOM.
-        // Use char-safe truncation to avoid panicking on multi-byte UTF-8.
-        let body = resp.text().await.map_or_else(
-            |_| String::new(),
-            |text| {
-                if text.len() > 1024 {
-                    let truncated: String = text.chars().take(1024).collect();
-                    format!("{truncated}...(truncated)")
-                } else {
-                    text
-                }
-            },
-        );
+        let body = read_error_body_preview(resp).await;
         return Err(ProviderClientError::Http {
             status,
             url,
@@ -115,6 +106,39 @@ pub async fn check_response(
         });
     }
     Ok(resp)
+}
+
+async fn read_error_body_preview(resp: reqwest::Response) -> String {
+    let mut resp = resp;
+    let mut preview = Vec::with_capacity(MAX_ERROR_BODY_PREVIEW_BYTES);
+    let mut truncated = false;
+
+    while preview.len() < MAX_ERROR_BODY_PREVIEW_BYTES {
+        let next = resp.chunk().await;
+        let Some(chunk) = next.ok().flatten() else {
+            break;
+        };
+
+        let remaining = MAX_ERROR_BODY_PREVIEW_BYTES - preview.len();
+        if chunk.len() > remaining {
+            preview.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+
+        preview.extend_from_slice(&chunk);
+    }
+
+    if preview.len() >= MAX_ERROR_BODY_PREVIEW_BYTES {
+        truncated = true;
+    }
+
+    let text = String::from_utf8_lossy(&preview).into_owned();
+    if truncated {
+        format!("{text}...(truncated)")
+    } else {
+        text
+    }
 }
 
 impl From<reqwest::Error> for ProviderClientError {

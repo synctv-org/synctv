@@ -143,7 +143,7 @@ impl LiveStreamingInfrastructure {
     /// Looks up all of the user's active streams from the tracker and sends `UnPublish` events.
     /// Used when banning or deleting a user to terminate all their RTMP publish sessions.
     pub async fn kick_user_publishers(&self, user_id: &str) {
-        let streams = self.user_stream_tracker.remove_user(user_id);
+        let streams = self.user_stream_tracker.get_user_streams(user_id);
         for (room_id, media_id) in streams {
             info!(
                 user_id = %user_id,
@@ -151,7 +151,11 @@ impl LiveStreamingInfrastructure {
                 media_id = %media_id,
                 "Kicking RTMP publisher for banned user"
             );
-            // Remove from Redis registry
+            if let Err(e) = self.kick_publisher(&room_id, &media_id) {
+                error!("Failed to kick publisher for user {}: {}", user_id, e);
+                continue;
+            }
+            let _ = self.user_stream_tracker.remove_stream(&room_id, &media_id);
             if let Err(e) = self
                 .registry
                 .unregister_publisher(&room_id, &media_id)
@@ -161,9 +165,6 @@ impl LiveStreamingInfrastructure {
                     "Failed to unregister publisher from Redis for user {}: {}",
                     user_id, e
                 );
-            }
-            if let Err(e) = self.kick_publisher(&room_id, &media_id) {
-                error!("Failed to kick publisher for user {}: {}", user_id, e);
             }
         }
     }
@@ -176,7 +177,8 @@ impl LiveStreamingInfrastructure {
         let media_ids = self.user_stream_tracker.get_room_streams(room_id);
 
         for media_id in media_ids {
-            if let Some(user_id) = self.user_stream_tracker.remove_stream(room_id, &media_id) {
+            let user_id = self.user_stream_tracker.get_stream_user(room_id, &media_id);
+            if let Some(user_id) = user_id.as_ref() {
                 info!(
                     user_id = %user_id,
                     room_id = %room_id,
@@ -184,15 +186,16 @@ impl LiveStreamingInfrastructure {
                     "Kicking RTMP publisher for banned room"
                 );
             }
-            // Remove from Redis registry
+            if let Err(e) = self.kick_publisher(room_id, &media_id) {
+                error!("Failed to kick publisher in room {}: {}", room_id, e);
+                continue;
+            }
+            let _ = self.user_stream_tracker.remove_stream(room_id, &media_id);
             if let Err(e) = self.registry.unregister_publisher(room_id, &media_id).await {
                 error!(
                     "Failed to unregister publisher from Redis in room {}: {}",
                     room_id, e
                 );
-            }
-            if let Err(e) = self.kick_publisher(room_id, &media_id) {
-                error!("Failed to kick publisher in room {}: {}", room_id, e);
             }
         }
     }
@@ -201,16 +204,16 @@ impl LiveStreamingInfrastructure {
     ///
     /// Removes the publisher from Redis and sends an `UnPublish` event.
     pub async fn kick_stream(&self, room_id: &str, media_id: &str) -> Result<()> {
-        // Remove from Redis registry
+        // Send UnPublish to StreamHub
+        self.kick_publisher(room_id, media_id)?;
+
+        // Remove from local tracker after StreamHub accepted the control event.
+        let _ = self.user_stream_tracker.remove_stream(room_id, media_id);
+
+        // Remove from Redis registry after the local stream has been told to stop.
         self.registry
             .unregister_publisher(room_id, media_id)
             .await?;
-
-        // Remove from local tracker
-        let _ = self.user_stream_tracker.remove_stream(room_id, media_id);
-
-        // Send UnPublish to StreamHub
-        self.kick_publisher(room_id, media_id)?;
 
         Ok(())
     }
@@ -371,6 +374,78 @@ mod tests {
         assert!(
             result.is_ok(),
             "local publisher should create FLV session without requiring gRPC pull"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kick_stream_does_not_delete_tracking_when_unpublish_signal_fails() {
+        let registry = Arc::new(MockStreamRegistry::with_publishers(
+            std::collections::HashMap::from([(
+                ("room1".to_string(), "media1".to_string()),
+                PublisherInfo {
+                    node_id: "node-local".to_string(),
+                    grpc_address: "127.0.0.1:50051".to_string(),
+                    app_name: "live".to_string(),
+                    user_id: "user1".to_string(),
+                    started_at: Utc::now(),
+                    epoch: 1,
+                },
+            )]),
+        ));
+        let (event_sender, event_receiver) = mpsc::channel(1);
+        drop(event_receiver);
+
+        let tracker = Arc::new(StreamTracker::new());
+        tracker.insert(
+            "user1".to_string(),
+            "room1".to_string(),
+            "media1".to_string(),
+            "rtmp-room",
+            "rtmp-stream",
+        );
+
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                "node-local".to_string(),
+                event_sender.clone(),
+            )
+            .expect("external publish manager should build"),
+        );
+
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender.clone(),
+            pull_manager,
+            external_publish_manager,
+            tracker.clone(),
+        );
+
+        let err = infrastructure
+            .kick_stream("room1", "media1")
+            .await
+            .expect_err("closed StreamHub channel should fail the kick");
+
+        assert!(
+            err.to_string().contains("StreamHub not running"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            tracker.get_stream_user("room1", "media1").as_deref(),
+            Some("user1"),
+            "tracker entry must remain until UnPublish is accepted"
+        );
+        assert!(
+            registry
+                .get_publisher("room1", "media1")
+                .await
+                .expect("registry lookup should succeed")
+                .is_some(),
+            "registry entry must remain until UnPublish is accepted"
         );
     }
 }

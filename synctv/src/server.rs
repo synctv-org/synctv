@@ -359,13 +359,13 @@ async fn spawn_admin_event_listener(
                                     "Received cluster-wide stream kick"
                                 );
                                 if let Err(e) =
-                                    infra.kick_publisher(room_id.as_str(), media_id.as_str())
+                                    infra.kick_stream(room_id.as_str(), media_id.as_str()).await
                                 {
                                     warn!(
                                         room_id = %room_id.as_str(),
                                         media_id = %media_id.as_str(),
                                         error = %e,
-                                        "Failed to kick publisher from StreamHub"
+                                        "Failed to kick publisher from cluster admin event"
                                     );
                                 }
                             }
@@ -1494,6 +1494,124 @@ mod tests {
         let cancel = CancellationToken::new();
         let handle =
             spawn_admin_event_listener(Arc::new(cluster_manager), infra, cancel.clone()).await;
+
+        cancel.cancel();
+        await_task_shutdown("admin event listener", handle, Duration::from_secs(1)).await;
+    }
+
+    #[tokio::test]
+    async fn test_admin_event_listener_kick_publisher_removes_registry_entry() {
+        use chrono::Utc;
+        use synctv_cluster::sync::{ClusterConfig, ClusterEvent, ClusterManager};
+        use synctv_core::models::{MediaId, RoomId};
+        use synctv_livestream::api::StreamTracker;
+        use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+        use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
+        use tokio::sync::mpsc;
+
+        let cluster_manager = ClusterManager::new(
+            ClusterConfig {
+                redis_client: None,
+                redis_conn: None,
+                cluster_enabled: false,
+                node_id: "test-node".to_string(),
+                dedup_window: Duration::from_mins(1),
+                cleanup_interval: Duration::from_secs(30),
+                critical_channel_capacity: 8,
+                publish_channel_capacity: 8,
+                key_prefix: "test:".to_string(),
+                catchup_window_secs: 60,
+                stream_max_length: 100,
+                shared_redis_conn: None,
+                parent_cancel_token: None,
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("cluster manager should be created");
+
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        registry
+            .try_register_publisher(
+                "room-1",
+                "media-1",
+                "test-node",
+                "publisher-user",
+                "127.0.0.1:50051",
+            )
+            .await
+            .expect("publisher should register");
+
+        let (event_sender, event_receiver) = mpsc::channel(8);
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                "test-node".to_string(),
+                event_sender.clone(),
+            )
+            .expect("failed to create ExternalPublishManager"),
+        );
+        let infra = Arc::new(synctv_livestream::api::LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender,
+            pull_manager,
+            external_publish_manager,
+            Arc::new(StreamTracker::new()),
+        ));
+        let cancel = CancellationToken::new();
+        let cluster_manager = Arc::new(cluster_manager);
+        let handle =
+            spawn_admin_event_listener(cluster_manager.clone(), infra, cancel.clone()).await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if cluster_manager
+                    .admin_event_tx()
+                    .send(ClusterEvent::KickPublisher {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: RoomId::from_string("room-1".to_string()),
+                        media_id: MediaId::from_string("media-1".to_string()),
+                        reason: "room_deleted".to_string(),
+                        timestamp: Utc::now(),
+                    })
+                    .is_ok()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("kick publisher event should reach the listener");
+
+        tokio::time::timeout(Duration::from_secs(1), async move {
+            let mut rx = event_receiver;
+            rx.recv().await
+        })
+        .await
+        .expect("listener should enqueue an unpublish event")
+        .expect("streamhub event channel should receive unpublish");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if registry
+                    .get_publisher("room-1", "media-1")
+                    .await
+                    .expect("registry lookup should succeed")
+                    .is_none()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("kick listener should remove registry entry after processing");
 
         cancel.cancel();
         await_task_shutdown("admin event listener", handle, Duration::from_secs(1)).await;

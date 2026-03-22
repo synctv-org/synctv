@@ -231,7 +231,11 @@ where
             .guest_token_validator
             .validate_async(&token)
             .await
-            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+            .map_err(|e| match SecurityPipeline::classify_auth_error(&e) {
+                AuthErrorCategory::Authentication => AppError::unauthorized(format!("{e}")),
+                AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
+                AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
+            })?;
 
         if !claims.is_guest() {
             return Err(AppError::unauthorized("Not a guest token"));
@@ -859,6 +863,27 @@ mod tests {
         };
         let cloned = auth_user;
         assert_eq!(cloned.user_id.as_str(), "test123");
+    }
+
+    #[test]
+    fn test_guest_user_maps_service_unavailable_to_503() {
+        let err = match SecurityPipeline::classify_auth_error(&synctv_core::Error::ServiceUnavailable(
+            "Authentication service temporarily unavailable".to_string(),
+        )) {
+            AuthErrorCategory::Authentication => {
+                AppError::unauthorized("unexpected authentication classification")
+            }
+            AuthErrorCategory::Authorization => {
+                AppError::forbidden("unexpected authorization classification")
+            }
+            AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => {
+                AppError::from(synctv_core::Error::ServiceUnavailable(
+                    "Authentication service temporarily unavailable".to_string(),
+                ))
+            }
+        };
+
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     // === RateLimitCategory Tests ===

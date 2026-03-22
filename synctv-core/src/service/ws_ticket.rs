@@ -716,7 +716,14 @@ impl WsTicketService {
                     mode = %mode,
                     "WebSocket ticket rejected: user validation failed"
                 );
-                Error::Authorization("Authentication failed".to_string())
+                match crate::service::auth::SecurityPipeline::classify_auth_error(&e) {
+                    crate::service::auth::AuthErrorCategory::Authentication
+                    | crate::service::auth::AuthErrorCategory::Authorization => {
+                        Error::Authorization("Authentication failed".to_string())
+                    }
+                    crate::service::auth::AuthErrorCategory::Unavailable
+                    | crate::service::auth::AuthErrorCategory::Internal => e,
+                }
             })?;
 
         // Check password version after loading the current user state.
@@ -888,9 +895,10 @@ mod tests {
     #[async_trait]
     impl UserValidator for StaticUserValidator {
         async fn validate_for_ticket(&self, _user_id: &UserId) -> Result<UserValidationResult> {
-            self.result
-                .clone()
-                .map_err(|message| Error::Authorization((*message).to_string()))
+            self.result.clone().map_err(|message| match message {
+                "temporarily unavailable" => Error::ServiceUnavailable(message.to_string()),
+                _ => Error::Authorization(message.to_string()),
+            })
         }
     }
 
@@ -949,6 +957,42 @@ mod tests {
         assert!(
             second_result.is_ok(),
             "user validation rejection must not consume the ticket"
+        );
+        let validated = second_result.unwrap();
+        assert_eq!(validated.user_id.as_str(), "user1");
+        assert_eq!(validated.password_version, 4);
+    }
+
+    #[tokio::test]
+    async fn test_ticket_user_validation_backend_outage_is_preserved_and_does_not_consume_ticket() {
+        let service = WsTicketService::with_memory(Some(30));
+        let user_id = create_test_user_id("user1");
+        let room_id = create_test_room_id("room-a");
+        let ticket = service.create_ticket(&user_id, &room_id, 4).await.unwrap();
+
+        let failing_validator = StaticUserValidator {
+            result: Err("temporarily unavailable"),
+        };
+        let allow_validator = StaticUserValidator {
+            result: Ok(UserValidationResult {
+                password_version: 4,
+            }),
+        };
+
+        let first_result = service
+            .validate_checked(&ticket, &room_id, &failing_validator)
+            .await;
+        assert!(
+            matches!(first_result, Err(Error::ServiceUnavailable(ref msg)) if msg.contains("temporarily unavailable")),
+            "backend outages must stay retryable, got: {first_result:?}"
+        );
+
+        let second_result = service
+            .validate_and_consume_checked(&ticket, &room_id, &allow_validator)
+            .await;
+        assert!(
+            second_result.is_ok(),
+            "backend outages must not consume the ticket"
         );
         let validated = second_result.unwrap();
         assert_eq!(validated.user_id.as_str(), "user1");

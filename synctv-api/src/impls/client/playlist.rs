@@ -39,6 +39,7 @@ impl ClientApiImpl {
             source_config: None,
             provider_instance_name: None,
         };
+        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         let playlist = self
             .room_service
@@ -48,7 +49,9 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist structure change
-        self.publish_room_cache_invalidation(&rid).await;
+        if let Some(cache_invalidation) = cache_invalidation {
+            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+        }
 
         let item_count = self
             .room_service
@@ -97,6 +100,7 @@ impl ClientApiImpl {
             name,
             position,
         };
+        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         let playlist = self
             .room_service
@@ -106,7 +110,9 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist update
-        self.publish_room_cache_invalidation(&rid).await;
+        if let Some(cache_invalidation) = cache_invalidation {
+            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+        }
 
         let item_count = self
             .room_service
@@ -138,6 +144,7 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id);
+        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         self.room_service
             .playlist_service()
@@ -146,7 +153,9 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist deletion
-        self.publish_room_cache_invalidation(&rid).await;
+        if let Some(cache_invalidation) = cache_invalidation {
+            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+        }
 
         Ok(crate::proto::client::DeletePlaylistResponse { success: true })
     }

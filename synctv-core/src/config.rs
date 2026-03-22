@@ -7,6 +7,31 @@ fn process_env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
+    let parsed =
+        url::Url::parse(origin).map_err(|_| format!("CORS origin '{origin}' is not a valid URL"))?;
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!(
+            "CORS origin '{origin}' must use http:// or https://"
+        ));
+    }
+
+    if parsed.host_str().is_none() {
+        return Err(format!(
+            "CORS origin '{origin}' must include a host"
+        ));
+    }
+
+    if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(format!(
+            "CORS origin '{origin}' must not include a path, query, or fragment"
+        ));
+    }
+
+    Ok(())
+}
+
 /// Application configuration
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -764,6 +789,11 @@ impl Config {
 
     /// Load from file path
     pub fn from_file(path: &str) -> Result<Self, ConfigError> {
+        if !Path::new(path).exists() {
+            return Err(ConfigError::Message(format!(
+                "config file not found: {path}"
+            )));
+        }
         Self::load(Some(path))
     }
 
@@ -1795,11 +1825,8 @@ impl Config {
                     );
                     break;
                 }
-                // Validate origin format
-                if !origin.starts_with("http://") && !origin.starts_with("https://") {
-                    errors.push(format!(
-                        "CORS origin '{origin}' must start with http:// or https://"
-                    ));
+                if let Err(error) = validate_cors_origin(origin) {
+                    errors.push(error);
                 }
             }
         }
@@ -1883,6 +1910,7 @@ impl Config {
                         .to_string(),
                 ),
             }
+
         }
 
         if cluster_mode_active && self.cluster.leader_election_mode == "k8s_lease" {
@@ -1999,19 +2027,18 @@ impl Config {
         }
 
         // **WebRTC Issue (#21)**: Validate STUN external address.
-        // In cluster/K8s/NAT environments,
-        // stun_external_addr is REQUIRED because pods sit behind NAT and the
-        // default advertise_host (pod IP) is not reachable from the internet.
-        // Without an explicit external address, STUN reflexive candidates will
-        // contain internal IPs and WebRTC connections will fail.
+        // In cluster/K8s/NAT environments, an explicit stun_external_addr is
+        // preferred, but runtime bootstrap also supports auto-detecting a
+        // usable external address from advertise_host / POD_IP / cloud
+        // metadata. Configuration validation should therefore not fail-closed
+        // just because the explicit field is empty.
         if self.webrtc.enable_builtin_stun && self.webrtc.stun_external_addr.is_empty() {
             if self.cluster_runtime_enabled() {
-                errors.push(
-                    "webrtc.stun_external_addr must be set when running in cluster mode \
-                         (cluster.enabled=true). In NAT/K8s environments, STUN needs \
-                         the server's public IP:port to generate valid reflexive candidates. \
-                         Example: webrtc.stun_external_addr = \"203.0.113.1:3478\""
-                        .to_string(),
+                tracing::warn!(
+                    "webrtc.enable_builtin_stun=true but stun_external_addr is not set in cluster mode. \
+                     Startup will attempt STUN external address auto-detection from advertise_host, POD_IP, \
+                     or cloud metadata. For deterministic production behavior, prefer setting \
+                     webrtc.stun_external_addr explicitly."
                 );
             } else {
                 tracing::warn!(
@@ -2492,6 +2519,27 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_rejects_cors_origin_with_path() {
+        let mut config = valid_prod_config();
+        config.server.cors_allowed_origins = vec!["https://app.example.com/foo".to_string()];
+
+        let errors = config
+            .validate()
+            .expect_err("CORS origins with paths must be rejected during config validation");
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("cors origin") || e.contains("CORS origin")),
+            "unexpected errors: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("must not include a path")),
+            "unexpected errors: {errors:?}"
+        );
+    }
+
+    #[test]
     fn test_grpc_address() {
         let config = Config {
             server: ServerConfig {
@@ -2888,6 +2936,27 @@ jwt:
     }
 
     #[test]
+    fn test_from_file_rejects_missing_path() {
+        let unique = format!(
+            "synctv-missing-config-{}-{}.yaml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+
+        let error = Config::from_file(path.to_str().expect("utf-8 path"))
+            .expect_err("missing file must not fall back to defaults");
+
+        assert!(
+            error.to_string().contains("not found"),
+            "missing file error should mention not found: {error}"
+        );
+    }
+
+    #[test]
     fn test_validate_default_root_password() {
         let mut config = valid_prod_config();
         config.bootstrap.root_password = "root".to_string();
@@ -3183,6 +3252,19 @@ jwt:
     }
 
     #[test]
+    fn test_validate_cluster_enabled_allows_builtin_stun_without_explicit_external_addr() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.webrtc.enable_builtin_stun = true;
+        config.webrtc.stun_external_addr.clear();
+
+        assert!(
+            config.validate().is_ok(),
+            "cluster mode should not reject STUN auto-detection paths during config validation"
+        );
+    }
+
+    #[test]
     fn test_validate_cluster_enabled_with_sentinel_rejects_k8s_lease() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
@@ -3361,6 +3443,12 @@ jwt:
                 .iter()
                 .any(|e| e.contains("POD_NAMESPACE") && e.contains("k8s_dns")),
             "Expected POD_NAMESPACE validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|e| !e.contains("POD_IP") || !e.contains("k8s_dns")),
+            "Offline validation must not require runtime-only POD_IP, got: {errors:?}"
         );
     }
 

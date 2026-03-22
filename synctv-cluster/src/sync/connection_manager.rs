@@ -1071,9 +1071,9 @@ impl ConnectionManager {
     async fn await_shutdown_task(
         task_name: &'static str,
         timeout_budget: Duration,
-        handle: tokio::task::JoinHandle<()>,
+        mut handle: tokio::task::JoinHandle<()>,
     ) -> ShutdownTaskOutcome {
-        match tokio::time::timeout(timeout_budget, handle).await {
+        match tokio::time::timeout(timeout_budget, &mut handle).await {
             Ok(Ok(())) => {
                 debug!(
                     task = task_name,
@@ -1101,8 +1101,24 @@ impl ConnectionManager {
                 warn!(
                     task = task_name,
                     timeout_secs = timeout_budget.as_secs(),
-                    "ConnectionManager background task did not stop before shutdown timeout"
+                    "ConnectionManager background task did not stop before shutdown timeout; aborting"
                 );
+                handle.abort();
+                match handle.await {
+                    Ok(()) => debug!(
+                        task = task_name,
+                        "ConnectionManager background task completed after abort"
+                    ),
+                    Err(error) if error.is_cancelled() => debug!(
+                        task = task_name,
+                        "ConnectionManager background task aborted after timeout"
+                    ),
+                    Err(error) => warn!(
+                        task = task_name,
+                        error = %error,
+                        "ConnectionManager background task returned join error after timeout abort"
+                    ),
+                }
                 ShutdownTaskOutcome::TimedOut
             }
         }
@@ -5158,6 +5174,37 @@ mod tests {
             report.ttl_refresh,
             Some(ShutdownTaskOutcome::Cancelled),
             "aborted background tasks must not be silently swallowed during shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_aborts_timed_out_background_task() {
+        let manager = ConnectionManager::new(ConnectionLimits::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            futures::future::pending::<()>().await;
+        });
+        manager.test_set_ttl_refresh_handle(handle);
+
+        started_rx
+            .await
+            .expect("timeout test task should report that it started");
+
+        let report = manager.shutdown().await;
+
+        assert_eq!(
+            report.ttl_refresh,
+            Some(ShutdownTaskOutcome::TimedOut),
+            "shutdown should report timeout before forcing task abort"
+        );
+        assert!(
+            manager
+                .ttl_refresh_handle
+                .lock()
+                .expect("ttl refresh handle mutex poisoned")
+                .is_none(),
+            "shutdown must drain the timed-out task handle after aborting it"
         );
     }
 

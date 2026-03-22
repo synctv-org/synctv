@@ -111,7 +111,7 @@ impl StaticDiscovery {
                 grpc_address.to_string(),
                 Self::derive_http_address(grpc_address, default_http_port),
             )
-            .with_epoch(0),
+            .with_epoch(discovered.epoch),
         )
     }
 
@@ -278,6 +278,7 @@ mod tests {
         let discovered = ProbedNodeIdentity {
             node_id: "peer-node-1".to_string(),
             grpc_address: "10.0.0.5:50051".to_string(),
+            epoch: 7,
         };
 
         let info = StaticDiscovery::discovered_node_info(&discovered, "10.0.0.5:50051", 8080)
@@ -286,6 +287,6 @@ mod tests {
         assert_eq!(info.node_id, "peer-node-1");
         assert_eq!(info.grpc_address, "10.0.0.5:50051");
         assert_eq!(info.http_address, "10.0.0.5:8080");
-        assert_eq!(info.epoch, 0);
+        assert_eq!(info.epoch, 7);
     }
 }

@@ -75,6 +75,9 @@ pub struct HealthMonitor {
     check_interval_secs: u64,
     pub health_status: Arc<RwLock<std::collections::HashMap<String, NodeHealth>>>,
     cancel_token: CancellationToken,
+    /// Unix timestamp (seconds) of the last successful registry-backed health refresh.
+    /// Load balancers use this to fail closed instead of routing on frozen status snapshots.
+    last_successful_refresh_at: Arc<std::sync::atomic::AtomicU64>,
     /// Active probe configuration
     probe_config: HealthProbeConfig,
     /// Probe state per node
@@ -96,6 +99,7 @@ impl HealthMonitor {
             check_interval_secs,
             health_status: Arc::new(RwLock::new(std::collections::HashMap::new())),
             cancel_token: CancellationToken::new(),
+            last_successful_refresh_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             probe_config: HealthProbeConfig::default(),
             probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
             join_handle: tokio::sync::Mutex::new(None),
@@ -119,6 +123,7 @@ impl HealthMonitor {
             check_interval_secs,
             health_status: Arc::new(RwLock::new(std::collections::HashMap::new())),
             cancel_token: parent_token.child_token(),
+            last_successful_refresh_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             probe_config: HealthProbeConfig::default(),
             probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
             join_handle: tokio::sync::Mutex::new(None),
@@ -142,6 +147,7 @@ impl HealthMonitor {
             check_interval_secs,
             health_status: Arc::new(RwLock::new(std::collections::HashMap::new())),
             cancel_token: CancellationToken::new(),
+            last_successful_refresh_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             probe_config,
             probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
             join_handle: tokio::sync::Mutex::new(None),
@@ -162,6 +168,7 @@ impl HealthMonitor {
             check_interval_secs,
             health_status: Arc::new(RwLock::new(std::collections::HashMap::new())),
             cancel_token: parent_token.child_token(),
+            last_successful_refresh_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             probe_config,
             probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
             join_handle: tokio::sync::Mutex::new(None),
@@ -193,6 +200,7 @@ impl HealthMonitor {
         let health_status = self.health_status.clone();
         let timeout_secs = registry.heartbeat_timeout_secs;
         let cancel_token = self.cancel_token.clone();
+        let last_successful_refresh_at = self.last_successful_refresh_at.clone();
         let probe_config = self.probe_config.clone();
         let probe_states = self.probe_states.clone();
         let check_interval_secs = self.check_interval_secs;
@@ -234,6 +242,12 @@ impl HealthMonitor {
                                     );
                                 }
                                 consecutive_registry_failures = 0;
+                                if registry.cluster_mode() == super::node_registry::ClusterMode::Normal {
+                                    last_successful_refresh_at.store(
+                                        current_unix_timestamp_secs(),
+                                        Ordering::Relaxed,
+                                    );
+                                }
                                 Self::process_heartbeats(&health_status, &nodes, timeout_secs).await;
                             }
                             Err(e) => {
@@ -457,6 +471,36 @@ impl HealthMonitor {
         let status = self.health_status.read().await;
         status.get(node_id).copied()
     }
+
+    /// Whether the last successful health snapshot is too old to be used for routing.
+    ///
+    /// Before the monitor has completed its first successful registry-backed refresh,
+    /// there is no stale snapshot yet; callers should treat the monitor as
+    /// uninitialized rather than expired.
+    #[must_use]
+    pub fn is_snapshot_stale(&self) -> bool {
+        let last = self.last_successful_refresh_at.load(Ordering::Relaxed);
+        if last == 0 {
+            return false;
+        }
+
+        let now = current_unix_timestamp_secs();
+        let stale_after_secs = self.check_interval_secs.max(1);
+        now.saturating_sub(last) > stale_after_secs
+    }
+
+    #[doc(hidden)]
+    pub fn test_set_last_successful_refresh_at(&self, unix_secs: u64) {
+        self.last_successful_refresh_at
+            .store(unix_secs, Ordering::Relaxed);
+    }
+}
+
+fn current_unix_timestamp_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[cfg(test)]
@@ -508,6 +552,10 @@ mod tests {
         let monitor = HealthMonitor::new(registry, 10);
         let status = monitor.get_all_status().await;
         assert!(status.is_empty(), "New monitor should have no statuses");
+        assert!(
+            !monitor.is_snapshot_stale(),
+            "monitor without a successful refresh is uninitialized, not stale"
+        );
     }
 
     #[tokio::test]
@@ -716,6 +764,33 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_degraded_local_cache_refresh_does_not_mark_snapshot_fresh() {
+        let registry = make_registry();
+        registry.test_set_cluster_mode(super::super::node_registry::ClusterMode::Degraded);
+        registry
+            .test_insert_local(NodeInfo::new(
+                "self".to_string(),
+                "127.0.0.1:50051".to_string(),
+                "127.0.0.1:8080".to_string(),
+            ))
+            .await;
+
+        let monitor = HealthMonitor::new(registry, 1);
+        monitor.test_set_last_successful_refresh_at(current_unix_timestamp_secs());
+        let handle = monitor.start().await.expect("monitor should start");
+        monitor.set_join_handle(handle);
+
+        tokio::time::sleep(Duration::from_millis(2300)).await;
+
+        assert!(
+            monitor.is_snapshot_stale(),
+            "degraded local-cache reads must not refresh the last successful registry-backed snapshot"
+        );
+
+        monitor.shutdown().await;
+    }
+
     #[test]
     fn test_with_cancellation_token_and_probe_config_preserves_secret() {
         let registry = make_registry();
@@ -757,6 +832,21 @@ mod tests {
         assert!(
             monitor.cancel_token.is_cancelled(),
             "Monitor's token should be cancelled when parent is cancelled"
+        );
+    }
+
+    #[test]
+    fn test_snapshot_stale_after_successful_refresh_ages_out() {
+        let registry = make_registry();
+        let monitor = HealthMonitor::new(registry, 10);
+
+        monitor
+            .last_successful_refresh_at
+            .store(current_unix_timestamp_secs().saturating_sub(11), Ordering::Relaxed);
+
+        assert!(
+            monitor.is_snapshot_stale(),
+            "health snapshot should be stale after exceeding one monitor interval"
         );
     }
 }

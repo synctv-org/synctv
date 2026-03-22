@@ -382,11 +382,24 @@ impl RedisPubSub {
 
         // Await the subscriber task
         let handle = self.subscriber_handle.lock().await.take();
-        if let Some(handle) = handle {
-            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+        if let Some(mut handle) = handle {
+            match tokio::time::timeout(Duration::from_secs(5), &mut handle).await {
                 Ok(Ok(())) => info!("Redis subscriber task completed"),
                 Ok(Err(e)) => warn!("Redis subscriber task panicked: {}", e),
-                Err(_) => warn!("Redis subscriber task did not finish within 5s timeout"),
+                Err(_) => {
+                    warn!("Redis subscriber task did not finish within 5s timeout, aborting");
+                    handle.abort();
+                    match handle.await {
+                        Ok(()) => info!("Redis subscriber task completed after abort"),
+                        Err(e) if e.is_cancelled() => {
+                            info!("Redis subscriber task aborted after timeout")
+                        }
+                        Err(e) => warn!(
+                            "Redis subscriber task returned join error after timeout abort: {}",
+                            e
+                        ),
+                    }
+                }
             }
         }
     }
@@ -2545,6 +2558,44 @@ mod tests {
         assert!(
             pubsub.subscriber_handle.lock().await.is_none(),
             "failed start should not leave a subscriber task registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_aborts_timed_out_subscriber_task() {
+        let message_hub = Arc::new(RoomMessageHub::new());
+        let (admin_tx, _) = broadcast::channel(256);
+        let dedup = Arc::new(MessageDeduplicator::with_defaults());
+        let pubsub = RedisPubSub::with_key_prefix(
+            RedisClient::open("redis://127.0.0.1:1").expect("redis url should parse"),
+            message_hub,
+            "shutdown-timeout-node".to_string(),
+            "synctv:test:",
+            admin_tx,
+            None,
+            None,
+            dedup,
+            300,
+            1000,
+        )
+        .expect("pubsub should construct");
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            futures::future::pending::<()>().await;
+        });
+        *pubsub.subscriber_handle.lock().await = Some(handle);
+
+        started_rx
+            .await
+            .expect("subscriber timeout task should report that it started");
+
+        pubsub.shutdown().await;
+
+        assert!(
+            pubsub.subscriber_handle.lock().await.is_none(),
+            "shutdown must drain the timed-out subscriber handle after aborting it"
         );
     }
 

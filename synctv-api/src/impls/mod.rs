@@ -75,6 +75,81 @@ pub async fn try_publish_cluster_event(
     }
 }
 
+pub fn cluster_fanout_required(cluster_mode: bool, redis_publish_tx_configured: bool) -> bool {
+    cluster_mode && redis_publish_tx_configured
+}
+
+pub fn cluster_fanout_failure(message: impl Into<String>) -> ApiError {
+    ApiError::ServiceUnavailable(message.into())
+}
+
+#[derive(Debug)]
+pub struct ClusterEventPublishReservation {
+    permit: tokio::sync::mpsc::OwnedPermit<synctv_cluster::sync::PublishRequest>,
+}
+
+impl ClusterEventPublishReservation {
+    pub fn publish(self, request: synctv_cluster::sync::PublishRequest) {
+        let _ = self.permit.send(request);
+    }
+}
+
+pub async fn reserve_cluster_event_publish(
+    tx: Option<&tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
+    cluster_mode: bool,
+    failure_message: &'static str,
+) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
+    if !cluster_fanout_required(cluster_mode, tx.is_some()) {
+        return Ok(None);
+    }
+
+    let tx = tx.expect("cluster_fanout_required checked tx presence").clone();
+    match tx.try_reserve_owned() {
+        Ok(permit) => Ok(Some(ClusterEventPublishReservation { permit })),
+        Err(tokio::sync::mpsc::error::TrySendError::Full(tx)) => {
+            match tokio::time::timeout(CLUSTER_EVENT_SEND_TIMEOUT, tx.reserve_owned()).await {
+                Ok(Ok(permit)) => Ok(Some(ClusterEventPublishReservation { permit })),
+                Ok(Err(_)) => {
+                    record_cluster_event_publish_failure(
+                        "channel_closed",
+                        "Cluster event publish channel closed, event dropped",
+                    );
+                    Err(cluster_fanout_failure(failure_message))
+                }
+                Err(_) => {
+                    record_cluster_event_publish_failure(
+                        "channel_timeout",
+                        "Cluster event publish channel remained full until timeout, event dropped",
+                    );
+                    Err(cluster_fanout_failure(failure_message))
+                }
+            }
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            record_cluster_event_publish_failure(
+                "channel_closed",
+                "Cluster event publish channel closed, event dropped",
+            );
+            Err(cluster_fanout_failure(failure_message))
+        }
+    }
+}
+
+pub async fn require_cluster_event_publish(
+    tx: Option<&tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
+    request: synctv_cluster::sync::PublishRequest,
+    cluster_mode: bool,
+    failure_message: &'static str,
+) -> Result<(), ApiError> {
+    if let Some(reservation) =
+        reserve_cluster_event_publish(tx, cluster_mode, failure_message).await?
+    {
+        reservation.publish(request);
+    }
+
+    Ok(())
+}
+
 /// Kick a stream both locally and cluster-wide via Redis Pub/Sub.
 ///
 /// Shared utility used by both `ClientApiImpl` and `AdminApiImpl` after media
@@ -419,6 +494,19 @@ pub fn classify_error(err: &str) -> ErrorKind {
         || lower.contains("already registered")
     {
         ErrorKind::AlreadyExists
+    } else if lower.contains("room at capacity")
+        || lower.contains("user at capacity")
+        || lower.contains("server at capacity")
+        || lower.contains("room capacity exceeded")
+        || lower.contains("realtime room capacity exceeded")
+        || lower.contains("too many connections for this user")
+    {
+        ErrorKind::RateLimited
+    } else if lower.contains("distributed room capacity check unavailable")
+        || lower.contains("distributed user connection check unavailable")
+        || lower.contains("distributed total connection check unavailable")
+    {
+        ErrorKind::ServiceUnavailable
     } else if lower.contains("invalid")
         || lower.contains("too short")
         || lower.contains("too long")
@@ -465,6 +553,39 @@ fn classify_by_prefix(err: &str) -> Option<ErrorKind> {
         Some(ErrorKind::Internal)
     } else {
         None
+    }
+}
+
+/// Parse an `ApiError`-style display string into a semantic kind and a
+/// user-facing message with any structured prefix removed.
+#[must_use]
+pub fn parse_api_error_string(err: &str) -> (ErrorKind, &str) {
+    let trimmed = err.trim();
+
+    if let Some(message) = trimmed.strip_prefix("Not found: ") {
+        (ErrorKind::NotFound, message)
+    } else if let Some(message) = trimmed.strip_prefix("Authentication error: ") {
+        (ErrorKind::Unauthenticated, message)
+    } else if let Some(message) = trimmed.strip_prefix("Authorization error: ") {
+        (ErrorKind::PermissionDenied, message)
+    } else if let Some(message) = trimmed.strip_prefix("Already exists: ") {
+        (ErrorKind::AlreadyExists, message)
+    } else if let Some(message) = trimmed.strip_prefix("Invalid input: ") {
+        (ErrorKind::InvalidArgument, message)
+    } else if let Some(message) = trimmed.strip_prefix("Rate limited: ") {
+        (ErrorKind::RateLimited, message)
+    } else if let Some(message) = trimmed.strip_prefix("Service unavailable: ") {
+        (ErrorKind::ServiceUnavailable, message)
+    } else if let Some(message) = trimmed.strip_prefix("Internal error: ") {
+        (ErrorKind::Internal, message)
+    } else if let Some(message) = trimmed.strip_prefix("Database error: ") {
+        (ErrorKind::Internal, message)
+    } else if let Some(message) = trimmed.strip_prefix("Redis error: ") {
+        (ErrorKind::Internal, message)
+    } else if let Some(message) = trimmed.strip_prefix("Serialization error: ") {
+        (ErrorKind::Internal, message)
+    } else {
+        (classify_error(trimmed), trimmed)
     }
 }
 
@@ -795,6 +916,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_parse_api_error_string_strips_structured_prefixes() {
+        let (kind, message) =
+            parse_api_error_string("Rate limited: realtime room capacity exceeded");
+        assert!(matches!(kind, ErrorKind::RateLimited));
+        assert_eq!(message, "realtime room capacity exceeded");
+
+        let (kind, message) = parse_api_error_string(
+            "Service unavailable: distributed room capacity check unavailable",
+        );
+        assert!(matches!(kind, ErrorKind::ServiceUnavailable));
+        assert_eq!(message, "distributed room capacity check unavailable");
+    }
+
     #[tokio::test]
     async fn test_try_publish_cluster_event_waits_for_capacity_instead_of_dropping() {
         use synctv_cluster::sync::{CacheTarget, ClusterEvent, PublishRequest};
@@ -845,6 +980,135 @@ mod tests {
             }
             other => panic!("unexpected second event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_cluster_fanout_required_only_in_cluster_mode_with_publish_channel() {
+        assert!(super::cluster_fanout_required(true, true));
+        assert!(!super::cluster_fanout_required(true, false));
+        assert!(!super::cluster_fanout_required(false, true));
+        assert!(!super::cluster_fanout_required(false, false));
+    }
+
+    #[tokio::test]
+    async fn test_require_cluster_event_publish_fails_closed_in_cluster_mode() {
+        use synctv_cluster::sync::{CacheTarget, ClusterEvent, PublishRequest};
+
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+
+        let err = super::require_cluster_event_publish(
+            Some(&tx),
+            PublishRequest {
+                event: ClusterEvent::CacheInvalidate {
+                    event_id: "closed_channel_event".to_string(),
+                    targets: vec![CacheTarget::Room {
+                        room_id: "room-cluster".to_string(),
+                    }],
+                    timestamp: chrono::Utc::now(),
+                },
+            },
+            true,
+            "critical cluster event fanout failed",
+        )
+        .await
+        .expect_err("cluster mode must fail closed when fanout cannot be queued");
+
+        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+        assert_eq!(err.message(), "critical cluster event fanout failed");
+    }
+
+    #[tokio::test]
+    async fn test_require_cluster_event_publish_is_noop_outside_cluster_mode() {
+        use synctv_cluster::sync::{CacheTarget, ClusterEvent, PublishRequest};
+
+        let result = super::require_cluster_event_publish(
+            None,
+            PublishRequest {
+                event: ClusterEvent::CacheInvalidate {
+                    event_id: "standalone_event".to_string(),
+                    targets: vec![CacheTarget::Room {
+                        room_id: "room-standalone".to_string(),
+                    }],
+                    timestamp: chrono::Utc::now(),
+                },
+            },
+            false,
+            "should not fail",
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "standalone mode should not require cross-replica fanout"
+        );
+    }
+
+    #[test]
+    fn test_classify_error_room_capacity_is_rate_limited() {
+        assert!(matches!(
+            classify_error("Room at capacity (42 connections, max: 40)"),
+            ErrorKind::RateLimited
+        ));
+        assert!(matches!(
+            classify_error("Room at capacity across all replicas (42 connections)"),
+            ErrorKind::RateLimited
+        ));
+        assert!(matches!(
+            classify_error("Server at capacity across all replicas (42 connections)"),
+            ErrorKind::RateLimited
+        ));
+    }
+
+    #[test]
+    fn test_classify_error_user_capacity_is_rate_limited() {
+        assert!(matches!(
+            classify_error("User at capacity (4 connections, max: 3)"),
+            ErrorKind::RateLimited
+        ));
+        assert!(matches!(
+            classify_error("Too many connections for this user across all replicas (max 3)"),
+            ErrorKind::RateLimited
+        ));
+    }
+
+    #[test]
+    fn test_classify_error_distributed_capacity_check_is_service_unavailable() {
+        assert!(matches!(
+            classify_error(
+                "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
+            ),
+            ErrorKind::ServiceUnavailable
+        ));
+        assert!(matches!(
+            classify_error(
+                "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
+            ),
+            ErrorKind::ServiceUnavailable
+        ));
+        assert!(matches!(
+            classify_error(
+                "Distributed total connection check unavailable; refusing new connection while cluster Redis is degraded"
+            ),
+            ErrorKind::ServiceUnavailable
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_reserve_cluster_event_publish_fails_closed_in_cluster_mode() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+
+        let err = super::reserve_cluster_event_publish(
+            Some(&tx),
+            true,
+            "critical cluster event fanout failed",
+        )
+        .await
+        .expect_err("cluster mode must fail closed when reservation cannot be acquired");
+
+        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+        assert_eq!(err.message(), "critical cluster event fanout failed");
     }
 
     #[test]

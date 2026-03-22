@@ -107,6 +107,9 @@ fn load_config_for_validation_with_env(
     env: &std::collections::HashMap<String, String>,
 ) -> Result<Config, String> {
     if let Some(path) = config_path {
+        if !std::path::Path::new(path).exists() {
+            return Err(format!("config file not found: {path}"));
+        }
         synctv_core::Config::load_with_env_map(Some(path), env).map_err(|e| e.to_string())
     } else {
         Config::from_env_map(env).map_err(|e| e.to_string())
@@ -209,6 +212,22 @@ mod tests {
         assert!(
             result.is_ok(),
             "empty environment should still load default config"
+        );
+    }
+
+    #[test]
+    fn load_config_for_validation_rejects_explicit_missing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing_path = dir.path().join("missing-config.yaml");
+
+        let result = load_config_for_validation_with_env(
+            &Some(missing_path.display().to_string()),
+            &HashMap::new(),
+        );
+
+        assert!(
+            result.is_err(),
+            "explicit missing config path must fail instead of falling back to defaults"
         );
     }
 

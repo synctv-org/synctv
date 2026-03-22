@@ -33,7 +33,7 @@ use crate::cluster_bridge::ClusterPlaybackBroadcaster;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
     AuditFlushHook, CacheInvalidationStopHook, HealthMonitorShutdownHook, ProviderInvalidationHook,
-    SettingsListenHook, ShutdownCoordinator,
+    PermissionServiceShutdownHook, SettingsListenHook, ShutdownCoordinator,
 };
 
 /// Infrastructure: Redis (optional), Database, `NodeID`.
@@ -547,6 +547,22 @@ impl Application {
             cache_invalidation_listener_task,
         )
         .await?;
+
+        if synctv_services
+            .room_service
+            .permission_service()
+            .has_invalidation_service()
+        {
+            synctv_services
+                .room_service
+                .permission_service()
+                .start()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to start PermissionService invalidation runtime: {e}"))?;
+            shutdown.register_hook(PermissionServiceShutdownHook {
+                service: synctv_services.room_service.permission_service().clone(),
+            });
+        }
 
         // Track settings cancellation token and listen task in shutdown coordinator
         shutdown.track_token("settings", synctv_services.settings_cancel.clone());

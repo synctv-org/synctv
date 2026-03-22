@@ -191,31 +191,77 @@ pub async fn broadcast_until_all_clients_receive(
     mut make_event: impl FnMut() -> synctv_cluster::sync::events::ClusterEvent,
     label: &str,
 ) {
+    broadcast_until_all_clients_receive_with(
+        || {
+            let _ = manager.broadcast(make_event());
+        },
+        clients,
+        expected_message,
+        label,
+    )
+    .await;
+}
+
+async fn broadcast_until_all_clients_receive_with(
+    mut broadcast: impl FnMut(),
+    clients: &mut [(
+        tokio::sync::mpsc::Receiver<synctv_cluster::sync::events::ClusterEvent>,
+        String,
+    )],
+    expected_message: &str,
+    label: &str,
+) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     let mut pending = vec![true; clients.len()];
+    const ROUND_TIMEOUT: Duration = Duration::from_millis(750);
+    const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
     while pending.iter().any(|is_pending| *is_pending) {
-        manager.broadcast(make_event());
+        broadcast();
 
-        for (index, (rx, _conn_id)) in clients.iter_mut().enumerate() {
-            if !pending[index] {
-                continue;
+        let round_deadline = tokio::time::Instant::now() + ROUND_TIMEOUT;
+        loop {
+            let mut made_progress = false;
+
+            for (index, (rx, _conn_id)) in clients.iter_mut().enumerate() {
+                if !pending[index] {
+                    continue;
+                }
+
+                match rx.try_recv() {
+                    Ok(synctv_cluster::sync::events::ClusterEvent::ChatMessage {
+                        message,
+                        ..
+                    }) if message == expected_message => {
+                        pending[index] = false;
+                        made_progress = true;
+                    }
+                    Ok(_) => {
+                        made_progress = true;
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        panic!("{label} channel closed unexpectedly");
+                    }
+                }
             }
 
-            match tokio::time::timeout(Duration::from_millis(750), rx.recv()).await {
-                Ok(Some(synctv_cluster::sync::events::ClusterEvent::ChatMessage {
-                    message,
-                    ..
-                })) if message == expected_message => {
-                    pending[index] = false;
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => panic!("{label} channel closed unexpectedly"),
-                Err(_) => {}
+            if !pending.iter().any(|is_pending| *is_pending) {
+                return;
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline || now >= round_deadline {
+                break;
+            }
+
+            if !made_progress {
+                tokio::time::sleep(POLL_INTERVAL).await;
             }
         }
 
-        if pending.iter().any(|is_pending| *is_pending) && tokio::time::Instant::now() >= deadline {
+        if pending.iter().any(|is_pending| *is_pending) && tokio::time::Instant::now() >= deadline
+        {
             let missing = pending.into_iter().filter(|is_pending| *is_pending).count();
             panic!(
                 "timed out waiting for {label}; {missing} clients still missing expected message"
@@ -353,5 +399,43 @@ pub async fn broadcast_until_cache_invalidation(
             tokio::time::Instant::now() < deadline,
             "timed out waiting for {label}"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::broadcast_until_all_clients_receive_with;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    #[tokio::test(start_paused = true)]
+    async fn broadcast_until_all_clients_receive_respects_global_deadline() {
+        let mut clients = Vec::new();
+        for index in 0..5 {
+            let (_tx, rx) = mpsc::channel(1);
+            clients.push((rx, format!("conn-{index}")));
+        }
+
+        let task = tokio::spawn(async move {
+            broadcast_until_all_clients_receive_with(
+                || {},
+                &mut clients,
+                "never-delivered",
+                "helper test",
+            )
+            .await;
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(15_100)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            task.is_finished(),
+            "helper timeout should honor the global deadline instead of multiplying by client count"
+        );
+
+        let join_result = task.await;
+        assert!(join_result.is_err(), "timeout path should panic the helper task");
     }
 }

@@ -185,6 +185,8 @@ impl MemberService {
 
     /// Set the cache invalidation service for cross-replica permission cache sync
     pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
+        self.permission_service
+            .set_invalidation_service(Arc::clone(&service));
         self.cache_invalidation = Some(service);
     }
 
@@ -196,54 +198,6 @@ impl MemberService {
     /// Set the cluster event broadcaster for cross-replica kick/ban propagation
     pub fn set_event_broadcaster(&mut self, broadcaster: Arc<dyn MemberEventBroadcaster>) {
         self.event_broadcaster = Some(broadcaster);
-    }
-
-    /// Broadcast permission cache invalidation to other cluster replicas with
-    /// retry logic (3 attempts, exponential backoff starting at 50ms).
-    ///
-    /// Permission changes are security-critical, so we retry aggressively to
-    /// ensure all replicas see the invalidation. If all attempts fail, an error
-    /// is logged but the operation is not rolled back (the local change succeeded).
-    async fn broadcast_permission_invalidation_with_retry(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-    ) {
-        let Some(ref invalidation) = self.cache_invalidation else {
-            return;
-        };
-        let mut last_err = None;
-        for attempt in 0..3u32 {
-            match invalidation
-                .invalidate_user_permission(room_id, user_id)
-                .await
-            {
-                Ok(()) => {
-                    return;
-                }
-                Err(e) => {
-                    let backoff_ms = 50 * (1u64 << attempt); // 50ms, 100ms, 200ms
-                    tracing::warn!(
-                        error = %e,
-                        room_id = %room_id.as_str(),
-                        user_id = %user_id.as_str(),
-                        attempt = attempt + 1,
-                        backoff_ms = backoff_ms,
-                        "Permission invalidation broadcast failed, retrying"
-                    );
-                    last_err = Some(e);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                }
-            }
-        }
-        if let Some(e) = last_err {
-            tracing::error!(
-                error = %e,
-                room_id = %room_id.as_str(),
-                user_id = %user_id.as_str(),
-                "Permission invalidation broadcast failed after 3 attempts"
-            );
-        }
     }
 
     /// Log an audit event if the audit service is configured.
@@ -325,24 +279,6 @@ impl MemberService {
             self.permission_service
                 .invalidate_cache(&room_id, &user_id)
                 .await;
-
-            // Broadcast permission cache invalidation to other replicas.
-            // This is necessary for re-joins (ON CONFLICT UPDATE) where the
-            // user's permissions may have changed. Without this, other replicas
-            // would serve stale permission data from their L1 caches.
-            if let Some(ref invalidation) = self.cache_invalidation {
-                if let Err(e) = invalidation
-                    .invalidate_user_permission(&room_id, &user_id)
-                    .await
-                {
-                    tracing::warn!(
-                        error = %e,
-                        room_id = %room_id.as_str(),
-                        user_id = %user_id.as_str(),
-                        "Failed to broadcast permission cache invalidation after member add/re-join"
-                    );
-                }
-            }
         }
 
         Ok(created_member)
@@ -371,10 +307,6 @@ impl MemberService {
         // Invalidate permission cache
         self.permission_service
             .invalidate_cache(&room_id, &user_id)
-            .await;
-
-        // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &user_id)
             .await;
 
         // Broadcast kick event to cluster for cross-replica disconnect
@@ -422,10 +354,6 @@ impl MemberService {
         // Invalidate permission cache for kicked user (local)
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
             .await;
 
         // Notify local WebSocket clients that member was kicked
@@ -517,10 +445,6 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        // Broadcast permission cache invalidation to other cluster replicas
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
-            .await;
-
         // Audit log
         self.audit_log(
             &granter_id,
@@ -566,10 +490,6 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        // Broadcast permission cache invalidation to other cluster replicas
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
-            .await;
-
         // Audit log
         self.audit_log(
             &granter_id,
@@ -612,10 +532,6 @@ impl MemberService {
         // Invalidate permission cache for target user
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        // Broadcast permission cache invalidation to other cluster replicas
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
             .await;
 
         // Audit log
@@ -672,10 +588,6 @@ impl MemberService {
         // Invalidate permission cache for target user
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        // Broadcast permission cache invalidation to other cluster replicas
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
             .await;
 
         Ok(updated_member)
@@ -789,10 +701,6 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
-            .await;
-
         // Notify local WebSocket clients that member was kicked (ban implies kick)
         if let Some(ref ns) = self.notification_service {
             if let Err(e) = ns.notify_member_kicked(&room_id, &target_user_id).await {
@@ -853,10 +761,6 @@ impl MemberService {
         // Invalidate permission cache for unbanned user
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
             .await;
 
         // Audit log
@@ -922,10 +826,6 @@ impl MemberService {
         // Invalidate permission cache (local)
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
             .await;
 
         // Invalidate room settings cache to ensure fresh role default permissions
@@ -1001,10 +901,6 @@ impl MemberService {
         // Invalidate permission cache
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
-            .await;
-
-        // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
             .await;
 
         // Audit log

@@ -115,6 +115,7 @@ impl ClusterServer {
             registered_at: discovery.last_heartbeat.timestamp(),
             last_heartbeat: discovery.last_heartbeat.timestamp(),
             metrics: None,
+            epoch: discovery.epoch,
         }
     }
 

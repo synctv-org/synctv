@@ -219,6 +219,14 @@ async fn test_permission_change_cross_replica_sync() {
         300,
         cache_invalidation_2.clone(),
     );
+    permission_service_a
+        .start()
+        .await
+        .expect("Failed to start permission service a");
+    permission_service_b
+        .start()
+        .await
+        .expect("Failed to start permission service b");
 
     // Node B: First permission query (caches the result)
     let perms_b_initial = permission_service_b

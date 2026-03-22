@@ -14,3 +14,5 @@ target/
 .env
 config.yaml
 keys/
+
+AGENTS.md

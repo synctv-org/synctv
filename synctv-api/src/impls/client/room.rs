@@ -173,6 +173,12 @@ impl ClientApiImpl {
             validate_password_for_set(&req.password)?;
             Some(req.password)
         };
+        let cluster_event = crate::impls::reserve_cluster_event_publish(
+            self.redis_publish_tx.as_ref(),
+            self.config.cluster_runtime_enabled(),
+            "failed to fan out RoomCreated to cluster replicas",
+        )
+        .await?;
 
         let (room, _member) = self
             .room_service
@@ -180,21 +186,16 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Publish RoomCreated cluster event for cross-replica propagation (non-blocking)
-        if let Some(ref tx) = self.redis_publish_tx {
-            let _ = crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::RoomCreated {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: room.id.clone(),
-                        room_name: room.name.clone(),
-                        creator_id: uid,
-                        timestamp: chrono::Utc::now(),
-                    },
+        if let Some(cluster_event) = cluster_event {
+            cluster_event.publish(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::RoomCreated {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: room.id.clone(),
+                    room_name: room.name.clone(),
+                    creator_id: uid,
+                    timestamp: chrono::Utc::now(),
                 },
-            )
-            .await;
+            });
         }
 
         let member_count = self
@@ -327,6 +328,12 @@ impl ClientApiImpl {
             .await
             .map(|u| u.username)
             .unwrap_or_default();
+        let cluster_event = crate::impls::reserve_cluster_event_publish(
+            self.redis_publish_tx.as_ref(),
+            self.config.cluster_runtime_enabled(),
+            "failed to fan out UserLeft to cluster replicas",
+        )
+        .await?;
 
         self.room_service
             .leave_room(rid.clone(), uid.clone())
@@ -337,23 +344,16 @@ impl ClientApiImpl {
         self.connection_manager
             .disconnect_user_from_room(&uid, &rid);
 
-        // Publish UserLeft cluster event so other replicas also disconnect this user.
-        // Using UserLeft (not KickUserFromRoom) to correctly distinguish voluntary
-        // departure from administrative kicks in audit logs. (non-blocking)
-        if let Some(ref tx) = self.redis_publish_tx {
-            let _ = crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::UserLeft {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: rid,
-                        user_id: uid,
-                        username,
-                        timestamp: chrono::Utc::now(),
-                    },
+        if let Some(cluster_event) = cluster_event {
+            cluster_event.publish(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::UserLeft {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid,
+                    user_id: uid,
+                    username,
+                    timestamp: chrono::Utc::now(),
                 },
-            )
-            .await;
+            });
         }
 
         Ok(crate::proto::client::LeaveRoomResponse { success: true })
@@ -366,6 +366,12 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::DeleteRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
+        let cluster_event = crate::impls::reserve_cluster_event_publish(
+            self.redis_publish_tx.as_ref(),
+            self.config.cluster_runtime_enabled(),
+            "failed to fan out RoomDeleted to cluster replicas",
+        )
+        .await?;
 
         // 1. Delete the DB record first. If this fails, no cluster event is
         //    published and no connections are dropped -- the room remains intact.
@@ -374,21 +380,15 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // 2. Publish RoomDeleted cluster event so other replicas disconnect
-        //    their users. Only reached after successful DB deletion. (non-blocking)
-        if let Some(ref tx) = self.redis_publish_tx {
-            let _ = crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::RoomDeleted {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: rid.clone(),
-                        deleted_by: uid,
-                        timestamp: chrono::Utc::now(),
-                    },
+        if let Some(cluster_event) = cluster_event {
+            cluster_event.publish(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::RoomDeleted {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid.clone(),
+                    deleted_by: uid,
+                    timestamp: chrono::Utc::now(),
                 },
-            )
-            .await;
+            });
         }
 
         // 3. Force disconnect all local connections in the deleted room
@@ -415,35 +415,36 @@ impl ClientApiImpl {
         }
 
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)?;
+        let cluster_event = crate::impls::reserve_cluster_event_publish(
+            self.redis_publish_tx.as_ref(),
+            self.config.cluster_runtime_enabled(),
+            "failed to fan out RoomSettingsChanged to cluster replicas",
+        )
+        .await?;
 
         self.room_service
             .set_settings(rid.clone(), uid.clone(), settings)
             .await
             .map_err(ApiError::from)?;
 
-        // Publish RoomSettingsChanged cluster event for cross-replica propagation (non-blocking)
-        if let Some(ref tx) = self.redis_publish_tx {
-            let username = self
-                .user_service
-                .get_user(&uid)
-                .await
-                .map(|u| u.username)
-                .unwrap_or_default();
+        let username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map(|u| u.username)
+            .unwrap_or_default();
 
-            let _ = crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: rid.clone(),
-                        user_id: uid,
-                        username,
-                        settings_json: req.settings.clone(),
-                        timestamp: chrono::Utc::now(),
-                    },
+        if let Some(cluster_event) = cluster_event {
+            cluster_event.publish(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid.clone(),
+                    user_id: uid,
+                    username,
+                    settings_json: req.settings.clone(),
+                    timestamp: chrono::Utc::now(),
                 },
-            )
-            .await;
+            });
         }
 
         // Get updated room
@@ -502,6 +503,7 @@ impl ClientApiImpl {
                 .map_err(|e| ApiError::Internal(format!("Failed to hash password: {e}")))?;
             Some(hash)
         };
+        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         self.room_service
             .update_room_password(&rid, password_hash)
@@ -509,7 +511,9 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Internal(format!("Failed to update password: {e}")))?;
 
         // Invalidate room cache on other replicas so password check uses fresh data
-        self.publish_room_cache_invalidation(&rid).await;
+        if let Some(cache_invalidation) = cache_invalidation {
+            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+        }
 
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
     }

@@ -23,6 +23,7 @@ use crate::grpc::synctv::cluster::{self, GetNodesRequest};
 pub struct ProbedNodeIdentity {
     pub node_id: String,
     pub grpc_address: String,
+    pub epoch: u64,
 }
 
 /// Probe a node's gRPC service by calling `GetNodes`.
@@ -107,6 +108,7 @@ fn extract_probed_node_identity(
                 Some(ProbedNodeIdentity {
                     node_id: node.node_id,
                     grpc_address: node_address,
+                    epoch: node.epoch,
                 })
             } else {
                 None
@@ -126,4 +128,32 @@ fn normalize_cluster_node_address(address: &str) -> Option<String> {
         return None;
     }
     Some(address.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_probed_node_identity_preserves_peer_epoch() {
+        let response = cluster::GetNodesResponse {
+            nodes: vec![cluster::NodeInfo {
+                node_id: "peer-node-1".to_string(),
+                address: "10.0.0.5:50051".to_string(),
+                region: String::new(),
+                status: cluster::NodeStatus::Active as i32,
+                registered_at: 100,
+                last_heartbeat: 100,
+                metrics: None,
+                epoch: 7,
+            }],
+        };
+
+        let identity = extract_probed_node_identity(response, "10.0.0.5:50051")
+            .expect("matching peer should be extracted");
+
+        assert_eq!(identity.node_id, "peer-node-1");
+        assert_eq!(identity.grpc_address, "10.0.0.5:50051");
+        assert_eq!(identity.epoch, 7);
+    }
 }

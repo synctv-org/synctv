@@ -233,6 +233,46 @@ pub struct NodeRegistry {
 }
 
 impl NodeRegistry {
+    fn filter_routable_nodes(&self, nodes: Vec<NodeInfo>) -> Vec<NodeInfo> {
+        if self.local_only {
+            return nodes;
+        }
+
+        nodes
+            .into_iter()
+            .filter(|node| {
+                !node
+                    .metadata
+                    .get("discovery")
+                    .is_some_and(|value| value == "k8s_dns")
+            })
+            .collect()
+    }
+
+    fn merge_verified_discovery_nodes(
+        &self,
+        redis_nodes: Vec<NodeInfo>,
+        local_nodes: &HashMap<String, NodeInfo>,
+    ) -> Vec<NodeInfo> {
+        let redis_node_ids: std::collections::HashSet<String> =
+            redis_nodes.iter().map(|node| node.node_id.clone()).collect();
+        let mut merged_nodes = redis_nodes;
+
+        for node in local_nodes.values() {
+            if !node.is_stale(self.heartbeat_timeout_secs)
+                && node
+                    .metadata
+                    .get("discovery")
+                    .is_some_and(|value| value == "k8s_dns")
+                && !redis_node_ids.contains(&node.node_id)
+            {
+                merged_nodes.push(node.clone());
+            }
+        }
+
+        merged_nodes
+    }
+
     /// Create a new node registry backed by Redis.
     ///
     /// Redis is required for all cluster coordination. If the Redis URL is
@@ -1362,7 +1402,7 @@ impl NodeRegistry {
                 redis_node_ids.contains(node_id) || !info.is_stale(self.heartbeat_timeout_secs)
             });
 
-            Ok(nodes)
+            Ok(self.merge_verified_discovery_nodes(nodes, &local_nodes))
         }
     }
 
@@ -1420,6 +1460,32 @@ impl NodeRegistry {
         for peer in peers {
             nodes.entry(peer.node_id.clone()).or_insert(peer);
         }
+    }
+
+    /// Remove a transient discovery-only node from the local cache.
+    ///
+    /// This only removes the entry when it is still marked with the expected
+    /// discovery source, preventing DNS disappearance from evicting a real node
+    /// record that has since been refreshed from Redis.
+    #[cfg(feature = "k8s")]
+    pub(crate) async fn remove_discovered_local_node(
+        &self,
+        node_id: &str,
+        discovery_source: &str,
+    ) -> bool {
+        let mut nodes = self.local_nodes.write().await;
+        let should_remove = nodes.get(node_id).is_some_and(|node| {
+            node.metadata
+                .get("discovery")
+                .is_some_and(|value| value == discovery_source)
+        });
+
+        if should_remove {
+            nodes.remove(node_id);
+            return true;
+        }
+
+        false
     }
 
     /// Read all non-stale nodes from the local in-memory cache.
@@ -1494,7 +1560,8 @@ impl NodeRegistry {
     /// Return the node set that is safe to use for routing decisions.
     ///
     /// This differs from [`get_all_nodes`] by refusing to silently serve stale
-    /// local cache data once the cache has exceeded the staleness budget.
+    /// local cache data once the cache has exceeded the staleness budget, and by
+    /// excluding transient DNS-only peers that have not been confirmed by Redis.
     pub async fn get_routable_nodes(&self) -> Result<(Vec<NodeInfo>, NodeViewMode)> {
         if self.local_only {
             return Ok((self.get_all_nodes_local().await, NodeViewMode::LocalOnly));
@@ -1502,7 +1569,7 @@ impl NodeRegistry {
 
         match self.get_all_nodes().await {
             Ok(nodes) if self.cluster_mode() == ClusterMode::Normal => {
-                Ok((nodes, NodeViewMode::Fresh))
+                Ok((self.filter_routable_nodes(nodes), NodeViewMode::Fresh))
             }
             Ok(nodes) => {
                 if self.is_nodes_stale() {
@@ -1511,7 +1578,7 @@ impl NodeRegistry {
                             .to_string(),
                     ))
                 } else {
-                    Ok((nodes, NodeViewMode::DegradedCache))
+                    Ok((self.filter_routable_nodes(nodes), NodeViewMode::DegradedCache))
                 }
             }
             Err(err) => Err(err),
@@ -1859,6 +1926,95 @@ mod tests {
         // Original registration should be preserved (not overwritten)
         let nodes = registry.local_nodes.read().await;
         assert_eq!(nodes["self"].grpc_address, "10.0.0.1:50051");
+    }
+
+    #[tokio::test]
+    async fn test_merge_verified_discovery_nodes_includes_k8s_dns_peers_missing_from_redis() {
+        let registry = NodeRegistry::new_local_only("self".to_string(), 30, "synctv:")
+            .expect("local-only registry");
+
+        let redis_nodes = vec![NodeInfo::new(
+            "redis-peer-1".to_string(),
+            "10.0.0.10:50051".to_string(),
+            "10.0.0.10:8080".to_string(),
+        )];
+
+        let mut local_nodes = HashMap::new();
+        let mut dns_peer = NodeInfo::new(
+            "dns-peer-1".to_string(),
+            "10.0.0.2:50051".to_string(),
+            "10.0.0.2:8080".to_string(),
+        );
+        dns_peer
+            .metadata
+            .insert("discovery".to_string(), "k8s_dns".to_string());
+        local_nodes.insert(dns_peer.node_id.clone(), dns_peer);
+
+        local_nodes.insert(
+            "other-discovery".to_string(),
+            NodeInfo::new(
+                "other-discovery".to_string(),
+                "10.0.0.3:50051".to_string(),
+                "10.0.0.3:8080".to_string(),
+            ),
+        );
+
+        let nodes = registry.merge_verified_discovery_nodes(redis_nodes, &local_nodes);
+        assert!(
+            nodes.iter().any(|node| node.node_id == "dns-peer-1"),
+            "verified k8s DNS peers should remain visible in the normal node view"
+        );
+        assert!(
+            nodes.iter().any(|node| node.node_id == "redis-peer-1"),
+            "Redis-backed nodes should remain present after the merge"
+        );
+        assert!(
+            nodes.iter().all(|node| node.node_id != "other-discovery"),
+            "only verified k8s DNS peers should supplement the Redis-backed node view"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_routable_nodes_excludes_k8s_dns_only_candidates() {
+        let registry = NodeRegistry::new(
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            "self".to_string(),
+            30,
+            "synctv:",
+        )
+        .expect("clustered registry");
+
+        let redis_peer = NodeInfo::new(
+            "redis-peer-1".to_string(),
+            "10.0.0.10:50051".to_string(),
+            "10.0.0.10:8080".to_string(),
+        );
+        let mut dns_peer = NodeInfo::new(
+            "dns-peer-1".to_string(),
+            "10.0.0.2:50051".to_string(),
+            "10.0.0.2:8080".to_string(),
+        );
+        dns_peer
+            .metadata
+            .insert("discovery".to_string(), "k8s_dns".to_string());
+
+        registry
+            .nodes_cache
+            .insert((), vec![redis_peer.clone(), dns_peer])
+            .await;
+
+        let (nodes, mode) = registry
+            .get_routable_nodes()
+            .await
+            .expect("routable nodes should be returned from cached fresh view");
+
+        assert_eq!(mode, NodeViewMode::Fresh);
+        assert_eq!(
+            nodes.len(),
+            1,
+            "transient DNS-only peers must not be treated as routable members"
+        );
+        assert_eq!(nodes[0].node_id, redis_peer.node_id);
     }
 
     #[test]

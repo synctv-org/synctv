@@ -13,15 +13,16 @@ use crate::{
     },
     repository::{
         ChatRepository, NotificationRepository, ProviderInstanceRepository,
-        RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
+        RoomMemberRepository, RoomRepository, RoomSettingsRepository as RoomSettingsRepo,
+        SettingsRepository,
         UserOAuthProviderRepository, UserProviderCredentialRepository,
     },
     service::{
         notification::NotificationService as RoomNotificationService, AuditFlushHandle,
         AuditService, ChatService, ContentFilter, EmailConfig, EmailService, EmailTokenService,
-        JwtService, OAuth2Service, ProvidersManager, PublishKeyService, RateLimitConfig,
-        RateLimiter, RemoteProviderManager, RoomService, RoomSettingsService, SettingsRegistry,
-        SettingsService, UserNotificationService, UserService,
+        JwtService, OAuth2Service, PermissionService, ProvidersManager, PublishKeyService,
+        RateLimitConfig, RateLimiter, RemoteProviderManager, RoomService, RoomSettingsService,
+        SettingsRegistry, SettingsService, UserNotificationService, UserService,
     },
     Config,
 };
@@ -805,7 +806,20 @@ fn build_room_service(
     redis_key_prefix: &str,
     cache_l2_ttl_seconds: u64,
 ) -> RoomService {
-    let mut room_service = RoomService::new_with_providers(pool, user_service, providers_manager);
+    let permission_service = PermissionService::with_invalidation(
+        RoomMemberRepository::new(pool.clone()),
+        RoomRepository::new(pool.clone()),
+        None,
+        PermissionService::DEFAULT_CACHE_SIZE,
+        PermissionService::DEFAULT_CACHE_TTL_SECS,
+        cache_invalidation.clone(),
+    );
+    let mut room_service = RoomService::new_with_providers_and_permission_service(
+        pool,
+        user_service,
+        providers_manager,
+        permission_service,
+    );
     if cluster_mode {
         let redis_handles = redis_handles.expect(
             "cluster.enabled=true requires Redis and is validated before service initialization",
@@ -1109,6 +1123,10 @@ mod tests {
         assert!(room_service.has_brute_force_service());
         assert!(!room_service.has_distributed_lock());
         assert!(
+            room_service.permission_service().has_invalidation_service(),
+            "room service must wire permission invalidation even without Redis so local subscribers stay consistent"
+        );
+        assert!(
             !room_service.has_playback_l2_cache(),
             "room service should not wire playback L2 cache without Redis"
         );
@@ -1211,6 +1229,12 @@ mod tests {
         assert!(
             cluster_room_service.has_playback_l2_cache(),
             "cluster mode should also wire playback L2 cache"
+        );
+        assert!(
+            cluster_room_service
+                .permission_service()
+                .has_invalidation_service(),
+            "cluster room service must wire permission invalidation"
         );
     }
 

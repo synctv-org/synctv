@@ -229,6 +229,57 @@ enum RedisConnHandle {
 }
 
 impl RoomMessageHub {
+    fn remaining_shutdown_budget(deadline: tokio::time::Instant) -> Duration {
+        deadline.saturating_duration_since(tokio::time::Instant::now())
+    }
+
+    async fn await_shutdown_handle(
+        task_name: &'static str,
+        timeout: Duration,
+        mut handle: JoinHandle<()>,
+    ) {
+        if timeout.is_zero() {
+            warn!(
+                task = task_name,
+                "RoomMessageHub shutdown budget exhausted before task stopped; aborting immediately"
+            );
+            handle.abort();
+            let _ = handle.await;
+            return;
+        }
+
+        match tokio::time::timeout(timeout, &mut handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) if error.is_cancelled() => {}
+            Ok(Err(error)) => {
+                warn!(
+                    task = task_name,
+                    error = %error,
+                    "RoomMessageHub background task ended with join error during shutdown"
+                );
+            }
+            Err(_) => {
+                warn!(
+                    task = task_name,
+                    timeout_secs = timeout.as_secs(),
+                    "RoomMessageHub background task did not stop before shutdown timeout; aborting"
+                );
+                handle.abort();
+                match handle.await {
+                    Ok(()) => {}
+                    Err(error) if error.is_cancelled() => {}
+                    Err(error) => {
+                        warn!(
+                            task = task_name,
+                            error = %error,
+                            "RoomMessageHub background task returned join error after timeout abort"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Create a new `RoomMessageHub`
     #[must_use]
     pub fn new() -> Self {
@@ -334,6 +385,7 @@ impl RoomMessageHub {
     /// Cancel the auto-spawned background tasks (TTL refresh and stale cleanup)
     /// and wait for them to exit.
     pub async fn shutdown(&self) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         self.ttl_refresh_cancel.cancel();
         self.stale_cleanup_cancel.cancel();
 
@@ -343,7 +395,12 @@ impl RoomMessageHub {
             .expect("ttl refresh handle mutex poisoned")
             .take();
         if let Some(handle) = ttl_handle {
-            let _ = handle.await;
+            Self::await_shutdown_handle(
+                "ttl refresh",
+                Self::remaining_shutdown_budget(deadline),
+                handle,
+            )
+            .await;
         }
         let stale_cleanup_handle = self
             .stale_cleanup_handle
@@ -351,7 +408,12 @@ impl RoomMessageHub {
             .expect("stale cleanup handle mutex poisoned")
             .take();
         if let Some(handle) = stale_cleanup_handle {
-            let _ = handle.await;
+            Self::await_shutdown_handle(
+                "stale cleanup",
+                Self::remaining_shutdown_budget(deadline),
+                handle,
+            )
+            .await;
         }
         self.background_tasks_started
             .store(false, Ordering::Release);
@@ -1915,6 +1977,44 @@ mod tests {
         assert!(
             cleanup_result.is_ok(),
             "Stale cleanup task should complete after cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_aborts_stuck_background_tasks() {
+        let hub = RoomMessageHub::new();
+
+        hub.ttl_refresh_handle
+            .lock()
+            .expect("ttl refresh handle mutex poisoned")
+            .replace(tokio::spawn(async {
+                futures::future::pending::<()>().await;
+            }));
+        hub.stale_cleanup_handle
+            .lock()
+            .expect("stale cleanup handle mutex poisoned")
+            .replace(tokio::spawn(async {
+                futures::future::pending::<()>().await;
+            }));
+
+        let result = tokio::time::timeout(Duration::from_secs(6), hub.shutdown()).await;
+        assert!(
+            result.is_ok(),
+            "shutdown should abort stuck RoomMessageHub background tasks instead of hanging"
+        );
+        assert!(
+            hub.ttl_refresh_handle
+                .lock()
+                .expect("ttl refresh handle mutex poisoned")
+                .is_none(),
+            "shutdown must drain timed-out ttl refresh handles"
+        );
+        assert!(
+            hub.stale_cleanup_handle
+                .lock()
+                .expect("stale cleanup handle mutex poisoned")
+                .is_none(),
+            "shutdown must drain timed-out stale cleanup handles"
         );
     }
 

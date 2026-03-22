@@ -18,6 +18,9 @@ pub struct NodeInfo {
     pub last_heartbeat: i64,
     #[prost(message, optional, tag = "7")]
     pub metrics: ::core::option::Option<NodeMetrics>,
+    /// Fencing token epoch for stale-registration protection
+    #[prost(uint64, tag = "8")]
+    pub epoch: u64,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct NodeMetrics {

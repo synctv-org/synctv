@@ -221,6 +221,7 @@ impl ClientApiImpl {
                 .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?;
             Some(validated)
         };
+        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         let media = self
             .room_service
@@ -229,7 +230,9 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas so they see updated metadata
-        self.publish_room_cache_invalidation(&rid).await;
+        if let Some(cache_invalidation) = cache_invalidation {
+            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+        }
 
         Ok(crate::proto::client::EditMediaResponse {
             media: Some(media_to_proto(&media)),
@@ -557,6 +560,7 @@ impl ClientApiImpl {
                 )
             })
             .collect();
+        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         self.room_service
             .media_service()
@@ -565,7 +569,9 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas so they refresh playlist order
-        self.publish_room_cache_invalidation(&rid).await;
+        if let Some(cache_invalidation) = cache_invalidation {
+            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+        }
 
         Ok(crate::proto::client::ReorderMediaBatchResponse { success: true })
     }
@@ -850,6 +856,7 @@ impl ClientApiImpl {
 
         let media_id1 = synctv_core::models::MediaId::from_string(req.media_id1.clone());
         let media_id2 = synctv_core::models::MediaId::from_string(req.media_id2.clone());
+        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         self.room_service
             .swap_media(rid.clone(), uid, media_id1, media_id2)
@@ -857,7 +864,9 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas so they refresh playlist order
-        self.publish_room_cache_invalidation(&rid).await;
+        if let Some(cache_invalidation) = cache_invalidation {
+            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+        }
 
         Ok(crate::proto::client::SwapMediaResponse { success: true })
     }

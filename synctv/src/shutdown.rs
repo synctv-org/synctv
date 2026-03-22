@@ -378,6 +378,25 @@ impl ShutdownHook for HealthMonitorShutdownHook {
     }
 }
 
+/// Stops the permission cache invalidation listener tasks.
+pub struct PermissionServiceShutdownHook {
+    pub service: synctv_core::service::PermissionService,
+}
+
+impl ShutdownHook for PermissionServiceShutdownHook {
+    fn name(&self) -> &'static str {
+        "permission_service"
+    }
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            self.service.shutdown().await;
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

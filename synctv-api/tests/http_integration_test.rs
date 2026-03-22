@@ -362,8 +362,8 @@ mod error_responses {
         }
     }
 
-    /// Service unavailable (503) is a server error, so it returns generic message.
-    /// This is consistent with security best practices - all 5xx errors get generic messages.
+    /// Service unavailable (503) should preserve retryability semantics while still avoiding
+    /// leaking backend-specific failure details.
     #[tokio::test]
     async fn test_service_unavailable_returns_safe_message() {
         let app = error_router(AppError::service_unavailable());
@@ -374,14 +374,13 @@ mod error_responses {
         let json = body_json(resp).await;
         let error_msg = json["error"].as_str().unwrap();
 
-        // 503 is a server error (5xx), so it returns generic message for security
         assert_eq!(
-            error_msg, "Internal server error",
-            "503 should return generic message (all 5xx errors are sanitized)"
+            error_msg, "Service temporarily unavailable. Please try again later.",
+            "503 should keep a safe retryable message instead of collapsing into 500 semantics"
         );
     }
 
-    /// Bad gateway (502) should also return generic message.
+    /// Bad gateway (502) should preserve upstream-failure semantics without leaking internals.
     #[tokio::test]
     async fn test_bad_gateway_returns_generic_message() {
         let app = error_router(AppError::new(
@@ -395,14 +394,13 @@ mod error_responses {
         let json = body_json(resp).await;
         let error_msg = json["error"].as_str().unwrap();
 
-        // 502 is a server error, should return generic message
         assert_eq!(
-            error_msg, "Internal server error",
-            "502 should return generic message"
+            error_msg, "Upstream service error",
+            "502 should remain distinguishable from an internal 500"
         );
     }
 
-    /// Gateway timeout (504) should also return generic message.
+    /// Gateway timeout (504) should preserve timeout semantics without exposing internals.
     #[tokio::test]
     async fn test_gateway_timeout_returns_generic_message() {
         let app = error_router(AppError::new(
@@ -416,10 +414,9 @@ mod error_responses {
         let json = body_json(resp).await;
         let error_msg = json["error"].as_str().unwrap();
 
-        // 504 is a server error, should return generic message
         assert_eq!(
-            error_msg, "Internal server error",
-            "504 should return generic message"
+            error_msg, "Upstream service timed out",
+            "504 should remain distinguishable from a generic internal failure"
         );
     }
 }

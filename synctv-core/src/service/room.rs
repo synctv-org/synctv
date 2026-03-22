@@ -187,6 +187,8 @@ impl RoomService {
     /// Also propagates to the inner `MemberService` so that permission/role
     /// changes are broadcast to other replicas.
     pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
+        self.permission_service
+            .set_invalidation_service(Arc::clone(&service));
         self.member_service
             .set_cache_invalidation(Arc::clone(&service));
         self.cache_invalidation = Some(service);
@@ -237,6 +239,28 @@ impl RoomService {
         user_service: UserService,
         providers_manager: Arc<ProvidersManager>,
     ) -> Self {
+        let permission_service = PermissionService::new(
+            RoomMemberRepository::new(pool.clone()),
+            RoomRepository::new(pool.clone()),
+            None,
+            PermissionService::DEFAULT_CACHE_SIZE,
+            PermissionService::DEFAULT_CACHE_TTL_SECS,
+        );
+        Self::new_with_providers_and_permission_service(
+            pool,
+            user_service,
+            providers_manager,
+            permission_service,
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_providers_and_permission_service(
+        pool: PgPool,
+        user_service: UserService,
+        providers_manager: Arc<ProvidersManager>,
+        permission_service: PermissionService,
+    ) -> Self {
         // Initialize repositories
         let room_repo = RoomRepository::new(pool.clone());
         let room_settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -247,13 +271,7 @@ impl RoomService {
         let chat_repo = ChatRepository::new(pool.clone());
 
         // Initialize permission service with caching
-        let mut permission_service = PermissionService::new(
-            member_repo.clone(),
-            room_repo.clone(),
-            None, // SettingsRegistry - will be set later if needed
-            PermissionService::DEFAULT_CACHE_SIZE,
-            PermissionService::DEFAULT_CACHE_TTL_SECS,
-        );
+        let mut permission_service = permission_service;
         permission_service.set_room_settings_repo(room_settings_repo.clone());
 
         // Initialize domain services
@@ -3106,6 +3124,15 @@ impl RoomService {
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
+    use super::RoomService;
+    use crate::{
+        cache::{CacheInvalidationService, KeyBuilder, NoopCacheL2, UsernameCache},
+        config::PasswordComplexityConfig,
+        service::{
+            auth::{BruteForceProtection, JwtService},
+            InMemoryTokenBlacklistStore, UserService,
+        },
+    };
     use crate::models::{
         room_settings::{
             AllowGuestJoin, ChatEnabled, DanmakuEnabled, GuestAddedPermissions, MaxMembers,
@@ -3115,6 +3142,8 @@ mod tests {
     };
     use crate::test_helpers::RoomFixture;
     use crate::Error;
+    use sqlx::PgPool;
+    use std::sync::Arc;
 
     // ========== Room Name Validation ==========
 
@@ -3185,6 +3214,51 @@ mod tests {
             validate_room_name(&name_too_long).is_err(),
             "Room name with {} CJK characters should be rejected",
             max_len + 1
+        );
+    }
+
+    fn make_user_service(pool: PgPool) -> UserService {
+        let jwt_service = JwtService::new("room-service-test-secret-key-32bytes!!").unwrap();
+        let username_cache = UsernameCache::new(
+            Arc::new(NoopCacheL2),
+            "room-service:test:username:".to_string(),
+            128,
+            60,
+        );
+        let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+        let brute_force = BruteForceProtection::in_memory("room-service-test".to_string());
+
+        UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            PasswordComplexityConfig::default(),
+            token_blacklist,
+            KeyBuilder::new("room-service-test"),
+            brute_force,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_set_cache_invalidation_wires_permission_service_for_room_service_new() {
+        let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
+        let user_service = make_user_service(pool.clone());
+        let mut room_service = RoomService::new(pool, user_service);
+
+        assert!(
+            !room_service.permission_service().has_invalidation_service(),
+            "plain RoomService::new should start without permission invalidation wiring"
+        );
+
+        room_service.set_cache_invalidation(Arc::new(CacheInvalidationService::new(
+            None,
+            "room-service-node".to_string(),
+            "room-service-stream".to_string(),
+        )));
+
+        assert!(
+            room_service.permission_service().has_invalidation_service(),
+            "post-construction cache invalidation wiring must reach the shared permission service"
         );
     }
 

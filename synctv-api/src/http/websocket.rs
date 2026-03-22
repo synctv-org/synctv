@@ -807,28 +807,22 @@ pub async fn websocket_handler(
 ) -> Result<impl IntoResponse, AppError> {
     validate_websocket_runtime_dependencies(&state)?;
 
-    let prepared = run_websocket_handshake_with_timeout(prepare_websocket_upgrade(
-        &state,
-        &room_id,
-        &query,
-        &headers,
-        connect_info.0.ip(),
-    ))
+    let prepared = run_websocket_handshake_with_timeout(async {
+        let prepared = prepare_websocket_upgrade(
+            &state,
+            &room_id,
+            &query,
+            &headers,
+            connect_info.0.ip(),
+        )
+        .await?;
+
+        commit_websocket_upgrade(&state, prepared).await
+    })
     .await?;
-    let rid = prepared.room_id.clone();
-    let auth = prepared.auth.clone();
-    let username = prepared.username.clone();
-    let connection_id = prepared.connection_id.clone();
-    let reservation = prepared.reservation.clone();
-    commit_prevalidated_ticket(&state, &rid, &auth)
-        .await
-        .map_err(|error| {
-            reservation.release(&state.connection_manager);
-            error
-        })?;
 
     let failed_upgrade_cleanup =
-        build_failed_upgrade_cleanup(state.connection_manager.clone(), reservation.clone());
+        build_failed_upgrade_cleanup(state.connection_manager.clone(), prepared.reservation.clone());
 
     // Authentication and membership verified, upgrade to WebSocket.
     // Reservations are released inside handle_socket after join_room completes.
@@ -840,11 +834,11 @@ pub async fn websocket_handler(
             handle_socket(
                 socket,
                 state,
-                rid,
-                auth,
-                username,
-                connection_id,
-                reservation,
+                prepared.room_id,
+                prepared.auth,
+                prepared.username,
+                prepared.connection_id,
+                prepared.reservation,
             )
         }))
 }
@@ -867,6 +861,21 @@ async fn commit_prevalidated_ticket(
         .await
         .map(|_| ())
         .map_err(AppError::from)
+}
+
+async fn commit_websocket_upgrade(
+    state: &AppState,
+    prepared: PreparedWebSocketUpgrade,
+) -> Result<PreparedWebSocketUpgrade, AppError> {
+    let mut cleanup = ReservationCleanupGuard::new(
+        state.connection_manager.clone(),
+        prepared.reservation.clone(),
+    );
+
+    commit_prevalidated_ticket(state, &prepared.room_id, &prepared.auth).await?;
+    cleanup.disarm();
+
+    Ok(prepared)
 }
 
 async fn run_websocket_handshake_with_timeout<T>(
@@ -1028,13 +1037,11 @@ fn websocket_content_filter(filter: &Arc<ContentFilter>) -> Arc<ContentFilter> {
 }
 
 fn map_websocket_pre_join_error(error: String) -> AppError {
-    let lower = error.to_ascii_lowercase();
-    if lower.contains("capacity") || lower.contains("too many connections") {
-        AppError::too_many_requests(error)
-    } else if lower.contains("unavailable") || lower.contains("redis is degraded") {
-        AppError::service_unavailable()
-    } else {
-        AppError::internal_server_error(error)
+    let (kind, message) = crate::impls::parse_api_error_string(&error);
+    match kind {
+        crate::impls::ErrorKind::RateLimited => AppError::too_many_requests(message.to_string()),
+        crate::impls::ErrorKind::ServiceUnavailable => AppError::service_unavailable(),
+        _ => AppError::internal_server_error(error),
     }
 }
 
@@ -1187,7 +1194,21 @@ mod tests {
     use std::sync::Arc;
     use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
     use synctv_core::models::{RoomId, UserId};
-    use synctv_core::service::RateLimitConfig;
+    use synctv_core::service::{RateLimitConfig, UserValidationResult, UserValidator};
+
+    struct AllowAllTicketValidator;
+
+    #[async_trait::async_trait]
+    impl UserValidator for AllowAllTicketValidator {
+        async fn validate_for_ticket(
+            &self,
+            _user_id: &UserId,
+        ) -> synctv_core::Result<UserValidationResult> {
+            Ok(UserValidationResult {
+                password_version: 0,
+            })
+        }
+    }
 
     // ========== WsQuery Tests ==========
 
@@ -1651,6 +1672,103 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_map_websocket_pre_join_error_maps_typed_rate_limit_prefix() {
+        let err = map_websocket_pre_join_error(
+            "Rate limited: realtime room capacity exceeded".to_string(),
+        );
+
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.message, "realtime room capacity exceeded");
+    }
+
+    #[test]
+    fn test_map_websocket_pre_join_error_maps_raw_capacity_error() {
+        let err =
+            map_websocket_pre_join_error("Room at capacity (42 connections, max: 40)".to_string());
+
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.message, "Room at capacity (42 connections, max: 40)");
+    }
+
+    #[test]
+    fn test_map_websocket_pre_join_error_maps_raw_user_capacity_error() {
+        let err = map_websocket_pre_join_error(
+            "Too many connections for this user across all replicas (max 3)".to_string(),
+        );
+
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            err.message,
+            "Too many connections for this user across all replicas (max 3)"
+        );
+    }
+
+    #[test]
+    fn test_map_websocket_pre_join_error_maps_raw_total_capacity_error() {
+        let err = map_websocket_pre_join_error(
+            "Server at capacity across all replicas (42 connections)".to_string(),
+        );
+
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.message, "Server at capacity across all replicas (42 connections)");
+    }
+
+    #[test]
+    fn test_map_websocket_pre_join_error_maps_typed_service_unavailable_prefix() {
+        let err = map_websocket_pre_join_error(
+            "Service unavailable: distributed room capacity check unavailable".to_string(),
+        );
+
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            err.message.contains("temporarily unavailable"),
+            "typed service-unavailable pre-join failures should remain retryable"
+        );
+    }
+
+    #[test]
+    fn test_map_websocket_pre_join_error_maps_raw_degraded_cluster_error() {
+        let err = map_websocket_pre_join_error(
+            "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
+                .to_string(),
+        );
+
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            err.message.contains("temporarily unavailable"),
+            "raw degraded-cluster pre-join failures should remain retryable"
+        );
+    }
+
+    #[test]
+    fn test_map_websocket_pre_join_error_maps_raw_degraded_user_check_error() {
+        let err = map_websocket_pre_join_error(
+            "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
+                .to_string(),
+        );
+
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            err.message.contains("temporarily unavailable"),
+            "raw degraded user-check failures should remain retryable"
+        );
+    }
+
+    #[test]
+    fn test_map_websocket_pre_join_error_maps_raw_degraded_total_check_error() {
+        let err = map_websocket_pre_join_error(
+            "Distributed total connection check unavailable; refusing new connection while cluster Redis is degraded"
+                .to_string(),
+        );
+
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            err.message.contains("temporarily unavailable"),
+            "raw degraded total-check failures should remain retryable"
+        );
+    }
+
     // ========== RateLimitConfig Tests ==========
     // These tests verify that the RateLimitConfig used for WebSocket message handling
     // has sensible defaults and can be customized.
@@ -1744,6 +1862,169 @@ mod tests {
             manager.reserve_room_slot(&room_id).is_ok(),
             "cleanup should free room reservation capacity"
         );
+    }
+
+    #[tokio::test]
+    async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() {
+        let state = crate::http::tests::test_app_state();
+        let ws_ticket_service = state
+            .ws_ticket_service
+            .clone()
+            .expect("test app state should wire websocket tickets");
+        let user_id = UserId::from_string("user-ticket-restore".to_string());
+        let room_id = RoomId::from_string("room-ticket-restore".to_string());
+        let reservation = HandshakeReservation {
+            room_id: room_id.clone(),
+            user_id: user_id.clone(),
+        };
+
+        state
+            .connection_manager
+            .reserve_user_slot(&user_id)
+            .expect("handshake should reserve a user slot");
+        state
+            .connection_manager
+            .reserve_room_slot(&room_id)
+            .expect("handshake should reserve a room slot");
+
+        let ticket = ws_ticket_service
+            .create_ticket(&user_id, &room_id, 0)
+            .await
+            .expect("create websocket ticket");
+        let pending = ws_ticket_service
+            .validate_checked(&ticket, &room_id, &AllowAllTicketValidator)
+            .await
+            .expect("ticket should prevalidate before upgrade");
+        let prepared = PreparedWebSocketUpgrade {
+            room_id: room_id.clone(),
+            auth: HandshakeAuthContext {
+                user_id: user_id.clone(),
+                ticket_commit: Some(TicketAuthCommit {
+                    ticket: ticket.clone(),
+                    pending,
+                }),
+            },
+            username: "ticket-user".to_string(),
+            connection_id: "conn-ticket-restore".to_string(),
+            reservation: reservation.clone(),
+        };
+
+        commit_websocket_upgrade(&state, prepared)
+            .await
+            .expect("handshake commit should consume the ticket before switching protocols");
+
+        let cleanup = build_failed_upgrade_cleanup(state.connection_manager.clone(), reservation);
+        cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
+
+        let validated = ws_ticket_service.validate_and_consume(&ticket, &room_id).await;
+        assert!(
+            validated.is_err(),
+            "failed upgrade cleanup must not resurrect a one-time ticket after the HTTP handshake succeeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fails() {
+        let state = crate::http::tests::test_app_state();
+        let ws_ticket_service = state
+            .ws_ticket_service
+            .clone()
+            .expect("test app state should wire websocket tickets");
+        let user_id = UserId::from_string("user-ticket-claim-fail".to_string());
+        let room_id = RoomId::from_string("room-ticket-claim-fail".to_string());
+
+        let reservation = reserve_websocket_upgrade_slots(&state.connection_manager, &room_id, &user_id)
+            .await
+            .expect("handshake should reserve websocket capacity");
+
+        let ticket = ws_ticket_service
+            .create_ticket(&user_id, &room_id, 0)
+            .await
+            .expect("create websocket ticket");
+        let pending = ws_ticket_service
+            .validate_checked(&ticket, &room_id, &AllowAllTicketValidator)
+            .await
+            .expect("ticket should prevalidate before upgrade");
+
+        ws_ticket_service
+            .consume_prevalidated(&ticket, &room_id, &pending)
+            .await
+            .expect("fixture should spend the ticket before commit");
+
+        let prepared = PreparedWebSocketUpgrade {
+            room_id: room_id.clone(),
+            auth: HandshakeAuthContext {
+                user_id: user_id.clone(),
+                ticket_commit: Some(TicketAuthCommit { ticket, pending }),
+            },
+            username: "ticket-user".to_string(),
+            connection_id: "conn-ticket-claim-fail".to_string(),
+            reservation,
+        };
+
+        let error = commit_websocket_upgrade(&state, prepared)
+            .await
+            .expect_err("commit should fail when another handshake already claimed the ticket");
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
+
+        state
+            .connection_manager
+            .reserve_user_slot(&user_id)
+            .expect("failed commit should release the reserved user slot");
+        state
+            .connection_manager
+            .reserve_room_slot(&room_id)
+            .expect("failed commit should release the reserved room slot");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels_commit() {
+        let state = crate::http::tests::test_app_state();
+        let timeout_state = state.clone();
+        let user_id = UserId::from_string("user-ticket-timeout".to_string());
+        let room_id = RoomId::from_string("room-ticket-timeout".to_string());
+        let reservation =
+            reserve_websocket_upgrade_slots(&state.connection_manager, &room_id, &user_id)
+                .await
+                .expect("handshake should reserve websocket capacity");
+
+        let prepared = PreparedWebSocketUpgrade {
+            room_id: room_id.clone(),
+            auth: HandshakeAuthContext {
+                user_id: user_id.clone(),
+                ticket_commit: None,
+            },
+            username: "ticket-user".to_string(),
+            connection_id: "conn-ticket-timeout".to_string(),
+            reservation,
+        };
+
+        let timeout_task = tokio::spawn(async move {
+            run_websocket_handshake_with_timeout(async move {
+                let prepared = commit_websocket_upgrade(&timeout_state, prepared).await?;
+                std::future::pending::<()>().await;
+                #[allow(unreachable_code)]
+                Ok::<PreparedWebSocketUpgrade, AppError>(prepared)
+            })
+            .await
+        });
+
+        tokio::time::advance(WEBSOCKET_HANDSHAKE_TIMEOUT + Duration::from_secs(1)).await;
+
+        let err = timeout_task
+            .await
+            .expect("timeout task should complete")
+            .expect_err("commit path should time out");
+        assert_eq!(err.status, StatusCode::REQUEST_TIMEOUT);
+
+        state
+            .connection_manager
+            .reserve_user_slot(&user_id)
+            .expect("timed out commit should release the reserved user slot");
+        state
+            .connection_manager
+            .reserve_room_slot(&room_id)
+            .expect("timed out commit should release the reserved room slot");
     }
 
     #[tokio::test]

@@ -12,6 +12,8 @@
 
 use crate::relay::registry_trait::StreamRegistryTrait;
 use async_trait::async_trait;
+use dashmap::DashMap;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use synctv_core::service::PublishKeyService;
@@ -54,15 +56,22 @@ struct PublisherGuard {
     registry: Arc<dyn StreamRegistryTrait>,
     room_id: String,
     media_id: String,
+    epoch: Option<u64>,
     armed: bool,
 }
 
 impl PublisherGuard {
-    fn new(registry: Arc<dyn StreamRegistryTrait>, room_id: String, media_id: String) -> Self {
+    fn new(
+        registry: Arc<dyn StreamRegistryTrait>,
+        room_id: String,
+        media_id: String,
+        epoch: Option<u64>,
+    ) -> Self {
         Self {
             registry,
             room_id,
             media_id,
+            epoch,
             armed: true,
         }
     }
@@ -80,19 +89,44 @@ impl Drop for PublisherGuard {
             let registry = Arc::clone(&self.registry);
             let room_id = self.room_id.clone();
             let media_id = self.media_id.clone();
+            let epoch = self.epoch;
             if crate::util::try_spawn(async move {
-                warn!(
-                    room_id = %room_id,
-                    media_id = %media_id,
-                    "Cleaning up publisher registration due to auth failure"
-                );
-                if let Err(e) = registry.unregister_publisher(&room_id, &media_id).await {
-                    warn!(
-                        room_id = %room_id,
-                        media_id = %media_id,
-                        error = %e,
-                        "Failed to cleanup publisher registration"
-                    );
+                match epoch {
+                    Some(epoch) => {
+                        warn!(
+                            room_id = %room_id,
+                            media_id = %media_id,
+                            epoch,
+                            "Cleaning up publisher registration due to auth failure"
+                        );
+                        if let Err(e) = registry
+                            .unregister_publisher_if_epoch_matches(&room_id, &media_id, epoch)
+                            .await
+                        {
+                            warn!(
+                                room_id = %room_id,
+                                media_id = %media_id,
+                                epoch,
+                                error = %e,
+                                "Failed to cleanup publisher registration"
+                            );
+                        }
+                    }
+                    None => {
+                        warn!(
+                            room_id = %room_id,
+                            media_id = %media_id,
+                            "Cleaning up publisher registration without epoch due to auth failure before epoch capture"
+                        );
+                        if let Err(e) = registry.unregister_publisher(&room_id, &media_id).await {
+                            warn!(
+                                room_id = %room_id,
+                                media_id = %media_id,
+                                error = %e,
+                                "Failed to cleanup publisher registration without epoch"
+                            );
+                        }
+                    }
                 }
             })
             .is_none()
@@ -100,6 +134,7 @@ impl Drop for PublisherGuard {
                 warn!(
                     room_id = %self.room_id,
                     media_id = %self.media_id,
+                    epoch = ?self.epoch,
                     "Skipping publisher cleanup because no Tokio runtime is available"
                 );
             }
@@ -125,6 +160,10 @@ pub struct RtmpAuthCallbackImpl {
     /// When set and true, new publications are rejected to prevent race conditions
     /// during the restart window.
     is_restarting: Option<Arc<AtomicBool>>,
+    /// Epochs captured after auth-phase registration and used for rollback fencing.
+    /// Multiple pending attempts may exist transiently for the same stream when a
+    /// delayed rollback arrives after a reconnect/retry.
+    pending_publish_epochs: Arc<DashMap<(String, String), VecDeque<u64>>>,
 }
 
 impl RtmpAuthCallbackImpl {
@@ -137,6 +176,7 @@ impl RtmpAuthCallbackImpl {
             node_id: String::new(),
             grpc_address: String::new(),
             is_restarting: None,
+            pending_publish_epochs: Arc::new(DashMap::new()),
         }
     }
 
@@ -153,6 +193,7 @@ impl RtmpAuthCallbackImpl {
             node_id: String::new(),
             grpc_address: String::new(),
             is_restarting: None,
+            pending_publish_epochs: Arc::new(DashMap::new()),
         }
     }
 
@@ -254,6 +295,7 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         //
         // Use a guard to ensure cleanup if subsequent steps fail.
         // The guard will be disarmed when the function returns successfully.
+        let mut registered_epoch = None;
         let registry_guard = if let Some(ref registry) = self.registry {
             let registered = registry
                 .try_register_publisher(
@@ -279,12 +321,30 @@ impl AuthCallback for RtmpAuthCallbackImpl {
                 claims.room_id, claims.media_id, self.node_id
             );
 
-            // Create guard that will unregister if not disarmed
-            Some(PublisherGuard::new(
+            // Create a provisional guard immediately after registration so any
+            // subsequent failure still rolls back the publisher entry.
+            let mut guard = PublisherGuard::new(
                 Arc::clone(registry),
                 claims.room_id.clone(),
                 claims.media_id.clone(),
-            ))
+                None,
+            );
+            let epoch = registry
+                .get_publisher(&claims.room_id, &claims.media_id)
+                .await
+                .map_err(|e| format!("Failed to fetch publisher epoch after registration: {e}"))?
+                .ok_or_else(|| {
+                    format!(
+                        "Publisher registration disappeared before epoch capture: room={}, media={}",
+                        claims.room_id, claims.media_id
+                    )
+                })?
+                .epoch;
+            guard.epoch = Some(epoch);
+            registered_epoch = Some(epoch);
+
+            // Create guard that will unregister if not disarmed
+            Some(guard)
         } else {
             None
         };
@@ -303,6 +363,13 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         // All operations succeeded - disarm the guard so it won't cleanup on drop.
         if let Some(guard) = registry_guard {
             guard.disarm();
+        }
+
+        if let Some(epoch) = registered_epoch {
+            self.pending_publish_epochs
+                .entry((claims.room_id.clone(), claims.media_id.clone()))
+                .or_default()
+                .push_back(epoch);
         }
 
         // Return rewrite so StreamHub uses canonical (room_id, media_id)
@@ -328,6 +395,16 @@ impl AuthCallback for RtmpAuthCallbackImpl {
     }
 
     async fn on_unpublish(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
+        let key = (app_name.to_string(), stream_name.to_string());
+        if let Some(mut epochs) = self.pending_publish_epochs.get_mut(&key) {
+            let _ = epochs.pop_front();
+            let empty = epochs.is_empty();
+            drop(epochs);
+            if empty {
+                self.pending_publish_epochs.remove(&key);
+            }
+        }
+
         // NOTE: app_name and stream_name are the REWRITTEN values (room_id, media_id)
         // after AuthPublishRewrite, so use remove_stream() which looks up by (room_id, media_id)
         // directly instead of remove_by_app_stream() which uses the original RTMP key.
@@ -382,7 +459,29 @@ impl AuthCallback for RtmpAuthCallbackImpl {
                 "Rolling back publisher registration due to StreamHub failure"
             );
 
-            if let Err(e) = registry.unregister_publisher(app_name, stream_name).await {
+            let expected_epoch = self
+                .pending_publish_epochs
+                .get_mut(&(app_name.to_string(), stream_name.to_string()))
+                .and_then(|mut epochs| {
+                    let epoch = epochs.pop_front();
+                    let empty = epochs.is_empty();
+                    drop(epochs);
+                    if empty {
+                        self.pending_publish_epochs
+                            .remove(&(app_name.to_string(), stream_name.to_string()));
+                    }
+                    epoch
+                });
+
+            let rollback_result = if let Some(epoch) = expected_epoch {
+                registry
+                    .unregister_publisher_if_epoch_matches(app_name, stream_name, epoch)
+                    .await
+            } else {
+                Ok(())
+            };
+
+            if let Err(e) = rollback_result {
                 warn!(
                     room_id = %app_name,
                     media_id = %redacted_stream_name,
@@ -424,8 +523,11 @@ fn extract_token_from_query(query: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::relay::InMemoryStreamRegistry;
+    use crate::relay::MockStreamRegistry;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::Arc;
+    use synctv_core::models::{MediaId, RoomId, UserId};
+    use synctv_core::service::{auth::JwtService, PublishKeyService};
 
     #[test]
     fn test_redact_jwt_token_standard_jwt() {
@@ -507,7 +609,12 @@ mod tests {
             let runtime = tokio::runtime::Runtime::new().expect("runtime");
             let guard = runtime.block_on(async {
                 let registry = Arc::new(InMemoryStreamRegistry::new());
-                PublisherGuard::new(registry, "room1".to_string(), "media1".to_string())
+                PublisherGuard::new(
+                    registry,
+                    "room1".to_string(),
+                    "media1".to_string(),
+                    Some(1),
+                )
             });
             drop(runtime);
             drop(guard);
@@ -516,6 +623,323 @@ mod tests {
         assert!(
             result.is_ok(),
             "PublisherGuard::drop must not panic when runtime is unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_rollback_does_not_remove_newer_registration() {
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let publish_key_service = Arc::new(PublishKeyService::new(
+            JwtService::new("test-secret-key-for-rtmp-auth-rollback-1234567890").expect("jwt"),
+            24,
+        ));
+
+        let auth = RtmpAuthCallbackImpl::new(publish_key_service.clone()).with_registry(
+            registry.clone(),
+            "node-a".to_string(),
+            "127.0.0.1:50051".to_string(),
+        );
+
+        let room_id = RoomId::from_string("room-rollback".to_string());
+        let media_id = MediaId::from_string("media-rollback".to_string());
+        let old_user_id = UserId::from_string("user-old".to_string());
+        let new_user_id = UserId::from_string("user-new".to_string());
+
+        let old_publish = publish_key_service
+            .generate_publish_key(room_id.clone(), media_id.clone(), old_user_id)
+            .await
+            .expect("old publish key");
+
+        let result = auth
+            .on_publish(
+                room_id.as_str(),
+                media_id.as_str(),
+                Some(&format!("token={}", old_publish.token)),
+            )
+            .await
+            .expect("old publish should authenticate");
+        assert!(result.is_some(), "auth should rewrite to canonical room/media ids");
+
+        let original = registry
+            .get_publisher(room_id.as_str(), media_id.as_str())
+            .await
+            .expect("registry lookup should succeed")
+            .expect("publisher should be registered after auth success");
+
+        registry
+            .unregister_publisher(room_id.as_str(), media_id.as_str())
+            .await
+            .expect("test setup should remove the original publisher");
+
+        assert!(
+            !registry
+                .is_stream_active(room_id.as_str(), media_id.as_str())
+                .await
+                .expect("stream activity lookup should succeed"),
+            "stream should be inactive after removing the old registration"
+        );
+
+        assert!(
+            registry
+                .try_register_publisher(
+                    room_id.as_str(),
+                    media_id.as_str(),
+                    "node-b",
+                    new_user_id.as_str(),
+                    "127.0.0.1:50052",
+                )
+                .await
+                .expect("replacement registration should succeed"),
+            "replacement publisher should claim the stream"
+        );
+
+        let replacement = registry
+            .get_publisher(room_id.as_str(), media_id.as_str())
+            .await
+            .expect("replacement lookup should succeed")
+            .expect("replacement publisher should exist");
+        assert!(
+            replacement.epoch > original.epoch,
+            "replacement publisher must have a newer epoch"
+        );
+
+        auth.on_publish_rollback(room_id.as_str(), media_id.as_str(), None)
+            .await;
+
+        let current = registry
+            .get_publisher(room_id.as_str(), media_id.as_str())
+            .await
+            .expect("post-rollback lookup should succeed");
+        assert!(
+            current.is_some(),
+            "rollback of an older publish must not remove the newer publisher registration"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delayed_rollback_of_old_publish_does_not_remove_new_attempt() {
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let publish_key_service = Arc::new(PublishKeyService::new(
+            JwtService::new("test-secret-key-for-rtmp-auth-reconnect-1234567890").expect("jwt"),
+            24,
+        ));
+
+        let auth = RtmpAuthCallbackImpl::new(publish_key_service.clone()).with_registry(
+            registry.clone(),
+            "node-a".to_string(),
+            "127.0.0.1:50051".to_string(),
+        );
+
+        let room_id = RoomId::from_string("room-reconnect".to_string());
+        let media_id = MediaId::from_string("media-reconnect".to_string());
+        let old_user_id = UserId::from_string("user-old".to_string());
+        let new_user_id = UserId::from_string("user-new".to_string());
+
+        let old_publish = publish_key_service
+            .generate_publish_key(room_id.clone(), media_id.clone(), old_user_id)
+            .await
+            .expect("old publish key");
+        auth.on_publish(
+            room_id.as_str(),
+            media_id.as_str(),
+            Some(&format!("token={}", old_publish.token)),
+        )
+        .await
+        .expect("first publish should authenticate")
+        .expect("auth should rewrite stream ids");
+
+        let first_epoch = registry
+            .get_publisher(room_id.as_str(), media_id.as_str())
+            .await
+            .expect("first publisher lookup should succeed")
+            .expect("first publisher should exist")
+            .epoch;
+
+        registry
+            .unregister_publisher_if_epoch_matches(room_id.as_str(), media_id.as_str(), first_epoch)
+            .await
+            .expect("test setup should remove first publisher");
+
+        let new_publish = publish_key_service
+            .generate_publish_key(room_id.clone(), media_id.clone(), new_user_id.clone())
+            .await
+            .expect("new publish key");
+        auth.on_publish(
+            room_id.as_str(),
+            media_id.as_str(),
+            Some(&format!("token={}", new_publish.token)),
+        )
+        .await
+        .expect("second publish should authenticate")
+        .expect("auth should rewrite stream ids");
+
+        let replacement = registry
+            .get_publisher(room_id.as_str(), media_id.as_str())
+            .await
+            .expect("replacement lookup should succeed")
+            .expect("replacement publisher should exist");
+        assert!(
+            replacement.epoch > first_epoch,
+            "second publish attempt must have a newer epoch"
+        );
+        assert_eq!(
+            replacement.user_id,
+            new_user_id.as_str(),
+            "replacement publisher should belong to the newer publish attempt"
+        );
+
+        auth.on_publish_rollback(room_id.as_str(), media_id.as_str(), None)
+            .await;
+
+        let current = registry
+            .get_publisher(room_id.as_str(), media_id.as_str())
+            .await
+            .expect("post-rollback lookup should succeed")
+            .expect("delayed rollback of the older attempt must not remove the newer publisher");
+        assert_eq!(
+            current.user_id,
+            new_user_id.as_str(),
+            "rollback for an older publish attempt must not fence off the newer publisher"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delayed_unpublish_does_not_drop_newer_pending_rollback_epoch() {
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let publish_key_service = Arc::new(PublishKeyService::new(
+            JwtService::new("test-secret-key-for-rtmp-auth-unpublish-1234567890").expect("jwt"),
+            24,
+        ));
+
+        let auth = RtmpAuthCallbackImpl::new(publish_key_service.clone()).with_registry(
+            registry.clone(),
+            "node-a".to_string(),
+            "127.0.0.1:50051".to_string(),
+        );
+
+        let room_id = RoomId::from_string("room-delayed-unpublish".to_string());
+        let media_id = MediaId::from_string("media-delayed-unpublish".to_string());
+        let old_user_id = UserId::from_string("user-old".to_string());
+        let new_user_id = UserId::from_string("user-new".to_string());
+
+        let old_publish = publish_key_service
+            .generate_publish_key(room_id.clone(), media_id.clone(), old_user_id)
+            .await
+            .expect("old publish key");
+        auth.on_publish(
+            room_id.as_str(),
+            media_id.as_str(),
+            Some(&format!("token={}", old_publish.token)),
+        )
+        .await
+        .expect("first publish should authenticate")
+        .expect("auth should rewrite stream ids");
+
+        let first_epoch = registry
+            .get_publisher(room_id.as_str(), media_id.as_str())
+            .await
+            .expect("first publisher lookup should succeed")
+            .expect("first publisher should exist")
+            .epoch;
+
+        registry
+            .unregister_publisher_if_epoch_matches(room_id.as_str(), media_id.as_str(), first_epoch)
+            .await
+            .expect("test setup should remove first publisher");
+
+        let new_publish = publish_key_service
+            .generate_publish_key(room_id.clone(), media_id.clone(), new_user_id.clone())
+            .await
+            .expect("new publish key");
+        auth.on_publish(
+            room_id.as_str(),
+            media_id.as_str(),
+            Some(&format!("token={}", new_publish.token)),
+        )
+        .await
+        .expect("second publish should authenticate")
+        .expect("auth should rewrite stream ids");
+
+        let replacement = registry
+            .get_publisher(room_id.as_str(), media_id.as_str())
+            .await
+            .expect("replacement lookup should succeed")
+            .expect("replacement publisher should exist");
+        assert!(
+            replacement.epoch > first_epoch,
+            "second publish attempt must have a newer epoch"
+        );
+
+        auth.on_unpublish(room_id.as_str(), media_id.as_str(), None).await;
+        auth.on_publish_rollback(room_id.as_str(), media_id.as_str(), None)
+            .await;
+
+        assert!(
+            !registry
+                .is_stream_active(room_id.as_str(), media_id.as_str())
+                .await
+                .expect("post-rollback activity lookup should succeed"),
+            "delayed unpublish must not discard the newer publish epoch needed for rollback fencing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_publish_cleans_up_registration_when_epoch_lookup_fails() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let publish_key_service = Arc::new(PublishKeyService::new(
+            JwtService::new("test-secret-key-for-rtmp-auth-cleanup-1234567890").expect("jwt"),
+            24,
+        ));
+
+        let auth = RtmpAuthCallbackImpl::new(publish_key_service.clone()).with_registry(
+            registry.clone(),
+            "node-cleanup".to_string(),
+            "127.0.0.1:50051".to_string(),
+        );
+
+        let room_id = RoomId::from_string("room-cleanup".to_string());
+        let media_id = MediaId::from_string("media-cleanup".to_string());
+        let user_id = UserId::from_string("user-cleanup".to_string());
+
+        let publish = publish_key_service
+            .generate_publish_key(room_id.clone(), media_id.clone(), user_id)
+            .await
+            .expect("publish key");
+
+        registry.set_fail_get_publisher(true);
+
+        let error = auth
+            .on_publish(
+                room_id.as_str(),
+                media_id.as_str(),
+                Some(&format!("token={}", publish.token)),
+            )
+            .await
+            .expect_err("epoch lookup failure must fail publish auth");
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to fetch publisher epoch after registration"),
+            "error should preserve the epoch lookup failure context"
+        );
+
+        for _ in 0..10 {
+            if !registry
+                .is_stream_active(room_id.as_str(), media_id.as_str())
+                .await
+                .expect("registry lookup should succeed after cleanup")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        assert!(
+            !registry
+                .is_stream_active(room_id.as_str(), media_id.as_str())
+                .await
+                .expect("failed auth must not leave publisher registered"),
+            "failed auth must rollback the provisional publisher registration"
         );
     }
 }

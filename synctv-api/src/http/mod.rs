@@ -834,7 +834,7 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
             .server
             .cors_allowed_origins
             .iter()
-            .filter_map(|origin| origin.parse().ok())
+            .map(|origin| parse_configured_cors_origin(origin))
             .collect();
         tracing::info!(
             origins = ?origins,
@@ -866,6 +866,14 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
                 axum::http::header::ACCESS_CONTROL_REQUEST_HEADERS,
             ])
     }
+}
+
+fn parse_configured_cors_origin(origin: &str) -> HeaderValue {
+    synctv_core::config::validate_cors_origin(origin)
+        .unwrap_or_else(|error| panic!("invalid CORS origin configured: {error}"));
+
+    HeaderValue::from_str(origin)
+        .unwrap_or_else(|_| panic!("invalid CORS origin configured: `{origin}`"))
 }
 
 /// Apply global middleware layers (CORS, body limit, timeout, security headers, HSTS,
@@ -1767,6 +1775,33 @@ mod tests {
                 .get(axum::http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
                 .is_none(),
             "native-client-oriented CORS policy should not advertise credentialed browser requests by default"
+        );
+    }
+
+    #[test]
+    fn test_build_cors_layer_rejects_invalid_configured_origin() {
+        let mut config = synctv_core::Config::default();
+        config.server.cors_allowed_origins =
+            vec!["https://example.com".to_string(), "not a valid origin".to_string()];
+
+        let result = std::panic::catch_unwind(|| build_cors_layer(&config));
+
+        assert!(
+            result.is_err(),
+            "invalid configured CORS origins must fail fast instead of being silently ignored"
+        );
+    }
+
+    #[test]
+    fn test_build_cors_layer_rejects_configured_origin_with_path() {
+        let mut config = synctv_core::Config::default();
+        config.server.cors_allowed_origins = vec!["https://example.com/app".to_string()];
+
+        let result = std::panic::catch_unwind(|| build_cors_layer(&config));
+
+        assert!(
+            result.is_err(),
+            "configured CORS origins with paths must fail fast during router construction"
         );
     }
 

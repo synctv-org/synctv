@@ -149,7 +149,9 @@ pub async fn init_cluster_discovery(
                     })?;
             let (registry, hm, lb) =
                 init_cluster_components(redis_handles, cm, config, connection_manager).await?;
-            let k8s_discovery = k8s_discovery.with_node_registry(registry.clone());
+            let k8s_discovery = k8s_discovery
+                .with_cluster_secret(config.server.cluster_secret.clone())
+                .with_node_registry(registry.clone());
 
             // Perform initial DNS resolution
             if let Err(e) = k8s_discovery.refresh().await {

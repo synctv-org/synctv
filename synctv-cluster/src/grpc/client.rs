@@ -280,7 +280,7 @@ impl ClusterClient {
 
         // In degraded mode (>50% circuit breakers open), only query healthy nodes
         // to return partial results quickly instead of waiting for timeouts.
-        let mut skipped_nodes = 0usize;
+        let mut skipped_nodes = Vec::new();
         let query_nodes: Vec<_> = if self.circuit_breakers.is_cluster_degraded().await {
             let mut known_open_addresses = HashSet::new();
             for node in &remote_nodes {
@@ -295,9 +295,9 @@ impl ClusterClient {
             let (queryable, skipped) =
                 partition_degraded_query_nodes(&remote_nodes, &known_open_addresses);
             skipped_nodes = skipped;
-            if skipped_nodes > 0 {
+            if !skipped_nodes.is_empty() {
                 warn!(
-                    skipped = skipped_nodes,
+                    skipped = skipped_nodes.len(),
                     healthy = queryable.len(),
                     rpc = %rpc_name,
                     "Cluster degraded: skipping unhealthy nodes for fan-out"
@@ -325,8 +325,19 @@ impl ClusterClient {
 
         let mut all_items: Vec<Item> = Vec::new();
         let mut nodes_succeeded = 0usize;
-        let mut nodes_failed = skipped_nodes;
-        let mut failures = Vec::new();
+        let mut nodes_failed = skipped_nodes.len();
+        let mut failures: Vec<(String, String)> = skipped_nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.node_id.clone(),
+                    format!(
+                        "skipped in degraded mode: circuit breaker open for {}",
+                        node.grpc_address
+                    ),
+                )
+            })
+            .collect();
         let mut pending_nodes: HashMap<String, String> = query_nodes
             .iter()
             .map(|node| (node.node_id.clone(), node.grpc_address.clone()))
@@ -556,13 +567,16 @@ impl ClusterClient {
 fn partition_degraded_query_nodes(
     remote_nodes: &[crate::discovery::NodeInfo],
     known_open_addresses: &HashSet<String>,
-) -> (Vec<crate::discovery::NodeInfo>, usize) {
+) -> (
+    Vec<crate::discovery::NodeInfo>,
+    Vec<crate::discovery::NodeInfo>,
+) {
     let mut queryable = Vec::new();
-    let mut skipped_nodes = 0usize;
+    let mut skipped_nodes = Vec::new();
 
     for node in remote_nodes {
         if known_open_addresses.contains(&node.grpc_address) {
-            skipped_nodes += 1;
+            skipped_nodes.push(node.clone());
         } else {
             queryable.push(node.clone());
         }
@@ -741,9 +755,33 @@ mod tests {
         let (queryable, skipped) =
             partition_degraded_query_nodes(&remote_nodes, &known_open_addresses);
 
-        assert_eq!(skipped, 1);
+        assert_eq!(skipped.len(), 1);
         assert_eq!(queryable.len(), 1);
         assert_eq!(queryable[0].node_id, "node-unknown");
+        assert_eq!(skipped[0].node_id, "node-open");
+    }
+
+    #[test]
+    fn test_fan_out_result_failures_cover_skipped_nodes_in_degraded_mode() {
+        let result: FanOutResult<Vec<()>> = FanOutResult {
+            data: Vec::new(),
+            nodes_succeeded: 0,
+            nodes_failed: 1,
+            failures: vec![(
+                "node-open".to_string(),
+                "skipped in degraded mode: circuit breaker open for 10.0.0.1:50051".to_string(),
+            )],
+        };
+
+        assert_eq!(
+            result.failures.len(),
+            result.nodes_failed,
+            "every degraded-mode skipped node must have an explicit failure reason"
+        );
+        assert!(
+            result.failures[0].1.contains("skipped in degraded mode"),
+            "operators need to distinguish deliberate degraded-mode skips from RPC failures"
+        );
     }
 
     #[tokio::test]

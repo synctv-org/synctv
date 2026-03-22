@@ -58,6 +58,13 @@ impl LoadBalancer {
             return Ok(nodes);
         };
 
+        if monitor.is_snapshot_stale() {
+            return Err(Error::NotFound(
+                "Cluster health snapshot is stale; refusing to route with frozen health data"
+                    .to_string(),
+            ));
+        }
+
         let statuses = monitor.get_all_status().await;
 
         let healthy: Vec<NodeInfo> = nodes
@@ -587,6 +594,57 @@ mod tests {
         assert!(
             node.is_err(),
             "Must fail closed when all nodes are unhealthy"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_select_node_fails_closed_when_health_snapshot_is_stale() {
+        let registry = make_registry();
+        register_nodes(&registry, 2).await;
+
+        let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 1));
+        {
+            let mut status = monitor.health_status.write().await;
+            status.insert("self".to_string(), NodeHealth::Healthy);
+            status.insert("node-1".to_string(), NodeHealth::Healthy);
+        }
+        monitor.test_set_last_successful_refresh_at(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_sub(2),
+        );
+
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
+            .with_health_monitor(monitor);
+
+        let err = lb
+            .select_node()
+            .await
+            .expect_err("stale health snapshot must not be used for routing");
+        assert!(
+            err.to_string().contains("stale"),
+            "error should preserve the stale health snapshot reason: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_select_node_allows_routing_before_first_health_refresh() {
+        let registry = make_registry();
+        register_nodes(&registry, 2).await;
+
+        let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
+            .with_health_monitor(monitor);
+
+        let selected = lb
+            .select_node()
+            .await
+            .expect("routing should still work before the first successful health refresh");
+        assert!(
+            selected == "self" || selected == "node-1",
+            "selection should come from currently routable nodes: {selected}"
         );
     }
 

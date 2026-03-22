@@ -35,6 +35,7 @@ message NodeInfo {
     int64 registered_at = 5;
     int64 last_heartbeat = 6;
     NodeMetrics metrics = 7;
+    uint64 epoch = 8; // Fencing token epoch for stale-registration protection
 }
 
 enum NodeStatus {

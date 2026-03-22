@@ -410,17 +410,17 @@ impl RemoteProviderManager {
         Ok(RemoteProviderConnection::new(channel, auth_secret))
     }
 
-    async fn build_validated_remote_connection(
+    async fn build_management_validated_remote_connection(
         &self,
         config: &ProviderInstance,
     ) -> crate::Result<RemoteProviderConnection> {
         let channel = self.create_grpc_channel(config).await?;
         let connection = Self::build_remote_connection(config, channel)?;
-        self.validate_remote_connection(config, &connection).await?;
+        self.validate_management_connection(config, &connection).await?;
         Ok(connection)
     }
 
-    async fn validate_remote_connection(
+    async fn validate_management_connection(
         &self,
         config: &ProviderInstance,
         connection: &RemoteProviderConnection,
@@ -455,6 +455,15 @@ impl RemoteProviderManager {
             )));
         }
 
+        Ok(())
+    }
+
+    async fn validate_remote_connection(
+        &self,
+        config: &ProviderInstance,
+        connection: &RemoteProviderConnection,
+    ) -> crate::Result<()> {
+        self.validate_management_connection(config, connection).await?;
         self.validate_authenticated_provider_health(config, connection)
             .await
     }
@@ -883,7 +892,10 @@ impl RemoteProviderManager {
         Self::validate_config(&config, RemoteConfigValidationMode::RequireAuthSecret)?;
 
         let connection = if config.enabled && Self::requires_remote_connection(&config) {
-            Some(self.build_validated_remote_connection(&config).await?)
+            Some(
+                self.build_management_validated_remote_connection(&config)
+                    .await?,
+            )
         } else {
             None
         };
@@ -929,7 +941,10 @@ impl RemoteProviderManager {
         Self::validate_config(&config, validation_mode)?;
 
         let connection = if config.enabled && Self::requires_remote_connection(&config) {
-            Some(self.build_validated_remote_connection(&config).await?)
+            Some(
+                self.build_management_validated_remote_connection(&config)
+                    .await?,
+            )
         } else {
             None
         };
@@ -983,7 +998,9 @@ impl RemoteProviderManager {
 
         if config.enabled {
             if Self::requires_remote_connection(&config) {
-                let connection = self.build_validated_remote_connection(&config).await?;
+                let connection = self
+                    .build_management_validated_remote_connection(&config)
+                    .await?;
                 self.channel_cache
                     .insert(config.name.clone(), connection)
                     .await;
@@ -999,7 +1016,9 @@ impl RemoteProviderManager {
 
         config.enabled = true;
         if Self::requires_remote_connection(&config) {
-            let connection = self.build_validated_remote_connection(&config).await?;
+            let connection = self
+                .build_management_validated_remote_connection(&config)
+                .await?;
 
             // Persist only after a valid channel can be constructed.
             self.repository.enable(name).await?;
@@ -1063,7 +1082,9 @@ impl RemoteProviderManager {
             )));
         }
 
-        let connection = self.build_validated_remote_connection(&config).await?;
+        let connection = self
+            .build_management_validated_remote_connection(&config)
+            .await?;
         self.channel_cache
             .insert(config.name.clone(), connection)
             .await;

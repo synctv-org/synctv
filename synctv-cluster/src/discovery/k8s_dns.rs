@@ -11,13 +11,15 @@
 //! DNS provides faster detection of newly-scaled pods; Redis provides the
 //! NodeRegistry, HealthMonitor, and LoadBalancer infrastructure.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
+use futures::future::join_all;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
 use super::node_registry::{NodeInfo, NodeRegistry};
+use super::probe_node_identity;
 use crate::error::{Error, Result};
 
 /// Discovered peer from DNS resolution
@@ -53,14 +55,15 @@ pub struct K8sDnsDiscovery {
     self_ip: String,
     /// Cached list of discovered peers
     peers: Arc<RwLock<Vec<DnsPeer>>>,
-    /// Optional reference to NodeRegistry for syncing discovered peers.
-    /// When set, `refresh()` will register new peers and unregister
-    /// disappeared peers via `NodeRegistry::register_remote()` /
-    /// `NodeRegistry::unregister_remote()`.
+    /// Optional reference to NodeRegistry for syncing discovered peers into the
+    /// local transient node view. This supplements Redis-backed membership with
+    /// readiness-verified DNS peers before they self-register.
     node_registry: Option<Arc<NodeRegistry>>,
-    /// Tracks the registration epoch for each peer IP so that
-    /// `unregister_remote` can pass the correct epoch for validation.
-    peer_epochs: Arc<RwLock<HashMap<String, u64>>>,
+    /// Tracks the probed node_id for each peer IP so DNS disappearance can
+    /// remove only the corresponding transient local entry.
+    peer_node_ids: Arc<RwLock<HashMap<String, String>>>,
+    /// Optional cluster secret used to authenticate gRPC identity probes.
+    cluster_secret: String,
 }
 
 impl K8sDnsDiscovery {
@@ -117,7 +120,8 @@ impl K8sDnsDiscovery {
             self_ip,
             peers: Arc::new(RwLock::new(Vec::new())),
             node_registry: None,
-            peer_epochs: Arc::new(RwLock::new(HashMap::new())),
+            peer_node_ids: Arc::new(RwLock::new(HashMap::new())),
+            cluster_secret: String::new(),
         })
     }
 
@@ -130,16 +134,67 @@ impl K8sDnsDiscovery {
             self_ip,
             peers: Arc::new(RwLock::new(Vec::new())),
             node_registry: None,
-            peer_epochs: Arc::new(RwLock::new(HashMap::new())),
+            peer_node_ids: Arc::new(RwLock::new(HashMap::new())),
+            cluster_secret: String::new(),
         }
     }
 
-    /// Attach a `NodeRegistry` so that DNS-discovered peers are automatically
-    /// registered/unregistered in Redis. Without this, DNS discovery only
-    /// populates the local peer cache but not the shared NodeRegistry.
+    /// Attach a `NodeRegistry` so that readiness-verified DNS peers are merged
+    /// into the local transient node view used by health monitoring and routing.
     pub fn with_node_registry(mut self, registry: Arc<NodeRegistry>) -> Self {
         self.node_registry = Some(registry);
         self
+    }
+
+    /// Configure the cluster secret used for authenticated peer identity probes.
+    pub fn with_cluster_secret(mut self, cluster_secret: String) -> Self {
+        self.cluster_secret = cluster_secret;
+        self
+    }
+
+    async fn sync_verified_peers_to_registry(&self, verified_peers: Vec<(String, NodeInfo)>) {
+        let Some(registry) = &self.node_registry else {
+            return;
+        };
+
+        let old_mapping = self.peer_node_ids.read().await.clone();
+        let new_mapping: HashMap<String, String> = verified_peers
+            .iter()
+            .map(|(ip, info)| (ip.clone(), info.node_id.clone()))
+            .collect();
+        let new_node_ids: std::collections::HashSet<String> =
+            verified_peers.iter().map(|(_, info)| info.node_id.clone()).collect();
+
+        {
+            let mut nodes = registry.local_nodes.write().await;
+            for (_, info) in verified_peers {
+                match nodes.get_mut(&info.node_id) {
+                    Some(existing)
+                        if existing
+                            .metadata
+                            .get("discovery")
+                            .is_some_and(|value| value == "k8s_dns") =>
+                    {
+                        *existing = info;
+                    }
+                    Some(_) => {}
+                    None => {
+                        nodes.insert(info.node_id.clone(), info);
+                    }
+                }
+            }
+        }
+
+        for node_id in old_mapping
+            .values()
+            .filter(|node_id| !new_node_ids.contains(*node_id))
+        {
+            let _ = registry
+                .remove_discovered_local_node(node_id, "k8s_dns")
+                .await;
+        }
+
+        *self.peer_node_ids.write().await = new_mapping;
     }
 
     /// Perform a single DNS resolution and return discovered peers.
@@ -192,77 +247,45 @@ impl K8sDnsDiscovery {
     /// Resolve peers and update the internal cache.
     ///
     /// When a `NodeRegistry` is attached (via [`with_node_registry`]), this also:
-    /// - Registers newly discovered peers via `NodeRegistry::register_remote()`
-    /// - Unregisters peers that have disappeared from DNS via `NodeRegistry::unregister_remote()`
+    /// - Probes newly discovered peers to confirm gRPC readiness and real node identity
+    /// - Merges verified peers into the registry's transient local node view
+    /// - Removes disappeared transient DNS-only entries without touching Redis membership
     pub async fn refresh(&self) -> Result<()> {
         match self.resolve_once().await {
             Ok(new_peers) => {
                 let count = new_peers.len();
 
-                // Compute diffs for NodeRegistry sync before updating cache
                 if let Some(ref registry) = self.node_registry {
-                    let old_peers = self.peers.read().await;
-                    let old_ips: HashSet<&str> = old_peers.iter().map(|p| p.ip.as_str()).collect();
-                    let new_ips: HashSet<&str> = new_peers.iter().map(|p| p.ip.as_str()).collect();
+                    let probe_results = join_all(new_peers.iter().map(|peer| async move {
+                        let identity =
+                            probe_node_identity(&peer.grpc_address, 3, &self.cluster_secret).await;
+                        (peer, identity)
+                    }))
+                    .await;
 
-                    // Register new peers and track their epochs
-                    for peer in &new_peers {
-                        if !old_ips.contains(peer.ip.as_str()) {
+                    let mut verified_peers = Vec::new();
+                    for (peer, identity) in probe_results {
+                        if let Some(identity) = identity {
                             let mut info = NodeInfo::new(
-                                peer.ip.clone(),
+                                identity.node_id,
                                 peer.grpc_address.clone(),
                                 peer.http_address.clone(),
-                            );
+                            )
+                            .with_epoch(identity.epoch);
                             info.metadata
                                 .insert("discovery".to_string(), "k8s_dns".to_string());
-                            let registration_epoch = info.epoch;
-                            if let Err(e) = registry.register_remote(info).await {
-                                tracing::warn!(
-                                    peer_ip = %peer.ip,
-                                    error = %e,
-                                    "Failed to register DNS-discovered peer in NodeRegistry"
-                                );
-                            } else {
-                                // Track the epoch used for registration
-                                self.peer_epochs
-                                    .write()
-                                    .await
-                                    .insert(peer.ip.clone(), registration_epoch);
-                                tracing::info!(
-                                    peer_ip = %peer.ip,
-                                    grpc_address = %peer.grpc_address,
-                                    epoch = registration_epoch,
-                                    "DNS-discovered peer registered in NodeRegistry"
-                                );
-                            }
+                            verified_peers.push((peer.ip.clone(), info));
+                        } else {
+                            tracing::debug!(
+                                peer_ip = %peer.ip,
+                                grpc_address = %peer.grpc_address,
+                                "Skipping DNS peer until gRPC identity probe succeeds"
+                            );
                         }
                     }
 
-                    // Unregister disappeared peers with their tracked epoch
-                    for peer in old_peers.iter() {
-                        if !new_ips.contains(peer.ip.as_str()) {
-                            let tracked_epoch =
-                                self.peer_epochs.read().await.get(&peer.ip).copied();
-                            if let Err(e) =
-                                registry.unregister_remote(&peer.ip, tracked_epoch).await
-                            {
-                                tracing::warn!(
-                                    peer_ip = %peer.ip,
-                                    epoch = ?tracked_epoch,
-                                    error = %e,
-                                    "Failed to unregister disappeared DNS peer from NodeRegistry"
-                                );
-                            } else {
-                                // Remove the tracked epoch for the departed peer
-                                self.peer_epochs.write().await.remove(&peer.ip);
-                                tracing::info!(
-                                    peer_ip = %peer.ip,
-                                    epoch = ?tracked_epoch,
-                                    "Disappeared DNS peer unregistered from NodeRegistry"
-                                );
-                            }
-                        }
-                    }
+                    let _ = registry;
+                    self.sync_verified_peers_to_registry(verified_peers).await;
                 }
 
                 let mut cached = self.peers.write().await;
@@ -325,6 +348,7 @@ impl K8sDnsDiscovery {
         let this = self.clone();
         tokio::spawn(async move {
             let mut timer = interval(Duration::from_secs(interval_secs));
+            timer.tick().await;
 
             loop {
                 tokio::select! {
@@ -360,6 +384,8 @@ impl K8sDnsDiscovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discovery::NodeRegistry;
+    use std::sync::Arc;
 
     #[test]
     fn test_k8s_dns_discovery_new() {
@@ -373,6 +399,19 @@ mod tests {
         assert_eq!(disc.grpc_port, 50051);
         assert_eq!(disc.http_port, 8080);
         assert_eq!(disc.self_ip, "10.0.0.1");
+    }
+
+    #[test]
+    fn test_with_cluster_secret_sets_probe_secret() {
+        let disc = K8sDnsDiscovery::new(
+            "synctv-headless.default.svc.cluster.local".to_string(),
+            50051,
+            8080,
+            "10.0.0.1".to_string(),
+        )
+        .with_cluster_secret("shared-secret".to_string());
+
+        assert_eq!(disc.cluster_secret, "shared-secret");
     }
 
     #[test]
@@ -464,5 +503,189 @@ mod tests {
             .await
             .expect("refresh loop should stop promptly when parent shutdown token is cancelled")
             .expect("refresh loop should exit cleanly");
+    }
+
+    #[tokio::test]
+    async fn test_refresh_loop_waits_for_first_interval_before_refreshing() {
+        let disc = K8sDnsDiscovery::new("localhost".to_string(), 50051, 8080, "10.0.0.1".to_string());
+        let shutdown_token = CancellationToken::new();
+
+        let handle = disc.start_refresh_loop(60, shutdown_token.clone());
+
+        tokio::task::yield_now().await;
+
+        assert!(
+            disc.get_peers().await.is_empty(),
+            "refresh loop must not perform an immediate DNS refresh before the first interval elapses"
+        );
+
+        shutdown_token.cancel();
+        handle
+            .await
+            .expect("refresh loop should exit cleanly after cancellation");
+    }
+
+    #[tokio::test]
+    async fn test_sync_verified_peers_uses_probed_node_id_in_registry_local_cache() {
+        let registry = Arc::new(
+            NodeRegistry::new_local_only("self".to_string(), 30, "k8s-dns-test:")
+                .expect("local-only registry"),
+        );
+        let disc = K8sDnsDiscovery::new(
+            "test.default.svc.cluster.local".to_string(),
+            50051,
+            8080,
+            "10.0.0.1".to_string(),
+        )
+        .with_node_registry(registry.clone());
+
+        let mut node_info = NodeInfo::new(
+            "peer-node-1".to_string(),
+            "10.0.0.2:50051".to_string(),
+            "10.0.0.2:8080".to_string(),
+        )
+        .with_epoch(7);
+        node_info
+            .metadata
+            .insert("discovery".to_string(), "k8s_dns".to_string());
+
+        disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), node_info)])
+            .await;
+
+        assert!(
+            registry.test_get_local("peer-node-1").await.is_some(),
+            "verified DNS peers must be keyed by probed node_id"
+        );
+        assert!(
+            registry.test_get_local("10.0.0.2").await.is_none(),
+            "DNS IP must not be used as authoritative node_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_verified_peers_removes_disappeared_dns_local_entry() {
+        let registry = Arc::new(
+            NodeRegistry::new_local_only("self".to_string(), 30, "k8s-dns-test:")
+                .expect("local-only registry"),
+        );
+        let disc = K8sDnsDiscovery::new(
+            "test.default.svc.cluster.local".to_string(),
+            50051,
+            8080,
+            "10.0.0.1".to_string(),
+        )
+        .with_node_registry(registry.clone());
+
+        let mut node_info = NodeInfo::new(
+            "peer-node-1".to_string(),
+            "10.0.0.2:50051".to_string(),
+            "10.0.0.2:8080".to_string(),
+        );
+        node_info
+            .metadata
+            .insert("discovery".to_string(), "k8s_dns".to_string());
+
+        disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), node_info)])
+            .await;
+        assert!(registry.test_get_local("peer-node-1").await.is_some());
+
+        disc.sync_verified_peers_to_registry(Vec::new()).await;
+        assert!(
+            registry.test_get_local("peer-node-1").await.is_none(),
+            "vanished DNS peers should be removed from transient local cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_verified_peers_does_not_remove_real_node_entry_after_dns_disappears() {
+        let registry = Arc::new(
+            NodeRegistry::new_local_only("self".to_string(), 30, "k8s-dns-test:")
+                .expect("local-only registry"),
+        );
+        let disc = K8sDnsDiscovery::new(
+            "test.default.svc.cluster.local".to_string(),
+            50051,
+            8080,
+            "10.0.0.1".to_string(),
+        )
+        .with_node_registry(registry.clone());
+
+        let mut dns_node = NodeInfo::new(
+            "peer-node-1".to_string(),
+            "10.0.0.2:50051".to_string(),
+            "10.0.0.2:8080".to_string(),
+        );
+        dns_node
+            .metadata
+            .insert("discovery".to_string(), "k8s_dns".to_string());
+
+        disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), dns_node)])
+            .await;
+
+        registry
+            .test_insert_local(
+                NodeInfo::new(
+                    "peer-node-1".to_string(),
+                    "10.0.0.2:50051".to_string(),
+                    "10.0.0.2:8080".to_string(),
+                )
+                .with_epoch(9),
+            )
+            .await;
+
+        disc.sync_verified_peers_to_registry(Vec::new()).await;
+        assert!(
+            registry.test_get_local("peer-node-1").await.is_some(),
+            "DNS disappearance must not evict a real node entry that replaced the transient DNS one"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_verified_peers_refreshes_transient_entry_when_address_changes() {
+        let registry = Arc::new(
+            NodeRegistry::new_local_only("self".to_string(), 30, "k8s-dns-test:")
+                .expect("local-only registry"),
+        );
+        let disc = K8sDnsDiscovery::new(
+            "test.default.svc.cluster.local".to_string(),
+            50051,
+            8080,
+            "10.0.0.1".to_string(),
+        )
+        .with_node_registry(registry.clone());
+
+        let mut original = NodeInfo::new(
+            "peer-node-1".to_string(),
+            "10.0.0.2:50051".to_string(),
+            "10.0.0.2:8080".to_string(),
+        )
+        .with_epoch(7);
+        original
+            .metadata
+            .insert("discovery".to_string(), "k8s_dns".to_string());
+
+        disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), original)])
+            .await;
+
+        let mut restarted = NodeInfo::new(
+            "peer-node-1".to_string(),
+            "10.0.0.9:50051".to_string(),
+            "10.0.0.9:8080".to_string(),
+        )
+        .with_epoch(8);
+        restarted
+            .metadata
+            .insert("discovery".to_string(), "k8s_dns".to_string());
+
+        disc.sync_verified_peers_to_registry(vec![("10.0.0.9".to_string(), restarted)])
+            .await;
+
+        let node = registry
+            .test_get_local("peer-node-1")
+            .await
+            .expect("transient DNS peer should still exist");
+        assert_eq!(node.grpc_address, "10.0.0.9:50051");
+        assert_eq!(node.http_address, "10.0.0.9:8080");
+        assert_eq!(node.epoch, 8);
     }
 }

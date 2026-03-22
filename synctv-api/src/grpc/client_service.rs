@@ -100,16 +100,15 @@ fn extract_authenticated_token(
 
 #[allow(clippy::result_large_err)]
 fn map_message_stream_join_error(error: String) -> Status {
-    if error.contains("unavailable") || error.contains("degraded") {
-        return Status::unavailable(error);
+    let (kind, message) = crate::impls::parse_api_error_string(&error);
+    match kind {
+        crate::impls::ErrorKind::RateLimited => Status::resource_exhausted(message.to_string()),
+        crate::impls::ErrorKind::ServiceUnavailable => Status::unavailable(message.to_string()),
+        _ => {
+            tracing::error!("Unexpected MessageStream pre_join failure: {error}");
+            Status::internal("Failed to establish message stream")
+        }
     }
-
-    if error.contains("capacity") || error.contains("Too many connections") {
-        return Status::resource_exhausted(error);
-    }
-
-    tracing::error!("Unexpected MessageStream pre_join failure: {error}");
-    Status::internal("Failed to establish message stream")
 }
 
 #[allow(clippy::result_large_err)]
@@ -1616,10 +1615,42 @@ mod tests {
     #[test]
     fn test_map_message_stream_join_error_maps_capacity_to_resource_exhausted() {
         let status = map_message_stream_join_error(
-            "Room at capacity across all replicas (200 connections)".to_string(),
+            "Rate limited: realtime room capacity exceeded".to_string(),
         );
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
-        assert!(status.message().contains("capacity"));
+        assert_eq!(status.message(), "realtime room capacity exceeded");
+    }
+
+    #[test]
+    fn test_map_message_stream_join_error_maps_raw_capacity_error() {
+        let status =
+            map_message_stream_join_error("Room at capacity (42 connections, max: 40)".to_string());
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(status.message(), "Room at capacity (42 connections, max: 40)");
+    }
+
+    #[test]
+    fn test_map_message_stream_join_error_maps_raw_user_capacity_error() {
+        let status = map_message_stream_join_error(
+            "Too many connections for this user across all replicas (max 3)".to_string(),
+        );
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(
+            status.message(),
+            "Too many connections for this user across all replicas (max 3)"
+        );
+    }
+
+    #[test]
+    fn test_map_message_stream_join_error_maps_raw_total_capacity_error() {
+        let status = map_message_stream_join_error(
+            "Server at capacity across all replicas (42 connections)".to_string(),
+        );
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(
+            status.message(),
+            "Server at capacity across all replicas (42 connections)"
+        );
     }
 
     #[test]
@@ -1651,11 +1682,52 @@ mod tests {
     #[test]
     fn test_map_message_stream_join_error_maps_distributed_degradation_to_unavailable() {
         let status = map_message_stream_join_error(
+            "Service unavailable: distributed room capacity check unavailable".to_string(),
+        );
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            status.message(),
+            "distributed room capacity check unavailable"
+        );
+    }
+
+    #[test]
+    fn test_map_message_stream_join_error_maps_raw_degraded_cluster_error() {
+        let status = map_message_stream_join_error(
             "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
                 .to_string(),
         );
         assert_eq!(status.code(), tonic::Code::Unavailable);
-        assert!(status.message().contains("unavailable"));
+        assert_eq!(
+            status.message(),
+            "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
+        );
+    }
+
+    #[test]
+    fn test_map_message_stream_join_error_maps_raw_degraded_user_check_error() {
+        let status = map_message_stream_join_error(
+            "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
+                .to_string(),
+        );
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            status.message(),
+            "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
+        );
+    }
+
+    #[test]
+    fn test_map_message_stream_join_error_maps_raw_degraded_total_check_error() {
+        let status = map_message_stream_join_error(
+            "Distributed total connection check unavailable; refusing new connection while cluster Redis is degraded"
+                .to_string(),
+        );
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            status.message(),
+            "Distributed total connection check unavailable; refusing new connection while cluster Redis is degraded"
+        );
     }
 
     #[test]

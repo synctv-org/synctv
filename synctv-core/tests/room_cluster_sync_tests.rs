@@ -274,6 +274,14 @@ async fn test_member_join_synchronized_via_redis() {
         300,
         cache_invalidation_b.clone(),
     );
+    permission_service_a
+        .start()
+        .await
+        .expect("Failed to start permission_service_a");
+    permission_service_b
+        .start()
+        .await
+        .expect("Failed to start permission_service_b");
 
     // Create a new member
     let user_repo = UserRepository::new(pool.clone());
@@ -363,6 +371,10 @@ async fn test_member_role_change_synchronized() {
         300,
         cache_invalidation_b.clone(),
     );
+    permission_service_b
+        .start()
+        .await
+        .expect("Failed to start permission_service_b");
 
     let _perms_before = permission_service_b
         .get_user_permissions(&room.id, &member_user.id)
@@ -394,6 +406,10 @@ async fn test_member_role_change_synchronized() {
         300,
         cache_invalidation_a.clone(),
     );
+    permission_service_a
+        .start()
+        .await
+        .expect("Failed to start permission_service_a");
     permission_service_a
         .invalidate_cache(&room.id, &member_user.id)
         .await;

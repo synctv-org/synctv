@@ -1107,7 +1107,8 @@ async fn scenario_health_check_reports_emby_authenticated_provider_failure_as_un
     let _ = health_handle.await;
 }
 
-async fn scenario_add_emby_instance_rejects_authenticated_handler_failure() {
+async fn scenario_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation(
+) {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let (health_addr, health_handle) =
@@ -1131,18 +1132,17 @@ async fn scenario_add_emby_instance_rejects_authenticated_handler_failure() {
     );
     instance.providers = vec!["emby".to_string()];
 
-    let result = manager.add(instance.clone()).await;
-    assert!(
-        result.is_err(),
-        "management validation must reject emby instances when authenticated RPCs fail"
-    );
+    manager
+        .add(instance.clone())
+        .await
+        .expect("management validation should only require transport health, not authenticated Emby handler success");
     assert!(
         provider_repo(&infra.pool)
             .get_by_name(&instance.name)
             .await
             .expect("lookup should succeed")
-            .is_none(),
-        "failed add must not persist an emby instance with broken authenticated handlers"
+            .is_some(),
+        "successful management validation must persist the Emby instance even when authenticated handlers are unhealthy"
     );
 
     health_handle.abort();
@@ -3028,9 +3028,10 @@ async fn test_add_alist_instance_does_not_require_fake_upstream_auth_for_managem
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_add_emby_instance_rejects_authenticated_handler_failure() {
+async fn test_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation() {
     install_rustls_provider_once();
-    scenario_add_emby_instance_rejects_authenticated_handler_failure().await;
+    scenario_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation()
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

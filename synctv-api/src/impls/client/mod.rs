@@ -314,18 +314,21 @@ impl ClientApiImpl {
         }
     }
 
-    /// Publish a room cache invalidation event to other cluster replicas.
+    /// Reserve cluster fanout capacity for a room cache invalidation event.
     ///
-    /// Uses non-blocking `try_publish_cluster_event` internally (D8).
-    /// No-op when Redis is not configured.
-    async fn publish_room_cache_invalidation(&self, room_id: &synctv_core::models::RoomId) {
-        if let Some(ref tx) = self.redis_publish_tx {
-            let _ = crate::impls::try_publish_cluster_event(
-                tx,
-                Self::build_room_cache_invalidation_request(room_id),
-            )
-            .await;
-        }
+    /// Reserving before the mutation avoids returning failure after state has
+    /// already committed when the cross-replica publish channel is full/closed.
+    async fn reserve_room_cache_invalidation(
+        &self,
+        room_id: &synctv_core::models::RoomId,
+    ) -> Result<Option<crate::impls::ClusterEventPublishReservation>, ApiError> {
+        let _ = room_id;
+        crate::impls::reserve_cluster_event_publish(
+            self.redis_publish_tx.as_ref(),
+            self.config.cluster_runtime_enabled(),
+            "failed to fan out room cache invalidation to cluster replicas",
+        )
+        .await
     }
 
     /// Kick a stream both locally and cluster-wide via Redis Pub/Sub.
@@ -347,112 +350,119 @@ impl ClientApiImpl {
     /// Fetches actual usernames and effective permissions before broadcasting
     /// so that receivers get correct data without needing additional lookups.
     ///
-    /// Returns `true` if the event was successfully queued (or no Redis is
-    /// configured), `false` if publishing failed (channel full/closed).
-    async fn publish_permission_changed(
+    /// Returns an error in cluster mode when the event cannot be queued, so
+    /// callers can fail closed instead of committing a mutation that other
+    /// replicas will continue to serve from stale permission cache.
+    async fn publish_permission_changed_with_reservation(
         &self,
         room_id: &RoomId,
         target_user_id: &UserId,
         changed_by: &UserId,
-    ) -> bool {
-        let Some(ref tx) = self.redis_publish_tx else {
-            // No Redis configured -- nothing to publish, considered success
-            return true;
-        };
-        {
-            // Fetch room settings for proper three-layer permission calculation
-            let room_settings = self
+        reservation: Option<crate::impls::ClusterEventPublishReservation>,
+    ) -> Result<(), ApiError> {
+        // Fetch room settings for proper three-layer permission calculation
+        let room_settings = self
+            .room_service
+            .get_room_settings(room_id)
+            .await
+            .unwrap_or_default();
+
+        // Fetch actual usernames and permissions for the event
+        let (target_username, new_permissions, role, added_permissions, removed_permissions) =
+            match self
                 .room_service
-                .get_room_settings(room_id)
+                .member_service()
+                .get_member(room_id, target_user_id)
                 .await
-                .unwrap_or_default();
-
-            // Fetch actual usernames and permissions for the event
-            let (target_username, new_permissions, role, added_permissions, removed_permissions) =
-                match self
-                    .room_service
-                    .member_service()
-                    .get_member(room_id, target_user_id)
-                    .await
-                {
-                    Ok(Some(member)) => {
-                        let username = self
-                            .user_service
-                            .get_user(target_user_id)
-                            .await
-                            .map(|u| u.username)
-                            .unwrap_or_default();
-                        let role_default = self
-                            .room_service
-                            .permission_service()
-                            .calculate_role_default_permissions(&member.role, &room_settings);
-                        let perms = member.effective_permissions(role_default);
-                        let role_i32 = match member.role {
-                            synctv_core::models::RoomRole::Creator => {
-                                synctv_proto::common::RoomMemberRole::Creator as i32
-                            }
-                            synctv_core::models::RoomRole::Admin => {
-                                synctv_proto::common::RoomMemberRole::Admin as i32
-                            }
-                            synctv_core::models::RoomRole::Member => {
-                                synctv_proto::common::RoomMemberRole::Member as i32
-                            }
-                            synctv_core::models::RoomRole::Guest => {
-                                synctv_proto::common::RoomMemberRole::Guest as i32
-                            }
-                        };
-                        (
-                            username,
-                            perms,
-                            role_i32,
-                            member.added_permissions,
-                            member.removed_permissions,
-                        )
-                    }
-                    _ => (
-                        String::new(),
-                        synctv_core::models::PermissionBits::empty(),
-                        synctv_proto::common::RoomMemberRole::Member as i32,
-                        0u64,
-                        0u64,
-                    ),
-                };
-
-            let changed_by_username = self
-                .user_service
-                .get_user(changed_by)
-                .await
-                .map(|u| u.username)
-                .unwrap_or_default();
-
-            let request = synctv_cluster::sync::PublishRequest {
-                event: synctv_cluster::sync::ClusterEvent::PermissionChanged {
-                    event_id: nanoid::nanoid!(16),
-                    room_id: room_id.clone(),
-                    target_user_id: target_user_id.clone(),
-                    target_username,
-                    changed_by: changed_by.clone(),
-                    changed_by_username,
-                    new_permissions,
-                    role,
-                    added_permissions: synctv_core::models::PermissionBits(added_permissions),
-                    removed_permissions: synctv_core::models::PermissionBits(removed_permissions),
-                    admin_added_permissions: synctv_core::models::PermissionBits(0),
-                    admin_removed_permissions: synctv_core::models::PermissionBits(0),
-                    timestamp: chrono::Utc::now(),
-                },
+            {
+                Ok(Some(member)) => {
+                    let username = self
+                        .user_service
+                        .get_user(target_user_id)
+                        .await
+                        .map(|u| u.username)
+                        .unwrap_or_default();
+                    let role_default = self
+                        .room_service
+                        .permission_service()
+                        .calculate_role_default_permissions(&member.role, &room_settings);
+                    let perms = member.effective_permissions(role_default);
+                    let role_i32 = match member.role {
+                        synctv_core::models::RoomRole::Creator => {
+                            synctv_proto::common::RoomMemberRole::Creator as i32
+                        }
+                        synctv_core::models::RoomRole::Admin => {
+                            synctv_proto::common::RoomMemberRole::Admin as i32
+                        }
+                        synctv_core::models::RoomRole::Member => {
+                            synctv_proto::common::RoomMemberRole::Member as i32
+                        }
+                        synctv_core::models::RoomRole::Guest => {
+                            synctv_proto::common::RoomMemberRole::Guest as i32
+                        }
+                    };
+                    (
+                        username,
+                        perms,
+                        role_i32,
+                        member.added_permissions,
+                        member.removed_permissions,
+                    )
+                }
+                _ => (
+                    String::new(),
+                    synctv_core::models::PermissionBits::empty(),
+                    synctv_proto::common::RoomMemberRole::Member as i32,
+                    0u64,
+                    0u64,
+                ),
             };
-            if crate::impls::try_publish_cluster_event(tx, request).await {
-                true
-            } else {
-                tracing::warn!(
-                    room_id = %room_id.as_str(),
-                    target_user_id = %target_user_id.as_str(),
-                    "Failed to publish permission change event after bounded retry, \
-                     other replicas may serve stale permissions"
-                );
-                false
-            }
+
+        let changed_by_username = self
+            .user_service
+            .get_user(changed_by)
+            .await
+            .map(|u| u.username)
+            .unwrap_or_default();
+
+        let request = synctv_cluster::sync::PublishRequest {
+            event: synctv_cluster::sync::ClusterEvent::PermissionChanged {
+                event_id: nanoid::nanoid!(16),
+                room_id: room_id.clone(),
+                target_user_id: target_user_id.clone(),
+                target_username,
+                changed_by: changed_by.clone(),
+                changed_by_username,
+                new_permissions,
+                role,
+                added_permissions: synctv_core::models::PermissionBits(added_permissions),
+                removed_permissions: synctv_core::models::PermissionBits(removed_permissions),
+                admin_added_permissions: synctv_core::models::PermissionBits(0),
+                admin_removed_permissions: synctv_core::models::PermissionBits(0),
+                timestamp: chrono::Utc::now(),
+            },
+        };
+
+        if let Some(reservation) = reservation {
+            reservation.publish(request);
+            return Ok(());
         }
+
+        crate::impls::require_cluster_event_publish(
+            self.redis_publish_tx.as_ref(),
+            request,
+            self.config.cluster_runtime_enabled(),
+            "failed to fan out permission changes to cluster replicas",
+        )
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                room_id = %room_id.as_str(),
+                target_user_id = %target_user_id.as_str(),
+                error = %error.message(),
+                "Permission change fanout failed"
+            );
+            error
+        })
     }
 }

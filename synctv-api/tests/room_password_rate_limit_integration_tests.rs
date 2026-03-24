@@ -101,6 +101,7 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
             .check_room_password(
                 room.id.as_str(),
                 synctv_api::proto::client::CheckRoomPasswordRequest {
+                    room_id: room.id.to_string(),
                     password: "WrongPassword".to_string(),
                 },
                 "192.168.1.100",
@@ -114,6 +115,7 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         .check_room_password(
             room.id.as_str(),
             synctv_api::proto::client::CheckRoomPasswordRequest {
+                room_id: room.id.to_string(),
                 password: "CorrectPassword123".to_string(),
             },
             "192.168.1.100",
@@ -126,6 +128,7 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         .check_room_password(
             room.id.as_str(),
             synctv_api::proto::client::CheckRoomPasswordRequest {
+                room_id: room.id.to_string(),
                 password: "WrongPassword".to_string(),
             },
             "192.168.1.100",

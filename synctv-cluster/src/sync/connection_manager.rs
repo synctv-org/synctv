@@ -867,9 +867,6 @@ impl ConnectionManager {
             const RETRY_INTERVAL: Duration = Duration::from_millis(100);
             /// Maximum age of a pending disconnect signal before it's dropped (5 seconds).
             const MAX_SIGNAL_AGE: Duration = Duration::from_secs(5);
-            /// Maximum retry attempts per signal (used by age-based eviction via `MAX_SIGNAL_AGE`).
-            #[allow(dead_code)]
-            const MAX_RETRIES: u32 = 50; // 50 * 100ms = 5 seconds
 
             let mut ticker = tokio::time::interval(RETRY_INTERVAL);
             // Skip the first immediate tick

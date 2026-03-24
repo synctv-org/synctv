@@ -14,8 +14,8 @@ use synctv_core::service::{
 // Use synctv_proto for all gRPC traits and types
 use crate::proto::client::{
     auth_service_server::AuthService, email_service_server::EmailService,
-    media_service_server::MediaService, public_service_server::PublicService,
-    room_service_server::RoomService, user_service_server::UserService, AddMediaBatchRequest,
+    public_service_server::PublicService, room_service_server::RoomService,
+    user_service_server::UserService, AddMediaBatchRequest,
     AddMediaBatchResponse, AddMediaRequest, AddMediaResponse, BanMemberRequest, BanMemberResponse,
     CheckRoomPasswordRequest, CheckRoomPasswordResponse, CheckRoomRequest, CheckRoomResponse,
     ClearPlaylistRequest, ClearPlaylistResponse, ClientMessage, ConfirmEmailRequest,
@@ -260,12 +260,11 @@ impl ClientServiceImpl {
         &self,
         request: &Request<impl std::fmt::Debug>,
     ) -> Result<super::interceptors::RoomContext, Status> {
-        let room_context = request
+        request
             .extensions()
             .get::<super::interceptors::RoomContext>()
-            .ok_or_else(|| Status::unauthenticated("Room context required"))?;
-
-        Ok(room_context.clone())
+            .cloned()
+            .ok_or_else(|| Status::unauthenticated("Room context required"))
     }
 
     /// Extract `room_id` from `RoomContext`
@@ -397,6 +396,102 @@ impl UserService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
+    async fn create_room(
+        &self,
+        request: Request<CreateRoomRequest>,
+    ) -> Result<Response<CreateRoomResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .create_room(user_id.as_str(), req)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_room(
+        &self,
+        request: Request<GetRoomRequest>,
+    ) -> Result<Response<GetRoomResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let req = request.into_inner();
+        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
+        let response = self
+            .client_api
+            .get_room(user_id.as_str(), room_id.as_str())
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn join_room(
+        &self,
+        request: Request<JoinRoomRequest>,
+    ) -> Result<Response<JoinRoomResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let req = request.into_inner();
+        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
+        let response = self
+            .client_api
+            .join_room(user_id.as_str(), room_id.as_str(), req)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn leave_room(
+        &self,
+        request: Request<LeaveRoomRequest>,
+    ) -> Result<Response<LeaveRoomResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let req = request.into_inner();
+        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
+        let response = self
+            .client_api
+            .leave_room(user_id.as_str(), room_id.as_str())
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn delete_room(
+        &self,
+        request: Request<DeleteRoomRequest>,
+    ) -> Result<Response<DeleteRoomResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let req = request.into_inner();
+        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
+        let response = self
+            .client_api
+            .delete_room(user_id.as_str(), room_id.as_str())
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn check_room_password(
+        &self,
+        request: Request<CheckRoomPasswordRequest>,
+    ) -> Result<Response<CheckRoomPasswordResponse>, Status> {
+        let _user_id = self.get_user_id(&request).await?;
+        let client_ip = super::extract_client_ip(&request, &self.config)
+            .map_or_else(|| "unknown".to_string(), |ip| ip.to_string());
+        let req = request.into_inner();
+        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
+        let response = self
+            .client_api
+            .check_room_password(room_id.as_str(), req, &client_ip)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn list_created_rooms(
         &self,
         request: Request<ListCreatedRoomsRequest>,
@@ -437,77 +532,6 @@ impl UserService for ClientServiceImpl {
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl RoomService for ClientServiceImpl {
-    async fn create_room(
-        &self,
-        request: Request<CreateRoomRequest>,
-    ) -> Result<Response<CreateRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let req = request.into_inner();
-        let response = self
-            .client_api
-            .create_room(user_id.as_str(), req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn get_room(
-        &self,
-        request: Request<GetRoomRequest>,
-    ) -> Result<Response<GetRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let response = self
-            .client_api
-            .get_room(user_id.as_str(), room_id.as_str())
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn join_room(
-        &self,
-        request: Request<JoinRoomRequest>,
-    ) -> Result<Response<JoinRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let req = request.into_inner();
-        let response = self
-            .client_api
-            .join_room(user_id.as_str(), room_id.as_str(), req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn leave_room(
-        &self,
-        request: Request<LeaveRoomRequest>,
-    ) -> Result<Response<LeaveRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let response = self
-            .client_api
-            .leave_room(user_id.as_str(), room_id.as_str())
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn delete_room(
-        &self,
-        request: Request<DeleteRoomRequest>,
-    ) -> Result<Response<DeleteRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let response = self
-            .client_api
-            .delete_room(user_id.as_str(), room_id.as_str())
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
     async fn update_room_settings(
         &self,
         request: Request<UpdateRoomSettingsRequest>,
@@ -641,23 +665,6 @@ impl RoomService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn check_room_password(
-        &self,
-        request: Request<CheckRoomPasswordRequest>,
-    ) -> Result<Response<CheckRoomPasswordResponse>, Status> {
-        let _user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let client_ip = super::extract_client_ip(&request, &self.config)
-            .map_or_else(|| "unknown".to_string(), |ip| ip.to_string());
-        let req = request.into_inner();
-        let response = self
-            .client_api
-            .check_room_password(room_id.as_str(), req, &client_ip)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
     type MessageStreamStream = std::pin::Pin<
         Box<dyn tokio_stream::Stream<Item = Result<ServerMessage, Status>> + Send + 'static>,
     >;
@@ -677,10 +684,8 @@ impl RoomService for ClientServiceImpl {
             .ok_or_else(|| Status::unauthenticated("Authentication required"))?
             .clone();
         let room_id = self.get_room_id(&request)?;
-        // Consume request now so it is not held across await points
-        let client_stream = request.into_inner();
-
         let user_id = UserId::from_string(user_context.user_id.clone());
+        let client_stream = request.into_inner();
 
         // Get user details from service
         let user = self
@@ -826,97 +831,7 @@ impl RoomService for ClientServiceImpl {
             .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
-}
 
-/// gRPC message sender for `StreamMessageHandler`
-struct GrpcMessageSender {
-    sender: tokio::sync::mpsc::Sender<ServerMessage>,
-}
-
-impl GrpcMessageSender {
-    const fn new(sender: tokio::sync::mpsc::Sender<ServerMessage>) -> Self {
-        Self { sender }
-    }
-}
-
-impl MessageSender for GrpcMessageSender {
-    fn send(&self, message: ServerMessage) -> Result<(), String> {
-        // Use try_send to avoid blocking and provide backpressure.
-        // When the channel is full we log a warning here so the dropped message is
-        // always visible in logs, even for callers that ignore the returned error.
-        self.sender.try_send(message).map_err(|e| match e {
-            tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                tracing::warn!(
-                    "gRPC outgoing message dropped: client stream buffer is full \
-                         (buffer capacity: {}). Client may be too slow to consume messages.",
-                    MESSAGE_STREAM_BUFFER_SIZE,
-                );
-                "Channel full: client too slow to consume messages".to_string()
-            }
-            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                "Channel closed: client disconnected".to_string()
-            }
-        })
-    }
-
-    fn is_alive(&self) -> bool {
-        !self.sender.is_closed()
-    }
-}
-
-/// gRPC stream implementation of `StreamMessage` trait
-///
-/// Adapts `tonic::Streaming<ClientMessage>` + `mpsc::Sender<ServerMessage>` to the
-/// unified `StreamMessage` interface, enabling full code reuse with the WebSocket path.
-struct GrpcStreamMessage {
-    client_stream: tonic::Streaming<ClientMessage>,
-    sender: Arc<GrpcMessageSender>,
-    alive: std::sync::atomic::AtomicBool,
-}
-
-#[async_trait::async_trait]
-impl StreamMessage for GrpcStreamMessage {
-    async fn recv(&mut self) -> Option<Result<ClientMessage, String>> {
-        match await_grpc_receive_or_response_close(
-            self.client_stream.message(),
-            self.sender.sender.clone(),
-        )
-        .await
-        {
-            GrpcReceiveOutcome::Message(Ok(Some(msg))) => Some(Ok(msg)),
-            GrpcReceiveOutcome::Message(Ok(None)) => {
-                self.alive
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                None
-            }
-            GrpcReceiveOutcome::Message(Err(e)) => {
-                self.alive
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                Some(Err(format!("gRPC stream error: {e}")))
-            }
-            GrpcReceiveOutcome::ResponseStreamClosed => {
-                self.alive
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                None
-            }
-        }
-    }
-
-    fn send(&self, message: ServerMessage) -> Result<(), String> {
-        MessageSender::send(&*self.sender, message)
-    }
-
-    fn is_alive(&self) -> bool {
-        self.alive.load(std::sync::atomic::Ordering::Relaxed) && self.sender.is_alive()
-    }
-
-    // gRPC uses HTTP/2 PING frames automatically, no application-level ping needed
-}
-
-// ==================== MediaService Implementation ====================
-#[tonic::async_trait]
-#[allow(clippy::result_large_err)]
-impl MediaService for ClientServiceImpl {
     async fn add_media(
         &self,
         request: Request<AddMediaRequest>,
@@ -1233,6 +1148,88 @@ impl MediaService for ClientServiceImpl {
     }
 }
 
+/// gRPC message sender for `StreamMessageHandler`
+struct GrpcMessageSender {
+    sender: tokio::sync::mpsc::Sender<ServerMessage>,
+}
+
+impl GrpcMessageSender {
+    const fn new(sender: tokio::sync::mpsc::Sender<ServerMessage>) -> Self {
+        Self { sender }
+    }
+}
+
+impl MessageSender for GrpcMessageSender {
+    fn send(&self, message: ServerMessage) -> Result<(), String> {
+        self.sender.try_send(message).map_err(|e| match e {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                tracing::warn!(
+                    "gRPC outgoing message dropped: client stream buffer is full \
+                         (buffer capacity: {}). Client may be too slow to consume messages.",
+                    MESSAGE_STREAM_BUFFER_SIZE,
+                );
+                "Channel full: client too slow to consume messages".to_string()
+            }
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                "Channel closed: client disconnected".to_string()
+            }
+        })
+    }
+
+    fn is_alive(&self) -> bool {
+        !self.sender.is_closed()
+    }
+}
+
+/// gRPC stream implementation of `StreamMessage` trait
+///
+/// Adapts `tonic::Streaming<ClientMessage>` + `mpsc::Sender<ServerMessage>` to the
+/// unified `StreamMessage` interface, enabling full code reuse with the WebSocket path.
+struct GrpcStreamMessage {
+    client_stream: tonic::Streaming<ClientMessage>,
+    sender: Arc<GrpcMessageSender>,
+    alive: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl StreamMessage for GrpcStreamMessage {
+    async fn recv(&mut self) -> Option<Result<ClientMessage, String>> {
+        match await_grpc_receive_or_response_close(
+            self.client_stream.message(),
+            self.sender.sender.clone(),
+        )
+        .await
+        {
+            GrpcReceiveOutcome::Message(Ok(Some(msg))) => Some(Ok(msg)),
+            GrpcReceiveOutcome::Message(Ok(None)) => {
+                self.alive
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                None
+            }
+            GrpcReceiveOutcome::Message(Err(e)) => {
+                self.alive
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                Some(Err(format!("gRPC stream error: {e}")))
+            }
+            GrpcReceiveOutcome::ResponseStreamClosed => {
+                self.alive
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                None
+            }
+        }
+    }
+
+    fn send(&self, message: ServerMessage) -> Result<(), String> {
+        MessageSender::send(&*self.sender, message)
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive.load(std::sync::atomic::Ordering::Relaxed) && self.sender.is_alive()
+    }
+
+    // gRPC uses HTTP/2 PING frames automatically, no application-level ping needed
+}
+
 // ==================== PublicService Implementation ====================
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
@@ -1367,7 +1364,7 @@ impl EmailService for ClientServiceImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grpc::interceptors::UserContext;
+    use crate::grpc::interceptors::{RoomContext, UserContext};
 
     // ==================== Error Mapping ====================
 
@@ -1610,6 +1607,30 @@ mod tests {
         let result = extract_authenticated_token(&request);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn test_get_room_context_reads_room_context_extension() {
+        let mut request = tonic::Request::new(());
+        let expected = RoomContext {
+            room_id: "room1234_abx".to_string(),
+        };
+        request.extensions_mut().insert(expected.clone());
+
+        let room_context = request
+            .extensions()
+            .get::<RoomContext>()
+            .cloned()
+            .expect("room context");
+        let room_id = RoomId::from_string(room_context.room_id);
+        assert_eq!(room_id.as_str(), "room1234_abx");
+    }
+
+    #[test]
+    fn test_room_context_requires_extension() {
+        let request = tonic::Request::new(());
+        let room_context = request.extensions().get::<RoomContext>().cloned();
+        assert!(room_context.is_none());
     }
 
     #[test]

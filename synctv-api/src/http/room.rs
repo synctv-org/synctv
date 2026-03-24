@@ -28,6 +28,103 @@ use crate::proto::client::{
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
+#[derive(serde::Deserialize)]
+pub struct JoinRoomBody {
+    #[serde(default)]
+    password: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct SetRoomPasswordBody {
+    password: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct CheckRoomPasswordBody {
+    #[serde(default)]
+    password: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpdateRoomSettingsBody {
+    #[serde(default)]
+    settings: Vec<u8>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct StartPlaybackBody {
+    media_id: String,
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct StopPlaybackBody {}
+
+#[derive(serde::Deserialize)]
+pub struct AddMediaBody {
+    #[serde(default)]
+    playlist_id: String,
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    provider_instance_name: String,
+    #[serde(default)]
+    source_config: Vec<u8>,
+    #[serde(default)]
+    title: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct DeleteMediaBatchBody {
+    #[serde(default)]
+    media_ids: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ReorderMediaBatchBody {
+    #[serde(default)]
+    updates: Vec<MediaReorderUpdate>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct SwapMediaBody {
+    media_id1: String,
+    media_id2: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct AddMediaBatchBody {
+    #[serde(default)]
+    items: Vec<AddMediaBody>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct EditMediaBody {
+    #[serde(default)]
+    title: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreatePlaylistBody {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    parent_id: String,
+    #[serde(default)]
+    is_folder: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpdatePlaylistBody {
+    #[serde(default)]
+    name: String,
+    #[serde(default = "default_playlist_position")]
+    position: i32,
+}
+
+const fn default_playlist_position() -> i32 {
+    -1
+}
+
 fn map_validation_error(err: ValidationError) -> super::AppError {
     match err {
         ValidationError::TooLong { field, .. } => {
@@ -94,8 +191,12 @@ pub async fn join_room(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<JoinRoomRequest>,
+    Json(body): Json<JoinRoomBody>,
 ) -> AppResult<Json<JoinRoomResponse>> {
+    let req = JoinRoomRequest {
+        password: body.password,
+        room_id: room_id.clone(),
+    };
     let response = state
         .client_api
         .join_room(&auth.user_id.to_string(), &room_id, req)
@@ -149,8 +250,15 @@ pub async fn add_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<AddMediaRequest>,
+    Json(body): Json<AddMediaBody>,
 ) -> AppResult<Json<AddMediaResponse>> {
+    let req = AddMediaRequest {
+        playlist_id: body.playlist_id,
+        provider: body.provider,
+        provider_instance_name: body.provider_instance_name,
+        source_config: body.source_config,
+        title: body.title,
+    };
     let response = state
         .client_api
         .add_media(&auth.user_id.to_string(), &room_id, req)
@@ -166,7 +274,9 @@ pub async fn delete_media(
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
 ) -> AppResult<Json<DeleteMediaResponse>> {
-    let proto_req = DeleteMediaRequest { media_id };
+    let proto_req = DeleteMediaRequest {
+        media_id,
+    };
     let response = state
         .client_api
         .delete_media(&auth.user_id.to_string(), &room_id, proto_req)
@@ -177,13 +287,16 @@ pub async fn delete_media(
 }
 
 /// Bulk delete media from playlist
-#[tracing::instrument(name = "http_delete_media_batch", skip(state, req), fields(user_id = %auth.user_id, room_id = %room_id))]
+#[tracing::instrument(name = "http_delete_media_batch", skip(state, body), fields(user_id = %auth.user_id, room_id = %room_id))]
 pub async fn delete_media_batch(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<DeleteMediaBatchRequest>,
+    Json(body): Json<DeleteMediaBatchBody>,
 ) -> AppResult<Json<DeleteMediaBatchResponse>> {
+    let req = DeleteMediaBatchRequest {
+        media_ids: body.media_ids,
+    };
     let response = state
         .client_api
         .delete_media_batch(&auth.user_id.to_string(), &room_id, req)
@@ -197,13 +310,16 @@ pub async fn delete_media_batch(
 }
 
 /// Bulk reorder media items in playlist
-#[tracing::instrument(name = "http_reorder_media_batch", skip(state, req), fields(user_id = %auth.user_id, room_id = %room_id))]
+#[tracing::instrument(name = "http_reorder_media_batch", skip(state, body), fields(user_id = %auth.user_id, room_id = %room_id))]
 pub async fn reorder_media_batch(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<ReorderMediaBatchRequest>,
+    Json(body): Json<ReorderMediaBatchBody>,
 ) -> AppResult<Json<ReorderMediaBatchResponse>> {
+    let req = ReorderMediaBatchRequest {
+        updates: body.updates,
+    };
     let response = state
         .client_api
         .reorder_media_batch(&auth.user_id.to_string(), &room_id, req)
@@ -245,8 +361,12 @@ pub async fn swap_media_items(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<SwapMediaRequest>,
+    Json(body): Json<SwapMediaBody>,
 ) -> AppResult<Json<SwapMediaResponse>> {
+    let req = SwapMediaRequest {
+        media_id1: body.media_id1,
+        media_id2: body.media_id2,
+    };
     let response = state
         .client_api
         .swap_media(&auth.user_id.to_string(), &room_id, req)
@@ -264,8 +384,11 @@ pub async fn start_playback(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<StartPlaybackRequest>,
+    Json(body): Json<StartPlaybackBody>,
 ) -> AppResult<Json<StartPlaybackResponse>> {
+    let req = StartPlaybackRequest {
+        media_id: body.media_id,
+    };
     let response = state
         .client_api
         .start_playback(&auth.user_id.to_string(), &room_id, req)
@@ -280,8 +403,10 @@ pub async fn stop_playback(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<StopPlaybackRequest>,
+    Json(_body): Json<StopPlaybackBody>,
 ) -> AppResult<Json<StopPlaybackResponse>> {
+    let req = StopPlaybackRequest {
+    };
     let response = state
         .client_api
         .stop_playback(&auth.user_id.to_string(), &room_id, req)
@@ -328,7 +453,10 @@ pub async fn get_room_members(
         .get_room_members(
             &auth.user_id.to_string(),
             &room_id,
-            crate::proto::client::GetRoomMembersRequest { page, page_size },
+            crate::proto::client::GetRoomMembersRequest {
+                page,
+                page_size,
+            },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -396,8 +524,11 @@ pub async fn set_room_password(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<SetRoomPasswordRequest>,
+    Json(body): Json<SetRoomPasswordBody>,
 ) -> AppResult<Json<SetRoomPasswordResponse>> {
+    let req = SetRoomPasswordRequest {
+        password: body.password,
+    };
     let response = state
         .client_api
         .set_room_password(&auth.user_id.to_string(), &room_id, req)
@@ -414,10 +545,14 @@ pub async fn check_password(
     headers: axum::http::HeaderMap,
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(room_id): Path<String>,
-    Json(req): Json<CheckRoomPasswordRequest>,
+    Json(body): Json<CheckRoomPasswordBody>,
 ) -> AppResult<Json<CheckRoomPasswordResponse>> {
     let client_ip =
         super::auth::extract_client_ip(&state.config, connect_info.0, &headers).to_string();
+    let req = CheckRoomPasswordRequest {
+        password: body.password,
+        room_id: room_id.clone(),
+    };
 
     let response = state
         .client_api
@@ -448,8 +583,21 @@ pub async fn push_media_batch(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<AddMediaBatchRequest>,
+    Json(body): Json<AddMediaBatchBody>,
 ) -> AppResult<Json<crate::proto::client::AddMediaBatchResponse>> {
+    let req = AddMediaBatchRequest {
+        items: body
+            .items
+            .into_iter()
+            .map(|item| AddMediaRequest {
+                playlist_id: item.playlist_id,
+                provider: item.provider,
+                provider_instance_name: item.provider_instance_name,
+                source_config: item.source_config,
+                title: item.title,
+            })
+            .collect(),
+    };
     let response = state
         .client_api
         .add_media_batch(&auth.user_id.to_string(), &room_id, req)
@@ -464,9 +612,12 @@ pub async fn edit_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
-    Json(mut req): Json<EditMediaRequest>,
+    Json(body): Json<EditMediaBody>,
 ) -> AppResult<Json<EditMediaResponse>> {
-    req.media_id = media_id;
+    let req = EditMediaRequest {
+        media_id,
+        title: body.title,
+    };
     let response = state
         .client_api
         .edit_media(&auth.user_id.to_string(), &room_id, req)
@@ -576,8 +727,11 @@ pub async fn update_room_settings(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<UpdateRoomSettingsRequest>,
+    Json(body): Json<UpdateRoomSettingsBody>,
 ) -> AppResult<Json<UpdateRoomSettingsResponse>> {
+    let req = UpdateRoomSettingsRequest {
+        settings: body.settings,
+    };
     let response = state
         .client_api
         .update_room_settings(&auth.user_id.to_string(), &room_id, req)
@@ -712,7 +866,7 @@ pub struct UpdateMediaBatchRequest {
     pub reorder: Option<Vec<MediaReorderUpdate>>,
     /// Swap operation: {`media_id1`, `media_id2`}
     #[serde(default)]
-    pub swap: Option<SwapMediaRequest>,
+    pub swap: Option<SwapMediaBody>,
 }
 
 /// HTTP-specific: batch operation response
@@ -734,10 +888,12 @@ pub async fn update_media_batch(
 
     // Check for reorder operation
     if let Some(updates) = req.reorder {
-        let proto_req = ReorderMediaBatchRequest { updates };
+        let proto_req = ReorderMediaBatchRequest {
+                updates,
+            };
         let response = state
-            .client_api
-            .reorder_media_batch(&user_id, &room_id, proto_req)
+                .client_api
+                .reorder_media_batch(&user_id, &room_id, proto_req)
             .await
             .map_err(super::error::map_api_error)?;
 
@@ -748,9 +904,13 @@ pub async fn update_media_batch(
 
     // Check for swap operation
     if let Some(swap_req) = req.swap {
+        let proto_req = SwapMediaRequest {
+            media_id1: swap_req.media_id1,
+            media_id2: swap_req.media_id2,
+        };
         let response = state
             .client_api
-            .swap_media(&user_id, &room_id, swap_req)
+            .swap_media(&user_id, &room_id, proto_req)
             .await
             .map_err(super::error::map_api_error)?;
 
@@ -826,8 +986,13 @@ pub async fn create_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<CreatePlaylistRequest>,
+    Json(body): Json<CreatePlaylistBody>,
 ) -> AppResult<Json<CreatePlaylistResponse>> {
+    let req = CreatePlaylistRequest {
+        name: body.name,
+        parent_id: body.parent_id,
+        is_folder: body.is_folder,
+    };
     let response = state
         .client_api
         .create_playlist(&auth.user_id.to_string(), &room_id, req)
@@ -843,9 +1008,13 @@ pub async fn update_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
     Path((room_id, playlist_id)): Path<(String, String)>,
-    Json(mut req): Json<UpdatePlaylistRequest>,
+    Json(body): Json<UpdatePlaylistBody>,
 ) -> AppResult<Json<UpdatePlaylistResponse>> {
-    req.playlist_id = playlist_id;
+    let req = UpdatePlaylistRequest {
+        playlist_id,
+        name: body.name,
+        position: body.position,
+    };
     let response = state
         .client_api
         .update_playlist(&auth.user_id.to_string(), &room_id, req)
@@ -862,7 +1031,9 @@ pub async fn delete_playlist(
     State(state): State<AppState>,
     Path((room_id, playlist_id)): Path<(String, String)>,
 ) -> AppResult<Json<DeletePlaylistResponse>> {
-    let req = DeletePlaylistRequest { playlist_id };
+    let req = DeletePlaylistRequest {
+        playlist_id,
+    };
     let response = state
         .client_api
         .delete_playlist(&auth.user_id.to_string(), &room_id, req)
@@ -923,7 +1094,7 @@ pub async fn get_hot_rooms(
 
 #[cfg(test)]
 mod tests {
-    use super::UpdatePlaybackRequest;
+    use super::{AddMediaBatchBody, UpdateMediaBatchRequest, UpdatePlaybackRequest};
 
     #[test]
     fn test_update_playback_request_deserialize_state_only() {
@@ -1004,5 +1175,36 @@ mod tests {
             req.version.is_none(),
             "version should default to None when not provided"
         );
+    }
+
+    #[test]
+    fn test_add_media_batch_body_deserializes_without_room_id_in_nested_items() {
+        let json = r#"{
+            "items": [
+                {
+                    "playlist_id": "playlist-1",
+                    "provider": "yt-dlp",
+                    "provider_instance_name": "default",
+                    "source_config": [1, 2, 3],
+                    "title": "Example"
+                }
+            ]
+        }"#;
+        let body: AddMediaBatchBody = serde_json::from_str(json).unwrap();
+        assert_eq!(body.items.len(), 1);
+    }
+
+    #[test]
+    fn test_update_media_batch_request_deserializes_swap_without_room_id() {
+        let json = r#"{
+            "swap": {
+                "media_id1": "media-1",
+                "media_id2": "media-2"
+            }
+        }"#;
+        let req: UpdateMediaBatchRequest = serde_json::from_str(json).unwrap();
+        let swap = req.swap.expect("swap operation should deserialize");
+        assert_eq!(swap.media_id1, "media-1");
+        assert_eq!(swap.media_id2, "media-2");
     }
 }

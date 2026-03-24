@@ -112,34 +112,6 @@ impl NetStreamWriter {
         self.write_chunk(0).await
     }
 
-    #[allow(dead_code)]
-    async fn write_receive_audio(
-        &mut self,
-        transaction_id: &f64,
-        enable: &bool,
-    ) -> Result<(), NetStreamError> {
-        self.amf0_writer
-            .write_string(&String::from("receiveAudio"))?;
-        self.amf0_writer.write_number(transaction_id)?;
-        self.amf0_writer.write_null()?;
-        self.amf0_writer.write_bool(enable)?;
-
-        self.write_chunk(0).await
-    }
-    #[allow(dead_code)]
-    async fn write_receive_video(
-        &mut self,
-        transaction_id: &f64,
-        enable: &bool,
-    ) -> Result<(), NetStreamError> {
-        self.amf0_writer
-            .write_string(&String::from("receiveVideo"))?;
-        self.amf0_writer.write_number(transaction_id)?;
-        self.amf0_writer.write_null()?;
-        self.amf0_writer.write_bool(enable)?;
-
-        self.write_chunk(0).await
-    }
     pub async fn write_publish(
         &mut self,
         transaction_id: &f64,
@@ -154,45 +126,6 @@ impl NetStreamWriter {
 
         self.write_chunk(0).await
     }
-    #[allow(dead_code)]
-    async fn write_seek(&mut self, transaction_id: &f64, ms: &f64) -> Result<(), NetStreamError> {
-        self.amf0_writer.write_string(&String::from("seek"))?;
-        self.amf0_writer.write_number(transaction_id)?;
-        self.amf0_writer.write_null()?;
-        self.amf0_writer.write_number(ms)?;
-
-        self.write_chunk(0).await
-    }
-    #[allow(dead_code)]
-    async fn write_pause(
-        &mut self,
-        transaction_id: &f64,
-        pause: &bool,
-        ms: &f64,
-    ) -> Result<(), NetStreamError> {
-        self.amf0_writer.write_string(&String::from("pause"))?;
-        self.amf0_writer.write_number(transaction_id)?;
-        self.amf0_writer.write_null()?;
-        self.amf0_writer.write_bool(pause)?;
-        self.amf0_writer.write_number(ms)?;
-
-        self.write_chunk(0).await
-    }
-
-    #[allow(dead_code)]
-    async fn write_on_bw_done(
-        &mut self,
-        transaction_id: &f64,
-        bandwidth: &f64,
-    ) -> Result<(), NetStreamError> {
-        self.amf0_writer.write_string(&String::from("onBWDone"))?;
-        self.amf0_writer.write_number(transaction_id)?;
-        self.amf0_writer.write_null()?;
-        self.amf0_writer.write_number(bandwidth)?;
-
-        self.write_chunk(0).await
-    }
-
     pub async fn write_on_status(
         &mut self,
         transaction_id: &f64,

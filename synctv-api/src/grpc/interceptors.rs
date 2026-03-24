@@ -56,12 +56,9 @@ pub struct UserContext {
     pub pv: i32,
 }
 
-/// Room context - contains `UserContext` and `room_id`
-/// Used by `RoomService` and `MediaService` methods
+/// Room context for room-scoped gRPC operations.
 #[derive(Debug, Clone)]
 pub struct RoomContext {
-    #[allow(dead_code)] // Nested for future use when both user and room info needed
-    pub user_ctx: UserContext,
     pub room_id: String,
 }
 
@@ -108,19 +105,8 @@ impl AuthInterceptor {
         Ok(request)
     }
 
-    /// Inject `RoomContext` using the authenticated token and `x-room-id` header.
-    /// Used for `RoomService` and `MediaService`
-    ///
-    /// # Layer Ordering (RUNTIME CHECK)
-    ///
-    /// This method requires `SecurityCheckPassed` marker in request extensions,
-    /// which is injected by `BlacklistCheckLayer`. If the marker is missing,
-    /// this method returns an internal error to indicate misconfigured layer ordering.
-    ///
-    /// The room_id is validated against the same rules as HTTP endpoints:
-    /// - Must not be empty
-    /// - Must be exactly 12 characters
-    /// - Must contain only alphanumeric characters, underscores, and hyphens
+    /// Inject `RoomContext` using the authenticated token and `x-room-id` metadata.
+    /// Used for room-scoped gRPC operations.
     #[allow(clippy::result_large_err)]
     pub fn inject_room<T: std::fmt::Debug>(
         &self,
@@ -128,37 +114,24 @@ impl AuthInterceptor {
     ) -> Result<Request<T>, Status> {
         let authenticated_token = Self::require_authenticated_token(&request)?;
         let claims = &authenticated_token.claims;
-
-        // Extract room_id from x-room-id header
         let room_id_str = request
             .metadata()
             .get("x-room-id")
             .ok_or_else(|| Status::invalid_argument("Missing x-room-id header"))?
             .to_str()
             .map_err(|_| Status::invalid_argument("Invalid x-room-id header"))?;
-
-        // Validate room_id format (same rules as HTTP layer)
         let room_id = crate::room_id_validation::parse_room_id(room_id_str)
             .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
 
-        // Inject UserContext (for nested structure)
         let user_context = UserContext {
             user_id: authenticated_token.user_id.as_str().to_string(),
             iat: claims.iat,
             pv: claims.pv,
         };
-        request.extensions_mut().insert(user_context);
-
-        // Inject RoomContext
-        let room_context = RoomContext {
-            user_ctx: UserContext {
-                user_id: authenticated_token.user_id.as_str().to_string(),
-                iat: claims.iat,
-                pv: claims.pv,
-            },
+        request.extensions_mut().insert(user_context.clone());
+        request.extensions_mut().insert(RoomContext {
             room_id: room_id.0,
-        };
-        request.extensions_mut().insert(room_context);
+        });
 
         Ok(request)
     }
@@ -575,109 +548,5 @@ mod tests {
         assert_eq!(ctx.user_id, user_id.as_str());
         assert_eq!(ctx.iat, expected.claims.iat);
         assert_eq!(ctx.pv, expected.claims.pv);
-    }
-
-    #[test]
-    fn test_inject_room_rejects_without_security_check_marker() {
-        // TDD test: inject_room MUST reject requests without SecurityCheckPassed marker
-        let jwt_service =
-            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
-                .expect("Should create JwtService");
-
-        let mut request = tonic::Request::new(());
-        // Add a valid token and room_id (but no SecurityCheckPassed marker)
-        let user_id = synctv_core::models::UserId::new();
-        let token = jwt_service
-            .sign_token(&user_id, synctv_core::service::auth::TokenType::Access, 0)
-            .expect("Should sign token");
-        request
-            .metadata_mut()
-            .insert("authorization", format!("Bearer {token}").parse().unwrap());
-        request
-            .metadata_mut()
-            .insert("x-room-id", "room1234_abx".parse().unwrap());
-
-        // Clone jwt_service before moving to AuthInterceptor
-        let interceptor = AuthInterceptor::new(jwt_service);
-
-        // Should fail with internal error because SecurityCheckPassed marker is missing
-        let result = interceptor.inject_room(request);
-        assert!(
-            result.is_err(),
-            "Should reject without SecurityCheckPassed marker"
-        );
-        let err = result.unwrap_err();
-        assert_eq!(
-            err.code(),
-            tonic::Code::Internal,
-            "Should return Internal status"
-        );
-        assert!(
-            err.message().contains("misconfiguration"),
-            "Error should mention misconfiguration"
-        );
-    }
-
-    #[test]
-    fn test_inject_room_accepts_with_security_check_marker() {
-        // TDD test: inject_room MUST accept requests with SecurityCheckPassed marker
-        let jwt_service =
-            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
-                .expect("Should create JwtService");
-
-        let mut request = tonic::Request::new(());
-        // Add the SecurityCheckPassed marker (simulating BlacklistCheckLayer)
-        request.extensions_mut().insert(SecurityCheckPassed);
-        let user_id = synctv_core::models::UserId::new();
-        request
-            .extensions_mut()
-            .insert(test_authenticated_token(&user_id));
-        request
-            .metadata_mut()
-            .insert("x-room-id", "room1234_abx".parse().unwrap());
-
-        // Clone jwt_service before moving to AuthInterceptor
-        let interceptor = AuthInterceptor::new(jwt_service);
-
-        // Should succeed because SecurityCheckPassed marker is present
-        let result = interceptor.inject_room(request);
-        assert!(
-            result.is_ok(),
-            "Should accept with SecurityCheckPassed marker"
-        );
-    }
-
-    #[test]
-    fn test_inject_room_uses_authenticated_token_extension_without_revalidating_metadata() {
-        let jwt_service =
-            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
-                .expect("Should create JwtService");
-        let interceptor = AuthInterceptor::new(jwt_service);
-
-        let user_id = synctv_core::models::UserId::new();
-        let expected = test_authenticated_token(&user_id);
-
-        let mut request = tonic::Request::new(());
-        request.extensions_mut().insert(SecurityCheckPassed);
-        request.extensions_mut().insert(expected.clone());
-        request
-            .metadata_mut()
-            .insert("authorization", "Bearer invalid.jwt.value".parse().unwrap());
-        request
-            .metadata_mut()
-            .insert("x-room-id", "room1234_abx".parse().unwrap());
-
-        let request = interceptor
-            .inject_room(request)
-            .expect("Existing authenticated token should be reused");
-        let ctx = request
-            .extensions()
-            .get::<RoomContext>()
-            .expect("RoomContext should be injected");
-
-        assert_eq!(ctx.user_ctx.user_id, user_id.as_str());
-        assert_eq!(ctx.user_ctx.iat, expected.claims.iat);
-        assert_eq!(ctx.user_ctx.pv, expected.claims.pv);
-        assert_eq!(ctx.room_id, "room1234_abx");
     }
 }

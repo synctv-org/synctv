@@ -7,6 +7,7 @@
 
 use async_trait::async_trait;
 use sqlx::PgPool;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -415,14 +416,28 @@ impl SyncTvServer {
 
     /// Start all servers and wait for shutdown signal, using a `ShutdownCoordinator`
     /// for centralized shutdown orchestration.
-    pub async fn start_with_coordinator(
+    pub async fn start_with_coordinator(self, coordinator: ShutdownCoordinator) -> anyhow::Result<()> {
+        self.start_with_coordinator_and_shutdown_signal(coordinator, shutdown_signal())
+            .await
+    }
+
+    /// Start all servers and wait for an externally supplied shutdown signal.
+    ///
+    /// This is primarily used by integration tests that need to start the full
+    /// process in-process and stop it deterministically without sending OS signals.
+    pub async fn start_with_coordinator_and_shutdown_signal<F>(
         mut self,
         coordinator: ShutdownCoordinator,
-    ) -> anyhow::Result<()> {
+        shutdown_signal: F,
+    ) -> anyhow::Result<()>
+    where
+        F: Future<Output = ()> + Send,
+    {
         info!("Starting SyncTV server...");
 
         // Create shutdown signal channel
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        tokio::pin!(shutdown_signal);
 
         // Log infrastructure state
         if self.livestream_state.is_some() {
@@ -551,8 +566,8 @@ impl SyncTvServer {
                 None,
             )
             },
-            () = shutdown_signal() => {
-                info!("Shutdown signal received, starting graceful shutdown...");
+            () = &mut shutdown_signal => {
+                info!("External shutdown signal received, starting graceful shutdown...");
                 (None, grpc_handle.take(), http_handle.take())
             }
         };

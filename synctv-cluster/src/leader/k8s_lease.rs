@@ -834,13 +834,6 @@ impl K8sLeaderElector {
         }
     }
 
-    /// Returns `true` if we recently lost leadership and should wait before
-    /// attempting to re-acquire. Uses exponential backoff based on consecutive losses.
-    #[allow(dead_code)]
-    fn in_grace_period(&self) -> bool {
-        self.grace_period_remaining().is_some()
-    }
-
     /// Returns the number of consecutive leadership losses.
     /// Useful for monitoring and health checks.
     pub fn consecutive_losses(&self) -> u64 {

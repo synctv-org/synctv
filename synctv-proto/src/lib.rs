@@ -383,6 +383,39 @@ mod tests {
         assert_eq!(msg, decoded);
     }
 
+    #[test]
+    fn old_join_room_request_bytes_decode_with_room_id_default() {
+        let old_request = crate::client::JoinRoomRequest {
+            room_id: String::new(),
+            password: "secret".into(),
+        };
+        let bytes = old_request.encode_to_vec();
+        let decoded = crate::client::JoinRoomRequest::decode(bytes.as_slice()).unwrap();
+        assert_eq!(decoded.password, "secret");
+        assert!(decoded.room_id.is_empty());
+    }
+
+    #[test]
+    fn old_client_message_chat_tag_remains_decodable() {
+        let msg = crate::client::ClientMessage {
+            message: Some(crate::client::client_message::Message::Chat(
+                crate::client::ChatMessageSend {
+                    content: "compat".into(),
+                    position: None,
+                    color: None,
+                },
+            )),
+        };
+        let bytes = msg.encode_to_vec();
+        let decoded = crate::client::ClientMessage::decode(bytes.as_slice()).unwrap();
+        match decoded.message {
+            Some(crate::client::client_message::Message::Chat(chat)) => {
+                assert_eq!(chat.content, "compat");
+            }
+            other => panic!("expected chat variant, got {other:?}"),
+        }
+    }
+
     // === Backward Compatibility: Added Fields ===
 
     #[test]

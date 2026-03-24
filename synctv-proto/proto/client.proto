@@ -27,7 +27,13 @@ service UserService {
     rpc SetUsername(SetUsernameRequest) returns (SetUsernameResponse);
     rpc SetPassword(SetPasswordRequest) returns (SetPasswordResponse);
 
-    // User's Rooms
+    // User-initiated room resource operations (room_id in payload when targeting an existing room)
+    rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
+    rpc GetRoom(GetRoomRequest) returns (GetRoomResponse);
+    rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
+    rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
+    rpc DeleteRoom(DeleteRoomRequest) returns (DeleteRoomResponse);
+    rpc CheckRoomPassword(CheckRoomPasswordRequest) returns (CheckRoomPasswordResponse);
     rpc ListCreatedRooms(ListCreatedRoomsRequest) returns (ListCreatedRoomsResponse);
     rpc ListParticipatedRooms(ListParticipatedRoomsRequest) returns (ListParticipatedRoomsResponse);
 }
@@ -36,13 +42,6 @@ service UserService {
 // Authentication: JWT Authorization header (user_id) + x-room-id metadata (room context)
 // Routes: /api/room/*
 service RoomService {
-    // Room Management (resource-targeted operations)
-    rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
-    rpc GetRoom(GetRoomRequest) returns (GetRoomResponse);
-    rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
-    rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
-    rpc DeleteRoom(DeleteRoomRequest) returns (DeleteRoomResponse);
-
     // Room Settings Management
     rpc GetRoomSettings(GetRoomSettingsRequest) returns (GetRoomSettingsResponse);
     rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (UpdateRoomSettingsResponse);
@@ -50,16 +49,15 @@ service RoomService {
 
     // Room Password Management
     rpc SetRoomPassword(SetRoomPasswordRequest) returns (SetRoomPasswordResponse);
-    rpc CheckRoomPassword(CheckRoomPasswordRequest) returns (CheckRoomPasswordResponse);
 
-    // Member Management (room-scoped operations, use x-room-id)
+    // Member Management (room-scoped operations)
     rpc GetRoomMembers(GetRoomMembersRequest) returns (GetRoomMembersResponse);
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (UpdateMemberPermissionsResponse);
     rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
     rpc BanMember(BanMemberRequest) returns (BanMemberResponse);
     rpc UnbanMember(UnbanMemberRequest) returns (UnbanMemberResponse);
 
-    // Real-time Messaging (room-scoped, use x-room-id)
+    // Real-time Messaging (room-scoped)
     rpc MessageStream(stream ClientMessage) returns (stream ServerMessage);
     rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
 
@@ -68,20 +66,15 @@ service RoomService {
 
     // WebRTC Network Quality Monitoring
     rpc GetNetworkQuality(GetNetworkQualityRequest) returns (GetNetworkQualityResponse);
-}
 
-// ==================== Media Service ====================
-// Authentication: JWT Authorization header (user_id) + x-room-id metadata (room context)
-// Routes: /api/room/media/*
-service MediaService {
-    // Playlist Management (room-scoped operations, use x-room-id)
+    // Playlist Management (room-scoped operations)
     rpc CreatePlaylist(CreatePlaylistRequest) returns (CreatePlaylistResponse);
     rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse);
     rpc UpdatePlaylist(UpdatePlaylistRequest) returns (UpdatePlaylistResponse);
     rpc DeletePlaylist(DeletePlaylistRequest) returns (DeletePlaylistResponse);
     rpc ListPlaylists(ListPlaylistsRequest) returns (ListPlaylistsResponse);
 
-    // Media Management (room-scoped operations, use x-room-id)
+    // Media Management (room-scoped operations)
     rpc AddMedia(AddMediaRequest) returns (AddMediaResponse);
     rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
     rpc EditMedia(EditMediaRequest) returns (EditMediaResponse);
@@ -95,13 +88,13 @@ service MediaService {
     rpc DeleteMediaBatch(DeleteMediaBatchRequest) returns (DeleteMediaBatchResponse);
     rpc ReorderMediaBatch(ReorderMediaBatchRequest) returns (ReorderMediaBatchResponse);
 
-    // Playback Control (room-scoped operations, use x-room-id)
+    // Playback Control (room-scoped operations)
     // Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
     rpc StartPlayback(StartPlaybackRequest) returns (StartPlaybackResponse); // Start playing a specific media
     rpc StopPlayback(StopPlaybackRequest) returns (StopPlaybackResponse); // Stop current playback
     rpc GetPlayback(GetPlaybackRequest) returns (GetPlaybackResponse); // Get current playback state and info
 
-    // Live Streaming (room-scoped, use x-room-id)
+    // Live Streaming (room-scoped)
     rpc CreatePublishKey(CreatePublishKeyRequest) returns (CreatePublishKeyResponse);
     rpc GetStreamInfo(GetStreamInfoRequest) returns (GetStreamInfoResponse);
     rpc ListRoomStreams(ListRoomStreamsRequest) returns (ListRoomStreamsResponse);
@@ -269,8 +262,10 @@ message CreateRoomResponse {
     Room room = 1;
 }
 
-// Note: room_id extracted from x-room-id metadata (gRPC) or URL path (HTTP)
-message GetRoomRequest {}
+// Note: UserService room-scoped resource request; room_id is carried in payload.
+message GetRoomRequest {
+    string room_id = 1;
+}
 
 message GetRoomResponse {
     Room room = 1;
@@ -279,6 +274,7 @@ message GetRoomResponse {
 
 message JoinRoomRequest {
     string password = 1; // Optional room password
+    string room_id = 2; // Target room, carried in payload because this RPC is outside RoomService context
 }
 
 message JoinRoomResponse {
@@ -287,7 +283,9 @@ message JoinRoomResponse {
     repeated synctv.common.RoomMember members = 3;
 }
 
-message LeaveRoomRequest {}
+message LeaveRoomRequest {
+    string room_id = 1; // Target room, carried in payload because this RPC is outside RoomService context
+}
 
 message LeaveRoomResponse {
     bool success = 1;
@@ -304,7 +302,9 @@ message ListRoomsResponse {
     int32 total = 2;
 }
 
-message DeleteRoomRequest {}
+message DeleteRoomRequest {
+    string room_id = 1; // Target room, carried in payload because this RPC is outside RoomService context
+}
 
 message DeleteRoomResponse {
     bool success = 1;
@@ -342,6 +342,7 @@ message SetRoomPasswordResponse {
 
 message CheckRoomPasswordRequest {
     string password = 1;
+    string room_id = 2; // Target room, carried in payload because this RPC is outside RoomService context
 }
 message CheckRoomPasswordResponse {
     bool valid = 1;
@@ -467,9 +468,7 @@ message StartPlaybackResponse {
 }
 
 // HTTP API: Stop current playback
-message StopPlaybackRequest {
-    // Empty: stops the currently playing media
-}
+message StopPlaybackRequest {}
 
 message StopPlaybackResponse {
     // Empty: playback stopped successfully
@@ -1253,9 +1252,7 @@ message IceServer {
 }
 
 // Request/Response for GetIceServers RPC
-message GetIceServersRequest {
-    // Empty - uses x-room-id from metadata
-}
+message GetIceServersRequest {}
 
 message GetIceServersResponse {
     repeated IceServer servers = 1;
@@ -1264,9 +1261,7 @@ message GetIceServersResponse {
 // ==================== Network Quality Monitoring ====================
 // Real-time network quality monitoring for WebRTC connections
 
-message GetNetworkQualityRequest {
-    // Empty - uses x-room-id from metadata
-}
+message GetNetworkQualityRequest {}
 
 message GetNetworkQualityResponse {
     // Quality stats for each peer in the room

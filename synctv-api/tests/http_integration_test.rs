@@ -1057,6 +1057,7 @@ mod routing_structure {
 mod request_format {
     use synctv_proto::client::{
         CreateRoomRequest, JoinRoomRequest, LoginRequest, RefreshTokenRequest, RegisterRequest,
+        SetRoomPasswordRequest, StartPlaybackRequest,
     };
 
     #[test]
@@ -1097,6 +1098,7 @@ mod request_format {
         let json = r#"{"password":"room_pass"}"#;
         let req: JoinRoomRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.password, "room_pass");
+        assert!(req.room_id.is_empty());
     }
 
     #[test]
@@ -1104,6 +1106,34 @@ mod request_format {
         let json = r#"{"password":""}"#;
         let req: JoinRoomRequest = serde_json::from_str(json).unwrap();
         assert!(req.password.is_empty());
+        assert!(req.room_id.is_empty());
+    }
+
+    #[test]
+    fn test_set_room_password_request_deserializes_without_room_id() {
+        let json = r#"{"password":"new-secret"}"#;
+        let req: SetRoomPasswordRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.password, "new-secret");
+    }
+
+    #[test]
+    fn test_set_room_password_body_requires_password_field() {
+        let json = r#"{}"#;
+        let err = match serde_json::from_str::<synctv_api::http::room::SetRoomPasswordBody>(json) {
+            Ok(_) => panic!("missing password must be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("missing field"),
+            "unexpected deserialization error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_start_playback_request_deserializes_without_room_id() {
+        let json = r#"{"media_id":"media-123"}"#;
+        let req: StartPlaybackRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.media_id, "media-123");
     }
 
     #[test]

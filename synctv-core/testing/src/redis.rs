@@ -839,14 +839,4 @@ mod tests {
             vec![("::1".to_string(), 16380), ("127.0.0.1".to_string(), 6379)]
         );
     }
-
-    fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-        if let Some(message) = payload.downcast_ref::<String>() {
-            return message.clone();
-        }
-        if let Some(message) = payload.downcast_ref::<&str>() {
-            return (*message).to_string();
-        }
-        "<non-string panic payload>".to_string()
-    }
 }

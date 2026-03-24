@@ -114,7 +114,7 @@ struct PublisherEntry {
 
 impl PublisherEntry {
     // Used in test helpers to insert entries without a real registry lookup.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn new() -> Self {
         Self {
             last_active_secs: AtomicU64::new(Self::now_secs()),

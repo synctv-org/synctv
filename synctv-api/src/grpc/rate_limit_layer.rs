@@ -201,7 +201,6 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
     match service_name {
         Some("AuthService") => Some(GrpcRateLimitTier::Auth),
         Some("EmailService") => Some(GrpcRateLimitTier::Email),
-        Some("MediaService") => Some(GrpcRateLimitTier::Media),
         Some("UserService") => Some(user_service_tier(method_name)),
         Some("RoomService") => Some(room_service_tier(method_name)),
         Some("AdminService") => Some(GrpcRateLimitTier::Admin),
@@ -228,7 +227,12 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
 fn user_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
         Some(
-            "GetProfile" | "GetUser" | "ListCreatedRooms" | "ListParticipatedRooms" | "GetSettings",
+            "GetProfile"
+                | "GetUser"
+                | "GetRoom"
+                | "ListCreatedRooms"
+                | "ListParticipatedRooms"
+                | "GetSettings",
         ) => GrpcRateLimitTier::Read,
         _ => GrpcRateLimitTier::Write,
     }
@@ -236,13 +240,40 @@ fn user_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
 
 /// Classify `RoomService` methods into Read or Write tiers.
 ///
-/// Read-only methods use the more permissive Read tier. All other methods
-/// (`CreateRoom`, `JoinRoom`, etc.) default to Write tier.
+/// Read-only methods use the more permissive Read tier. Media and playback
+/// mutations are isolated into the Media tier. All other methods default to Write.
 fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
         Some(
-            "GetRoom" | "GetRoomSettings" | "GetRoomMembers" | "GetChatHistory" | "GetIceServers"
-            | "GetPlaylist" | "ListRooms",
+            "AddMedia"
+                | "DeleteMedia"
+                | "AddMediaBatch"
+                | "DeleteMediaBatch"
+                | "CreatePlaylist"
+                | "UpdatePlaylist"
+                | "DeletePlaylist"
+                | "ReorderMediaBatch"
+                | "StartPlayback"
+                | "StopPlayback"
+                | "UpdatePlayback"
+                | "MoveMedia"
+                | "SwapMedia"
+                | "EditMedia"
+                | "ClearPlaylist"
+                | "CreatePublishKey"
+        ) => GrpcRateLimitTier::Media,
+        Some(
+            "GetRoomSettings"
+                | "GetRoomMembers"
+                | "GetChatHistory"
+                | "GetIceServers"
+                | "GetPlaylist"
+                | "GetPlayback"
+                | "GetStreamInfo"
+                | "ListRoomStreams"
+                | "ListPlaylists"
+                | "ListPlaylist"
+                | "ListPlaylistItems",
         ) => GrpcRateLimitTier::Read,
         _ => GrpcRateLimitTier::Write,
     }
@@ -582,7 +613,43 @@ mod tests {
     #[test]
     fn test_tier_from_path_media() {
         assert_eq!(
-            tier_from_path("/synctv.client.MediaService/AddMedia"),
+            tier_from_path("/synctv.client.RoomService/AddMedia"),
+            Some(GrpcRateLimitTier::Media)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/DeleteMedia"),
+            Some(GrpcRateLimitTier::Media)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/AddMediaBatch"),
+            Some(GrpcRateLimitTier::Media)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/DeleteMediaBatch"),
+            Some(GrpcRateLimitTier::Media)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/StartPlayback"),
+            Some(GrpcRateLimitTier::Media)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/CreatePlaylist"),
+            Some(GrpcRateLimitTier::Media)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/UpdatePlaylist"),
+            Some(GrpcRateLimitTier::Media)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/DeletePlaylist"),
+            Some(GrpcRateLimitTier::Media)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/ReorderMediaBatch"),
+            Some(GrpcRateLimitTier::Media)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/CreatePublishKey"),
             Some(GrpcRateLimitTier::Media)
         );
     }
@@ -591,6 +658,10 @@ mod tests {
     fn test_tier_from_path_user_read() {
         assert_eq!(
             tier_from_path("/synctv.client.v1.UserService/GetProfile"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.v1.UserService/GetRoom"),
             Some(GrpcRateLimitTier::Read)
         );
         assert_eq!(
@@ -614,10 +685,6 @@ mod tests {
     #[test]
     fn test_tier_from_path_room_read() {
         assert_eq!(
-            tier_from_path("/synctv.client.v1.RoomService/GetRoom"),
-            Some(GrpcRateLimitTier::Read)
-        );
-        assert_eq!(
             tier_from_path("/synctv.client.v1.RoomService/GetRoomSettings"),
             Some(GrpcRateLimitTier::Read)
         );
@@ -633,16 +700,40 @@ mod tests {
             tier_from_path("/synctv.client.v1.RoomService/GetIceServers"),
             Some(GrpcRateLimitTier::Read)
         );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/GetPlayback"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/GetStreamInfo"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/ListRoomStreams"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/ListPlaylists"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/ListPlaylist"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/ListPlaylistItems"),
+            Some(GrpcRateLimitTier::Read)
+        );
     }
 
     #[test]
     fn test_tier_from_path_room_write() {
         assert_eq!(
-            tier_from_path("/synctv.client.RoomService/CreateRoom"),
+            tier_from_path("/synctv.client.RoomService/UpdateRoomSettings"),
             Some(GrpcRateLimitTier::Write)
         );
         assert_eq!(
-            tier_from_path("/synctv.client.RoomService/JoinRoom"),
+            tier_from_path("/synctv.client.RoomService/SendMessage"),
             Some(GrpcRateLimitTier::Write)
         );
     }

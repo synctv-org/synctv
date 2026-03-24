@@ -63,7 +63,6 @@ macro_rules! impl_grpc_service_ext {
 impl_grpc_service_ext!(<T> crate::proto::client::auth_service_server::AuthServiceServer<T>);
 impl_grpc_service_ext!(<T> crate::proto::client::user_service_server::UserServiceServer<T>);
 impl_grpc_service_ext!(<T> crate::proto::client::room_service_server::RoomServiceServer<T>);
-impl_grpc_service_ext!(<T> crate::proto::client::media_service_server::MediaServiceServer<T>);
 impl_grpc_service_ext!(<T> crate::proto::client::public_service_server::PublicServiceServer<T>);
 impl_grpc_service_ext!(<T> crate::proto::client::email_service_server::EmailServiceServer<T>);
 impl_grpc_service_ext!(<T> crate::proto::client::notification_service_server::NotificationServiceServer<T>);
@@ -290,9 +289,6 @@ async fn set_registered_grpc_services_serving(
         .set_serving::<RoomServiceServer<ClientServiceImpl>>()
         .await;
     health_reporter
-        .set_serving::<MediaServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
         .set_serving::<PublicServiceServer<ClientServiceImpl>>()
         .await;
     if state.email_registered {
@@ -361,9 +357,6 @@ async fn set_registered_grpc_services_not_serving(
         .await;
     health_reporter
         .set_not_serving::<RoomServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_not_serving::<MediaServiceServer<ClientServiceImpl>>()
         .await;
     health_reporter
         .set_not_serving::<PublicServiceServer<ClientServiceImpl>>()
@@ -445,7 +438,6 @@ fn validate_cluster_grpc_runtime_requirements(
 use crate::proto::admin_service_server::AdminServiceServer;
 use crate::proto::client::{
     auth_service_server::AuthServiceServer, email_service_server::EmailServiceServer,
-    media_service_server::MediaServiceServer,
     notification_service_server::NotificationServiceServer,
     public_service_server::PublicServiceServer, room_service_server::RoomServiceServer,
     user_service_server::UserServiceServer,
@@ -750,7 +742,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let user_interceptor = auth_interceptor.clone();
     let admin_interceptor = auth_interceptor.clone();
     let room_interceptor1 = auth_interceptor.clone();
-    let room_interceptor2 = auth_interceptor.clone();
 
     // Rate limiting is handled by the distributed_rate_limit_layer applied at the
     // server level (above). Per-service interceptors only handle auth concerns.
@@ -761,7 +752,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let client_service_clone2 = client_service.clone();
     let client_service_clone3 = client_service.clone();
     let client_service_clone4 = client_service.clone();
-    let client_service_clone5 = client_service.clone();
 
     let notification_service_registered = notification_service.is_some();
     let oauth2_service_registered = oauth2_service.is_some();
@@ -791,20 +781,15 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             UserServiceServer::new(client_service_clone1).with_message_size_limit(max_message_size),
             move |req| user_interceptor.inject_user(req),
         ))
-        // RoomService - JWT + room_id (inject RoomContext)
+        // RoomService - JWT + room_id metadata (inject RoomContext)
         .add_service(tonic::codegen::InterceptedService::new(
-            RoomServiceServer::new(client_service_clone2).with_message_size_limit(max_message_size),
-            move |req| room_interceptor1.inject_room(req),
-        ))
-        // MediaService - JWT + room_id (inject RoomContext)
-        .add_service(tonic::codegen::InterceptedService::new(
-            MediaServiceServer::new(client_service_clone3)
+            RoomServiceServer::new(client_service_clone2)
                 .with_message_size_limit(max_message_size),
-            move |req| room_interceptor2.inject_room(req),
+            move |req| room_interceptor1.inject_room(req),
         ))
         // PublicService (public room discovery)
         .add_service(
-            PublicServiceServer::new(client_service_clone4)
+            PublicServiceServer::new(client_service_clone3)
                 .with_message_size_limit(max_message_size),
         )
         // EmailService (send codes, confirm with token)
@@ -816,7 +801,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
     if email_service_registered {
         router = router.add_service(
-            EmailServiceServer::new(client_service_clone5)
+            EmailServiceServer::new(client_service_clone4)
                 .with_message_size_limit(max_message_size),
         );
     }

@@ -245,10 +245,14 @@ pub struct CreateRoomResponse {
     #[prost(message, optional, tag = "1")]
     pub room: ::core::option::Option<Room>,
 }
-/// Note: room_id extracted from x-room-id metadata (gRPC) or URL path (HTTP)
+/// Note: UserService room-scoped resource request; room_id is carried in payload.
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetRoomRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetRoomRequest {
+    #[prost(string, tag = "1")]
+    #[serde(default)]
+    pub room_id: ::prost::alloc::string::String,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetRoomResponse {
@@ -263,6 +267,10 @@ pub struct JoinRoomRequest {
     /// Optional room password
     #[prost(string, tag = "1")]
     pub password: ::prost::alloc::string::String,
+    /// Target room, carried in payload because this RPC is outside RoomService context
+    #[prost(string, tag = "2")]
+    #[serde(default)]
+    pub room_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -275,8 +283,13 @@ pub struct JoinRoomResponse {
     pub members: ::prost::alloc::vec::Vec<super::common::RoomMember>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct LeaveRoomRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LeaveRoomRequest {
+    /// Target room, carried in payload because this RPC is outside RoomService context
+    #[prost(string, tag = "1")]
+    #[serde(default)]
+    pub room_id: ::prost::alloc::string::String,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LeaveRoomResponse {
@@ -305,8 +318,13 @@ pub struct ListRoomsResponse {
     pub total: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct DeleteRoomRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteRoomRequest {
+    /// Target room, carried in payload because this RPC is outside RoomService context
+    #[prost(string, tag = "1")]
+    #[serde(default)]
+    pub room_id: ::prost::alloc::string::String,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteRoomResponse {
@@ -367,6 +385,10 @@ pub struct SetRoomPasswordResponse {
 pub struct CheckRoomPasswordRequest {
     #[prost(string, tag = "1")]
     pub password: ::prost::alloc::string::String,
+    /// Target room, carried in payload because this RPC is outside RoomService context
+    #[prost(string, tag = "2")]
+    #[serde(default)]
+    pub room_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -569,8 +591,6 @@ pub struct StartPlaybackRequest {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StartPlaybackResponse {}
 /// HTTP API: Stop current playback
-///
-/// Empty: stops the currently playing media
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StopPlaybackRequest {}
@@ -1828,8 +1848,6 @@ pub struct IceServer {
     pub expiry_time: i64,
 }
 /// Request/Response for GetIceServers RPC
-///
-/// Empty - uses x-room-id from metadata
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetIceServersRequest {}
@@ -1839,7 +1857,6 @@ pub struct GetIceServersResponse {
     #[prost(message, repeated, tag = "1")]
     pub servers: ::prost::alloc::vec::Vec<IceServer>,
 }
-/// Empty - uses x-room-id from metadata
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetNetworkQualityRequest {}
@@ -2763,7 +2780,153 @@ pub mod user_service_client {
                 .insert(GrpcMethod::new("synctv.client.UserService", "SetPassword"));
             self.inner.unary(req, path, codec).await
         }
-        /// User's Rooms
+        /// User-initiated room resource operations (room_id in payload when targeting an existing room)
+        pub async fn create_room(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CreateRoomRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreateRoomResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/CreateRoom",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.UserService", "CreateRoom"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_room(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetRoomRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetRoomResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/GetRoom",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.UserService", "GetRoom"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn join_room(
+            &mut self,
+            request: impl tonic::IntoRequest<super::JoinRoomRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::JoinRoomResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/JoinRoom",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.UserService", "JoinRoom"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn leave_room(
+            &mut self,
+            request: impl tonic::IntoRequest<super::LeaveRoomRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::LeaveRoomResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/LeaveRoom",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.UserService", "LeaveRoom"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn delete_room(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteRoomRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteRoomResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/DeleteRoom",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.UserService", "DeleteRoom"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn check_room_password(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CheckRoomPasswordRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CheckRoomPasswordResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/CheckRoomPassword",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.UserService", "CheckRoomPassword"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn list_created_rooms(
             &mut self,
             request: impl tonic::IntoRequest<super::ListCreatedRoomsRequest>,
@@ -2857,7 +3020,46 @@ pub mod user_service_server {
             tonic::Response<super::SetPasswordResponse>,
             tonic::Status,
         >;
-        /// User's Rooms
+        /// User-initiated room resource operations (room_id in payload when targeting an existing room)
+        async fn create_room(
+            &self,
+            request: tonic::Request<super::CreateRoomRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreateRoomResponse>,
+            tonic::Status,
+        >;
+        async fn get_room(
+            &self,
+            request: tonic::Request<super::GetRoomRequest>,
+        ) -> std::result::Result<tonic::Response<super::GetRoomResponse>, tonic::Status>;
+        async fn join_room(
+            &self,
+            request: tonic::Request<super::JoinRoomRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::JoinRoomResponse>,
+            tonic::Status,
+        >;
+        async fn leave_room(
+            &self,
+            request: tonic::Request<super::LeaveRoomRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::LeaveRoomResponse>,
+            tonic::Status,
+        >;
+        async fn delete_room(
+            &self,
+            request: tonic::Request<super::DeleteRoomRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteRoomResponse>,
+            tonic::Status,
+        >;
+        async fn check_room_password(
+            &self,
+            request: tonic::Request<super::CheckRoomPasswordRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CheckRoomPasswordResponse>,
+            tonic::Status,
+        >;
         async fn list_created_rooms(
             &self,
             request: tonic::Request<super::ListCreatedRoomsRequest>,
@@ -3132,6 +3334,277 @@ pub mod user_service_server {
                     };
                     Box::pin(fut)
                 }
+                "/synctv.client.UserService/CreateRoom" => {
+                    #[allow(non_camel_case_types)]
+                    struct CreateRoomSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::CreateRoomRequest>
+                    for CreateRoomSvc<T> {
+                        type Response = super::CreateRoomResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::CreateRoomRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::create_room(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = CreateRoomSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/GetRoom" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetRoomSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::GetRoomRequest>
+                    for GetRoomSvc<T> {
+                        type Response = super::GetRoomResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetRoomRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::get_room(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetRoomSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/JoinRoom" => {
+                    #[allow(non_camel_case_types)]
+                    struct JoinRoomSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::JoinRoomRequest>
+                    for JoinRoomSvc<T> {
+                        type Response = super::JoinRoomResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::JoinRoomRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::join_room(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = JoinRoomSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/LeaveRoom" => {
+                    #[allow(non_camel_case_types)]
+                    struct LeaveRoomSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::LeaveRoomRequest>
+                    for LeaveRoomSvc<T> {
+                        type Response = super::LeaveRoomResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::LeaveRoomRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::leave_room(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = LeaveRoomSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/DeleteRoom" => {
+                    #[allow(non_camel_case_types)]
+                    struct DeleteRoomSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::DeleteRoomRequest>
+                    for DeleteRoomSvc<T> {
+                        type Response = super::DeleteRoomResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DeleteRoomRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::delete_room(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = DeleteRoomSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/CheckRoomPassword" => {
+                    #[allow(non_camel_case_types)]
+                    struct CheckRoomPasswordSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::CheckRoomPasswordRequest>
+                    for CheckRoomPasswordSvc<T> {
+                        type Response = super::CheckRoomPasswordResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::CheckRoomPasswordRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::check_room_password(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = CheckRoomPasswordSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/synctv.client.UserService/ListCreatedRooms" => {
                     #[allow(non_camel_case_types)]
                     struct ListCreatedRoomsSvc<T: UserService>(pub Arc<T>);
@@ -3358,127 +3831,6 @@ pub mod room_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Room Management (resource-targeted operations)
-        pub async fn create_room(
-            &mut self,
-            request: impl tonic::IntoRequest<super::CreateRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreateRoomResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/CreateRoom",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "CreateRoom"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn get_room(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetRoomResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/GetRoom",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "GetRoom"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn join_room(
-            &mut self,
-            request: impl tonic::IntoRequest<super::JoinRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::JoinRoomResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/JoinRoom",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "JoinRoom"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn leave_room(
-            &mut self,
-            request: impl tonic::IntoRequest<super::LeaveRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::LeaveRoomResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/LeaveRoom",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "LeaveRoom"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn delete_room(
-            &mut self,
-            request: impl tonic::IntoRequest<super::DeleteRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::DeleteRoomResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/DeleteRoom",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "DeleteRoom"));
-            self.inner.unary(req, path, codec).await
-        }
         /// Room Settings Management
         pub async fn get_room_settings(
             &mut self,
@@ -3581,33 +3933,7 @@ pub mod room_service_client {
                 .insert(GrpcMethod::new("synctv.client.RoomService", "SetRoomPassword"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn check_room_password(
-            &mut self,
-            request: impl tonic::IntoRequest<super::CheckRoomPasswordRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CheckRoomPasswordResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/CheckRoomPassword",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.RoomService", "CheckRoomPassword"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Member Management (room-scoped operations, use x-room-id)
+        /// Member Management (room-scoped operations)
         pub async fn get_room_members(
             &mut self,
             request: impl tonic::IntoRequest<super::GetRoomMembersRequest>,
@@ -3733,7 +4059,7 @@ pub mod room_service_client {
                 .insert(GrpcMethod::new("synctv.client.RoomService", "UnbanMember"));
             self.inner.unary(req, path, codec).await
         }
-        /// Real-time Messaging (room-scoped, use x-room-id)
+        /// Real-time Messaging (room-scoped)
         pub async fn message_stream(
             &mut self,
             request: impl tonic::IntoStreamingRequest<Message = super::ClientMessage>,
@@ -3834,6 +4160,524 @@ pub mod room_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Playlist Management (room-scoped operations)
+        pub async fn create_playlist(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CreatePlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreatePlaylistResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/CreatePlaylist",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "CreatePlaylist"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_playlist(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetPlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetPlaylistResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/GetPlaylist",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "GetPlaylist"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn update_playlist(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdatePlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdatePlaylistResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/UpdatePlaylist",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "UpdatePlaylist"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn delete_playlist(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeletePlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeletePlaylistResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/DeletePlaylist",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "DeletePlaylist"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_playlists(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListPlaylistsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListPlaylistsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/ListPlaylists",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "ListPlaylists"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Media Management (room-scoped operations)
+        pub async fn add_media(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AddMediaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::AddMediaResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/AddMedia",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "AddMedia"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn delete_media(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteMediaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteMediaResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/DeleteMedia",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "DeleteMedia"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn edit_media(
+            &mut self,
+            request: impl tonic::IntoRequest<super::EditMediaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::EditMediaResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/EditMedia",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "EditMedia"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_playlist(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListPlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListPlaylistResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/ListPlaylist",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "ListPlaylist"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_playlist_items(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListPlaylistItemsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListPlaylistItemsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/ListPlaylistItems",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.RoomService", "ListPlaylistItems"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn swap_media(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SwapMediaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SwapMediaResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/SwapMedia",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "SwapMedia"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn clear_playlist(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ClearPlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ClearPlaylistResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/ClearPlaylist",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "ClearPlaylist"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Batch Operations (room-scoped)
+        pub async fn add_media_batch(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AddMediaBatchRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::AddMediaBatchResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/AddMediaBatch",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "AddMediaBatch"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn delete_media_batch(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteMediaBatchRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteMediaBatchResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/DeleteMediaBatch",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.RoomService", "DeleteMediaBatch"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn reorder_media_batch(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ReorderMediaBatchRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ReorderMediaBatchResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/ReorderMediaBatch",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.RoomService", "ReorderMediaBatch"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Playback Control (room-scoped operations)
+        /// Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
+        pub async fn start_playback(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StartPlaybackRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartPlaybackResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/StartPlayback",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "StartPlayback"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn stop_playback(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StopPlaybackRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StopPlaybackResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/StopPlayback",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "StopPlayback"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_playback(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetPlaybackRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetPlaybackResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/GetPlayback",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "GetPlayback"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Live Streaming (room-scoped)
+        pub async fn create_publish_key(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CreatePublishKeyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreatePublishKeyResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/CreatePublishKey",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.RoomService", "CreatePublishKey"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_stream_info(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetStreamInfoRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetStreamInfoResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/GetStreamInfo",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "GetStreamInfo"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_room_streams(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListRoomStreamsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListRoomStreamsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/ListRoomStreams",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "ListRoomStreams"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -3849,39 +4693,6 @@ pub mod room_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with RoomServiceServer.
     #[async_trait]
     pub trait RoomService: std::marker::Send + std::marker::Sync + 'static {
-        /// Room Management (resource-targeted operations)
-        async fn create_room(
-            &self,
-            request: tonic::Request<super::CreateRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreateRoomResponse>,
-            tonic::Status,
-        >;
-        async fn get_room(
-            &self,
-            request: tonic::Request<super::GetRoomRequest>,
-        ) -> std::result::Result<tonic::Response<super::GetRoomResponse>, tonic::Status>;
-        async fn join_room(
-            &self,
-            request: tonic::Request<super::JoinRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::JoinRoomResponse>,
-            tonic::Status,
-        >;
-        async fn leave_room(
-            &self,
-            request: tonic::Request<super::LeaveRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::LeaveRoomResponse>,
-            tonic::Status,
-        >;
-        async fn delete_room(
-            &self,
-            request: tonic::Request<super::DeleteRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::DeleteRoomResponse>,
-            tonic::Status,
-        >;
         /// Room Settings Management
         async fn get_room_settings(
             &self,
@@ -3912,14 +4723,7 @@ pub mod room_service_server {
             tonic::Response<super::SetRoomPasswordResponse>,
             tonic::Status,
         >;
-        async fn check_room_password(
-            &self,
-            request: tonic::Request<super::CheckRoomPasswordRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CheckRoomPasswordResponse>,
-            tonic::Status,
-        >;
-        /// Member Management (room-scoped operations, use x-room-id)
+        /// Member Management (room-scoped operations)
         async fn get_room_members(
             &self,
             request: tonic::Request<super::GetRoomMembersRequest>,
@@ -3961,7 +4765,7 @@ pub mod room_service_server {
             >
             + std::marker::Send
             + 'static;
-        /// Real-time Messaging (room-scoped, use x-room-id)
+        /// Real-time Messaging (room-scoped)
         async fn message_stream(
             &self,
             request: tonic::Request<tonic::Streaming<super::ClientMessage>>,
@@ -3990,6 +4794,159 @@ pub mod room_service_server {
             request: tonic::Request<super::GetNetworkQualityRequest>,
         ) -> std::result::Result<
             tonic::Response<super::GetNetworkQualityResponse>,
+            tonic::Status,
+        >;
+        /// Playlist Management (room-scoped operations)
+        async fn create_playlist(
+            &self,
+            request: tonic::Request<super::CreatePlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreatePlaylistResponse>,
+            tonic::Status,
+        >;
+        async fn get_playlist(
+            &self,
+            request: tonic::Request<super::GetPlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetPlaylistResponse>,
+            tonic::Status,
+        >;
+        async fn update_playlist(
+            &self,
+            request: tonic::Request<super::UpdatePlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdatePlaylistResponse>,
+            tonic::Status,
+        >;
+        async fn delete_playlist(
+            &self,
+            request: tonic::Request<super::DeletePlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeletePlaylistResponse>,
+            tonic::Status,
+        >;
+        async fn list_playlists(
+            &self,
+            request: tonic::Request<super::ListPlaylistsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListPlaylistsResponse>,
+            tonic::Status,
+        >;
+        /// Media Management (room-scoped operations)
+        async fn add_media(
+            &self,
+            request: tonic::Request<super::AddMediaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::AddMediaResponse>,
+            tonic::Status,
+        >;
+        async fn delete_media(
+            &self,
+            request: tonic::Request<super::DeleteMediaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteMediaResponse>,
+            tonic::Status,
+        >;
+        async fn edit_media(
+            &self,
+            request: tonic::Request<super::EditMediaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::EditMediaResponse>,
+            tonic::Status,
+        >;
+        async fn list_playlist(
+            &self,
+            request: tonic::Request<super::ListPlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListPlaylistResponse>,
+            tonic::Status,
+        >;
+        async fn list_playlist_items(
+            &self,
+            request: tonic::Request<super::ListPlaylistItemsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListPlaylistItemsResponse>,
+            tonic::Status,
+        >;
+        async fn swap_media(
+            &self,
+            request: tonic::Request<super::SwapMediaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SwapMediaResponse>,
+            tonic::Status,
+        >;
+        async fn clear_playlist(
+            &self,
+            request: tonic::Request<super::ClearPlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ClearPlaylistResponse>,
+            tonic::Status,
+        >;
+        /// Batch Operations (room-scoped)
+        async fn add_media_batch(
+            &self,
+            request: tonic::Request<super::AddMediaBatchRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::AddMediaBatchResponse>,
+            tonic::Status,
+        >;
+        async fn delete_media_batch(
+            &self,
+            request: tonic::Request<super::DeleteMediaBatchRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteMediaBatchResponse>,
+            tonic::Status,
+        >;
+        async fn reorder_media_batch(
+            &self,
+            request: tonic::Request<super::ReorderMediaBatchRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ReorderMediaBatchResponse>,
+            tonic::Status,
+        >;
+        /// Playback Control (room-scoped operations)
+        /// Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
+        async fn start_playback(
+            &self,
+            request: tonic::Request<super::StartPlaybackRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartPlaybackResponse>,
+            tonic::Status,
+        >;
+        async fn stop_playback(
+            &self,
+            request: tonic::Request<super::StopPlaybackRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StopPlaybackResponse>,
+            tonic::Status,
+        >;
+        async fn get_playback(
+            &self,
+            request: tonic::Request<super::GetPlaybackRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetPlaybackResponse>,
+            tonic::Status,
+        >;
+        /// Live Streaming (room-scoped)
+        async fn create_publish_key(
+            &self,
+            request: tonic::Request<super::CreatePublishKeyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreatePublishKeyResponse>,
+            tonic::Status,
+        >;
+        async fn get_stream_info(
+            &self,
+            request: tonic::Request<super::GetStreamInfoRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetStreamInfoResponse>,
+            tonic::Status,
+        >;
+        async fn list_room_streams(
+            &self,
+            request: tonic::Request<super::ListRoomStreamsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListRoomStreamsResponse>,
             tonic::Status,
         >;
     }
@@ -4072,231 +5029,6 @@ pub mod room_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/synctv.client.RoomService/CreateRoom" => {
-                    #[allow(non_camel_case_types)]
-                    struct CreateRoomSvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::CreateRoomRequest>
-                    for CreateRoomSvc<T> {
-                        type Response = super::CreateRoomResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::CreateRoomRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::create_room(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = CreateRoomSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/GetRoom" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetRoomSvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::GetRoomRequest>
-                    for GetRoomSvc<T> {
-                        type Response = super::GetRoomResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetRoomRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::get_room(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetRoomSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/JoinRoom" => {
-                    #[allow(non_camel_case_types)]
-                    struct JoinRoomSvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::JoinRoomRequest>
-                    for JoinRoomSvc<T> {
-                        type Response = super::JoinRoomResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::JoinRoomRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::join_room(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = JoinRoomSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/LeaveRoom" => {
-                    #[allow(non_camel_case_types)]
-                    struct LeaveRoomSvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::LeaveRoomRequest>
-                    for LeaveRoomSvc<T> {
-                        type Response = super::LeaveRoomResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::LeaveRoomRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::leave_room(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = LeaveRoomSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/DeleteRoom" => {
-                    #[allow(non_camel_case_types)]
-                    struct DeleteRoomSvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::DeleteRoomRequest>
-                    for DeleteRoomSvc<T> {
-                        type Response = super::DeleteRoomResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::DeleteRoomRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::delete_room(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = DeleteRoomSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/synctv.client.RoomService/GetRoomSettings" => {
                     #[allow(non_camel_case_types)]
                     struct GetRoomSettingsSvc<T: RoomService>(pub Arc<T>);
@@ -4464,52 +5196,6 @@ pub mod room_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = SetRoomPasswordSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/CheckRoomPassword" => {
-                    #[allow(non_camel_case_types)]
-                    struct CheckRoomPasswordSvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::CheckRoomPasswordRequest>
-                    for CheckRoomPasswordSvc<T> {
-                        type Response = super::CheckRoomPasswordResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::CheckRoomPasswordRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::check_room_password(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = CheckRoomPasswordSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -4940,913 +5626,11 @@ pub mod room_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
-            }
-        }
-    }
-    impl<T> Clone for RoomServiceServer<T> {
-        fn clone(&self) -> Self {
-            let inner = self.inner.clone();
-            Self {
-                inner,
-                accept_compression_encodings: self.accept_compression_encodings,
-                send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
-            }
-        }
-    }
-    /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "synctv.client.RoomService";
-    impl<T> tonic::server::NamedService for RoomServiceServer<T> {
-        const NAME: &'static str = SERVICE_NAME;
-    }
-}
-/// Generated client implementations.
-pub mod media_service_client {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    use tonic::codegen::http::Uri;
-    /// ==================== Media Service ====================
-    /// Authentication: JWT Authorization header (user_id) + x-room-id metadata (room context)
-    /// Routes: /api/room/media/\*
-    #[derive(Debug, Clone)]
-    pub struct MediaServiceClient<T> {
-        inner: tonic::client::Grpc<T>,
-    }
-    impl MediaServiceClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
-    }
-    impl<T> MediaServiceClient<T>
-    where
-        T: tonic::client::GrpcService<tonic::body::Body>,
-        T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
-    {
-        pub fn new(inner: T) -> Self {
-            let inner = tonic::client::Grpc::new(inner);
-            Self { inner }
-        }
-        pub fn with_origin(inner: T, origin: Uri) -> Self {
-            let inner = tonic::client::Grpc::with_origin(inner, origin);
-            Self { inner }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> MediaServiceClient<InterceptedService<T, F>>
-        where
-            F: tonic::service::Interceptor,
-            T::ResponseBody: Default,
-            T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
-                >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
-        {
-            MediaServiceClient::new(InterceptedService::new(inner, interceptor))
-        }
-        /// Compress requests with the given encoding.
-        ///
-        /// This requires the server to support it otherwise it might respond with an
-        /// error.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.send_compressed(encoding);
-            self
-        }
-        /// Enable decompressing responses.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.accept_compressed(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
-        /// Playlist Management (room-scoped operations, use x-room-id)
-        pub async fn create_playlist(
-            &mut self,
-            request: impl tonic::IntoRequest<super::CreatePlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreatePlaylistResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/CreatePlaylist",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "CreatePlaylist"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn get_playlist(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetPlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetPlaylistResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/GetPlaylist",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "GetPlaylist"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn update_playlist(
-            &mut self,
-            request: impl tonic::IntoRequest<super::UpdatePlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::UpdatePlaylistResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/UpdatePlaylist",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "UpdatePlaylist"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn delete_playlist(
-            &mut self,
-            request: impl tonic::IntoRequest<super::DeletePlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::DeletePlaylistResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/DeletePlaylist",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "DeletePlaylist"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn list_playlists(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ListPlaylistsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListPlaylistsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/ListPlaylists",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "ListPlaylists"));
-            self.inner.unary(req, path, codec).await
-        }
-        /// Media Management (room-scoped operations, use x-room-id)
-        pub async fn add_media(
-            &mut self,
-            request: impl tonic::IntoRequest<super::AddMediaRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::AddMediaResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/AddMedia",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "AddMedia"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn delete_media(
-            &mut self,
-            request: impl tonic::IntoRequest<super::DeleteMediaRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::DeleteMediaResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/DeleteMedia",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "DeleteMedia"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn edit_media(
-            &mut self,
-            request: impl tonic::IntoRequest<super::EditMediaRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::EditMediaResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/EditMedia",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "EditMedia"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn list_playlist(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ListPlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListPlaylistResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/ListPlaylist",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "ListPlaylist"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn list_playlist_items(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ListPlaylistItemsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListPlaylistItemsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/ListPlaylistItems",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.MediaService", "ListPlaylistItems"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn swap_media(
-            &mut self,
-            request: impl tonic::IntoRequest<super::SwapMediaRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::SwapMediaResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/SwapMedia",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "SwapMedia"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn clear_playlist(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ClearPlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ClearPlaylistResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/ClearPlaylist",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "ClearPlaylist"));
-            self.inner.unary(req, path, codec).await
-        }
-        /// Batch Operations (room-scoped)
-        pub async fn add_media_batch(
-            &mut self,
-            request: impl tonic::IntoRequest<super::AddMediaBatchRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::AddMediaBatchResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/AddMediaBatch",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "AddMediaBatch"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn delete_media_batch(
-            &mut self,
-            request: impl tonic::IntoRequest<super::DeleteMediaBatchRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::DeleteMediaBatchResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/DeleteMediaBatch",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.MediaService", "DeleteMediaBatch"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn reorder_media_batch(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ReorderMediaBatchRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ReorderMediaBatchResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/ReorderMediaBatch",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.MediaService", "ReorderMediaBatch"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Playback Control (room-scoped operations, use x-room-id)
-        /// Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
-        pub async fn start_playback(
-            &mut self,
-            request: impl tonic::IntoRequest<super::StartPlaybackRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::StartPlaybackResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/StartPlayback",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "StartPlayback"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn stop_playback(
-            &mut self,
-            request: impl tonic::IntoRequest<super::StopPlaybackRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::StopPlaybackResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/StopPlayback",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "StopPlayback"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn get_playback(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetPlaybackRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetPlaybackResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/GetPlayback",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "GetPlayback"));
-            self.inner.unary(req, path, codec).await
-        }
-        /// Live Streaming (room-scoped, use x-room-id)
-        pub async fn create_publish_key(
-            &mut self,
-            request: impl tonic::IntoRequest<super::CreatePublishKeyRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreatePublishKeyResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/CreatePublishKey",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.MediaService", "CreatePublishKey"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn get_stream_info(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetStreamInfoRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetStreamInfoResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/GetStreamInfo",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "GetStreamInfo"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn list_room_streams(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ListRoomStreamsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListRoomStreamsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/ListRoomStreams",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.MediaService", "ListRoomStreams"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-    }
-}
-/// Generated server implementations.
-pub mod media_service_server {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with MediaServiceServer.
-    #[async_trait]
-    pub trait MediaService: std::marker::Send + std::marker::Sync + 'static {
-        /// Playlist Management (room-scoped operations, use x-room-id)
-        async fn create_playlist(
-            &self,
-            request: tonic::Request<super::CreatePlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreatePlaylistResponse>,
-            tonic::Status,
-        >;
-        async fn get_playlist(
-            &self,
-            request: tonic::Request<super::GetPlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetPlaylistResponse>,
-            tonic::Status,
-        >;
-        async fn update_playlist(
-            &self,
-            request: tonic::Request<super::UpdatePlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::UpdatePlaylistResponse>,
-            tonic::Status,
-        >;
-        async fn delete_playlist(
-            &self,
-            request: tonic::Request<super::DeletePlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::DeletePlaylistResponse>,
-            tonic::Status,
-        >;
-        async fn list_playlists(
-            &self,
-            request: tonic::Request<super::ListPlaylistsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListPlaylistsResponse>,
-            tonic::Status,
-        >;
-        /// Media Management (room-scoped operations, use x-room-id)
-        async fn add_media(
-            &self,
-            request: tonic::Request<super::AddMediaRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::AddMediaResponse>,
-            tonic::Status,
-        >;
-        async fn delete_media(
-            &self,
-            request: tonic::Request<super::DeleteMediaRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::DeleteMediaResponse>,
-            tonic::Status,
-        >;
-        async fn edit_media(
-            &self,
-            request: tonic::Request<super::EditMediaRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::EditMediaResponse>,
-            tonic::Status,
-        >;
-        async fn list_playlist(
-            &self,
-            request: tonic::Request<super::ListPlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListPlaylistResponse>,
-            tonic::Status,
-        >;
-        async fn list_playlist_items(
-            &self,
-            request: tonic::Request<super::ListPlaylistItemsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListPlaylistItemsResponse>,
-            tonic::Status,
-        >;
-        async fn swap_media(
-            &self,
-            request: tonic::Request<super::SwapMediaRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::SwapMediaResponse>,
-            tonic::Status,
-        >;
-        async fn clear_playlist(
-            &self,
-            request: tonic::Request<super::ClearPlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ClearPlaylistResponse>,
-            tonic::Status,
-        >;
-        /// Batch Operations (room-scoped)
-        async fn add_media_batch(
-            &self,
-            request: tonic::Request<super::AddMediaBatchRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::AddMediaBatchResponse>,
-            tonic::Status,
-        >;
-        async fn delete_media_batch(
-            &self,
-            request: tonic::Request<super::DeleteMediaBatchRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::DeleteMediaBatchResponse>,
-            tonic::Status,
-        >;
-        async fn reorder_media_batch(
-            &self,
-            request: tonic::Request<super::ReorderMediaBatchRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ReorderMediaBatchResponse>,
-            tonic::Status,
-        >;
-        /// Playback Control (room-scoped operations, use x-room-id)
-        /// Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
-        async fn start_playback(
-            &self,
-            request: tonic::Request<super::StartPlaybackRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::StartPlaybackResponse>,
-            tonic::Status,
-        >;
-        async fn stop_playback(
-            &self,
-            request: tonic::Request<super::StopPlaybackRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::StopPlaybackResponse>,
-            tonic::Status,
-        >;
-        async fn get_playback(
-            &self,
-            request: tonic::Request<super::GetPlaybackRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetPlaybackResponse>,
-            tonic::Status,
-        >;
-        /// Live Streaming (room-scoped, use x-room-id)
-        async fn create_publish_key(
-            &self,
-            request: tonic::Request<super::CreatePublishKeyRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreatePublishKeyResponse>,
-            tonic::Status,
-        >;
-        async fn get_stream_info(
-            &self,
-            request: tonic::Request<super::GetStreamInfoRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetStreamInfoResponse>,
-            tonic::Status,
-        >;
-        async fn list_room_streams(
-            &self,
-            request: tonic::Request<super::ListRoomStreamsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListRoomStreamsResponse>,
-            tonic::Status,
-        >;
-    }
-    /// ==================== Media Service ====================
-    /// Authentication: JWT Authorization header (user_id) + x-room-id metadata (room context)
-    /// Routes: /api/room/media/\*
-    #[derive(Debug)]
-    pub struct MediaServiceServer<T> {
-        inner: Arc<T>,
-        accept_compression_encodings: EnabledCompressionEncodings,
-        send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
-    }
-    impl<T> MediaServiceServer<T> {
-        pub fn new(inner: T) -> Self {
-            Self::from_arc(Arc::new(inner))
-        }
-        pub fn from_arc(inner: Arc<T>) -> Self {
-            Self {
-                inner,
-                accept_compression_encodings: Default::default(),
-                send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
-            }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
-        where
-            F: tonic::service::Interceptor,
-        {
-            InterceptedService::new(Self::new(inner), interceptor)
-        }
-        /// Enable decompressing requests with the given encoding.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.accept_compression_encodings.enable(encoding);
-            self
-        }
-        /// Compress responses with the given encoding, if the client supports it.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.send_compression_encodings.enable(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
-    }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for MediaServiceServer<T>
-    where
-        T: MediaService,
-        B: Body + std::marker::Send + 'static,
-        B::Error: Into<StdError> + std::marker::Send + 'static,
-    {
-        type Response = http::Response<tonic::body::Body>;
-        type Error = std::convert::Infallible;
-        type Future = BoxFuture<Self::Response, Self::Error>;
-        fn poll_ready(
-            &mut self,
-            _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn call(&mut self, req: http::Request<B>) -> Self::Future {
-            match req.uri().path() {
-                "/synctv.client.MediaService/CreatePlaylist" => {
+                "/synctv.client.RoomService/CreatePlaylist" => {
                     #[allow(non_camel_case_types)]
-                    struct CreatePlaylistSvc<T: MediaService>(pub Arc<T>);
+                    struct CreatePlaylistSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::CreatePlaylistRequest>
                     for CreatePlaylistSvc<T> {
                         type Response = super::CreatePlaylistResponse;
@@ -5860,7 +5644,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::create_playlist(&inner, request).await
+                                <T as RoomService>::create_playlist(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -5887,11 +5671,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/GetPlaylist" => {
+                "/synctv.client.RoomService/GetPlaylist" => {
                     #[allow(non_camel_case_types)]
-                    struct GetPlaylistSvc<T: MediaService>(pub Arc<T>);
+                    struct GetPlaylistSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::GetPlaylistRequest>
                     for GetPlaylistSvc<T> {
                         type Response = super::GetPlaylistResponse;
@@ -5905,7 +5689,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::get_playlist(&inner, request).await
+                                <T as RoomService>::get_playlist(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -5932,11 +5716,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/UpdatePlaylist" => {
+                "/synctv.client.RoomService/UpdatePlaylist" => {
                     #[allow(non_camel_case_types)]
-                    struct UpdatePlaylistSvc<T: MediaService>(pub Arc<T>);
+                    struct UpdatePlaylistSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::UpdatePlaylistRequest>
                     for UpdatePlaylistSvc<T> {
                         type Response = super::UpdatePlaylistResponse;
@@ -5950,7 +5734,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::update_playlist(&inner, request).await
+                                <T as RoomService>::update_playlist(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -5977,11 +5761,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/DeletePlaylist" => {
+                "/synctv.client.RoomService/DeletePlaylist" => {
                     #[allow(non_camel_case_types)]
-                    struct DeletePlaylistSvc<T: MediaService>(pub Arc<T>);
+                    struct DeletePlaylistSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::DeletePlaylistRequest>
                     for DeletePlaylistSvc<T> {
                         type Response = super::DeletePlaylistResponse;
@@ -5995,7 +5779,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::delete_playlist(&inner, request).await
+                                <T as RoomService>::delete_playlist(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6022,11 +5806,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/ListPlaylists" => {
+                "/synctv.client.RoomService/ListPlaylists" => {
                     #[allow(non_camel_case_types)]
-                    struct ListPlaylistsSvc<T: MediaService>(pub Arc<T>);
+                    struct ListPlaylistsSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::ListPlaylistsRequest>
                     for ListPlaylistsSvc<T> {
                         type Response = super::ListPlaylistsResponse;
@@ -6040,7 +5824,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::list_playlists(&inner, request).await
+                                <T as RoomService>::list_playlists(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6067,11 +5851,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/AddMedia" => {
+                "/synctv.client.RoomService/AddMedia" => {
                     #[allow(non_camel_case_types)]
-                    struct AddMediaSvc<T: MediaService>(pub Arc<T>);
+                    struct AddMediaSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::AddMediaRequest>
                     for AddMediaSvc<T> {
                         type Response = super::AddMediaResponse;
@@ -6085,7 +5869,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::add_media(&inner, request).await
+                                <T as RoomService>::add_media(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6112,11 +5896,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/DeleteMedia" => {
+                "/synctv.client.RoomService/DeleteMedia" => {
                     #[allow(non_camel_case_types)]
-                    struct DeleteMediaSvc<T: MediaService>(pub Arc<T>);
+                    struct DeleteMediaSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::DeleteMediaRequest>
                     for DeleteMediaSvc<T> {
                         type Response = super::DeleteMediaResponse;
@@ -6130,7 +5914,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::delete_media(&inner, request).await
+                                <T as RoomService>::delete_media(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6157,11 +5941,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/EditMedia" => {
+                "/synctv.client.RoomService/EditMedia" => {
                     #[allow(non_camel_case_types)]
-                    struct EditMediaSvc<T: MediaService>(pub Arc<T>);
+                    struct EditMediaSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::EditMediaRequest>
                     for EditMediaSvc<T> {
                         type Response = super::EditMediaResponse;
@@ -6175,7 +5959,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::edit_media(&inner, request).await
+                                <T as RoomService>::edit_media(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6202,11 +5986,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/ListPlaylist" => {
+                "/synctv.client.RoomService/ListPlaylist" => {
                     #[allow(non_camel_case_types)]
-                    struct ListPlaylistSvc<T: MediaService>(pub Arc<T>);
+                    struct ListPlaylistSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::ListPlaylistRequest>
                     for ListPlaylistSvc<T> {
                         type Response = super::ListPlaylistResponse;
@@ -6220,7 +6004,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::list_playlist(&inner, request).await
+                                <T as RoomService>::list_playlist(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6247,11 +6031,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/ListPlaylistItems" => {
+                "/synctv.client.RoomService/ListPlaylistItems" => {
                     #[allow(non_camel_case_types)]
-                    struct ListPlaylistItemsSvc<T: MediaService>(pub Arc<T>);
+                    struct ListPlaylistItemsSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::ListPlaylistItemsRequest>
                     for ListPlaylistItemsSvc<T> {
                         type Response = super::ListPlaylistItemsResponse;
@@ -6265,7 +6049,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::list_playlist_items(&inner, request)
+                                <T as RoomService>::list_playlist_items(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -6293,11 +6077,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/SwapMedia" => {
+                "/synctv.client.RoomService/SwapMedia" => {
                     #[allow(non_camel_case_types)]
-                    struct SwapMediaSvc<T: MediaService>(pub Arc<T>);
+                    struct SwapMediaSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::SwapMediaRequest>
                     for SwapMediaSvc<T> {
                         type Response = super::SwapMediaResponse;
@@ -6311,7 +6095,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::swap_media(&inner, request).await
+                                <T as RoomService>::swap_media(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6338,11 +6122,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/ClearPlaylist" => {
+                "/synctv.client.RoomService/ClearPlaylist" => {
                     #[allow(non_camel_case_types)]
-                    struct ClearPlaylistSvc<T: MediaService>(pub Arc<T>);
+                    struct ClearPlaylistSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::ClearPlaylistRequest>
                     for ClearPlaylistSvc<T> {
                         type Response = super::ClearPlaylistResponse;
@@ -6356,7 +6140,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::clear_playlist(&inner, request).await
+                                <T as RoomService>::clear_playlist(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6383,11 +6167,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/AddMediaBatch" => {
+                "/synctv.client.RoomService/AddMediaBatch" => {
                     #[allow(non_camel_case_types)]
-                    struct AddMediaBatchSvc<T: MediaService>(pub Arc<T>);
+                    struct AddMediaBatchSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::AddMediaBatchRequest>
                     for AddMediaBatchSvc<T> {
                         type Response = super::AddMediaBatchResponse;
@@ -6401,7 +6185,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::add_media_batch(&inner, request).await
+                                <T as RoomService>::add_media_batch(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6428,11 +6212,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/DeleteMediaBatch" => {
+                "/synctv.client.RoomService/DeleteMediaBatch" => {
                     #[allow(non_camel_case_types)]
-                    struct DeleteMediaBatchSvc<T: MediaService>(pub Arc<T>);
+                    struct DeleteMediaBatchSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::DeleteMediaBatchRequest>
                     for DeleteMediaBatchSvc<T> {
                         type Response = super::DeleteMediaBatchResponse;
@@ -6446,7 +6230,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::delete_media_batch(&inner, request)
+                                <T as RoomService>::delete_media_batch(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -6474,11 +6258,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/ReorderMediaBatch" => {
+                "/synctv.client.RoomService/ReorderMediaBatch" => {
                     #[allow(non_camel_case_types)]
-                    struct ReorderMediaBatchSvc<T: MediaService>(pub Arc<T>);
+                    struct ReorderMediaBatchSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::ReorderMediaBatchRequest>
                     for ReorderMediaBatchSvc<T> {
                         type Response = super::ReorderMediaBatchResponse;
@@ -6492,7 +6276,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::reorder_media_batch(&inner, request)
+                                <T as RoomService>::reorder_media_batch(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -6520,11 +6304,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/StartPlayback" => {
+                "/synctv.client.RoomService/StartPlayback" => {
                     #[allow(non_camel_case_types)]
-                    struct StartPlaybackSvc<T: MediaService>(pub Arc<T>);
+                    struct StartPlaybackSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::StartPlaybackRequest>
                     for StartPlaybackSvc<T> {
                         type Response = super::StartPlaybackResponse;
@@ -6538,7 +6322,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::start_playback(&inner, request).await
+                                <T as RoomService>::start_playback(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6565,11 +6349,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/StopPlayback" => {
+                "/synctv.client.RoomService/StopPlayback" => {
                     #[allow(non_camel_case_types)]
-                    struct StopPlaybackSvc<T: MediaService>(pub Arc<T>);
+                    struct StopPlaybackSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::StopPlaybackRequest>
                     for StopPlaybackSvc<T> {
                         type Response = super::StopPlaybackResponse;
@@ -6583,7 +6367,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::stop_playback(&inner, request).await
+                                <T as RoomService>::stop_playback(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6610,11 +6394,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/GetPlayback" => {
+                "/synctv.client.RoomService/GetPlayback" => {
                     #[allow(non_camel_case_types)]
-                    struct GetPlaybackSvc<T: MediaService>(pub Arc<T>);
+                    struct GetPlaybackSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::GetPlaybackRequest>
                     for GetPlaybackSvc<T> {
                         type Response = super::GetPlaybackResponse;
@@ -6628,7 +6412,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::get_playback(&inner, request).await
+                                <T as RoomService>::get_playback(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6655,11 +6439,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/CreatePublishKey" => {
+                "/synctv.client.RoomService/CreatePublishKey" => {
                     #[allow(non_camel_case_types)]
-                    struct CreatePublishKeySvc<T: MediaService>(pub Arc<T>);
+                    struct CreatePublishKeySvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::CreatePublishKeyRequest>
                     for CreatePublishKeySvc<T> {
                         type Response = super::CreatePublishKeyResponse;
@@ -6673,7 +6457,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::create_publish_key(&inner, request)
+                                <T as RoomService>::create_publish_key(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -6701,11 +6485,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/GetStreamInfo" => {
+                "/synctv.client.RoomService/GetStreamInfo" => {
                     #[allow(non_camel_case_types)]
-                    struct GetStreamInfoSvc<T: MediaService>(pub Arc<T>);
+                    struct GetStreamInfoSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::GetStreamInfoRequest>
                     for GetStreamInfoSvc<T> {
                         type Response = super::GetStreamInfoResponse;
@@ -6719,7 +6503,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::get_stream_info(&inner, request).await
+                                <T as RoomService>::get_stream_info(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6746,11 +6530,11 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/ListRoomStreams" => {
+                "/synctv.client.RoomService/ListRoomStreams" => {
                     #[allow(non_camel_case_types)]
-                    struct ListRoomStreamsSvc<T: MediaService>(pub Arc<T>);
+                    struct ListRoomStreamsSvc<T: RoomService>(pub Arc<T>);
                     impl<
-                        T: MediaService,
+                        T: RoomService,
                     > tonic::server::UnaryService<super::ListRoomStreamsRequest>
                     for ListRoomStreamsSvc<T> {
                         type Response = super::ListRoomStreamsResponse;
@@ -6764,8 +6548,7 @@ pub mod media_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::list_room_streams(&inner, request)
-                                    .await
+                                <T as RoomService>::list_room_streams(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6814,7 +6597,7 @@ pub mod media_service_server {
             }
         }
     }
-    impl<T> Clone for MediaServiceServer<T> {
+    impl<T> Clone for RoomServiceServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -6827,8 +6610,8 @@ pub mod media_service_server {
         }
     }
     /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "synctv.client.MediaService";
-    impl<T> tonic::server::NamedService for MediaServiceServer<T> {
+    pub const SERVICE_NAME: &str = "synctv.client.RoomService";
+    impl<T> tonic::server::NamedService for RoomServiceServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }

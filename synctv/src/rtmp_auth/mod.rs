@@ -761,7 +761,7 @@ impl SyncTvRtmpAuth {
     /// falling back to Redis if not found locally (cross-replica lookup).
     ///
     /// Returns `Some((room_id, media_id))` if the user is actively publishing.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn get_user_stream(&self, user_id: &str) -> Option<(String, String)> {
         // Fast path: check local in-memory tracker
         let local = self.user_stream_tracker.get_user_streams(user_id);

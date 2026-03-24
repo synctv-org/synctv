@@ -509,6 +509,39 @@ impl StreamMessageHandler {
         concurrency_config: Arc<MessageConcurrencyConfig>,
     ) -> Self {
         let connection_id = Self::generate_connection_id(&user_id);
+        Self::with_connection_id_and_concurrency_config(
+            room_id,
+            user_id,
+            username,
+            connection_id,
+            room_service,
+            chat_service,
+            cluster_manager,
+            connection_manager,
+            rate_limiter,
+            rate_limit_config,
+            content_filter,
+            sender,
+            concurrency_config,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_connection_id_and_concurrency_config(
+        room_id: RoomId,
+        user_id: UserId,
+        username: String,
+        connection_id: String,
+        room_service: Arc<RoomService>,
+        chat_service: Arc<ChatService>,
+        cluster_manager: Arc<ClusterManager>,
+        connection_manager: ConnectionManager,
+        rate_limiter: Arc<RateLimiter>,
+        rate_limit_config: Arc<RateLimitConfig>,
+        content_filter: Arc<ContentFilter>,
+        sender: Arc<dyn MessageSender>,
+        concurrency_config: Arc<MessageConcurrencyConfig>,
+    ) -> Self {
         // Create membership cache with TTL for heartbeat validation.
         // This reduces database queries from every heartbeat (25-35s) to at most once per TTL (30s).
         let membership_cache = Arc::new(
@@ -610,7 +643,6 @@ impl StreamMessageHandler {
     /// inside a background task.  After a successful `pre_join`, call
     /// [`run_after_join`] to enter the message loop.
     pub async fn pre_join(&self) -> Result<(), String> {
-        // Register connection with connection manager
         if let Err(e) = self
             .connection_manager
             .register(self.connection_id.clone(), self.user_id.clone())
@@ -620,16 +652,20 @@ impl StreamMessageHandler {
             return Err(e);
         }
 
-        // Associate connection with the room (enforces per-room connection limit)
+        self.pre_join_after_registration().await
+    }
+
+    /// Continue admission after the connection was already registered.
+    ///
+    /// This is used by transports that need an early registration/backpressure
+    /// step before they can finish reading the room-scoped handshake.
+    pub async fn pre_join_after_registration(&self) -> Result<(), String> {
         if let Err(e) = self
             .connection_manager
             .join_room(&self.connection_id, self.room_id.clone())
             .await
         {
-            // Roll back the registration since we can't join the room
-            self.connection_manager
-                .unregister(&self.connection_id)
-                .await;
+            self.connection_manager.unregister(&self.connection_id).await;
             return Err(e);
         }
 

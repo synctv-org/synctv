@@ -33,7 +33,6 @@ use {
     tokio::{net::TcpStream, sync::Mutex},
 };
 
-#[allow(dead_code)]
 enum ClientSessionState {
     Handshake,
     Connect,
@@ -44,22 +43,6 @@ enum ClientSessionState {
     WaitStateChange,
 }
 
-#[allow(dead_code)]
-enum ClientSessionPlayState {
-    Handshake,
-    Connect,
-    CreateStream,
-    Play,
-}
-
-#[allow(dead_code)]
-enum ClientSessionPublishState {
-    Handshake,
-    Connect,
-    CreateStream,
-    PublishingContent,
-}
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClientSessionType {
     Pull,

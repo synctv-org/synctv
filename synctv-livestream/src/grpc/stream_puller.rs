@@ -411,13 +411,9 @@ impl GrpcStreamPuller {
 
 #[cfg(test)]
 mod tests {
-    use super::super::proto::stream_relay_service_server::StreamRelayServiceServer;
     use super::*;
-    use futures::stream;
-    use futures::StreamExt as _;
     use std::time::Duration;
     use tokio::sync::mpsc;
-    use tonic::Response;
 
     const TEST_STREAM_MESSAGE_TIMEOUT: Duration = Duration::from_millis(50);
     #[tokio::test]

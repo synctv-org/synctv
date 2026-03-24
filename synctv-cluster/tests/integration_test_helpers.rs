@@ -404,20 +404,16 @@ pub async fn broadcast_until_cache_invalidation(
 
 #[cfg(test)]
 mod tests {
-    use super::broadcast_until_all_clients_receive_with;
-    use std::time::Duration;
-    use tokio::sync::mpsc;
-
     #[tokio::test(start_paused = true)]
     async fn broadcast_until_all_clients_receive_respects_global_deadline() {
         let mut clients = Vec::new();
         for index in 0..5 {
-            let (_tx, rx) = mpsc::channel(1);
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
             clients.push((rx, format!("conn-{index}")));
         }
 
         let task = tokio::spawn(async move {
-            broadcast_until_all_clients_receive_with(
+            super::broadcast_until_all_clients_receive_with(
                 || {},
                 &mut clients,
                 "never-delivered",
@@ -427,7 +423,7 @@ mod tests {
         });
 
         tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_millis(15_100)).await;
+        tokio::time::advance(std::time::Duration::from_millis(15_100)).await;
         tokio::task::yield_now().await;
 
         assert!(

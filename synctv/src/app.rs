@@ -392,6 +392,26 @@ impl Application {
         server.start_with_coordinator(self.shutdown).await
     }
 
+    /// Start all servers and stop when the supplied future resolves.
+    ///
+    /// This provides a deterministic shutdown mechanism for integration tests
+    /// without changing the production startup path.
+    ///
+    /// Note: This method is intentionally kept even though it's only used by
+    /// E2E tests in the `synctv/tests/` directory. The `#[allow(dead_code)]`
+    /// attribute prevents warnings since tests are compiled separately.
+    #[allow(dead_code)]
+    pub async fn run_with_shutdown_signal<F>(self, shutdown_signal: F) -> Result<()>
+    where
+        F: Future<Output = ()> + Send,
+    {
+        let server =
+            SyncTvServer::new(self.config, self.services, self.livestream_state, self.pool);
+        server
+            .start_with_coordinator_and_shutdown_signal(self.shutdown, shutdown_signal)
+            .await
+    }
+
     // -- Phase 1: Infrastructure ------------------------------------------------
 
     async fn init_infrastructure(

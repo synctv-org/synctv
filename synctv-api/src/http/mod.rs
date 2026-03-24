@@ -26,7 +26,7 @@ pub mod provider_common;
 pub mod providers;
 
 use axum::{
-    http::{HeaderName, HeaderValue, Method},
+    http::{HeaderValue, Method},
     middleware as axum_middleware,
     response::IntoResponse,
     routing::{get, post},
@@ -841,9 +841,6 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
             "CORS: Configured with {} allowed origin(s)",
             origins.len()
         );
-        let x_room_id: HeaderName = "x-room-id"
-            .parse()
-            .unwrap_or_else(|_| HeaderName::from_static("x-room-id"));
         CorsLayer::new()
             .allow_origin(origins)
             .allow_methods([
@@ -858,7 +855,6 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
                 axum::http::header::AUTHORIZATION,
                 axum::http::header::CONTENT_TYPE,
                 axum::http::header::ACCEPT,
-                x_room_id,
             ])
             .vary([
                 axum::http::header::ORIGIN,

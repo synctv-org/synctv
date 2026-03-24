@@ -8,6 +8,13 @@ use serde::Deserialize;
 
 use crate::http::{middleware::AuthUser, AppResult, AppState};
 
+#[derive(Debug, Deserialize)]
+pub struct BanMemberBody {
+    pub user_id: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
 /// Kick a member from a room
 pub async fn kick_member(
     auth: AuthUser,
@@ -80,8 +87,12 @@ pub async fn ban_member(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<crate::proto::client::BanMemberRequest>,
+    Json(body): Json<BanMemberBody>,
 ) -> AppResult<Json<crate::proto::client::BanMemberResponse>> {
+    let req = crate::proto::client::BanMemberRequest {
+        user_id: body.user_id,
+        reason: body.reason,
+    };
     let resp = state
         .client_api
         .ban_member(auth.user_id.as_str(), &room_id, req)

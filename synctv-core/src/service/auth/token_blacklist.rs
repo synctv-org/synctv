@@ -1301,8 +1301,6 @@ impl TokenBlacklistStore for FallbackTokenBlacklistStore {
 /// A pending write entry for sync buffer.
 #[derive(Clone)]
 struct PendingWrite {
-    #[allow(dead_code)]
-    key: String,
     ttl_secs: u64,
     /// When this entry expires (for skipping expired entries during sync)
     expires_at: Instant,
@@ -1311,8 +1309,6 @@ struct PendingWrite {
 /// A pending family revocation entry for sync buffer.
 #[derive(Clone)]
 struct PendingFamilyWrite {
-    #[allow(dead_code)]
-    key: String,
     timestamp: i64,
     ttl_secs: u64,
     /// When this entry expires
@@ -1573,7 +1569,6 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
 
                 // Add to pending writes for later sync
                 let pending = PendingWrite {
-                    key: key.to_string(),
                     ttl_secs,
                     expires_at: Instant::now() + Duration::from_secs(ttl_secs),
                 };
@@ -1613,7 +1608,6 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
 
                 // Add to pending writes for later sync
                 let pending = PendingWrite {
-                    key: key.to_string(),
                     ttl_secs,
                     expires_at: Instant::now() + Duration::from_secs(ttl_secs),
                 };
@@ -1656,7 +1650,6 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
             Ok(()) => Ok(()),
             Err(e) => {
                 let pending = PendingFamilyWrite {
-                    key: key.to_string(),
                     timestamp,
                     ttl_secs,
                     expires_at: Instant::now() + Duration::from_secs(ttl_secs),

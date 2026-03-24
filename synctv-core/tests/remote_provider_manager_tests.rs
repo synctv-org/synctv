@@ -1324,6 +1324,63 @@ async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
     );
 }
 
+async fn scenario_resolve_client_required_surfaces_existing_remote_instance_config_errors() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    let mut legacy = make_test_instance("misconfigured-instance");
+    legacy.jwt_secret = None;
+    provider_repo(&infra.pool)
+        .create(&legacy)
+        .await
+        .expect("legacy misconfigured row should persist for resolution coverage");
+
+    let result = manager
+        .resolve_client_required(Some(&legacy.name), |_channel| "remote", || "local")
+        .await;
+
+    assert!(
+        result.is_err(),
+        "explicit remote instance with invalid stored config must fail"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        !matches!(err, synctv_core::provider::ProviderError::InstanceNotFound(_)),
+        "existing remote instance with bad config must not be reported as missing: {err:?}"
+    );
+}
+
+async fn scenario_resolve_client_required_preserves_retryable_repository_failures() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
+    let redis_client = Some(infra.redis_client.clone());
+
+    let repo = provider_repo(&infra.pool);
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client, "");
+
+    infra.pool.close().await;
+
+    let err = manager
+        .resolve_client_required(Some("retryable-store-failure"), |_channel| "remote", || "local")
+        .await
+        .expect_err("repository outages should surface as retryable remote resolution failures");
+
+    assert!(
+        matches!(err, synctv_core::provider::ProviderError::ApiError(_)),
+        "repository outages must remain retryable instead of becoming internal errors: {err:?}"
+    );
+}
+
 // ─── Test 12: Fallback when remote instance exists but channel fails ─────────
 
 async fn scenario_fallback_when_channel_creation_fails() {
@@ -3067,6 +3124,20 @@ async fn test_fallback_when_instance_name_none() {
 async fn test_resolve_client_required_rejects_missing_remote_instance() {
     install_rustls_provider_once();
     scenario_resolve_client_required_rejects_missing_remote_instance().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_resolve_client_required_surfaces_existing_remote_instance_config_errors() {
+    install_rustls_provider_once();
+    scenario_resolve_client_required_surfaces_existing_remote_instance_config_errors().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_resolve_client_required_preserves_retryable_repository_failures() {
+    install_rustls_provider_once();
+    scenario_resolve_client_required_preserves_retryable_repository_failures().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

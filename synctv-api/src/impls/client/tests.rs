@@ -160,6 +160,127 @@ fn test_validate_password_for_verify_rejects_too_long() {
     assert!(err.to_string().contains("too long"));
 }
 
+#[test]
+fn test_check_room_password_room_lookup_backend_failure_must_not_map_to_not_found() {
+    let mapped = super::ClientApiImpl::map_room_lookup_error(synctv_core::Error::ServiceUnavailable(
+        "room lookup unavailable".to_string(),
+    ));
+
+    assert!(
+        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "room lookup unavailable"),
+        "room lookup backend failures must remain service unavailable, got: {mapped:?}"
+    );
+}
+
+#[test]
+fn test_check_room_password_room_lookup_not_found_stays_not_found() {
+    let mapped = super::ClientApiImpl::map_room_lookup_error(synctv_core::Error::NotFound(
+        "db row missing".to_string(),
+    ));
+
+    assert!(
+        matches!(mapped, ApiError::NotFound(ref msg) if msg == "Room not found"),
+        "true room misses must remain not found, got: {mapped:?}"
+    );
+}
+
+#[test]
+fn test_room_access_error_authorization_stays_forbidden() {
+    let mapped = super::ClientApiImpl::map_room_access_error(synctv_core::Error::Authorization(
+        "Not a member of this room".to_string(),
+    ));
+
+    assert!(
+        matches!(mapped, ApiError::Authorization(ref msg) if msg == "Forbidden: Not a member of this room"),
+        "authorization failures must remain forbidden, got: {mapped:?}"
+    );
+}
+
+#[test]
+fn test_room_access_error_not_found_stays_not_found() {
+    let mapped = super::ClientApiImpl::map_room_access_error(synctv_core::Error::NotFound(
+        "Room not found".to_string(),
+    ));
+
+    assert!(
+        matches!(mapped, ApiError::NotFound(ref msg) if msg == "Room not found"),
+        "missing rooms must not be rewritten as forbidden, got: {mapped:?}"
+    );
+}
+
+#[test]
+fn test_room_access_error_service_unavailable_stays_service_unavailable() {
+    let mapped = super::ClientApiImpl::map_room_access_error(
+        synctv_core::Error::ServiceUnavailable("permission backend unavailable".to_string()),
+    );
+
+    assert!(
+        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "permission backend unavailable"),
+        "backend failures must not be rewritten as forbidden, got: {mapped:?}"
+    );
+}
+
+#[test]
+fn test_room_access_error_permission_denied_stays_forbidden() {
+    let mapped = super::ClientApiImpl::map_room_access_error(synctv_core::Error::Authorization(
+        "Permission denied".to_string(),
+    ));
+
+    assert!(
+        matches!(mapped, ApiError::Authorization(ref msg) if msg == "Forbidden: Permission denied"),
+        "permission denials must remain forbidden, got: {mapped:?}"
+    );
+}
+
+#[test]
+fn test_media_lookup_error_service_unavailable_stays_service_unavailable() {
+    let mapped = super::ClientApiImpl::map_media_lookup_error(
+        synctv_core::Error::ServiceUnavailable("media lookup unavailable".to_string()),
+        "Media not found",
+    );
+
+    assert!(
+        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "media lookup unavailable"),
+        "media lookup backend failures must remain service unavailable, got: {mapped:?}"
+    );
+}
+
+#[test]
+fn test_membership_probe_error_service_unavailable_stays_service_unavailable() {
+    let mapped = super::ClientApiImpl::map_membership_probe_error(
+        synctv_core::Error::ServiceUnavailable("membership backend unavailable".to_string()),
+    );
+
+    assert!(
+        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "membership backend unavailable"),
+        "membership probe backend failures must remain service unavailable, got: {mapped:?}"
+    );
+}
+
+#[test]
+fn test_room_list_backend_outage_maps_to_service_unavailable() {
+    let mapped =
+        crate::impls::ApiError::from(synctv_core::Error::Database(sqlx::Error::PoolTimedOut));
+
+    assert!(
+        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg.contains("pool timed out")),
+        "room list backend failures must remain service unavailable, got: {mapped:?}"
+    );
+}
+
+#[test]
+fn test_livestream_backend_error_service_unavailable_stays_service_unavailable() {
+    let stream_error = synctv_livestream::error::StreamError::RegistryError(
+        "redis temporarily unavailable".to_string(),
+    );
+    let mapped = super::ClientApiImpl::map_livestream_backend_error(&stream_error);
+
+    assert!(
+        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg.contains("redis temporarily unavailable")),
+        "livestream backend failures must remain service unavailable, got: {mapped:?}"
+    );
+}
+
 // === Proto Role Conversion Tests ===
 
 #[test]
@@ -302,11 +423,11 @@ fn test_provider_error_upstream_http_preserves_upstream_context() {
     });
 
     match err {
-        ApiError::Internal(message) => {
+        ApiError::ServiceUnavailable(message) => {
             assert!(message.contains("502"));
             assert!(message.contains("provider.example"));
         }
-        other => panic!("expected internal upstream error, got {other:?}"),
+        other => panic!("expected upstream unavailability, got {other:?}"),
     }
 }
 

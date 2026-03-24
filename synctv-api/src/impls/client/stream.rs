@@ -33,7 +33,7 @@ impl ClientApiImpl {
             .media_service()
             .get_media(&media_id)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to get media: {e}")))?
+            .map_err(|e| Self::map_media_lookup_error(e, "Media not found"))?
             .ok_or_else(|| ApiError::NotFound(format!("Media {} not found", req.id)))?;
 
         if media.room_id.as_str() != room_id {
@@ -53,7 +53,7 @@ impl ClientApiImpl {
         self.room_service
             .check_permission(&rid, &uid, synctv_core::models::PermissionBits::START_LIVE)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Permission denied: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         // Get publish key service
         let publish_key_service = self
@@ -108,7 +108,7 @@ impl ClientApiImpl {
             .member_service()
             .is_member(&rid, &user_id)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to check membership: {e}")))?;
+            .map_err(Self::map_membership_probe_error)?;
 
         if !is_member {
             return Err(ApiError::Authorization(
@@ -133,7 +133,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         let infrastructure = self
             .live_streaming_infrastructure
@@ -156,12 +156,7 @@ impl ClientApiImpl {
                 active: false,
                 publisher: None,
             }),
-            Err(e) => {
-                tracing::error!("Failed to query stream info: {e}");
-                Err(ApiError::Internal(
-                    "Failed to query stream info".to_string(),
-                ))
-            }
+            Err(e) => Err(Self::map_livestream_backend_error(&*e)),
         }
     }
 
@@ -178,7 +173,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         let infrastructure = self
             .live_streaming_infrastructure
@@ -189,7 +184,7 @@ impl ClientApiImpl {
             .registry
             .list_streams_for_room(room_id)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list streams: {e}")))?;
+            .map_err(|e| Self::map_livestream_backend_error(&*e))?;
 
         let streams: Vec<_> = media_ids
             .into_iter()

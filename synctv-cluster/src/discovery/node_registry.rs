@@ -1018,6 +1018,12 @@ impl NodeRegistry {
     /// Uses an atomic Lua script to check epoch <= `local_epoch` before deleting.
     /// Prevents stale nodes from unregistering newer registrations.
     pub async fn unregister(&self) -> Result<()> {
+        if self.local_only {
+            let mut nodes = self.local_nodes.write().await;
+            nodes.remove(&self.node_id);
+            return Ok(());
+        }
+
         {
             let mut conn = self.get_conn_with_breaker().await?;
 

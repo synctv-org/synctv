@@ -86,6 +86,85 @@ impl std::fmt::Debug for RemoteProviderManager {
 }
 
 impl RemoteProviderManager {
+    fn map_remote_resolution_error(err: crate::Error) -> ProviderError {
+        match err {
+            crate::Error::InvalidInput(msg) => ProviderError::InvalidConfig(msg),
+            crate::Error::Timeout(msg) => ProviderError::NetworkError(msg),
+            crate::Error::ServiceUnavailable(msg) => ProviderError::ApiError(msg),
+            crate::Error::Database(err) => {
+                ProviderError::ApiError(format!("Provider configuration store unavailable: {err}"))
+            }
+            crate::Error::Redis(err) => {
+                ProviderError::ApiError(format!("Provider configuration cache unavailable: {err}"))
+            }
+            crate::Error::Serialization(err) => {
+                ProviderError::Internal(format!("Serialization error: {err}"))
+            }
+            crate::Error::Deserialization { context } => {
+                ProviderError::Internal(format!("Deserialization error: {context}"))
+            }
+            crate::Error::Authentication(msg) => ProviderError::Internal(format!(
+                "Unexpected authentication error while resolving provider instance: {msg}"
+            )),
+            crate::Error::EmailNotVerified => ProviderError::Internal(
+                "Unexpected email verification error while resolving provider instance".to_string(),
+            ),
+            crate::Error::Authorization(msg) => ProviderError::Internal(format!(
+                "Unexpected authorization error while resolving provider instance: {msg}"
+            )),
+            crate::Error::NotFound(msg) => ProviderError::Internal(format!(
+                "Unexpected not found error while resolving provider instance: {msg}"
+            )),
+            crate::Error::AlreadyExists(msg) => ProviderError::Internal(format!(
+                "Unexpected already exists error while resolving provider instance: {msg}"
+            )),
+            crate::Error::RateLimited(msg) => ProviderError::ApiError(msg),
+            crate::Error::Internal(msg) => ProviderError::Internal(msg),
+            crate::Error::OptimisticLockConflict => {
+                ProviderError::Internal("Optimistic lock conflict".to_string())
+            }
+            crate::Error::LockConflict(msg) => ProviderError::Internal(format!(
+                "Distributed lock conflict while resolving provider instance: {msg}"
+            )),
+        }
+    }
+
+    async fn get_connection_result(
+        &self,
+        name: &str,
+    ) -> std::result::Result<Option<RemoteProviderConnection>, ProviderError> {
+        if let Some(connection) = self.channel_cache.get(name).await {
+            return Ok(Some(connection));
+        }
+
+        let Some(config) = self
+            .repository
+            .get_by_name(name)
+            .await
+            .map_err(Self::map_remote_resolution_error)?
+        else {
+            return Ok(None);
+        };
+
+        if !config.enabled || !Self::requires_remote_connection(&config) {
+            return Ok(None);
+        }
+
+        let channel = self
+            .create_grpc_channel(&config)
+            .await
+            .map_err(Self::map_remote_resolution_error)?;
+        let connection = Self::build_remote_connection(&config, channel)
+            .map_err(Self::map_remote_resolution_error)?;
+
+        self.channel_cache
+            .insert(name.to_string(), connection.clone())
+            .await;
+        tracing::debug!("Lazily created and cached channel for instance '{}'", name);
+
+        Ok(Some(connection))
+    }
+
     /// Create a new `RemoteProviderManager`
     ///
     /// Compatibility constructor for tests and standalone code paths that do not
@@ -769,51 +848,14 @@ impl RemoteProviderManager {
     /// - `Some(channel)` if the instance exists and is enabled
     /// - `None` if not found or disabled (caller should fallback to singleton local client)
     pub async fn get(&self, name: &str) -> Option<RemoteProviderConnection> {
-        // Fast path: check cache
-        if let Some(connection) = self.channel_cache.get(name).await {
-            return Some(connection);
-        }
-
-        // Cache miss: try to load from database and create channel lazily
-        match self.repository.get_by_name(name).await {
-            Ok(Some(config)) if config.enabled => {
-                if !Self::requires_remote_connection(&config) {
-                    return None;
-                }
-
-                match self.create_grpc_channel(&config).await {
-                    Ok(channel) => match Self::build_remote_connection(&config, channel) {
-                        Ok(connection) => {
-                            self.channel_cache
-                                .insert(name.to_string(), connection.clone())
-                                .await;
-                            tracing::debug!(
-                                "Lazily created and cached channel for instance '{}'",
-                                name
-                            );
-                            Some(connection)
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to build authenticated connection for instance '{}': {}",
-                                name,
-                                e
-                            );
-                            None
-                        }
-                    },
-                    Err(e) => {
-                        tracing::error!("Failed to create channel for instance '{}': {}", name, e);
-                        None
-                    }
-                }
-            }
-            Ok(_) => {
-                // Instance not found or disabled
-                None
-            }
-            Err(e) => {
-                tracing::error!("Failed to load provider instance '{}' from DB: {}", name, e);
+        match self.get_connection_result(name).await {
+            Ok(connection) => connection,
+            Err(err) => {
+                tracing::error!(
+                    "Failed to resolve remote provider instance '{}' for optional fallback path: {}",
+                    name,
+                    err
+                );
                 None
             }
         }
@@ -844,9 +886,11 @@ impl RemoteProviderManager {
     /// Semantics:
     /// - `instance_name=None`: use the local singleton client.
     /// - `instance_name=Some(name)` and remote exists: use remote client.
-    /// - `instance_name=Some(name)` and remote missing/disabled/unreachable:
-    ///   return [`ProviderError::InstanceNotFound`] instead of masking the issue
-    ///   by falling back to the local singleton.
+    /// - `instance_name=Some(name)` and remote missing/disabled: return
+    ///   [`ProviderError::InstanceNotFound`] instead of masking the issue by
+    ///   falling back to the local singleton.
+    /// - `instance_name=Some(name)` and remote resolution/config loading fails:
+    ///   surface the underlying provider/config/internal error.
     pub async fn resolve_client_required<T>(
         &self,
         instance_name: Option<&str>,
@@ -855,8 +899,8 @@ impl RemoteProviderManager {
     ) -> std::result::Result<T, ProviderError> {
         match instance_name {
             Some(name) => self
-                .get(name)
-                .await
+                .get_connection_result(name)
+                .await?
                 .map(create_remote)
                 .ok_or_else(|| ProviderError::InstanceNotFound(name.to_string())),
             None => Ok(load_local()),

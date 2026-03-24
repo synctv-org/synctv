@@ -24,7 +24,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         // E8 fix: Use database-level pagination instead of loading all members
         // Safely convert i32 to u32 (negative values default to safe values)

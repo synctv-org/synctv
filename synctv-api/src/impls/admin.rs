@@ -49,7 +49,7 @@ pub async fn validate_admin_auth(
             error = %e,
             "Admin auth rejected: failed to look up user"
         );
-        ApiError::Authentication("Authentication failed".to_string())
+        AdminApiImpl::map_admin_auth_user_lookup_error(e)
     })?;
 
     if user.is_deleted() || user.status == UserStatus::Banned || user.status == UserStatus::Pending
@@ -100,6 +100,22 @@ pub struct AdminApiImpl {
 }
 
 impl AdminApiImpl {
+    fn map_admin_auth_user_lookup_error(err: synctv_core::Error) -> ApiError {
+        match err {
+            synctv_core::Error::NotFound(_) => {
+                ApiError::Authentication("Authentication failed".to_string())
+            }
+            other => ApiError::from(other),
+        }
+    }
+
+    fn map_target_user_lookup_error(err: synctv_core::Error) -> ApiError {
+        match err {
+            synctv_core::Error::NotFound(_) => ApiError::NotFound("User not found".to_string()),
+            other => ApiError::from(other),
+        }
+    }
+
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
@@ -623,7 +639,7 @@ impl AdminApiImpl {
             .user_service
             .get_user(&uid)
             .await
-            .map_err(|e| ApiError::NotFound(format!("User not found: {e}")))?;
+            .map_err(Self::map_target_user_lookup_error)?;
 
         // Only root can reset another root user's password
         if target_user.role == UserRole::Root && caller_role != UserRole::Root {
@@ -3063,6 +3079,54 @@ mod tests {
         user.email = None;
         let proto = admin_user_to_proto(&user);
         assert_eq!(proto.email, "");
+    }
+
+    #[test]
+    fn test_update_user_password_user_lookup_backend_failure_stays_service_unavailable() {
+        let mapped = AdminApiImpl::map_target_user_lookup_error(
+            synctv_core::Error::ServiceUnavailable("user lookup unavailable".to_string()),
+        );
+
+        assert!(
+            matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "user lookup unavailable"),
+            "user lookup backend failures must not be reported as not found, got: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn test_update_user_password_user_lookup_not_found_stays_not_found() {
+        let mapped = AdminApiImpl::map_target_user_lookup_error(synctv_core::Error::NotFound(
+            "missing row".to_string(),
+        ));
+
+        assert!(
+            matches!(mapped, ApiError::NotFound(ref msg) if msg == "User not found"),
+            "true user misses must remain not found, got: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn test_admin_auth_user_lookup_backend_failure_stays_service_unavailable() {
+        let mapped = AdminApiImpl::map_admin_auth_user_lookup_error(
+            synctv_core::Error::ServiceUnavailable("user backend unavailable".to_string()),
+        );
+
+        assert!(
+            matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "user backend unavailable"),
+            "admin auth backend failures must not be reported as authentication failures, got: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn test_admin_auth_user_lookup_not_found_stays_authentication_failed() {
+        let mapped = AdminApiImpl::map_admin_auth_user_lookup_error(synctv_core::Error::NotFound(
+            "missing row".to_string(),
+        ));
+
+        assert!(
+            matches!(mapped, ApiError::Authentication(ref msg) if msg == "Authentication failed"),
+            "missing admin users should still be treated as authentication failure, got: {mapped:?}"
+        );
     }
 
     // === Admin Room Member Proto Conversion Tests ===

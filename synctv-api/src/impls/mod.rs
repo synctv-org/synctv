@@ -291,6 +291,7 @@ pub enum ApiError {
 
 impl From<synctv_core::Error> for ApiError {
     fn from(err: synctv_core::Error) -> Self {
+        const BACKEND_UNAVAILABLE_MESSAGE: &str = "Service temporarily unavailable";
         match err {
             synctv_core::Error::NotFound(msg) => Self::NotFound(msg),
             synctv_core::Error::Authentication(msg) => Self::Authentication(msg),
@@ -304,6 +305,17 @@ impl From<synctv_core::Error> for ApiError {
             synctv_core::Error::ServiceUnavailable(msg) | synctv_core::Error::Timeout(msg) => {
                 Self::ServiceUnavailable(msg)
             }
+            synctv_core::Error::Internal(msg) if msg.starts_with("Redis timeout:") => {
+                Self::ServiceUnavailable(msg)
+            }
+            synctv_core::Error::Database(err) => {
+                tracing::error!("Database error mapped to service unavailable: {}", err);
+                Self::ServiceUnavailable(BACKEND_UNAVAILABLE_MESSAGE.to_string())
+            }
+            synctv_core::Error::Redis(err) => {
+                tracing::error!("Redis error mapped to service unavailable: {}", err);
+                Self::ServiceUnavailable(BACKEND_UNAVAILABLE_MESSAGE.to_string())
+            }
             other => Self::Internal(other.to_string()),
         }
     }
@@ -314,9 +326,15 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
         use synctv_core::provider::ProviderError;
 
         match err {
-            ProviderError::NetworkError(msg) | ProviderError::ApiError(msg) => Self::Internal(msg),
+            ProviderError::NetworkError(msg) | ProviderError::ApiError(msg) => {
+                Self::ServiceUnavailable(msg)
+            }
             ProviderError::UpstreamHttp { status, url } => {
-                Self::Internal(format!("Upstream HTTP {status} error for {url}"))
+                if status >= 500 {
+                    Self::ServiceUnavailable(format!("Upstream HTTP {status} error for {url}"))
+                } else {
+                    Self::Internal(format!("Upstream HTTP {status} error for {url}"))
+                }
             }
             ProviderError::ParseError(msg)
             | ProviderError::InvalidConfig(msg)
@@ -1147,6 +1165,73 @@ mod tests {
         assert!(matches!(
             api_err,
             ApiError::ServiceUnavailable(ref msg) if msg == "oauth2 provider timed out"
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_api_error_from_core_database_maps_to_service_unavailable() {
+        let core_err = synctv_core::Error::Database(sqlx::Error::PoolTimedOut);
+        let api_err = ApiError::from(core_err);
+        assert!(
+            matches!(api_err, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable"),
+            "database infrastructure failures must remain service unavailable, got: {api_err:?}"
+        );
+        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_api_error_from_core_redis_maps_to_service_unavailable() {
+        let redis_err =
+            redis::RedisError::from((redis::ErrorKind::Io, "connection reset by peer"));
+        let api_err = ApiError::from(synctv_core::Error::Redis(redis_err));
+        assert!(
+            matches!(api_err, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable"),
+            "redis infrastructure failures must remain service unavailable, got: {api_err:?}"
+        );
+        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_api_error_from_provider_network_error_maps_to_service_unavailable() {
+        let provider_err =
+            synctv_core::provider::ProviderError::NetworkError("connection refused".to_string());
+        let api_err = ApiError::from(provider_err);
+        assert!(matches!(
+            api_err,
+            ApiError::ServiceUnavailable(ref msg) if msg == "connection refused"
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_api_error_from_provider_api_error_maps_to_service_unavailable() {
+        let provider_err =
+            synctv_core::provider::ProviderError::ApiError("upstream provider down".to_string());
+        let api_err = ApiError::from(provider_err);
+        assert!(matches!(
+            api_err,
+            ApiError::ServiceUnavailable(ref msg) if msg == "upstream provider down"
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_api_error_from_provider_upstream_5xx_maps_to_service_unavailable() {
+        let provider_err = synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 503,
+            url: "https://provider.example/api".to_string(),
+        };
+        let api_err = ApiError::from(provider_err);
+        assert!(matches!(
+            api_err,
+            ApiError::ServiceUnavailable(ref msg)
+                if msg == "Upstream HTTP 503 error for https://provider.example/api"
         ));
         assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
         assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);

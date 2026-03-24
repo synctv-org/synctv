@@ -16,6 +16,11 @@ use crate::proto::providers::emby::{
 
 use crate::grpc::map_provider_error as api_err;
 
+#[allow(clippy::result_large_err)]
+fn map_provider_binds_error(error: String) -> Status {
+    Status::unavailable(error)
+}
+
 /// Emby Provider gRPC Service
 ///
 /// Thin wrapper that delegates to `EmbyApiImpl`.
@@ -140,10 +145,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
             "emby_user_id",
         )
         .await
-        .map_err(|e| {
-            tracing::error!("Failed to query provider binds: {e}");
-            tonic::Status::internal("Internal error")
-        })?;
+        .map_err(map_provider_binds_error)?;
 
         let binds = provider_binds
             .into_iter()
@@ -156,5 +158,17 @@ impl EmbyProviderService for EmbyProviderGrpcService {
             .collect();
 
         Ok(Response::new(GetBindsResponse { binds }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_provider_binds_error;
+
+    #[test]
+    fn test_provider_binds_backend_outage_maps_to_unavailable() {
+        let status = map_provider_binds_error("Failed to query credentials: redis unavailable".into());
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(status.message(), "Failed to query credentials: redis unavailable");
     }
 }

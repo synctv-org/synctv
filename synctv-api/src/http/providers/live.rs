@@ -74,12 +74,12 @@ fn map_stream_error(context: &str, error: &StreamError) -> AppError {
         | StreamError::RegistryError(_)
         | StreamError::GrpcError(_)
         | StreamError::ConnectionFailed(_)
-        | StreamError::IoError(_)
-        | StreamError::Internal(_)
         | StreamError::StaleEpoch(_)
+        | StreamError::StreamHubError(_) => AppError::service_unavailable(),
+        StreamError::IoError(_)
+        | StreamError::Internal(_)
         | StreamError::AlreadyPublishing(_)
-        | StreamError::PublisherExists(_)
-        | StreamError::StreamHubError(_) => {
+        | StreamError::PublisherExists(_) => {
             AppError::internal_server_error(format!("{context}: {error}"))
         }
     }
@@ -526,6 +526,15 @@ mod tests {
             &StreamError::PermissionDenied("not allowed".to_string()),
         );
         assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn livestream_backend_outage_maps_to_503() {
+        let err = map_stream_error(
+            "Failed to create FLV session",
+            &StreamError::RedisError("connection reset by peer".to_string()),
+        );
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]

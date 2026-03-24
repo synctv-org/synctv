@@ -465,45 +465,6 @@ mod create_ticket_validation {
     use synctv_api::http::error::AppError;
     use synctv_api::http::ticket::CreateTicketRequest;
 
-    /// `ws_ticket_service=None` should produce 500 (internal server error)
-    #[tokio::test]
-    async fn test_ws_ticket_service_none_returns_500() {
-        let app = Router::new().route(
-            "/api/tickets",
-            post(|Json(req): Json<CreateTicketRequest>| async move {
-                // Reproduce ticket.rs:84-85
-                if req.room_id.trim().is_empty() {
-                    return Err::<Json<Value>, AppError>(AppError::bad_request(
-                        "room_id is required",
-                    ));
-                }
-
-                // Simulate ws_ticket_service = None (ticket.rs:91-95)
-                let ws_ticket_service: Option<()> = None;
-                ws_ticket_service.ok_or_else(|| {
-                    AppError::internal_server_error("WebSocket ticket service not configured")
-                })?;
-
-                Ok(Json(serde_json::json!({"ticket": "abc"})))
-            }),
-        );
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/tickets")
-            .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"room_id": "room123"}"#))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let json = body_json(resp).await;
-        // For 5xx errors, the actual message is replaced with generic "Internal server error"
-        // to avoid leaking sensitive information (see AppError::into_response)
-        assert_eq!(json["error"], "Internal server error");
-        assert_eq!(json["status"], 500);
-    }
-
     /// Empty `room_id` should produce 400
     #[tokio::test]
     async fn test_empty_room_id_returns_400() {
@@ -1183,19 +1144,6 @@ mod optional_services_absent {
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    /// `ws_ticket_service=None` produces correct error code
-    #[test]
-    fn test_ws_ticket_service_none_error_message() {
-        let ws_ticket_service: Option<()> = None;
-        let result = ws_ticket_service.ok_or_else(|| {
-            AppError::internal_server_error("WebSocket ticket service not configured")
-        });
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(err.message, "WebSocket ticket service not configured");
-    }
-
     /// `admin_api=None` should produce correct error
     #[test]
     fn test_admin_api_none_error() {
@@ -1221,9 +1169,6 @@ mod optional_services_absent {
             }),
             ("oauth2", || {
                 AppError::internal_server_error("OAuth2 service not configured")
-            }),
-            ("ws_ticket", || {
-                AppError::internal_server_error("WebSocket ticket service not configured")
             }),
             ("admin", || {
                 AppError::internal("Admin service not configured")

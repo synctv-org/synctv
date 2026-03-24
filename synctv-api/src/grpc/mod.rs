@@ -73,14 +73,6 @@ impl_grpc_service_ext!(<T> synctv_proto::providers::bilibili::bilibili_provider_
 impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_livestream::grpc::StreamRelayServiceServer<T>);
 
-/// Log an internal error and return a generic gRPC status to avoid leaking details.
-///
-/// Shared across all gRPC service implementations.
-pub(crate) fn internal_err(context: &str, err: impl std::fmt::Display) -> tonic::Status {
-    tracing::error!("{context}: {err}");
-    tonic::Status::internal(context)
-}
-
 /// Map a typed [`ApiError`](crate::impls::ApiError) to a gRPC `Status`.
 ///
 /// Shared across all gRPC service implementations to avoid duplicating the
@@ -968,7 +960,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             audit_service: audit_service.clone(),
             live_streaming_infrastructure: None,
             rate_limiter: rate_limiter_for_provider,
-            ws_ticket_service: None,
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
             redis_conn: redis_conn.clone(),
             builtin_stun_url: None,
             turn_health_checker: None,

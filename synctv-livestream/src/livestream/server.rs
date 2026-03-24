@@ -34,6 +34,46 @@ use tracing::{error, info, warn};
 /// under rapid consecutive restarts.
 const HUB_MAX_RESTARTS: u32 = 10;
 
+struct HubCycleTasks {
+    rtmp_cancel_token: CancellationToken,
+    rtmp_handle: Option<JoinHandle<()>>,
+    forwarder_handle: Option<JoinHandle<()>>,
+}
+
+impl HubCycleTasks {
+    fn new() -> Self {
+        Self {
+            rtmp_cancel_token: CancellationToken::new(),
+            rtmp_handle: None,
+            forwarder_handle: None,
+        }
+    }
+
+    async fn replace(
+        &mut self,
+        rtmp_cancel_token: CancellationToken,
+        rtmp_handle: JoinHandle<()>,
+        forwarder_handle: JoinHandle<()>,
+    ) {
+        self.shutdown().await;
+        self.rtmp_cancel_token = rtmp_cancel_token;
+        self.rtmp_handle = Some(rtmp_handle);
+        self.forwarder_handle = Some(forwarder_handle);
+    }
+
+    async fn shutdown(&mut self) {
+        self.rtmp_cancel_token.cancel();
+        if let Some(handle) = self.rtmp_handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.forwarder_handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+}
+
 pub struct LivestreamConfig {
     pub rtmp_address: String,
     pub gop_cache_size: usize,
@@ -102,6 +142,7 @@ pub struct LivestreamHandle {
     pub infrastructure: Arc<LiveStreamingInfrastructure>,
     pub pull_manager: Arc<PullStreamManager>,
     hub_handle: JoinHandle<()>,
+    hub_cycle_tasks: Arc<tokio::sync::Mutex<HubCycleTasks>>,
     hls_remuxer_handle: JoinHandle<()>,
     publisher_manager_handle: JoinHandle<()>,
     /// Inner re-registration task spawned inside `publisher_manager_handle`.
@@ -193,6 +234,10 @@ impl LivestreamHandle {
         self.hls_cleanup_handle.abort();
         self.hls_remuxer_handle.abort();
         self.hub_handle.abort();
+        let hub_cycle_tasks = Arc::clone(&self.hub_cycle_tasks);
+        let _ = crate::util::try_spawn(async move {
+            hub_cycle_tasks.lock().await.shutdown().await;
+        });
         self.spawn_local_publisher_cleanup();
     }
 
@@ -294,9 +339,11 @@ impl LivestreamHandle {
 
         // 8. Abort StreamHub (last, as other components depend on it).
         // The RTMP server is managed inside the hub loop and will be
-        // cancelled automatically when the hub task is aborted.
+        // shut down explicitly because aborting the hub task skips the loop's
+        // per-cycle cleanup path.
         self.hub_handle.abort();
         let _ = (&mut self.hub_handle).await;
+        self.hub_cycle_tasks.lock().await.shutdown().await;
         info!("StreamHub stopped");
 
         // 9. Final local publisher cleanup. Shutdown may interrupt the normal
@@ -352,6 +399,10 @@ impl Drop for LivestreamHandle {
         self.hls_cleanup_handle.abort();
         self.hls_remuxer_handle.abort();
         self.hub_handle.abort();
+        let hub_cycle_tasks = Arc::clone(&self.hub_cycle_tasks);
+        let _ = crate::util::try_spawn(async move {
+            hub_cycle_tasks.lock().await.shutdown().await;
+        });
         self.pull_manager_cleanup.abort();
         self.external_publish_cleanup.abort();
 
@@ -486,6 +537,8 @@ impl LivestreamServer {
         let restart_mutex_for_hub = Arc::clone(&restart_mutex);
         // Pre-bound listener for first cycle (enables early port conflict detection)
         let rtmp_listener = self.rtmp_listener;
+        let hub_cycle_tasks = Arc::new(tokio::sync::Mutex::new(HubCycleTasks::new()));
+        let hub_cycle_tasks_for_hub = Arc::clone(&hub_cycle_tasks);
 
         // 2. Spawn StreamHub event loop with automatic recovery
         let hub_handle = tokio::spawn(async move {
@@ -564,14 +617,21 @@ impl LivestreamServer {
                         error!("RTMP server error: {}", e);
                     }
                 });
+                hub_cycle_tasks_for_hub
+                    .lock()
+                    .await
+                    .replace(
+                        rtmp_session_token.clone(),
+                        rtmp_handle,
+                        forwarder_handle,
+                    )
+                    .await;
 
                 info!("Starting StreamHub event loop...");
                 let run_result = streams_hub.run().await;
 
                 // Hub exited -- stop the RTMP server and forwarder for this cycle
-                rtmp_session_token.cancel();
-                rtmp_handle.abort();
-                forwarder_handle.abort();
+                hub_cycle_tasks_for_hub.lock().await.shutdown().await;
 
                 // L6: Reset RTMP metric gauges after aborting the server.
                 // Aborted sessions may not call their stop callbacks, leaving
@@ -940,6 +1000,7 @@ impl LivestreamServer {
             infrastructure,
             pull_manager,
             hub_handle,
+            hub_cycle_tasks,
             hls_remuxer_handle,
             publisher_manager_handle,
             reregister_task_handle,
@@ -1388,6 +1449,96 @@ mod tests {
 
         // Clean up
         handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_releases_rtmp_port_for_rebind() {
+        let registry = Arc::new(MockStreamRegistry::new());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to pre-bind RTMP port");
+        let local_addr = listener.local_addr().expect("Failed to get local addr");
+
+        let config = LivestreamConfig {
+            rtmp_address: local_addr.to_string(),
+            gop_cache_size: 1024 * 1024,
+            node_id: "test-node".to_string(),
+            cleanup_check_interval_seconds: 1,
+            stream_timeout_seconds: 5,
+            cluster_enabled: false,
+            cluster_secret: None,
+            gop_cache_max_memory_mb: 0,
+            grpc_address: "127.0.0.1:0".to_string(),
+            hls_memory_max_mb: 0,
+            hls_shared_storage: false,
+            hls_storage_path: String::new(),
+        };
+
+        let server =
+            LivestreamServer::new(config, registry, test_tracker()).with_rtmp_listener(listener);
+
+        let handle = server
+            .start()
+            .await
+            .expect("Failed to start server with pre-bound listener");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        handle.shutdown();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let rebound = tokio::net::TcpListener::bind(local_addr).await;
+        assert!(
+            rebound.is_ok(),
+            "shutdown must release the RTMP listener so the port can be rebound: {rebound:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_graceful_releases_rtmp_port_for_rebind() {
+        let registry = Arc::new(MockStreamRegistry::new());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to pre-bind RTMP port");
+        let local_addr = listener.local_addr().expect("Failed to get local addr");
+
+        let config = LivestreamConfig {
+            rtmp_address: local_addr.to_string(),
+            gop_cache_size: 1024 * 1024,
+            node_id: "test-node".to_string(),
+            cleanup_check_interval_seconds: 1,
+            stream_timeout_seconds: 5,
+            cluster_enabled: false,
+            cluster_secret: None,
+            gop_cache_max_memory_mb: 0,
+            grpc_address: "127.0.0.1:0".to_string(),
+            hls_memory_max_mb: 0,
+            hls_shared_storage: false,
+            hls_storage_path: String::new(),
+        };
+
+        let server =
+            LivestreamServer::new(config, registry, test_tracker()).with_rtmp_listener(listener);
+
+        let mut handle = server
+            .start()
+            .await
+            .expect("Failed to start server with pre-bound listener");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let result = timeout(Duration::from_secs(2), handle.shutdown_graceful(1))
+            .await
+            .expect("shutdown_graceful should complete");
+        assert!(result, "shutdown_graceful should complete cleanly");
+
+        let rebound = tokio::net::TcpListener::bind(local_addr).await;
+        assert!(
+            rebound.is_ok(),
+            "shutdown_graceful must release the RTMP listener so the port can be rebound: {rebound:?}"
+        );
     }
 
     /// Test that port conflicts are detected when trying to bind an already-used port.

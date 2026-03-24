@@ -78,7 +78,7 @@ pub struct RouterConfig {
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
     /// WebSocket ticket service for secure WebSocket authentication (HTTP only)
-    pub ws_ticket_service: Option<Arc<synctv_core::service::WsTicketService>>,
+    pub ws_ticket_service: Arc<synctv_core::service::WsTicketService>,
     /// Shared Redis connection for playback caching (Sentinel-failover safe)
     pub redis_conn: Option<crate::SharedRedisConn>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
@@ -537,16 +537,14 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
             post(room::reset_room_settings),
         );
 
-    if state.ws_ticket_service.is_some() {
-        router = router.merge(
-            Router::new()
-                .route("/api/tickets", post(ticket::create_ticket))
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::websocket_runtime_required,
-                )),
-        );
-    }
+    router = router.merge(
+        Router::new()
+            .route("/api/tickets", post(ticket::create_ticket))
+            .route_layer(axum_middleware::from_fn_with_state(
+                state.clone(),
+                middleware::websocket_runtime_required,
+            )),
+    );
 
     if state.oauth2_api.is_some() {
         router = router
@@ -1111,9 +1109,7 @@ mod tests {
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
             rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-            ws_ticket_service: Some(Arc::new(
-                synctv_core::service::WsTicketService::with_memory(None),
-            )),
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
             redis_conn: None,
             builtin_stun_url: None,
             turn_health_checker: None,
@@ -1331,7 +1327,7 @@ mod tests {
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
             rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-            ws_ticket_service: None,
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
             redis_conn: None,
             builtin_stun_url: None,
             turn_health_checker: None,

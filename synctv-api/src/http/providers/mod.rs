@@ -183,14 +183,7 @@ pub(crate) async fn unified_proxy_handler(
         .room_service
         .check_membership(&rid, &uid)
         .await
-        .map_err(|e| match e {
-            synctv_core::Error::Authorization(_) => {
-                AppError::forbidden("Not a member of this room")
-            }
-            other => {
-                AppError::internal_server_error(format!("Failed to check room membership: {other}"))
-            }
-        })?;
+        .map_err(map_proxy_membership_probe_error)?;
 
     // 4. Resolve proxy provider from registry (no hardcoded match)
     let proxy = state
@@ -222,10 +215,17 @@ pub(crate) async fn unified_proxy_handler(
     }
 }
 
+fn map_proxy_membership_probe_error(err: synctv_core::Error) -> AppError {
+    match err {
+        synctv_core::Error::Authorization(_) => AppError::forbidden("Not a member of this room"),
+        other => AppError::from(other),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::header;
+    use axum::http::{header, StatusCode};
     use bytes::Bytes;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -337,6 +337,22 @@ mod tests {
 
         assert_eq!(response1.headers().get("X-Cache-Status").unwrap(), "MISS");
         assert_eq!(response2.headers().get("X-Cache-Status").unwrap(), "HIT");
+    }
+
+    #[test]
+    fn proxy_membership_probe_backend_outage_maps_to_503() {
+        let err = map_proxy_membership_probe_error(synctv_core::Error::ServiceUnavailable(
+            "membership backend temporarily unavailable".to_string(),
+        ));
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn proxy_membership_probe_authorization_stays_403() {
+        let err = map_proxy_membership_probe_error(synctv_core::Error::Authorization(
+            "Not a member of this room".to_string(),
+        ));
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -451,7 +467,7 @@ mod tests {
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
             rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-            ws_ticket_service: None,
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
             redis_conn: None,
             builtin_stun_url: None,
             turn_health_checker: None,

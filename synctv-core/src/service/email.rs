@@ -36,6 +36,10 @@ pub fn mask_email(email: &str) -> String {
     }
 }
 
+fn map_email_send_failure(error: impl std::fmt::Display) -> Error {
+    Error::ServiceUnavailable(format!("Failed to send email: {error}"))
+}
+
 /// Email verification error
 #[derive(Debug, thiserror::Error)]
 pub enum EmailError {
@@ -600,7 +604,7 @@ impl EmailService {
                 .await
             {
                 tracing::error!("Failed to send email: {}", e);
-                return Err(Error::Internal(format!("Failed to send email: {e}")));
+                return Err(map_email_send_failure(e));
             }
         }
 
@@ -635,7 +639,7 @@ impl EmailService {
                 .await
             {
                 tracing::error!("Failed to send verification email: {}", e);
-                return Err(Error::Internal(format!("Failed to send email: {e}")));
+                return Err(map_email_send_failure(e));
             }
             // In production (email configured), never leak the token to the caller.
             tracing::info!("Sent verification email to {}", mask_email(email));
@@ -666,7 +670,7 @@ impl EmailService {
                 .await
             {
                 tracing::error!("Failed to send password reset email: {}", e);
-                return Err(Error::Internal(format!("Failed to send email: {e}")));
+                return Err(map_email_send_failure(e));
             }
             // In production (email configured), never leak the token to the caller.
             tracing::info!("Sent password reset email to {}", mask_email(email));
@@ -1018,5 +1022,16 @@ mod tests {
             configured_service.is_configured(),
             "Service with Some config should be configured"
         );
+    }
+
+    #[test]
+    fn test_map_email_send_failure_returns_service_unavailable() {
+        let err = map_email_send_failure("smtp connection refused");
+        match err {
+            Error::ServiceUnavailable(message) => {
+                assert!(message.contains("smtp connection refused"));
+            }
+            other => panic!("expected ServiceUnavailable, got: {other:?}"),
+        }
     }
 }

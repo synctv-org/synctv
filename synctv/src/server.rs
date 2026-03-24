@@ -114,7 +114,7 @@ fn build_ws_ticket_service(
     redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     redis_key_prefix: &str,
     is_cluster_mode: bool,
-) -> anyhow::Result<Option<Arc<synctv_core::service::WsTicketService>>> {
+) -> anyhow::Result<Arc<synctv_core::service::WsTicketService>> {
     let svc = match (is_cluster_mode, redis_conn) {
         (_, Some(shared_conn)) => {
             synctv_core::service::WsTicketService::with_redis(shared_conn, redis_key_prefix, None)
@@ -126,7 +126,7 @@ fn build_ws_ticket_service(
         }
         (false, None) => synctv_core::service::WsTicketService::with_memory(None),
     };
-    Ok(Some(Arc::new(svc)))
+    Ok(Arc::new(svc))
 }
 
 async fn await_task_shutdown(name: &'static str, mut handle: JoinHandle<()>, timeout: Duration) {
@@ -1121,8 +1121,7 @@ mod tests {
     #[test]
     fn test_ws_ticket_service_uses_memory_in_standalone_without_redis() {
         let service = build_ws_ticket_service(None, "synctv:", false)
-            .expect("standalone mode should allow memory-backed ws tickets")
-            .expect("ws ticket service should be configured");
+            .expect("standalone mode should allow memory-backed ws tickets");
 
         assert_eq!(service.backend_name(), "memory");
     }
@@ -1149,8 +1148,7 @@ mod tests {
         let shared = Arc::new(tokio::sync::RwLock::new(manager));
 
         let service = build_ws_ticket_service(Some(shared), "synctv:", false)
-            .expect("standalone with redis should succeed")
-            .expect("ws ticket service should be configured");
+            .expect("standalone with redis should succeed");
 
         assert_eq!(service.backend_name(), "redis");
     }

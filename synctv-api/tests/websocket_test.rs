@@ -583,12 +583,6 @@ mod ws_auth_scenarios {
     }
 
     #[test]
-    fn test_ticket_service_not_configured() {
-        let err = AppError::internal_server_error("WebSocket ticket service not configured");
-        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[test]
     fn test_expired_ticket_error() {
         let err = AppError::unauthorized("Invalid or expired ticket: ticket not found");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
@@ -1025,7 +1019,7 @@ mod websocket_e2e {
             },
             live_streaming_infrastructure: None,
             rate_limiter,
-            ws_ticket_service: Some(ws_ticket_service.clone()),
+            ws_ticket_service: ws_ticket_service.clone(),
             redis_conn: None,
             builtin_stun_url: None,
             credential_encryption: None,
@@ -4199,9 +4193,7 @@ mod websocket_connection_limit_timing {
             },
             live_streaming_infrastructure: None,
             rate_limiter,
-            ws_ticket_service: Some(Arc::new(
-                synctv_core::service::WsTicketService::with_memory(None),
-            )),
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
             redis_conn: None,
             builtin_stun_url: None,
             credential_encryption: None,

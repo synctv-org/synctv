@@ -205,7 +205,7 @@ where
     tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
         .await
         .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
-        .map_err(|e| Error::Internal(format!("Failed to {operation}: {e}")))
+        .map_err(|e| Error::ServiceUnavailable(format!("Failed to {operation}: {e}")))
 }
 
 #[async_trait]
@@ -1198,6 +1198,25 @@ mod tests {
         assert!(matches!(
             err,
             Error::Timeout(ref msg) if msg == "Redis timeout: store ticket"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_ws_ticket_redis_error_maps_to_service_unavailable() {
+        let err = run_ws_ticket_redis_op::<(), _>("store ticket", async {
+            Err::<(), redis::RedisError>(redis::RedisError::from((
+                redis::ErrorKind::Io,
+                "connection reset by peer",
+            )))
+        })
+        .await
+        .expect_err("redis transport failures should stay retryable");
+
+        assert!(matches!(
+            err,
+            Error::ServiceUnavailable(ref msg)
+                if msg.contains("Failed to store ticket")
+                    && msg.contains("connection reset by peer")
         ));
     }
 

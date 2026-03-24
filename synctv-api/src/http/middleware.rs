@@ -886,6 +886,29 @@ mod tests {
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    #[test]
+    fn test_guest_user_room_existence_backend_failure_maps_to_503() {
+        let room_lookup_error =
+            synctv_core::Error::ServiceUnavailable("room lookup temporarily unavailable".to_string());
+        let err = match SecurityPipeline::classify_auth_error(&room_lookup_error) {
+            AuthErrorCategory::Authentication => {
+                AppError::unauthorized("unexpected authentication classification")
+            }
+            AuthErrorCategory::Authorization => {
+                AppError::forbidden("unexpected authorization classification")
+            }
+            AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => {
+                AppError::from(room_lookup_error)
+            }
+        };
+
+        assert_eq!(
+            err.status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "guest room existence backend failures must not be misreported as unauthorized"
+        );
+    }
+
     // === RateLimitCategory Tests ===
 
     #[test]

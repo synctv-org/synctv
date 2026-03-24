@@ -51,6 +51,14 @@ fn map_room_lookup_error(room_id: &str, err: synctv_core::Error) -> AppError {
     }
 }
 
+fn map_ticket_membership_probe_error(err: synctv_core::Error) -> AppError {
+    AppError::from(err)
+}
+
+fn map_ticket_creation_error(err: synctv_core::Error) -> AppError {
+    AppError::from(err)
+}
+
 /// Create a room-bound WebSocket ticket for secure authentication
 ///
 /// This endpoint creates a short-lived, one-time-use ticket that can be used
@@ -108,9 +116,7 @@ pub async fn create_ticket(
         .member_service()
         .is_member(&room_id, &auth.user_id)
         .await
-        .map_err(|e| {
-            AppError::internal_server_error(format!("Failed to check room membership: {e}"))
-        })?;
+        .map_err(map_ticket_membership_probe_error)?;
 
     if !is_member {
         return Err(AppError::forbidden(
@@ -119,23 +125,18 @@ pub async fn create_ticket(
     }
 
     // Check if ticket service is available
-    let ws_ticket_service = state.ws_ticket_service.as_ref().ok_or_else(|| {
-        AppError::internal_server_error("WebSocket ticket service not configured")
-    })?;
-
     // Create a new room-bound ticket for this user (Issue #65)
     // Include password_version so tickets are invalidated on password change
-    let ticket = ws_ticket_service
+    let ticket = state
+        .ws_ticket_service
         .create_ticket(&auth.user_id, &room_id, auth.password_version)
         .await
-        .map_err(|e| {
-            AppError::internal_server_error(format!("Failed to create WebSocket ticket: {e}"))
-        })?;
+        .map_err(map_ticket_creation_error)?;
 
     let response = TicketResponse {
         ticket,
         room_id: room_id.as_str().to_string(),
-        expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
+        expires_in_secs: state.ws_ticket_service.ticket_ttl_secs(),
         usage: format!(
             "Use in WebSocket URL: ws://host/ws/rooms/{}?ticket=xxx",
             room_id.as_str()
@@ -147,7 +148,9 @@ pub async fn create_ticket(
 
 #[cfg(test)]
 mod tests {
-    use super::map_room_lookup_error;
+    use super::{
+        map_room_lookup_error, map_ticket_creation_error, map_ticket_membership_probe_error,
+    };
     use axum::http::StatusCode;
 
     #[test]
@@ -166,6 +169,22 @@ mod tests {
             "room_123",
             synctv_core::Error::Database(sqlx::Error::PoolTimedOut),
         );
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn membership_probe_backend_outage_maps_to_503() {
+        let err = map_ticket_membership_probe_error(synctv_core::Error::ServiceUnavailable(
+            "membership backend temporarily unavailable".to_string(),
+        ));
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn ticket_creation_backend_outage_maps_to_503() {
+        let err = map_ticket_creation_error(synctv_core::Error::ServiceUnavailable(
+            "Failed to store ticket: connection reset by peer".to_string(),
+        ));
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 }

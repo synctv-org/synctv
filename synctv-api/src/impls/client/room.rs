@@ -26,7 +26,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         let media = self
             .room_service
@@ -223,7 +223,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         let room = self
             .room_service
@@ -545,7 +545,7 @@ impl ClientApiImpl {
         self.room_service
             .get_room(&rid)
             .await
-            .map_err(|e| ApiError::NotFound(format!("Room not found: {e}")))?;
+            .map_err(Self::map_room_lookup_error)?;
 
         // Record start time for timing attack protection
         let start = std::time::Instant::now();
@@ -604,7 +604,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         let settings = self
             .room_service
@@ -805,7 +805,7 @@ impl ClientApiImpl {
             .room_service
             .list_rooms(&query)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list rooms: {e}")))?;
+            .map_err(ApiError::from)?;
 
         // Fetch distributed connection counts for all candidate rooms (single Redis MGET),
         // then sort by distributed count to get a globally correct ranking.
@@ -869,7 +869,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         // Enforce a hard max page size of 100 to prevent OOM on large rooms
         let limit = req.limit.clamp(1, 100);

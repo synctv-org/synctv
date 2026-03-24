@@ -837,11 +837,8 @@ impl ClusterManager {
         self.cancel_token.cancel();
         self.critical_retry_tasks.close();
 
-        // Unregister this node from Redis FIRST so peers stop routing traffic
-        // to us immediately, before we start draining pub/sub channels.
         {
             let mut state = self.heartbeat_state.lock().await;
-            // Unregister this node from Redis so peers see it go immediately
             if let Some(ref registry) = state.node_registry {
                 if let Err(e) = registry.unregister().await {
                     warn!(error = %e, "Failed to unregister node during shutdown");
@@ -852,6 +849,13 @@ impl ClusterManager {
             if let Some(handle) = state.handle.take() {
                 await_shutdown_handle("Heartbeat task", handle, self.heartbeat_shutdown_timeout())
                     .await;
+            }
+            if let Some(ref registry) = state.node_registry {
+                if let Err(e) = registry.unregister().await {
+                    warn!(error = %e, "Failed to confirm node unregistration after heartbeat shutdown");
+                } else {
+                    info!("Node unregistered from Redis after heartbeat shutdown");
+                }
             }
         }
 
@@ -1068,6 +1072,12 @@ impl ClusterManager {
     pub async fn test_set_heartbeat_handle(&self, handle: tokio::task::JoinHandle<()>) {
         let mut state = self.heartbeat_state.lock().await;
         state.handle = Some(handle);
+    }
+
+    #[cfg(test)]
+    pub async fn test_set_heartbeat_registry(&self, node_registry: Arc<NodeRegistry>) {
+        let mut state = self.heartbeat_state.lock().await;
+        state.node_registry = Some(node_registry);
     }
 
     #[cfg(test)]
@@ -1464,6 +1474,84 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(1),
             "Shutdown should time out stuck heartbeat handle quickly, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_unregisters_node_before_waiting_for_heartbeat_exit() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "shutdown-race-node".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            shared_redis_conn: None,
+            parent_cancel_token: None,
+        };
+
+        let manager = Arc::new(
+            ClusterManager::new(config, None, None)
+                .await
+                .unwrap()
+                .test_with_heartbeat_shutdown_timeout(Duration::from_millis(200)),
+        );
+        let registry = Arc::new(
+            NodeRegistry::new_local_only("shutdown-race-node".to_string(), 30, "test:").unwrap(),
+        );
+
+        registry
+            .register("localhost:50051".to_string(), "localhost:8080".to_string())
+            .await
+            .unwrap();
+        manager.test_set_heartbeat_registry(registry.clone()).await;
+
+        let cancel = manager.cancel_token();
+        let registry_for_task = registry.clone();
+        let (cancel_seen_tx, cancel_seen_rx) = tokio::sync::oneshot::channel();
+        let (allow_finish_tx, allow_finish_rx) = tokio::sync::oneshot::channel();
+        manager
+            .test_set_heartbeat_handle(tokio::spawn(async move {
+                cancel.cancelled().await;
+                cancel_seen_tx
+                    .send(())
+                    .expect("test should observe heartbeat cancellation");
+                allow_finish_rx
+                    .await
+                    .expect("test should allow heartbeat task to finish");
+                registry_for_task
+                    .register("localhost:50051".to_string(), "localhost:8080".to_string())
+                    .await
+                    .unwrap();
+            }))
+            .await;
+
+        let shutdown_manager = Arc::clone(&manager);
+        let shutdown_handle = tokio::spawn(async move {
+            shutdown_manager.shutdown().await;
+        });
+
+        cancel_seen_rx
+            .await
+            .expect("shutdown should cancel heartbeat task promptly");
+        assert!(
+            registry.test_get_local("shutdown-race-node").await.is_none(),
+            "shutdown must unregister the node before waiting for heartbeat completion"
+        );
+
+        allow_finish_tx
+            .send(())
+            .expect("heartbeat task should still be waiting to finish");
+        shutdown_handle.await.unwrap();
+
+        assert!(
+            registry.test_get_local("shutdown-race-node").await.is_none(),
+            "shutdown must not leave the node registered after a late heartbeat re-registration"
         );
     }
 

@@ -4,7 +4,7 @@
 //! identical security checks in a fixed order:
 //!
 //! 1. **JWT verification** -- validate signature, expiration, and access token type
-//! 2. **Password invalidation** -- reject tokens issued before a password change (database-based)
+//! 2. **Password invalidation** -- reject tokens issued before a password change
 //! 3. **User status** -- reject banned, pending, or soft-deleted users
 //! 4. **Access token blacklist** -- reject revoked access tokens (e.g., after logout)
 //!
@@ -82,9 +82,10 @@ pub struct AuthenticatedToken {
 /// caller has valid [`Claims`], it passes them here for steps 2-4.
 ///
 /// When a [`UserCache`] is provided via [`with_user_cache`], the pipeline
-/// consults the cache first on every authenticated request. Only on a cache
-/// miss does it fall back to a database query, and the cache is populated
-/// after the DB lookup so subsequent requests for the same user are fast.
+/// consults the cache first to fast-reject obviously invalid requests and
+/// still populates the cache after successful DB checks to reduce repeated
+/// database reads. Successful authentication, however, is always confirmed
+/// from the database because cross-replica cache invalidation is best-effort.
 #[derive(Clone)]
 pub struct SecurityPipeline {
     user_service: Arc<UserService>,
@@ -126,9 +127,9 @@ impl SecurityPipeline {
 
     /// Attach a [`UserCache`] to this pipeline.
     ///
-    /// When set, [`check`] will consult the cache before hitting the database.
-    /// The cache is populated on every DB fallback so future requests are served
-    /// from the cache.
+    /// When set, [`check`] will consult the cache before hitting the database
+    /// so it can fast-reject stale or invalid sessions. The cache is also
+    /// populated after successful DB confirmation.
     #[must_use]
     pub fn with_user_cache(mut self, user_cache: Arc<UserCache>) -> Self {
         self.user_cache = Some(user_cache);
@@ -180,10 +181,9 @@ impl SecurityPipeline {
     ///
     /// ## Cache behaviour
     ///
-    /// The `pv` (password version) claim is always present, so the check
-    /// is fully satisfiable from the [`UserCache`]:
-    /// - Cache hit → validate `password_version` + `status` without a DB round-trip.
-    /// - Cache miss → fall back to DB, then populate the cache.
+    /// The cache is used as a negative cache:
+    /// - Cache hit → reject obviously invalid `password_version` or user status.
+    /// - Any allow decision → confirm current state from DB, then populate the cache.
     ///
     /// # Arguments
     /// * `claims` -- the already-verified JWT claims
@@ -193,43 +193,29 @@ impl SecurityPipeline {
     pub async fn check(&self, claims: &Claims) -> Result<AuthenticatedToken> {
         let user_id = claims.user_id();
 
-        // Fast path: try to satisfy the check from the cache.
         if let Some(cache) = &self.user_cache {
             if let Ok(Some(cached)) = cache.get(&user_id).await {
-                // Step 2: Password version check against cached value.
-                if claims.pv < cached.password_version() {
-                    return Err(Error::Authentication(
-                        "Token invalidated due to password change. Please log in again."
-                            .to_string(),
-                    ));
-                }
-
-                // Step 3: Status check.
-                // INVARIANT: CachedUser does not store `deleted_at` (to keep
-                // the cache entry compact). Instead, `UserService::soft_delete`
-                // invalidates the cache entry on deletion, so a cache HIT with
-                // Active status can be trusted to not be deleted. If this
-                // invariant is ever broken (e.g. a code path deletes without
-                // invalidation), the DB slow path below will still catch it.
                 if cached.status() == UserStatus::Banned
                     || cached.status() == UserStatus::Pending
                     || cached.is_deleted()
+                    || claims.pv < cached.password_version()
                 {
-                    return Err(Error::Authentication("Authentication failed".to_string()));
+                    return Err(if claims.pv < cached.password_version() {
+                        Error::Authentication(
+                            "Token invalidated due to password change. Please log in again."
+                                .to_string(),
+                        )
+                    } else {
+                        Error::Authentication("Authentication failed".to_string())
+                    });
                 }
-
-                // Check access token JTI blacklist (e.g. logout)
-                self.check_access_token_blacklist(claims).await?;
-
-                return Ok(AuthenticatedToken {
-                    user_id,
-                    claims: claims.clone(),
-                });
             }
-            // Cache miss: fall through to DB lookup and populate the cache below.
         }
 
-        // Slow path: fetch user from the database.
+        // Always confirm security-sensitive user state from the database.
+        // Cache invalidation is best-effort across replicas, so a cache hit
+        // cannot be treated as authoritative for password version, status, or
+        // soft-deletion checks.
         let user = self
             .user_service
             .get_user(&user_id)

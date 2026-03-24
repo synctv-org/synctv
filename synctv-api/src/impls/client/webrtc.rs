@@ -41,11 +41,11 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(room_id, user_id)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
         self.room_service
             .check_permission(room_id, user_id, PermissionBits::USE_WEBRTC)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
         let room = self
             .room_service
             .get_room(room_id)
@@ -167,7 +167,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(room_id, user_id)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         // SFU removed: network quality is now handled peer-to-peer
         tracing::debug!(

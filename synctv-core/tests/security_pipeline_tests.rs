@@ -357,6 +357,101 @@ async fn test_cache_hit_pending_user_rejected() {
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cache_hit_stale_active_status_does_not_bypass_ban() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+    let user_service = Arc::new(create_user_service(pool.clone()));
+
+    let user_cache = Arc::new(
+        UserCache::new(Arc::new(NoopCacheL2), 100, 5, 0, "test:user:".to_string()).unwrap(),
+    );
+
+    let cached = CachedUser::with_updated_at(
+        user.id.as_str().to_string(),
+        user.username.clone(),
+        user.role,
+        UserStatus::Active,
+        user.created_at,
+        user.updated_at,
+        0,
+        false,
+    );
+    user_cache.set(&user.id, cached).await.unwrap();
+
+    sqlx::query("UPDATE users SET status = $1, version = version + 1 WHERE id = $2")
+        .bind(UserStatus::Banned)
+        .bind(user.id.as_str())
+        .execute(&pool)
+        .await
+        .expect("Failed to ban user in DB");
+
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_user_cache(user_cache)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
+    let claims = make_claims(&user.id, 0);
+
+    let result = pipeline.check(&claims).await;
+    assert!(
+        result.is_err(),
+        "Stale cached active status must not allow a now-banned user to authenticate"
+    );
+    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cache_hit_stale_password_version_does_not_bypass_password_change() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+    let user_service = Arc::new(create_user_service(pool.clone()));
+
+    let user_cache = Arc::new(
+        UserCache::new(Arc::new(NoopCacheL2), 100, 5, 0, "test:user:".to_string()).unwrap(),
+    );
+
+    let cached = CachedUser::with_updated_at(
+        user.id.as_str().to_string(),
+        user.username.clone(),
+        user.role,
+        UserStatus::Active,
+        user.created_at,
+        user.updated_at,
+        0,
+        false,
+    );
+    user_cache.set(&user.id, cached).await.unwrap();
+
+    sqlx::query(
+        "UPDATE users
+         SET password_version = 3,
+             password_changed_at = NOW(),
+             version = version + 1
+         WHERE id = $1",
+    )
+    .bind(user.id.as_str())
+    .execute(&pool)
+    .await
+    .expect("Failed to bump password_version in DB");
+
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_user_cache(user_cache)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
+    let claims = make_claims(&user.id, 0);
+
+    let result = pipeline.check(&claims).await;
+    assert!(
+        result.is_err(),
+        "Stale cached password version must not allow tokens invalidated by password change"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(&err, Error::Authentication(msg) if msg.contains("password change")),
+        "Should reject stale password version via fresh auth state, got: {err}"
+    );
+}
+
 // ============================================================================
 // SEC5: Cache population after DB miss
 // ============================================================================
@@ -420,7 +515,7 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cache_populated_then_subsequent_check_uses_cache() {
+async fn test_cache_populated_then_subsequent_check_fails_closed_when_db_unavailable() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
     let user_service = Arc::new(create_user_service(pool.clone()));
@@ -438,14 +533,15 @@ async fn test_cache_populated_then_subsequent_check_uses_cache() {
     let result1 = pipeline.check(&claims).await;
     assert!(result1.is_ok());
 
-    // Close the pool to prove the second check uses the cache, not DB
+    // Close the pool to prove cache hits do not bypass the fresh DB confirmation.
     pool.close().await;
 
-    // Second check: should succeed from cache even though DB is closed
+    // Second check: authentication must fail closed because current security
+    // state can no longer be confirmed from the database.
     let result2 = pipeline.check(&claims).await;
     assert!(
-        result2.is_ok(),
-        "Second check should succeed from cache even with DB closed: {:?}",
+        matches!(result2, Err(Error::Database(sqlx::Error::PoolClosed))),
+        "Second check should fail closed when DB is unavailable, got: {:?}",
         result2.err()
     );
 }

@@ -80,16 +80,9 @@ pub async fn init_cluster_components(
             health_monitor.set_join_handle(hm_handle);
         }
         Err(e) => {
-            // P1 fix: Clean up resources on health monitor start failure
-            // 1. Stop the heartbeat loop via cancellation token
-            cm.cancel_token().cancel();
-            // 2. Unregister the node from Redis
-            if let Err(unreg_err) = registry.unregister().await {
-                warn!(
-                    error = %unreg_err,
-                    "Failed to unregister node during health monitor startup failure cleanup"
-                );
-            }
+            // Reuse the production shutdown path so heartbeat re-registration
+            // cannot race with node deregistration during startup rollback.
+            cm.shutdown().await;
             return Err(anyhow::anyhow!(
                 "Failed to start health monitor: {e}. \
                  Health monitoring is required for cluster mode."

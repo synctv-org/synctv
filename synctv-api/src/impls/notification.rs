@@ -124,6 +124,17 @@ fn normalize_notification_pagination(
     Ok(pagination)
 }
 
+fn map_notification_lookup_error(err: synctv_core::Error) -> ApiError {
+    match err {
+        synctv_core::Error::NotFound(_) => ApiError::NotFound("Notification not found".to_string()),
+        other => ApiError::from(other),
+    }
+}
+
+fn map_notification_mutation_error(err: synctv_core::Error) -> ApiError {
+    ApiError::from(err)
+}
+
 impl NotificationApiImpl {
     #[must_use]
     pub const fn new(notification_service: Arc<UserNotificationService>) -> Self {
@@ -158,7 +169,7 @@ impl NotificationApiImpl {
             .notification_service
             .get_unread_count(user_id)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to get unread count: {e}")))?;
+            .map_err(map_notification_mutation_error)?;
 
         Ok(ListNotificationsResult {
             notifications,
@@ -176,12 +187,7 @@ impl NotificationApiImpl {
         self.notification_service
             .get(user_id, notification_id)
             .await
-            .map_err(|e| match e {
-                synctv_core::Error::NotFound(_) => {
-                    ApiError::NotFound("Notification not found".to_string())
-                }
-                other => ApiError::Internal(format!("Failed to get notification: {other}")),
-            })
+            .map_err(map_notification_lookup_error)
     }
 
     /// Mark specific notifications as read.
@@ -194,7 +200,7 @@ impl NotificationApiImpl {
             .mark_as_read(user_id, MarkAsReadRequest { notification_ids })
             .await
             .map(|_| ())
-            .map_err(|e| ApiError::Internal(format!("Failed to mark notifications as read: {e}")))
+            .map_err(map_notification_mutation_error)
     }
 
     /// Mark all notifications as read, optionally before a timestamp.
@@ -207,9 +213,7 @@ impl NotificationApiImpl {
             .mark_all_as_read(user_id, MarkAllAsReadRequest { before })
             .await
             .map(|_| ())
-            .map_err(|e| {
-                ApiError::Internal(format!("Failed to mark all notifications as read: {e}"))
-            })
+            .map_err(map_notification_mutation_error)
     }
 
     /// Delete a specific notification.
@@ -221,12 +225,7 @@ impl NotificationApiImpl {
         self.notification_service
             .delete(user_id, notification_id)
             .await
-            .map_err(|e| match e {
-                synctv_core::Error::NotFound(_) => {
-                    ApiError::NotFound("Notification not found".to_string())
-                }
-                other => ApiError::Internal(format!("Failed to delete notification: {other}")),
-            })
+            .map_err(map_notification_lookup_error)
     }
 
     /// Delete all read notifications for a user.
@@ -235,9 +234,7 @@ impl NotificationApiImpl {
             .delete_all_read(user_id)
             .await
             .map(|_| ())
-            .map_err(|e| {
-                ApiError::Internal(format!("Failed to delete all read notifications: {e}"))
-            })
+            .map_err(map_notification_mutation_error)
     }
 }
 
@@ -339,5 +336,40 @@ mod tests {
             let converted_back = proto_notification_type_to_core(proto_value).unwrap();
             assert_eq!(converted_back, core_type);
         }
+    }
+
+    #[test]
+    fn test_notification_lookup_backend_outage_maps_to_service_unavailable() {
+        let mapped = map_notification_lookup_error(synctv_core::Error::Database(
+            sqlx::Error::PoolTimedOut,
+        ));
+
+        assert!(
+            matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg.contains("pool timed out")),
+            "notification lookup backend failures must remain service unavailable, got: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn test_notification_lookup_not_found_stays_not_found() {
+        let mapped =
+            map_notification_lookup_error(synctv_core::Error::NotFound("missing".to_string()));
+
+        assert!(
+            matches!(mapped, ApiError::NotFound(ref msg) if msg == "Notification not found"),
+            "missing notifications must remain not found, got: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn test_notification_mutation_backend_outage_maps_to_service_unavailable() {
+        let mapped = map_notification_mutation_error(synctv_core::Error::Database(
+            sqlx::Error::PoolTimedOut,
+        ));
+
+        assert!(
+            matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg.contains("pool timed out")),
+            "notification mutation backend failures must remain service unavailable, got: {mapped:?}"
+        );
     }
 }

@@ -34,6 +34,15 @@ pub struct OAuth2ApiImpl {
 }
 
 impl OAuth2ApiImpl {
+    fn map_bind_user_lookup_error(err: synctv_core::Error) -> ApiError {
+        match err {
+            synctv_core::Error::NotFound(_) => {
+                ApiError::Authentication("Authentication failed".to_string())
+            }
+            other => ApiError::from(other),
+        }
+    }
+
     #[must_use]
     pub const fn new(oauth2_service: Arc<OAuth2Service>, user_service: Arc<UserService>) -> Self {
         Self {
@@ -78,7 +87,7 @@ impl OAuth2ApiImpl {
             .user_service
             .get_user(user_id)
             .await
-            .map_err(|_| ApiError::Authentication("Authentication failed".to_string()))?;
+            .map_err(Self::map_bind_user_lookup_error)?;
 
         if user.is_deleted() || user.status == UserStatus::Banned {
             // Use the same generic error to prevent distinguishing between
@@ -422,6 +431,30 @@ impl From<LinkedProviderInfo> for LinkedProvider {
 #[cfg(test)]
 mod tests {
     use crate::impls::ApiError;
+
+    #[test]
+    fn test_bind_user_lookup_backend_failure_stays_service_unavailable() {
+        let mapped = super::OAuth2ApiImpl::map_bind_user_lookup_error(
+            synctv_core::Error::ServiceUnavailable("user backend unavailable".to_string()),
+        );
+
+        assert!(
+            matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "user backend unavailable"),
+            "bind user lookup backend failures must not be reported as authentication failures, got: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn test_bind_user_lookup_not_found_stays_authentication_failed() {
+        let mapped = super::OAuth2ApiImpl::map_bind_user_lookup_error(
+            synctv_core::Error::NotFound("missing row".to_string()),
+        );
+
+        assert!(
+            matches!(mapped, ApiError::Authentication(ref msg) if msg == "Authentication failed"),
+            "missing bind users should still be treated as authentication failure, got: {mapped:?}"
+        );
+    }
 
     /// Test that the unlink provider safety check uses `has_usable_password()`
     /// instead of just checking `signup_method`.

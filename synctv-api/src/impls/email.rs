@@ -12,6 +12,14 @@ const GENERIC_VERIFICATION_MESSAGE: &str =
 const GENERIC_PASSWORD_RESET_MESSAGE: &str =
     "If an account exists with this email, a password reset code will be sent.";
 
+fn map_email_user_lookup_error(err: synctv_core::Error) -> ApiError {
+    ApiError::from(err)
+}
+
+fn map_email_mutation_error(err: synctv_core::Error) -> ApiError {
+    ApiError::from(err)
+}
+
 /// Shared email operations implementation.
 pub struct EmailApiImpl {
     pub user_service: Arc<UserService>,
@@ -65,7 +73,7 @@ impl EmailApiImpl {
             .user_service
             .get_by_email(email)
             .await
-            .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
+            .map_err(map_email_user_lookup_error)?;
 
         let user = if let Some(u) = user {
             u
@@ -83,7 +91,7 @@ impl EmailApiImpl {
             .email_service
             .send_verification_email(email, &self.email_token_service, &user.id)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to send email: {e}")))?;
+            .map_err(ApiError::from)?;
 
         tracing::info!(
             "Sent verification email to {}",
@@ -105,7 +113,7 @@ impl EmailApiImpl {
             .user_service
             .get_by_email(email)
             .await
-            .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
+            .map_err(map_email_user_lookup_error)?
             .ok_or_else(|| {
                 ApiError::InvalidInput("Invalid or expired verification token".to_string())
             })?;
@@ -134,13 +142,13 @@ impl EmailApiImpl {
         self.user_service
             .set_email_verified(&user.id, true)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to update email verification: {e}")))?;
+            .map_err(map_email_mutation_error)?;
 
         // Invalidate all remaining email verification tokens for this user
         self.email_token_service
             .invalidate_user_tokens(&user.id, EmailTokenType::EmailVerification)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to invalidate tokens: {e}")))?;
+            .map_err(map_email_mutation_error)?;
 
         tracing::info!("Email verified for user {}", user.id.as_str());
 
@@ -160,7 +168,7 @@ impl EmailApiImpl {
             .user_service
             .get_by_email(email)
             .await
-            .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
+            .map_err(map_email_user_lookup_error)?;
 
         let Some(user) = user else {
             // Add random delay to prevent timing side-channel that leaks
@@ -176,7 +184,7 @@ impl EmailApiImpl {
             .email_service
             .send_password_reset_email(email, &self.email_token_service, &user.id)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to send email: {e}")))?;
+            .map_err(ApiError::from)?;
 
         tracing::info!("Password reset requested for user {}", user.id.as_str());
 
@@ -200,7 +208,7 @@ impl EmailApiImpl {
             .user_service
             .get_by_email(email)
             .await
-            .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
+            .map_err(map_email_user_lookup_error)?
             .ok_or_else(|| ApiError::InvalidInput("Invalid or expired reset token".to_string()))?;
 
         let validated_user_id = self
@@ -225,13 +233,13 @@ impl EmailApiImpl {
         self.user_service
             .set_password(&user.id, new_password)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to update password: {e}")))?;
+            .map_err(map_email_mutation_error)?;
 
         // Invalidate all remaining password reset tokens for this user
         self.email_token_service
             .invalidate_user_tokens(&user.id, EmailTokenType::PasswordReset)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to invalidate tokens: {e}")))?;
+            .map_err(map_email_mutation_error)?;
 
         tracing::info!("Password reset completed for user {}", user.id.as_str());
 
@@ -244,7 +252,10 @@ impl EmailApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmailApiImpl, GENERIC_PASSWORD_RESET_MESSAGE};
+    use super::{
+        map_email_mutation_error, map_email_user_lookup_error, EmailApiImpl,
+        GENERIC_PASSWORD_RESET_MESSAGE,
+    };
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
     use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
@@ -313,5 +324,27 @@ mod tests {
 
         assert_eq!(existing.message, GENERIC_PASSWORD_RESET_MESSAGE);
         assert_eq!(missing.message, GENERIC_PASSWORD_RESET_MESSAGE);
+    }
+
+    #[test]
+    fn email_user_lookup_backend_outage_maps_to_service_unavailable() {
+        let mapped =
+            map_email_user_lookup_error(synctv_core::Error::Database(sqlx::Error::PoolTimedOut));
+
+        assert!(
+            matches!(mapped, crate::impls::ApiError::ServiceUnavailable(ref msg) if msg.contains("pool timed out")),
+            "email user lookup backend failures must remain service unavailable, got: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn email_mutation_backend_outage_maps_to_service_unavailable() {
+        let mapped =
+            map_email_mutation_error(synctv_core::Error::Database(sqlx::Error::PoolTimedOut));
+
+        assert!(
+            matches!(mapped, crate::impls::ApiError::ServiceUnavailable(ref msg) if msg.contains("pool timed out")),
+            "email mutation backend failures must remain service unavailable, got: {mapped:?}"
+        );
     }
 }

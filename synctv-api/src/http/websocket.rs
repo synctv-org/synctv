@@ -184,23 +184,19 @@ async fn extract_user_id(
     // User status and password version are checked atomically with ticket consumption
     // to prevent TOCTOU race conditions (Issue #17).
     if let Some(ref ticket) = query.ticket {
-        if let Some(ref ws_ticket_service) = state.ws_ticket_service {
-            let pending = ws_ticket_service
-                .validate_checked(ticket, room_id, &*state.user_service)
-                .await
-                .map_err(map_websocket_ticket_validation_error)?;
+        let pending = state
+            .ws_ticket_service
+            .validate_checked(ticket, room_id, &*state.user_service)
+            .await
+            .map_err(map_websocket_ticket_validation_error)?;
 
-            return Ok(HandshakeAuthContext {
-                user_id: pending.user_id.clone(),
-                ticket_commit: Some(TicketAuthCommit {
-                    ticket: ticket.clone(),
-                    pending,
-                }),
-            });
-        }
-        return Err(AppError::internal_server_error(
-            "WebSocket ticket service not configured",
-        ));
+        return Ok(HandshakeAuthContext {
+            user_id: pending.user_id.clone(),
+            ticket_commit: Some(TicketAuthCommit {
+                ticket: ticket.clone(),
+                pending,
+            }),
+        });
     }
 
     Err(AppError::unauthorized(
@@ -230,6 +226,10 @@ fn map_websocket_ticket_validation_error(error: synctv_core::Error) -> AppError 
         AuthErrorCategory::Authorization => AppError::forbidden(format!("{error}")),
         AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(error),
     }
+}
+
+fn map_websocket_membership_probe_error(error: synctv_core::Error) -> AppError {
+    AppError::from(error)
 }
 
 fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<String>, AppError> {
@@ -852,11 +852,8 @@ async fn commit_prevalidated_ticket(
         return Ok(());
     };
 
-    let ws_ticket_service = state.ws_ticket_service.as_ref().ok_or_else(|| {
-        AppError::internal_server_error("WebSocket ticket service not configured")
-    })?;
-
-    ws_ticket_service
+    state
+        .ws_ticket_service
         .consume_prevalidated(&ticket_commit.ticket, room_id, &ticket_commit.pending)
         .await
         .map(|_| ())
@@ -980,7 +977,7 @@ async fn prepare_websocket_upgrade(
         .member_service()
         .is_member(&rid, &user_id)
         .await
-        .map_err(|e| AppError::internal_server_error(format!("Failed to check membership: {e}")))?;
+        .map_err(map_websocket_membership_probe_error)?;
 
     if !is_member {
         return Err(AppError::forbidden("Not a member of this room"));
@@ -1384,12 +1381,6 @@ mod tests {
     }
 
     #[test]
-    fn test_internal_error_for_missing_ticket_service() {
-        let err = AppError::internal_server_error("WebSocket ticket service not configured");
-        assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[test]
     fn test_unauthorized_error_for_revoked_token() {
         let err = AppError::unauthorized("Token has been revoked");
         assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
@@ -1673,6 +1664,19 @@ mod tests {
     }
 
     #[test]
+    fn test_map_websocket_membership_probe_error_preserves_backend_outages() {
+        let err = map_websocket_membership_probe_error(synctv_core::Error::ServiceUnavailable(
+            "membership backend temporarily unavailable".to_string(),
+        ));
+
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            err.message.contains("temporarily unavailable"),
+            "websocket membership probe outages should remain retryable"
+        );
+    }
+
+    #[test]
     fn test_map_websocket_pre_join_error_maps_typed_rate_limit_prefix() {
         let err = map_websocket_pre_join_error(
             "Rate limited: realtime room capacity exceeded".to_string(),
@@ -1869,8 +1873,7 @@ mod tests {
         let state = crate::http::tests::test_app_state();
         let ws_ticket_service = state
             .ws_ticket_service
-            .clone()
-            .expect("test app state should wire websocket tickets");
+            .clone();
         let user_id = UserId::from_string("user-ticket-restore".to_string());
         let room_id = RoomId::from_string("room-ticket-restore".to_string());
         let reservation = HandshakeReservation {
@@ -1928,8 +1931,7 @@ mod tests {
         let state = crate::http::tests::test_app_state();
         let ws_ticket_service = state
             .ws_ticket_service
-            .clone()
-            .expect("test app state should wire websocket tickets");
+            .clone();
         let user_id = UserId::from_string("user-ticket-claim-fail".to_string());
         let room_id = RoomId::from_string("room-ticket-claim-fail".to_string());
 

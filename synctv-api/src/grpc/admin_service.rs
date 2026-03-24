@@ -103,7 +103,7 @@ impl AdminServiceImpl {
             user_context.iat,
         )
         .await
-        .map_err(Status::unauthenticated)?;
+        .map_err(map_api_error)?;
 
         Ok(validated.role)
     }
@@ -139,7 +139,7 @@ impl AdminServiceImpl {
             user_context.iat,
         )
         .await
-        .map_err(Status::unauthenticated)?;
+        .map_err(map_api_error)?;
 
         if !validated.role.is_admin_or_above() {
             return Err(Status::permission_denied("Admin role required"));
@@ -935,6 +935,13 @@ mod tests {
         let err = crate::impls::ApiError::Authentication("bad token".to_string());
         let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn test_api_err_service_unavailable_stays_unavailable() {
+        let err = crate::impls::ApiError::ServiceUnavailable("user backend unavailable".to_string());
+        let status = map_api_error(err);
+        assert_eq!(status.code(), tonic::Code::Unavailable);
     }
 
     #[test]

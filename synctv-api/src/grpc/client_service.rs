@@ -48,8 +48,6 @@ use crate::proto::client::{
     UpdateRoomSettingsResponse,
 };
 
-use super::internal_err;
-
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
 /// Provides backpressure for slow clients without excessive memory usage.
 const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
@@ -124,6 +122,34 @@ fn validate_realtime_room_access(room: &Room) -> Result<(), Status> {
     }
 
     Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+fn map_message_stream_membership_error(err: synctv_core::Error) -> Status {
+    match crate::impls::ClientApiImpl::map_room_access_error(err) {
+        crate::impls::ApiError::Authorization(message) => Status::permission_denied(message),
+        crate::impls::ApiError::NotFound(message) => Status::not_found(message),
+        crate::impls::ApiError::ServiceUnavailable(message) => Status::unavailable(message),
+        other => map_api_error(other),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn map_email_flow_error(err: crate::impls::ApiError) -> Status {
+    map_api_error(err)
+}
+
+#[allow(clippy::result_large_err)]
+fn map_message_stream_user_lookup_error(err: synctv_core::Error) -> Status {
+    map_api_error(crate::impls::ApiError::from(err))
+}
+
+#[allow(clippy::result_large_err)]
+fn map_message_stream_room_lookup_error(err: synctv_core::Error) -> Status {
+    match crate::impls::ApiError::from(err) {
+        crate::impls::ApiError::NotFound(message) => Status::not_found(message),
+        other => map_api_error(other),
+    }
 }
 
 /// Configuration for `ClientService`
@@ -692,20 +718,20 @@ impl RoomService for ClientServiceImpl {
             .user_service
             .get_user(&user_id)
             .await
-            .map_err(|e| internal_err("Failed to get user", e))?;
+            .map_err(map_message_stream_user_lookup_error)?;
         let username = user.username;
 
         // Check room membership before establishing stream
         self.room_service
             .check_membership(&room_id, &user_id)
             .await
-            .map_err(|e| Status::permission_denied(format!("Not a member of the room: {e}")))?;
+            .map_err(map_message_stream_membership_error)?;
 
         let room = self
             .room_service
             .get_room(&room_id)
             .await
-            .map_err(|e| internal_err("Failed to fetch room", e))?;
+            .map_err(map_message_stream_room_lookup_error)?;
         validate_realtime_room_access(&room)?;
 
         tracing::info!(
@@ -1038,7 +1064,7 @@ impl RoomService for ClientServiceImpl {
             .create_publish_key(user_id.as_str(), room_id.as_str(), req)
             .await
             .map(Response::new)
-            .map_err(|e| internal_err("Failed to create publish key", e))
+            .map_err(map_api_error)
     }
 
     async fn get_stream_info(
@@ -1053,7 +1079,7 @@ impl RoomService for ClientServiceImpl {
             .get_stream_info(user_id.as_str(), room_id.as_str(), &req.media_id)
             .await
             .map(Response::new)
-            .map_err(|e| internal_err("Failed to get stream info", e))
+            .map_err(map_api_error)
     }
 
     async fn list_room_streams(
@@ -1068,7 +1094,7 @@ impl RoomService for ClientServiceImpl {
             .list_room_streams(user_id.as_str(), room_id.as_str())
             .await
             .map(Response::new)
-            .map_err(|e| internal_err("Failed to list room streams", e))
+            .map_err(map_api_error)
     }
 
     // Playlist Management
@@ -1300,7 +1326,7 @@ impl EmailService for ClientServiceImpl {
         let result = email_api
             .send_verification_email(&req.email)
             .await
-            .map_err(|e| internal_err("Email verification", &e))?;
+            .map_err(map_email_flow_error)?;
 
         Ok(Response::new(SendVerificationEmailResponse {
             message: result.message,
@@ -1335,7 +1361,7 @@ impl EmailService for ClientServiceImpl {
         let result = email_api
             .request_password_reset(&req.email)
             .await
-            .map_err(|e| internal_err("Password reset", &e))?;
+            .map_err(map_email_flow_error)?;
 
         Ok(Response::new(RequestPasswordResetResponse {
             message: result.message,
@@ -1413,6 +1439,64 @@ mod tests {
         assert_eq!(status.message(), "Internal error");
         assert!(!status.message().contains("password"));
         assert!(!status.message().contains("secret"));
+    }
+
+    #[test]
+    fn test_create_publish_key_grpc_maps_service_unavailable() {
+        let err = crate::impls::ApiError::ServiceUnavailable("publish key backend unavailable".into());
+        let status = map_api_error(err);
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(status.message(), "publish key backend unavailable");
+    }
+
+    #[test]
+    fn test_get_stream_info_grpc_maps_not_found() {
+        let err = crate::impls::ApiError::NotFound("stream not found".into());
+        let status = map_api_error(err);
+        assert_eq!(status.code(), tonic::Code::NotFound);
+        assert_eq!(status.message(), "stream not found");
+    }
+
+    #[test]
+    fn test_list_room_streams_grpc_maps_service_unavailable() {
+        let err = crate::impls::ApiError::ServiceUnavailable("livestream registry unavailable".into());
+        let status = map_api_error(err);
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(status.message(), "livestream registry unavailable");
+    }
+
+    #[test]
+    fn test_send_verification_email_grpc_maps_service_unavailable() {
+        let err = crate::impls::ApiError::ServiceUnavailable("email backend unavailable".into());
+        let status = map_email_flow_error(err);
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(status.message(), "email backend unavailable");
+    }
+
+    #[test]
+    fn test_request_password_reset_grpc_maps_service_unavailable() {
+        let err = crate::impls::ApiError::ServiceUnavailable("password reset backend unavailable".into());
+        let status = map_email_flow_error(err);
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(status.message(), "password reset backend unavailable");
+    }
+
+    #[test]
+    fn test_message_stream_user_lookup_backend_outage_stays_unavailable() {
+        let status = map_message_stream_user_lookup_error(synctv_core::Error::ServiceUnavailable(
+            "user backend unavailable".to_string(),
+        ));
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(status.message(), "user backend unavailable");
+    }
+
+    #[test]
+    fn test_message_stream_room_lookup_not_found_stays_not_found() {
+        let status = map_message_stream_room_lookup_error(synctv_core::Error::NotFound(
+            "Room not found".to_string(),
+        ));
+        assert_eq!(status.code(), tonic::Code::NotFound);
+        assert_eq!(status.message(), "Room not found");
     }
 
     #[test]
@@ -1698,6 +1782,26 @@ mod tests {
     fn test_validate_realtime_room_access_allows_active_room() {
         let room = Room::new("test-room".to_string(), UserId::new());
         assert!(validate_realtime_room_access(&room).is_ok());
+    }
+
+    #[test]
+    fn test_map_message_stream_membership_error_backend_outage_stays_unavailable() {
+        let status = map_message_stream_membership_error(synctv_core::Error::ServiceUnavailable(
+            "membership backend unavailable".to_string(),
+        ));
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(status.message(), "membership backend unavailable");
+    }
+
+    #[test]
+    fn test_map_message_stream_membership_error_authorization_stays_permission_denied() {
+        let status = map_message_stream_membership_error(synctv_core::Error::Authorization(
+            "Not a member of this room".to_string(),
+        ));
+
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(status.message(), "Forbidden: Not a member of this room");
     }
 
     #[test]

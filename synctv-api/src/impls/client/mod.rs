@@ -140,6 +140,77 @@ impl ClientApiImpl {
         parse_external_room_id(room_id)
     }
 
+    pub(crate) fn map_room_access_error(err: synctv_core::Error) -> ApiError {
+        match err {
+            synctv_core::Error::Authorization(msg) => {
+                ApiError::Authorization(format!("Forbidden: {msg}"))
+            }
+            other => ApiError::from(other),
+        }
+    }
+
+    fn map_room_lookup_error(err: synctv_core::Error) -> ApiError {
+        match err {
+            synctv_core::Error::NotFound(_) => ApiError::NotFound("Room not found".to_string()),
+            other => ApiError::from(other),
+        }
+    }
+
+    pub(super) fn map_media_lookup_error(
+        err: synctv_core::Error,
+        not_found_message: &'static str,
+    ) -> ApiError {
+        match err {
+            synctv_core::Error::NotFound(_) => ApiError::NotFound(not_found_message.to_string()),
+            other => ApiError::from(other),
+        }
+    }
+
+    pub(super) fn map_membership_probe_error(err: synctv_core::Error) -> ApiError {
+        ApiError::from(err)
+    }
+
+    pub(super) fn map_livestream_backend_error(error: &(dyn std::error::Error + 'static)) -> ApiError {
+        if let Some(stream_error) = error.downcast_ref::<synctv_livestream::error::StreamError>() {
+            return match stream_error {
+                synctv_livestream::error::StreamError::NoPublisher(_)
+                | synctv_livestream::error::StreamError::StreamNotFound(_)
+                | synctv_livestream::error::StreamError::InvalidStreamKey(_) => {
+                    ApiError::NotFound(stream_error.to_string())
+                }
+                synctv_livestream::error::StreamError::PermissionDenied(_)
+                | synctv_livestream::error::StreamError::AuthenticationFailed(_) => {
+                    ApiError::Authorization(stream_error.to_string())
+                }
+                synctv_livestream::error::StreamError::ResourceExhausted(_) => {
+                    ApiError::RateLimited(stream_error.to_string())
+                }
+                synctv_livestream::error::StreamError::InvalidAddress(_)
+                | synctv_livestream::error::StreamError::ProtocolError(_)
+                | synctv_livestream::error::StreamError::HandshakeFailed(_)
+                | synctv_livestream::error::StreamError::InvalidState(_) => {
+                    ApiError::InvalidInput(stream_error.to_string())
+                }
+                synctv_livestream::error::StreamError::RedisError(_)
+                | synctv_livestream::error::StreamError::RegistryError(_)
+                | synctv_livestream::error::StreamError::GrpcError(_)
+                | synctv_livestream::error::StreamError::ConnectionFailed(_)
+                | synctv_livestream::error::StreamError::StaleEpoch(_)
+                | synctv_livestream::error::StreamError::StreamHubError(_) => {
+                    ApiError::ServiceUnavailable(stream_error.to_string())
+                }
+                synctv_livestream::error::StreamError::IoError(_)
+                | synctv_livestream::error::StreamError::Internal(_)
+                | synctv_livestream::error::StreamError::AlreadyPublishing(_)
+                | synctv_livestream::error::StreamError::PublisherExists(_) => {
+                    ApiError::Internal(stream_error.to_string())
+                }
+            };
+        }
+
+        ApiError::Internal(error.to_string())
+    }
+
     /// Create a new `ClientApiImpl` from individual parameters.
     ///
     /// Prefer [`ClientApiImpl::from_config`] for new code.

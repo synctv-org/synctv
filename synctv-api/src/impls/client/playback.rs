@@ -79,7 +79,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         // Get playback state
         let state = self

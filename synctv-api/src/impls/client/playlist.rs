@@ -20,7 +20,7 @@ impl ClientApiImpl {
         self.room_service
             .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         let parent_id = if req.parent_id.is_empty() {
             None
@@ -80,7 +80,7 @@ impl ClientApiImpl {
         self.room_service
             .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id);
 
@@ -141,7 +141,7 @@ impl ClientApiImpl {
         self.room_service
             .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id);
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
@@ -177,7 +177,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         // Get playlist
         let playlist = self
@@ -231,7 +231,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         // Pagination defaults and limits
         const DEFAULT_PAGE_SIZE: i32 = 50;

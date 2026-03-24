@@ -153,22 +153,23 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         None => None, // No cluster manager, single-node mode
     };
 
-    // Check WebSocket ticket service (if configured)
+    // Check WebSocket ticket service.
     // In cluster mode, memory-backed ticket storage causes cross-replica auth failures.
-    let ws_ticket_status = state.ws_ticket_service.as_ref().map(|svc| {
+    let ws_ticket_status = {
+        let svc = &state.ws_ticket_service;
         let is_cluster_mode = state.config.cluster_runtime_enabled();
         let health = check_ws_ticket_health(svc);
         if ws_ticket_backend_is_safe_for_mode(svc, is_cluster_mode) {
-            health
+            Some(health)
         } else {
             error_messages.push(
                 "WsTicketService: memory mode is not safe in cluster mode (tickets created on one node cannot be validated on another)".to_string()
             );
             is_healthy = false;
             warn!("WsTicketService is using memory storage in cluster mode — cross-replica ticket validation will fail");
-            "unhealthy (memory, cluster mode)".to_string()
+            Some("unhealthy (memory, cluster mode)".to_string())
         }
-    });
+    };
 
     // Check email service (if configured) - validates SMTP config is present
     let email_status = state

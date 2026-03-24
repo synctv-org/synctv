@@ -548,7 +548,7 @@ impl ClientApiImpl {
                 synctv_core::models::PermissionBits::REORDER_PLAYLIST,
             )
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         let updates_converted: Vec<(synctv_core::models::MediaId, i32)> = req
             .updates
@@ -590,7 +590,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         // M-7: Use paginated query instead of loading all items into memory.
         // Default to first page with 50 items, max 200 items per page.
@@ -669,7 +669,7 @@ impl ClientApiImpl {
         self.room_service
             .check_membership(&rid, &uid)
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         // Get playlist info to determine if static or dynamic
         let playlist = self
@@ -852,7 +852,7 @@ impl ClientApiImpl {
                 synctv_core::models::PermissionBits::REORDER_PLAYLIST,
             )
             .await
-            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+            .map_err(Self::map_room_access_error)?;
 
         let media_id1 = synctv_core::models::MediaId::from_string(req.media_id1.clone());
         let media_id2 = synctv_core::models::MediaId::from_string(req.media_id2.clone());

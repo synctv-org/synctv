@@ -12,6 +12,7 @@ use synctv_core::provider::{
 use synctv_core::service::RoomService;
 
 use super::ApiError;
+use crate::impls::client::ClientApiImpl;
 
 // ------------------------------------------------------------------
 // Shared playback resolution helpers
@@ -31,13 +32,13 @@ pub async fn resolve_media_from_playlist(
     room_service
         .check_membership(room_id, user_id)
         .await
-        .map_err(|_| ApiError::Authorization("Not a member of this room".to_string()))?;
+        .map_err(ClientApiImpl::map_room_access_error)?;
 
     let media = room_service
         .media_service()
         .get_media(media_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get media: {e}")))?
+        .map_err(|e| ClientApiImpl::map_media_lookup_error(e, "Media not found in playlist"))?
         .ok_or_else(|| ApiError::NotFound("Media not found in playlist".to_string()))?;
 
     // Verify the media belongs to the requested room

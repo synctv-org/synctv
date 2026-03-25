@@ -268,9 +268,26 @@ fn test_standalone_mode_tolerates_missing_redis() {
 // ============================================================================
 
 mod p1_cluster_cleanup_tests {
+    use synctv::app::Application;
+    use synctv_cluster::discovery::NodeRegistry;
+    use synctv_core_testing::{create_test_database_url_with_label, start_redis_url_with_label};
     use std::sync::Arc;
+    use std::time::Instant;
     use std::time::Duration;
+    use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
+
+    async fn reserve_unused_port() -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("should reserve an ephemeral port");
+        let port = listener
+            .local_addr()
+            .expect("reserved listener should have local addr")
+            .port();
+        drop(listener);
+        port
+    }
 
     /// P1: Verify that ClusterManager's cancel_token can stop the heartbeat loop.
     ///
@@ -437,6 +454,110 @@ mod p1_cluster_cleanup_tests {
 
         // This test passes if the contract is understood
         assert!(true, "P1 cleanup contract verified");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn test_application_build_does_not_register_cluster_node_before_run() {
+        let (postgres, database_url) =
+            create_test_database_url_with_label("synctv_test", "build-before-run").await;
+        let (redis, redis_url) = start_redis_url_with_label("build-before-run").await;
+
+        let mut config = super::cluster_test_config();
+        config.database.url = database_url;
+        config.redis.url = redis_url.clone();
+        config.server.http_port = reserve_unused_port().await;
+        config.server.grpc_port = reserve_unused_port().await;
+        config.livestream.rtmp_port = reserve_unused_port().await;
+        config.server.advertise_host = "127.0.0.1".to_string();
+
+        let app = Application::build(config.clone())
+            .await
+            .expect("application build should succeed before run");
+
+        let redis_client =
+            redis::Client::open(redis_url).expect("test Redis client should be created");
+        let registry = NodeRegistry::new(
+            redis_client,
+            "observer-node".to_string(),
+            30,
+            &config.redis.key_prefix,
+        )
+        .expect("observer registry should be created");
+        let nodes = registry
+            .get_all_nodes()
+            .await
+            .expect("observer registry should read nodes");
+
+        assert!(
+            nodes.is_empty(),
+            "Application::build must not make the node routable before listeners are started, found nodes: {:?}",
+            nodes.iter().map(|n| n.node_id.as_str()).collect::<Vec<_>>()
+        );
+
+        app.run_with_shutdown_signal(std::future::ready(())).await.ok();
+        redis.cleanup().await;
+        postgres.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn test_application_build_startup_failure_unregisters_cluster_node() {
+        let (postgres, database_url) =
+            create_test_database_url_with_label("synctv_test", "build-failure-unregister").await;
+        let (redis, redis_url) = start_redis_url_with_label("build-failure-unregister").await;
+
+        let mut config = super::cluster_test_config();
+        config.database.url = database_url;
+        config.redis.url = redis_url.clone();
+
+        let occupied_rtmp = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("should reserve an RTMP port to force Phase 7 failure");
+        let occupied_addr = occupied_rtmp
+            .local_addr()
+            .expect("reserved RTMP listener should have local addr");
+        config.server.http_port = occupied_addr.port().saturating_add(1);
+        config.server.grpc_port = occupied_addr.port().saturating_add(2);
+        config.livestream.rtmp_port = occupied_addr.port();
+        config.server.advertise_host = "127.0.0.1".to_string();
+
+        let result = Application::build(config.clone()).await;
+        assert!(
+            result.is_err(),
+            "occupied RTMP port must force Application::build to fail after cluster init"
+        );
+
+        let redis_client =
+            redis::Client::open(redis_url).expect("test Redis client should be created");
+        let registry = NodeRegistry::new(
+            redis_client,
+            "observer-node".to_string(),
+            30,
+            &config.redis.key_prefix,
+        )
+        .expect("observer registry should be created");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let nodes = registry
+                .get_all_nodes()
+                .await
+                .expect("observer registry should read nodes");
+            if nodes.is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "cluster node should be unregistered after build rollback, still found nodes: {:?}",
+                nodes.iter().map(|n| n.node_id.as_str()).collect::<Vec<_>>()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        drop(occupied_rtmp);
+        redis.cleanup().await;
+        postgres.cleanup().await;
     }
 }
 

@@ -100,40 +100,47 @@ impl ClientApiImpl {
             // The service layer (set_member_permissions) already enforces it
             // as the single source of truth via check_permission_no_cache.
 
-            // Determine which permission set to use based on the caller's actual role
-            let caller_member = self
+            let target_member = self
                 .room_service
                 .member_service()
-                .get_member(&rid, &uid)
+                .get_member(&rid, &target_uid)
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| {
-                    ApiError::Authorization("Caller is not a member of this room".to_string())
+                    ApiError::NotFound("Target member not found".to_string())
                 })?;
 
-            let caller_is_admin = matches!(
-                caller_member.role,
-                synctv_core::models::RoomRole::Creator | synctv_core::models::RoomRole::Admin
+            let target_uses_admin_overrides = matches!(
+                target_member.role,
+                synctv_core::models::RoomRole::Admin
             );
 
-            // Only callers with admin/creator role can set admin-level permissions
-            if !caller_is_admin
-                && (req.admin_added_permissions > 0 || req.admin_removed_permissions > 0)
+            if target_uses_admin_overrides
+                && (req.added_permissions > 0 || req.removed_permissions > 0)
             {
                 return Err(ApiError::Authorization(
-                    "Only admins or creators can modify admin-level permissions".to_string(),
+                    "Admin members must use admin_added_permissions/admin_removed_permissions"
+                        .to_string(),
                 ));
             }
 
-            // Merge both admin-level and member-level permissions when caller is admin
-            let added = if caller_is_admin {
-                req.admin_added_permissions | req.added_permissions
+            if !target_uses_admin_overrides
+                && (req.admin_added_permissions > 0 || req.admin_removed_permissions > 0)
+            {
+                return Err(ApiError::Authorization(
+                    "Only admin members use admin_added_permissions/admin_removed_permissions"
+                        .to_string(),
+                ));
+            }
+
+            let added = if target_uses_admin_overrides {
+                req.admin_added_permissions
             } else {
                 req.added_permissions
             };
 
-            let removed = if caller_is_admin {
-                req.admin_removed_permissions | req.removed_permissions
+            let removed = if target_uses_admin_overrides {
+                req.admin_removed_permissions
             } else {
                 req.removed_permissions
             };

@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{PermissionBits, User, UserId, UserRole, UserStatus},
+    models::{PermissionBits, RoomRole, User, UserId, UserRole, UserStatus},
     repository::{RoomMemberRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
@@ -171,6 +171,95 @@ async fn test_set_member_permissions_creator_can_set() {
     assert!(
         updated.added_permissions & PermissionBits::KICK_USER != 0,
         "KICK_USER should be added"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_member_permissions_updates_admin_override_fields_for_admin_target() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("smp_admin_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("smp_admin_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "SMP Admin Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    room_service
+        .member_service()
+        .set_member_role(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            RoomRole::Admin,
+        )
+        .await
+        .unwrap();
+
+    let member_service = room_service.member_service();
+    let updated = member_service
+        .set_member_permissions(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            PermissionBits::DELETE_ROOM,
+            PermissionBits::BAN_MEMBER,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        updated.admin_added_permissions & PermissionBits::DELETE_ROOM,
+        PermissionBits::DELETE_ROOM,
+        "admin target must persist allow overrides into admin_added_permissions"
+    );
+    assert_eq!(
+        updated.admin_removed_permissions & PermissionBits::BAN_MEMBER,
+        PermissionBits::BAN_MEMBER,
+        "admin target must persist deny overrides into admin_removed_permissions"
+    );
+    assert_eq!(
+        updated.added_permissions, 0,
+        "admin-specific override writes must not leak into member-level added_permissions"
+    );
+    assert_eq!(
+        updated.removed_permissions, 0,
+        "admin-specific override writes must not leak into member-level removed_permissions"
+    );
+
+    let effective = room_service
+        .permission_service()
+        .get_user_permissions_no_cache(&room.id, &target.id)
+        .await
+        .unwrap();
+    assert!(
+        effective.has(PermissionBits::DELETE_ROOM),
+        "admin allow override should affect effective permissions"
+    );
+    assert!(
+        !effective.has(PermissionBits::BAN_MEMBER),
+        "admin deny override should affect effective permissions"
     );
 }
 
@@ -379,4 +468,176 @@ async fn test_reset_member_permissions_requires_grant_permission() {
         Error::Authorization(_) => {}
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("grp_admin_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("grp_admin_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Grant Admin Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    room_service
+        .member_service()
+        .set_member_role(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            RoomRole::Admin,
+        )
+        .await
+        .unwrap();
+
+    let member_service = room_service.member_service();
+    let updated = member_service
+        .grant_permission(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            PermissionBits::DELETE_ROOM,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        updated.admin_added_permissions & PermissionBits::DELETE_ROOM,
+        PermissionBits::DELETE_ROOM,
+        "grant_permission must target admin_added_permissions for admin members"
+    );
+    assert_eq!(
+        updated.added_permissions, 0,
+        "member-level added_permissions should remain untouched for admin members"
+    );
+
+    let updated = member_service
+        .revoke_permission(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            PermissionBits::BAN_MEMBER,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        updated.admin_removed_permissions & PermissionBits::BAN_MEMBER,
+        PermissionBits::BAN_MEMBER,
+        "revoke_permission must target admin_removed_permissions for admin members"
+    );
+    assert_eq!(
+        updated.removed_permissions, 0,
+        "member-level removed_permissions should remain untouched for admin members"
+    );
+
+    let effective = room_service
+        .permission_service()
+        .get_user_permissions_no_cache(&room.id, &target.id)
+        .await
+        .unwrap();
+    assert!(
+        effective.has(PermissionBits::DELETE_ROOM),
+        "granted admin override should be visible in effective permissions"
+    );
+    assert!(
+        !effective.has(PermissionBits::BAN_MEMBER),
+        "revoked admin override should be visible in effective permissions"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_stale_admin_role_grant_fails_closed_without_writing_override_columns() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("stale_admin_grant_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("stale_admin_grant_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Stale Admin Grant".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    room_service
+        .member_service()
+        .set_member_role(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            RoomRole::Admin,
+        )
+        .await
+        .unwrap();
+
+    let stale_admin = member_repo.get(&room.id, &target.id).await.unwrap().unwrap();
+
+    room_service
+        .member_service()
+        .set_member_role(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            RoomRole::Member,
+        )
+        .await
+        .unwrap();
+
+    let err = member_repo
+        .grant_admin_permission_atomic_for_role(
+            &room.id,
+            &target.id,
+            PermissionBits::DELETE_ROOM,
+            stale_admin.role,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, synctv_core::Error::OptimisticLockConflict));
+
+    let refreshed = member_repo.get(&room.id, &target.id).await.unwrap().unwrap();
+    assert_eq!(refreshed.admin_added_permissions, 0);
+    assert_eq!(refreshed.added_permissions, 0);
 }

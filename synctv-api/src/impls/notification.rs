@@ -345,7 +345,7 @@ mod tests {
         ));
 
         assert!(
-            matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg.contains("pool timed out")),
+            matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable. Please try again later."),
             "notification lookup backend failures must remain service unavailable, got: {mapped:?}"
         );
     }
@@ -368,7 +368,7 @@ mod tests {
         ));
 
         assert!(
-            matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg.contains("pool timed out")),
+            matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable. Please try again later."),
             "notification mutation backend failures must remain service unavailable, got: {mapped:?}"
         );
     }

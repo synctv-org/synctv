@@ -291,7 +291,6 @@ pub enum ApiError {
 
 impl From<synctv_core::Error> for ApiError {
     fn from(err: synctv_core::Error) -> Self {
-        const BACKEND_UNAVAILABLE_MESSAGE: &str = "Service temporarily unavailable";
         match err {
             synctv_core::Error::NotFound(msg) => Self::NotFound(msg),
             synctv_core::Error::Authentication(msg) => Self::Authentication(msg),
@@ -310,11 +309,15 @@ impl From<synctv_core::Error> for ApiError {
             }
             synctv_core::Error::Database(err) => {
                 tracing::error!("Database error mapped to service unavailable: {}", err);
-                Self::ServiceUnavailable(BACKEND_UNAVAILABLE_MESSAGE.to_string())
+                Self::ServiceUnavailable(
+                    "Service temporarily unavailable. Please try again later.".to_string(),
+                )
             }
             synctv_core::Error::Redis(err) => {
                 tracing::error!("Redis error mapped to service unavailable: {}", err);
-                Self::ServiceUnavailable(BACKEND_UNAVAILABLE_MESSAGE.to_string())
+                Self::ServiceUnavailable(
+                    "Service temporarily unavailable. Please try again later.".to_string(),
+                )
             }
             other => Self::Internal(other.to_string()),
         }
@@ -1175,7 +1178,7 @@ mod tests {
         let core_err = synctv_core::Error::Database(sqlx::Error::PoolTimedOut);
         let api_err = ApiError::from(core_err);
         assert!(
-            matches!(api_err, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable"),
+            matches!(api_err, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable. Please try again later."),
             "database infrastructure failures must remain service unavailable, got: {api_err:?}"
         );
         assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
@@ -1188,7 +1191,7 @@ mod tests {
             redis::RedisError::from((redis::ErrorKind::Io, "connection reset by peer"));
         let api_err = ApiError::from(synctv_core::Error::Redis(redis_err));
         assert!(
-            matches!(api_err, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable"),
+            matches!(api_err, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable. Please try again later."),
             "redis infrastructure failures must remain service unavailable, got: {api_err:?}"
         );
         assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));

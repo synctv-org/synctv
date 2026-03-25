@@ -223,25 +223,36 @@ where
         let token = JwtValidator::extract_bearer_token(auth_str)
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
-        // B1 FIX: Use GuestTokenValidator::validate_async() which checks the
-        // token blacklist (for kicked guests) in addition to JWT signature/expiry.
-        // Previously this only called jwt_service.verify_guest_token() which
-        // allowed kicked guests to continue accessing the room until token expiry.
-        let claims = app_state
+        let map_guest_auth_error = |e: synctv_core::Error| match SecurityPipeline::classify_auth_error(&e) {
+            AuthErrorCategory::Authentication => AppError::unauthorized(format!("{e}")),
+            AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
+            AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
+        };
+
+        // Validate JWT first so we can derive the target room and then enforce
+        // both the room-wide guest version and current guest access policy.
+        let prevalidated_claims = app_state
             .guest_token_validator
             .validate_async(&token)
             .await
-            .map_err(|e| match SecurityPipeline::classify_auth_error(&e) {
-                AuthErrorCategory::Authentication => AppError::unauthorized(format!("{e}")),
-                AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
-                AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
-            })?;
+            .map_err(map_guest_auth_error)?;
 
-        if !claims.is_guest() {
+        if !prevalidated_claims.is_guest() {
             return Err(AppError::unauthorized("Not a guest token"));
         }
 
-        let room_id = claims.room_id();
+        let room_id = prevalidated_claims.room_id();
+        let current_room_guest_version = app_state
+            .room_service
+            .get_room_guest_version(&room_id)
+            .await
+            .map_err(map_guest_auth_error)?;
+
+        let claims = app_state
+            .guest_token_validator
+            .validate_with_version_async(&token, current_room_guest_version)
+            .await
+            .map_err(map_guest_auth_error)?;
 
         // Verify the room still exists. A guest token is only valid for the specific room
         // it was issued for. If the room has been deleted, the token must be rejected so
@@ -258,6 +269,12 @@ where
         if !exists {
             return Err(AppError::unauthorized("Room not found or has been deleted"));
         }
+
+        app_state
+            .room_service
+            .check_guest_allowed(&room_id, app_state.settings_registry.as_deref())
+            .await
+            .map_err(map_guest_auth_error)?;
 
         Ok(Self {
             room_id,

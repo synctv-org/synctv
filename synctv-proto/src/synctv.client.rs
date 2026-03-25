@@ -1077,7 +1077,7 @@ pub struct PlaybackProgressReport {
 pub struct ServerMessage {
     #[prost(
         oneof = "server_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
     )]
     pub message: ::core::option::Option<server_message::Message>,
 }
@@ -1133,6 +1133,10 @@ pub mod server_message {
         /// User notification push (replaces NOTIFICATION_PUSH error code abuse)
         #[prost(message, tag = "22")]
         Notification(super::UserNotification),
+        #[prost(message, tag = "23")]
+        MediaUpdated(super::MediaUpdated),
+        #[prost(message, tag = "24")]
+        PlaylistReordered(super::PlaylistReordered),
     }
 }
 /// Note: room_id extracted from x-room-id metadata in MessageStream context
@@ -1645,6 +1649,22 @@ pub struct MediaRemoved {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MediaUpdated {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub media_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub title: ::prost::alloc::string::String,
+    /// Username
+    #[prost(string, tag = "4")]
+    pub updated_by: ::prost::alloc::string::String,
+    /// User ID
+    #[prost(string, tag = "5")]
+    pub updated_by_user_id: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PermissionChanged {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
@@ -1693,6 +1713,20 @@ pub struct PlaylistDeleted {
     pub room_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub playlist_id: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PlaylistReordered {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "2")]
+    pub media_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Username
+    #[prost(string, tag = "3")]
+    pub reordered_by: ::prost::alloc::string::String,
+    /// User ID
+    #[prost(string, tag = "4")]
+    pub reordered_by_user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

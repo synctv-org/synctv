@@ -64,7 +64,7 @@
 //!
 //! The `invalidate_room_caches()` method handles all three types appropriately.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rand::RngExt;
 use sqlx::PgPool;
 use std::net::IpAddr;
@@ -201,6 +201,15 @@ impl RoomService {
         broadcaster: Arc<dyn crate::service::PlaybackBroadcaster>,
     ) {
         self.playback_service.set_cluster_broadcaster(broadcaster);
+    }
+
+    /// Set the cluster broadcaster on the inner member service for cross-replica kick/ban sync.
+    /// Uses interior mutability so this can be called through `Arc<RoomService>`.
+    pub fn set_member_event_broadcaster(
+        &self,
+        broadcaster: Arc<dyn crate::service::MemberEventBroadcaster>,
+    ) {
+        self.member_service.set_event_broadcaster(broadcaster);
     }
 
     /// Wire the cache invalidation service into the inner playback service
@@ -363,6 +372,11 @@ impl RoomService {
     #[cfg(test)]
     pub(crate) fn has_playback_l2_cache(&self) -> bool {
         self.playback_service.has_l2_cache()
+    }
+
+    #[doc(hidden)]
+    pub fn has_member_event_broadcaster(&self) -> bool {
+        self.member_service.has_event_broadcaster()
     }
 
     /// Inject the settings registry for reading `create_room_need_review` and other global settings.
@@ -1445,6 +1459,20 @@ impl RoomService {
         self.room_settings_repo.get(room_id).await
     }
 
+    /// Get the current room-wide guest token version.
+    ///
+    /// Anonymous guest JWTs embed this version at issuance time. Bumping it
+    /// revokes every previously issued guest token for the room.
+    pub async fn get_room_guest_version(&self, room_id: &RoomId) -> Result<i64> {
+        let key = self.user_service.key_builder().room_guest_version(room_id.as_str());
+        Ok(self
+            .user_service
+            .token_blacklist_store()
+            .get_family_revoked_at_checked(&key)
+            .await?
+            .unwrap_or(0))
+    }
+
     /// Get settings for multiple rooms in a single query (avoids N+1)
     pub async fn get_room_settings_batch(
         &self,
@@ -1537,10 +1565,10 @@ impl RoomService {
         })?;
 
         // 4. Post-apply hooks (side effects after commit)
+        self.run_post_apply_hooks(room_id, key, value).await;
         self.permission_service.invalidate_room_cache(room_id).await;
         self.notify_room_invalidation(room_id).await;
         self.notify_room_settings_invalidation(room_id).await;
-        self.run_post_apply_hooks(room_id, key, value).await;
 
         serde_json::to_string(&settings).internal_with_err("Failed to serialize settings")
     }
@@ -1548,26 +1576,28 @@ impl RoomService {
     /// Post-apply hooks: side effects triggered after a setting change commits.
     ///
     /// Centralized registry — add new side effects here when a setting
-    /// change needs to trigger external actions (notifications, kicks, etc.).
+    /// change needs to trigger external actions (notifications, membership cleanup, etc.).
     async fn run_post_apply_hooks(&self, room_id: &RoomId, key: &str, value: &str) {
-        use crate::models::room_settings::{AllowGuestJoin, RequirePassword, RoomSetting};
-        use crate::service::notification::GuestKickReason;
-
-        let kick_reason = match (key, value) {
-            (k, "false") if k == AllowGuestJoin::KEY => {
-                Some(GuestKickReason::RoomGuestModeDisabled)
-            }
-            (k, "true") if k == RequirePassword::KEY => Some(GuestKickReason::RoomPasswordAdded),
-            _ => None,
+        use crate::{
+            models::room_settings::{AllowGuestJoin, RequirePassword, RoomSetting},
+            service::notification::GuestKickReason,
         };
 
-        if let Some(reason) = kick_reason {
-            if let Err(e) = self
-                .notification_service
-                .kick_all_guests(room_id, reason)
-                .await
-            {
-                tracing::warn!("Failed to kick guests after settings change: {}", e);
+        let guest_kick_reason = if key == AllowGuestJoin::KEY && value == "false" {
+            Some(GuestKickReason::RoomGuestModeDisabled)
+        } else if key == RequirePassword::KEY && value == "true" {
+            Some(GuestKickReason::RoomPasswordAdded)
+        } else {
+            None
+        };
+
+        if let Some(reason) = guest_kick_reason {
+            if let Err(e) = self.revoke_all_guest_access(room_id, reason).await {
+                tracing::warn!(
+                    room_id = %room_id,
+                    error = %e,
+                    "Failed to revoke guest access after settings change"
+                );
             }
         }
     }
@@ -1734,24 +1764,27 @@ impl RoomService {
         room_id: &RoomId,
         password_hash: Option<String>,
     ) -> Result<()> {
-        use crate::service::notification::GuestKickReason;
-
         let password_was_set = password_hash.is_some();
         self.do_set_password_hash(room_id, password_hash).await?;
 
-        // Invalidate room cache across all replicas
-        self.notify_room_invalidation(room_id).await;
-
-        // Side effects outside transaction
         if password_was_set {
             if let Err(e) = self
-                .notification_service
-                .kick_all_guests(room_id, GuestKickReason::RoomPasswordAdded)
+                .revoke_all_guest_access(
+                    room_id,
+                    crate::service::notification::GuestKickReason::RoomPasswordAdded,
+                )
                 .await
             {
-                tracing::warn!("Failed to kick guests after password was added: {}", e);
+                tracing::warn!(
+                    room_id = %room_id,
+                    error = %e,
+                    "Failed to revoke guest access after password was added"
+                );
             }
         }
+
+        // Invalidate room cache across all replicas after membership side effects complete
+        self.notify_room_invalidation(room_id).await;
         Ok(())
     }
 
@@ -2172,26 +2205,28 @@ impl RoomService {
             "SELECT EXISTS (
                 SELECT 1
                 FROM room_members rm
-                LEFT JOIN room_settings rs ON rs.room_id = rm.room_id
+                LEFT JOIN room_settings rs
+                  ON rs.room_id = rm.room_id
+                 AND rs.key = '_settings'
                 WHERE rm.room_id = $1
                   AND rm.user_id = $2
                   AND rm.left_at IS NULL
                   AND (
                       -- Creator has all permissions
-                      rm.role = 'creator'
+                      rm.role = 1
                       OR (
                           -- Calculate effective permissions:
                           -- (role_default | added) & ~removed
                           CASE rm.role
-                              WHEN 'admin' THEN
-                                  ((COALESCE(rs.admin_added_permissions, 0::bigint) | rm.added_permissions) &
-                                   ~COALESCE(rs.admin_removed_permissions, 0::bigint) & ~rm.removed_permissions) & $3 > 0
-                              WHEN 'member' THEN
-                                  ((COALESCE(rs.member_added_permissions, 0::bigint) | rm.added_permissions) &
-                                   ~COALESCE(rs.member_removed_permissions, 0::bigint) & ~rm.removed_permissions) & $3 > 0
-                              WHEN 'guest' THEN
-                                  ((COALESCE(rs.guest_added_permissions, 0::bigint) | rm.added_permissions) &
-                                   ~COALESCE(rs.guest_removed_permissions, 0::bigint) & ~rm.removed_permissions) & $3 > 0
+                              WHEN 2 THEN
+                                  ((COALESCE((rs.value::jsonb ->> 'admin_added_permissions')::bigint, 0::bigint) | rm.admin_added_permissions) &
+                                   ~COALESCE((rs.value::jsonb ->> 'admin_removed_permissions')::bigint, 0::bigint) & ~rm.admin_removed_permissions) & $3 > 0
+                              WHEN 3 THEN
+                                  ((COALESCE((rs.value::jsonb ->> 'member_added_permissions')::bigint, 0::bigint) | rm.added_permissions) &
+                                   ~COALESCE((rs.value::jsonb ->> 'member_removed_permissions')::bigint, 0::bigint) & ~rm.removed_permissions) & $3 > 0
+                              WHEN 4 THEN
+                                  ((COALESCE((rs.value::jsonb ->> 'guest_added_permissions')::bigint, 0::bigint) | rm.added_permissions) &
+                                   ~COALESCE((rs.value::jsonb ->> 'guest_removed_permissions')::bigint, 0::bigint) & ~rm.removed_permissions) & $3 > 0
                               ELSE FALSE
                           END
                       )
@@ -2810,8 +2845,6 @@ impl RoomService {
         room_id: &RoomId,
         new_password: Option<&str>,
     ) -> Result<()> {
-        use crate::service::notification::GuestKickReason;
-
         // Verify room exists
         let _room = self
             .room_repo
@@ -2828,18 +2861,71 @@ impl RoomService {
 
         self.do_set_password_hash(room_id, hashed_password).await?;
 
-        // Kick guests when a password is being set (guests cannot join password-protected rooms)
         if password_is_being_set {
-            if let Err(e) = self
-                .notification_service
-                .kick_all_guests(room_id, GuestKickReason::RoomPasswordAdded)
-                .await
-            {
-                tracing::warn!("Failed to kick guests after admin password set: {}", e);
+            if let Err(e) = self.remove_guest_role_members(room_id).await {
+                tracing::warn!(
+                    "Failed to remove guest-role members after admin password set: {}",
+                    e
+                );
+            }
+        }
+
+        self.notify_room_invalidation(room_id).await;
+
+        Ok(())
+    }
+
+    /// Remove all active `RoomRole::Guest` members from a room.
+    ///
+    /// This is one part of room-wide guest revocation when room policy changes
+    /// make guest access invalid.
+    async fn remove_guest_role_members(&self, room_id: &RoomId) -> Result<()> {
+        let members = self.member_service.list_members(room_id).await?;
+
+        for member in members {
+            if member.role == RoomRole::Guest {
+                self.member_service
+                    .remove_member(room_id.clone(), member.user_id.clone())
+                    .await?;
             }
         }
 
         Ok(())
+    }
+
+    /// Revoke all guest access for the room.
+    ///
+    /// This removes persisted guest members, invalidates anonymous guest JWTs
+    /// via the room guest version, and notifies online guest connections to
+    /// disconnect immediately.
+    async fn revoke_all_guest_access(
+        &self,
+        room_id: &RoomId,
+        reason: crate::service::notification::GuestKickReason,
+    ) -> Result<()> {
+        self.remove_guest_role_members(room_id).await?;
+        self.bump_room_guest_version(room_id).await?;
+        self.notification_service.kick_all_guests(room_id, reason).await?;
+        Ok(())
+    }
+
+    async fn bump_room_guest_version(&self, room_id: &RoomId) -> Result<i64> {
+        let current = self.get_room_guest_version(room_id).await?;
+        let next = current
+            .checked_add(1)
+            .ok_or_else(|| Error::Internal("Room guest version overflowed".to_string()))?;
+
+        let key = self.user_service.key_builder().room_guest_version(room_id.as_str());
+        self.user_service
+            .token_blacklist_store()
+            .set_family_revoked(&key, next, self.room_guest_version_ttl_secs())
+            .await?;
+
+        Ok(next)
+    }
+
+    fn room_guest_version_ttl_secs(&self) -> u64 {
+        Duration::hours(4).num_seconds() as u64
     }
 
     // ========== Service Accessors ==========

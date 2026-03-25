@@ -81,9 +81,11 @@ impl HttpFlvSession {
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
-        // Subscribe to StreamHub
-        self.subscribe_from_stream_hub().await?;
+        self.start().await?;
+        self.run_after_start().await
+    }
 
+    pub async fn run_after_start(&mut self) -> anyhow::Result<()> {
         let result = self.send_media_stream().await;
         let unsubscribe_result = self.unsubscribe_from_stream_hub().await;
 
@@ -101,6 +103,10 @@ impl HttpFlvSession {
             }
             (Ok(()), Ok(())) => Ok(()),
         }
+    }
+
+    pub async fn start(&mut self) -> anyhow::Result<()> {
+        self.subscribe_from_stream_hub().await
     }
 
     async fn send_media_stream(&mut self) -> anyhow::Result<()> {

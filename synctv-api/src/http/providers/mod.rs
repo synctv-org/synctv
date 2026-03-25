@@ -156,7 +156,7 @@ pub(crate) async fn proxy_options_preflight(
 /// Flow:
 /// 1. Extract version from sub_path (first segment)
 /// 2. Parse and verify HMAC signature from query string
-/// 3. Verify room membership
+/// 3. Revalidate current user/room/member access
 /// 4. Resolve provider and execute proxy action
 pub(crate) async fn unified_proxy_handler(
     Path((provider_name, sub_path)): Path<(String, String)>,
@@ -175,15 +175,10 @@ pub(crate) async fn unified_proxy_handler(
         .parse_and_verify_query(query_str, &provider_name, version)
         .map_err(|e| AppError::unauthorized(format!("Invalid proxy signature: {e}")))?;
 
-    // 3. Room membership verification
+    // 3. Fresh access verification
     let uid = UserId::from_string(claims.user_id.clone());
     let rid = RoomId::from_string(claims.room_id.clone());
-    state
-        .proxy_services
-        .room_service
-        .check_membership(&rid, &uid)
-        .await
-        .map_err(map_proxy_membership_probe_error)?;
+    validate_fresh_proxy_access(&state, &rid, &uid).await?;
 
     // 4. Resolve proxy provider from registry (no hardcoded match)
     let proxy = state
@@ -222,24 +217,52 @@ fn map_proxy_membership_probe_error(err: synctv_core::Error) -> AppError {
     }
 }
 
+async fn validate_fresh_proxy_access(
+    state: &AppState,
+    room_id: &RoomId,
+    user_id: &UserId,
+) -> AppResult<()> {
+    let user = state.user_service.get_user(user_id).await?;
+    if user.status != synctv_core::models::UserStatus::Active || user.deleted_at.is_some() {
+        return Err(AppError::forbidden("Proxy URL is no longer valid for this user"));
+    }
+
+    let room = state.proxy_services.room_service.get_room(room_id).await?;
+    if room.is_banned || !room.status.is_active() {
+        return Err(AppError::forbidden("Proxy URL is no longer valid for this room"));
+    }
+
+    state
+        .proxy_services
+        .room_service
+        .check_membership(room_id, user_id)
+        .await
+        .map_err(map_proxy_membership_probe_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use axum::http::{header, StatusCode};
     use bytes::Bytes;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use synctv_core::models::{RoomStatus, SignupMethod, UserStatus};
     use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
     use synctv_core::config::PasswordComplexityConfig;
+    use synctv_core::provider::error::ProviderError;
+    use synctv_core::provider::proxy::{ProxyProviderRegistry, ProxyRequestContext};
     use synctv_core::provider::{
         AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
-        ProviderSet, RtmpProvider,
+        ProviderProxy, ProviderSet, RtmpProvider,
     };
-    use synctv_core::repository::SettingsRepository;
+    use synctv_core::repository::{SettingsRepository, UserRepository};
     use synctv_core::service::{
         AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
         RemoteProviderManager, RoomService, UserService,
     };
+    use synctv_core::service::{ProxySigningKey, ProxyUrlClaims};
     use synctv_core::service::{SettingsRegistry, SettingsService};
     use synctv_core_testing::postgres::create_test_pool;
     use synctv_proxy::slice_cache::SliceCacheConfig;
@@ -480,6 +503,274 @@ mod tests {
             providers_manager: None,
         })
         .1
+    }
+
+    #[derive(Debug)]
+    struct TestProxyProvider;
+
+    #[async_trait]
+    impl ProviderProxy for TestProxyProvider {
+        async fn resolve_proxy(
+            &self,
+            _ctx: &ProxyRequestContext<'_>,
+        ) -> Result<ProxyAction, ProviderError> {
+            Ok(ProxyAction::DirectBody {
+                body: b"ok".to_vec(),
+                content_type: "text/plain".to_string(),
+                status: 200,
+            })
+        }
+    }
+
+    fn make_proxy_test_user(username: &str) -> synctv_core::models::User {
+        synctv_core::models::User::new_with_status(
+            username.to_string(),
+            Some(format!("{username}@example.com")),
+            "hashed-password".to_string(),
+            SignupMethod::Email,
+            UserStatus::Active,
+        )
+    }
+
+    fn make_proxy_test_state(pool: sqlx::PgPool) -> AppState {
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+        let jwt_service = synctv_core::service::JwtService::new(
+            "test-secret-key-for-http-router-tests-minimum-32-chars",
+        )
+        .expect("jwt");
+        let user_service = Arc::new(UserService::new(
+            pool.clone(),
+            jwt_service.clone(),
+            username_cache,
+            PasswordComplexityConfig::default(),
+            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            KeyBuilder::new("test"),
+            synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
+        ));
+        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(
+            Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
+                pool.clone(),
+            )),
+            None,
+            None,
+            "test:",
+        ));
+        let providers = ProviderSet {
+            alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
+            bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
+            emby: Arc::new(EmbyProvider::new(provider_instance_manager.clone())),
+            direct_url: Arc::new(DirectUrlProvider::new()),
+            rtmp: Arc::new(RtmpProvider::new()),
+            live_proxy: Arc::new(LiveProxyProvider::new()),
+        };
+        let (audit_service, _audit_handle) = AuditService::new(pool.clone());
+        let mut state = crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
+            config: Arc::new(synctv_core::Config::default()),
+            user_service: user_service.clone(),
+            user_cache: Arc::new(
+                synctv_core::cache::UserCache::new(
+                    Arc::new(synctv_core::cache::NoopCacheL2),
+                    128,
+                    60,
+                    300,
+                    "test:user:".to_string(),
+                )
+                .expect("user cache"),
+            ),
+            room_service: room_service.clone(),
+            content_filter: ContentFilter::new(),
+            provider_instance_manager,
+            user_provider_credential_repository: Arc::new(
+                synctv_core::repository::UserProviderCredentialRepository::new(pool),
+            ),
+            providers,
+            cluster_manager: None,
+            connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
+                synctv_cluster::sync::ConnectionLimits::default(),
+            )),
+            jwt_service,
+            redis_publish_tx: None,
+            oauth2_service: None,
+            settings_service: None,
+            settings_registry: None,
+            email_service: None,
+            email_token_service: None,
+            publish_key_service: None,
+            notification_service: None,
+            chat_service: None,
+            audit_service: Arc::new(audit_service),
+            live_streaming_infrastructure: None,
+            rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
+            redis_conn: None,
+            builtin_stun_url: None,
+            turn_health_checker: None,
+            credential_encryption: None,
+            proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                SliceCacheConfig::default(),
+            )),
+            proxy_http_client: synctv_proxy::build_proxy_http_client()
+                .expect("proxy HTTP client should build for tests"),
+            messaging_rate_limit_config: RateLimitConfig::default(),
+            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
+            providers_manager: None,
+        })
+        .1;
+
+        let registry = ProxyProviderRegistry::new();
+        registry.register("test-provider", Arc::new(TestProxyProvider));
+        state.proxy_provider_registry = Arc::new(registry);
+        state.proxy_services = Arc::new(synctv_core::provider::proxy::ProxyServices {
+            room_service,
+            credential_encryption: None,
+            credential_repo: Arc::new(
+                synctv_core::repository::UserProviderCredentialRepository::new(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                        .expect("lazy pool"),
+                ),
+            ),
+            signing_key: state.proxy_signing_key.clone(),
+        });
+        state
+    }
+
+    fn build_proxy_query(
+        signing_key: &ProxySigningKey,
+        room_id: &str,
+        user_id: &str,
+        version: &str,
+    ) -> String {
+        signing_key.build_signed_query(&ProxyUrlClaims {
+            provider: "test-provider".to_string(),
+            version: version.to_string(),
+            room_id: room_id.to_string(),
+            user_id: user_id.to_string(),
+            expires_at: chrono::Utc::now().timestamp() + 300,
+        })
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_unified_proxy_handler_rejects_banned_user_even_with_valid_signature() {
+        let (_pg, pool) = create_test_pool().await;
+        let state = make_proxy_test_state(pool.clone());
+        let user_repo = UserRepository::new(pool.clone());
+
+        let owner = user_repo
+            .create(&make_proxy_test_user("proxy_owner"))
+            .await
+            .expect("owner");
+        let member = user_repo
+            .create(&make_proxy_test_user("proxy_member"))
+            .await
+            .expect("member");
+
+        let (room, _) = state
+            .proxy_services
+            .room_service
+            .create_room(
+                "Proxy Room".to_string(),
+                String::new(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room");
+        state
+            .proxy_services
+            .room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("join");
+
+        let raw_query = build_proxy_query(
+            state.proxy_signing_key.as_ref(),
+            room.id.as_str(),
+            member.id.as_str(),
+            "v1",
+        );
+
+        state
+            .user_service
+            .set_user_status(&member.id, UserStatus::Banned)
+            .await
+            .expect("ban user");
+
+        let err = unified_proxy_handler(
+            Path(("test-provider".to_string(), "v1/media".to_string())),
+            State(state),
+            HeaderMap::new(),
+            RawQuery(Some(raw_query)),
+        )
+        .await
+        .expect_err("banned user must not keep using old proxy URL");
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_unified_proxy_handler_rejects_closed_room_even_with_valid_signature() {
+        let (_pg, pool) = create_test_pool().await;
+        let state = make_proxy_test_state(pool.clone());
+        let user_repo = UserRepository::new(pool.clone());
+
+        let owner = user_repo
+            .create(&make_proxy_test_user("proxy_room_owner"))
+            .await
+            .expect("owner");
+        let member = user_repo
+            .create(&make_proxy_test_user("proxy_room_member"))
+            .await
+            .expect("member");
+
+        let (room, _) = state
+            .proxy_services
+            .room_service
+            .create_room(
+                "Proxy Closed Room".to_string(),
+                String::new(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room");
+        state
+            .proxy_services
+            .room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("join");
+
+        let raw_query = build_proxy_query(
+            state.proxy_signing_key.as_ref(),
+            room.id.as_str(),
+            member.id.as_str(),
+            "v1",
+        );
+
+        state
+            .proxy_services
+            .room_service
+            .update_room_status(&room.id, RoomStatus::Closed)
+            .await
+            .expect("close room");
+
+        let err = unified_proxy_handler(
+            Path(("test-provider".to_string(), "v1/media".to_string())),
+            State(state),
+            HeaderMap::new(),
+            RawQuery(Some(raw_query)),
+        )
+        .await
+        .expect_err("closed room must not keep serving old proxy URLs");
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

@@ -357,6 +357,10 @@ pub struct StreamMessageHandler {
     /// maintaining reasonable responsiveness to membership changes.
     /// Key: (`room_id`, `user_id`) tuple for O(1) lookup.
     membership_cache: Arc<moka::sync::Cache<(String, String), CachedMembership>>,
+    /// Room event receiver created during `pre_join()` so transports do not expose
+    /// a window where the connection is joined in `ConnectionManager` but not yet
+    /// subscribed in `RoomMessageHub`.
+    pending_room_event_rx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<ClusterEvent>>>>,
     /// Instance-level concurrency configuration for backpressure control.
     /// This replaces the global `MESSAGE_PROCESSING_SEMAPHORE` with per-AppState configuration.
     concurrency_config: Arc<MessageConcurrencyConfig>,
@@ -387,6 +391,7 @@ impl Clone for StreamMessageHandler {
             has_webrtc_session: Arc::clone(&self.has_webrtc_session),
             skip_cleanup_user_left: Arc::clone(&self.skip_cleanup_user_left),
             membership_cache: Arc::clone(&self.membership_cache),
+            pending_room_event_rx: Arc::clone(&self.pending_room_event_rx),
             concurrency_config: Arc::clone(&self.concurrency_config),
             last_progress_write: Arc::clone(&self.last_progress_write),
             heartbeat_schedule: self.heartbeat_schedule,
@@ -567,6 +572,7 @@ impl StreamMessageHandler {
             has_webrtc_session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             membership_cache,
+            pending_room_event_rx: Arc::new(tokio::sync::Mutex::new(None)),
             concurrency_config,
             last_progress_write: Arc::new(tokio::sync::Mutex::new(None)),
             heartbeat_schedule: HeartbeatSchedule::production(),
@@ -687,11 +693,61 @@ impl StreamMessageHandler {
                 error = %error,
                 room_id = %self.room_id.as_str(),
                 user_id = %self.user_id.as_str(),
-                "Failed to re-validate membership during pre_join; allowing connection to continue until runtime checks can verify membership"
+                "Failed to re-validate membership during pre_join; rejecting connection because final admission must fail closed"
             );
+            self.skip_cleanup_user_left
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.connection_manager
+                .unregister(&self.connection_id)
+                .await;
+            return Err("Membership re-validation temporarily unavailable".to_string());
         }
 
+        self.cache_room_event_subscription().await?;
+
         Ok(())
+    }
+
+    async fn cache_room_event_subscription(&self) -> Result<(), String> {
+        let mut pending_rx = self.pending_room_event_rx.lock().await;
+        if pending_rx.is_some() {
+            return Ok(());
+        }
+
+        let (event_rx, _connection_id) = self
+            .cluster_manager
+            .subscribe_with_id(
+                self.room_id.clone(),
+                self.user_id.clone(),
+                self.connection_id.clone(),
+            )
+            .await
+            .map_err(|e| {
+                self.skip_cleanup_user_left
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                format!("Failed to subscribe to cluster events during pre_join: {e}")
+            })?;
+        *pending_rx = Some(event_rx);
+
+        Ok(())
+    }
+
+    async fn take_room_event_subscription(
+        &self,
+    ) -> Result<tokio::sync::mpsc::Receiver<ClusterEvent>, String> {
+        if let Some(event_rx) = self.pending_room_event_rx.lock().await.take() {
+            return Ok(event_rx);
+        }
+
+        self.cluster_manager
+            .subscribe_with_id(
+                self.room_id.clone(),
+                self.user_id.clone(),
+                self.connection_id.clone(),
+            )
+            .await
+            .map(|(event_rx, _connection_id)| event_rx)
+            .map_err(|e| format!("Failed to subscribe to cluster events: {e}"))
     }
 
     /// Run the complete message loop using unified IO abstraction.
@@ -724,16 +780,9 @@ impl StreamMessageHandler {
     pub async fn run_after_join<S: StreamMessage>(&self, stream: &mut S) -> Result<(), String> {
         let room_id_str = self.room_id.as_str().to_string();
 
-        // Subscribe to cluster events using the same connection_id as ConnectionManager
-        let (mut event_rx, _connection_id) = self
-            .cluster_manager
-            .subscribe_with_id(
-                self.room_id.clone(),
-                self.user_id.clone(),
-                self.connection_id.clone(),
-            )
-            .await
-            .map_err(|e| format!("Failed to subscribe to cluster events: {e}"))?;
+        // Pre-join caches the room subscription so there is no gap between
+        // admission success and the transport starting its receive loop.
+        let mut event_rx = self.take_room_event_subscription().await?;
 
         // Subscribe to disconnect signals
         let mut disconnect_rx = self.connection_manager.subscribe_disconnect();
@@ -1806,17 +1855,11 @@ impl StreamMessageHandler {
         // Use bounded channel to prevent memory exhaustion from fast clients
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(256);
 
-        // Subscribe to cluster events using the same connection_id as ConnectionManager
         let room_id = self.room_id.clone();
-        let user_id = self.user_id.clone();
         let room_id_str = room_id.as_str().to_string();
         let event_connection_id = self.connection_id.clone();
         let event_user_id = self.user_id.clone();
-        let (mut rx_events, _connection_id) = self
-            .cluster_manager
-            .subscribe_with_id(room_id, user_id, self.connection_id.clone())
-            .await
-            .map_err(|e| format!("Failed to subscribe to cluster events: {e}"))?;
+        let mut rx_events = self.take_room_event_subscription().await?;
         let sender = self.sender.clone();
 
         let event_token = cancel_token.clone();
@@ -2899,8 +2942,8 @@ fn cluster_event_to_server_messages(
 ) -> Vec<ServerMessage> {
     use crate::proto::client::server_message::Message;
     use crate::proto::client::{
-        ChatMessageReceive, ErrorMessage, PlaybackState, PlaybackStateChanged, RoomSettingsChanged,
-        ServerMessage, UserJoinedRoom, UserLeftRoom,
+        ChatMessageReceive, ErrorMessage, MediaUpdated, PlaybackState, PlaybackStateChanged,
+        PlaylistReordered, RoomSettingsChanged, ServerMessage, UserJoinedRoom, UserLeftRoom,
     };
     use synctv_cluster::sync::ClusterEvent;
     use synctv_proto::common::RoomMember;
@@ -3034,6 +3077,34 @@ fn cluster_event_to_server_messages(
                 })
                 .collect()
         }
+        ClusterEvent::MediaUpdated {
+            media_id,
+            media_title,
+            user_id,
+            username,
+            ..
+        } => vec![ServerMessage {
+            message: Some(Message::MediaUpdated(MediaUpdated {
+                room_id: room_id.to_string(),
+                media_id: media_id.as_str().to_string(),
+                title: media_title.clone(),
+                updated_by: username.clone(),
+                updated_by_user_id: user_id.as_str().to_string(),
+            })),
+        }],
+        ClusterEvent::PlaylistReordered {
+            media_ids,
+            user_id,
+            username,
+            ..
+        } => vec![ServerMessage {
+            message: Some(Message::PlaylistReordered(PlaylistReordered {
+                room_id: room_id.to_string(),
+                media_ids: media_ids.iter().map(|id| id.as_str().to_string()).collect(),
+                reordered_by: username.clone(),
+                reordered_by_user_id: user_id.as_str().to_string(),
+            })),
+        }],
         ClusterEvent::PermissionChanged {
             target_user_id,
             new_permissions,
@@ -3525,6 +3596,70 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingStreamState {
+        sent_messages: parking_lot::Mutex<Vec<ServerMessage>>,
+        alive: AtomicBool,
+    }
+
+    impl RecordingStreamState {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                sent_messages: parking_lot::Mutex::new(Vec::new()),
+                alive: AtomicBool::new(true),
+            })
+        }
+
+        fn sent_messages(&self) -> Vec<ServerMessage> {
+            self.sent_messages.lock().clone()
+        }
+    }
+
+    struct RecordingStream {
+        incoming: VecDeque<Result<ClientMessage, String>>,
+        state: Arc<RecordingStreamState>,
+    }
+
+    impl RecordingStream {
+        fn new() -> (Self, Arc<RecordingStreamState>) {
+            let state = RecordingStreamState::new();
+            (
+                Self {
+                    incoming: VecDeque::new(),
+                    state: Arc::clone(&state),
+                },
+                state,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StreamMessage for RecordingStream {
+        async fn recv(&mut self) -> Option<Result<ClientMessage, String>> {
+            if let Some(msg) = self.incoming.pop_front() {
+                return Some(msg);
+            }
+            std::future::pending().await
+        }
+
+        fn send(&self, message: ServerMessage) -> Result<(), String> {
+            self.state.sent_messages.lock().push(message);
+            Ok(())
+        }
+
+        fn is_alive(&self) -> bool {
+            self.state.alive.load(Ordering::Relaxed)
+        }
+
+        fn ping(&self) -> Result<(), String> {
+            if self.is_alive() {
+                Ok(())
+            } else {
+                Err("forced dead recording stream".to_string())
+            }
+        }
+    }
+
     struct FailingStream {
         incoming: VecDeque<Result<ClientMessage, String>>,
         fail_after: usize,
@@ -3720,6 +3855,24 @@ mod tests {
         ))
     }
 
+    async fn prepare_handler_for_run_after_join(
+        handler: &StreamMessageHandler,
+        connection_manager: &ConnectionManager,
+    ) {
+        connection_manager
+            .register(handler.connection_id.clone(), handler.user_id.clone())
+            .await
+            .expect("register should succeed");
+        connection_manager
+            .join_room(&handler.connection_id, handler.room_id.clone())
+            .await
+            .expect("join_room should succeed");
+        handler
+            .cache_room_event_subscription()
+            .await
+            .expect("room subscription should cache before run_after_join");
+    }
+
     async fn wait_for_start_cleanup(
         handler: &StreamMessageHandler,
         connection_manager: &ConnectionManager,
@@ -3782,6 +3935,22 @@ mod tests {
         })
         .await
         .expect("run_after_join should be ready");
+    }
+
+    async fn wait_for_recorded_message_count(
+        stream_state: &RecordingStreamState,
+        expected: usize,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if stream_state.sent_messages().len() >= expected {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("recording stream should receive expected messages");
     }
 
     async fn wait_for_run_after_join_cleanup(
@@ -3961,7 +4130,7 @@ mod tests {
             Arc::clone(&cluster_manager),
             connection_manager.clone(),
         );
-        handler.pre_join().await.expect("pre_join should succeed");
+        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
 
         let (mut stream, stream_state) = FailingStream::fail_after(1);
         let task_handler = handler.clone();
@@ -3985,6 +4154,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cached_room_subscription_survives_pre_run_after_join_event_gap() {
+        let cluster_manager = test_cluster_manager("test_pre_join_caches_room_subscription").await;
+        let connection_manager = test_connection_manager();
+        let handler = test_message_handler(
+            FailingMessageSender::fail_after(usize::MAX),
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+        );
+        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
+
+        cluster_manager.broadcast(ClusterEvent::ChatMessage {
+            event_id: "evt-prejoin-window".to_string(),
+            room_id: handler.room_id.clone(),
+            user_id: UserId::from_string("other-user".to_string()),
+            username: "other".to_string(),
+            message: "arrived-before-run-after-join".to_string(),
+            timestamp: now(),
+            position: None,
+            color: None,
+        });
+
+        let (mut stream, stream_state) = RecordingStream::new();
+        let task_handler = handler.clone();
+        let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
+
+        wait_for_recorded_message_count(&stream_state, 2).await;
+
+        let messages = stream_state.sent_messages();
+        assert!(
+            messages
+                .iter()
+                .any(|msg| matches!(msg.message, Some(Message::UserJoined(_)))),
+            "run_after_join should still send the initial UserJoined payload"
+        );
+        assert!(
+            messages.iter().any(|msg| {
+                matches!(
+                    &msg.message,
+                    Some(Message::Chat(chat))
+                    if chat.content == "arrived-before-run-after-join"
+                )
+            }),
+            "room event broadcast after caching the subscription but before run_after_join must not be lost"
+        );
+
+        connection_manager.disconnect_connection(handler.connection_id());
+        wait_for_run_after_join_cleanup(&handler, &connection_manager, run_task).await;
+        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+    }
+
+    #[tokio::test]
     async fn test_run_after_join_cleans_up_when_initial_send_fails() {
         let cluster_manager = test_cluster_manager("test_run_after_join_initial_failure").await;
         let connection_manager = test_connection_manager();
@@ -3993,7 +4213,7 @@ mod tests {
             Arc::clone(&cluster_manager),
             connection_manager.clone(),
         );
-        handler.pre_join().await.expect("pre_join should succeed");
+        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
 
         let (mut rx, conn_id) = cluster_manager
             .subscribe(handler.room_id.clone(), handler.user_id.clone())
@@ -4024,7 +4244,7 @@ mod tests {
             Arc::clone(&cluster_manager),
             connection_manager.clone(),
         );
-        handler.pre_join().await.expect("pre_join should succeed");
+        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
 
         let (mut stream, stream_state) = FailingStream::fail_after(1);
         let task_handler = handler.clone();
@@ -4057,7 +4277,7 @@ mod tests {
             connection_manager.clone(),
         )
         .with_concurrency(Arc::new(MessageConcurrencyConfig::new(0)));
-        handler.pre_join().await.expect("pre_join should succeed");
+        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
 
         let input = ClientMessage { message: None };
         let (mut stream, stream_state) = FailingStream::fail_after_with_incoming(1, vec![input]);
@@ -4084,7 +4304,7 @@ mod tests {
             connection_manager.clone(),
         )
         .with_notification_service(Arc::clone(&notification_service));
-        handler.pre_join().await.expect("pre_join should succeed");
+        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
 
         let (mut stream, stream_state) = FailingStream::fail_after(1);
         let task_handler = handler.clone();
@@ -4279,6 +4499,58 @@ mod tests {
                 assert_eq!(mr.removed_by, "frank");
             }
             other => panic!("Expected MediaRemoved, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_media_updated_event_conversion() {
+        let event = ClusterEvent::MediaUpdated {
+            event_id: "evt6b".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "frank".to_string(),
+            media_id: media_id(),
+            media_title: "Renamed Video".to_string(),
+            timestamp: now(),
+        };
+
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
+            Some(Message::MediaUpdated(mu)) => {
+                assert_eq!(mu.room_id, "room_test");
+                assert_eq!(mu.media_id, "media_test");
+                assert_eq!(mu.title, "Renamed Video");
+                assert_eq!(mu.updated_by, "frank");
+            }
+            other => panic!("Expected MediaUpdated, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_playlist_reordered_event_conversion() {
+        let event = ClusterEvent::PlaylistReordered {
+            event_id: "evt6c".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "grace".to_string(),
+            media_ids: vec![
+                MediaId::from_string("media_b".to_string()),
+                MediaId::from_string("media_a".to_string()),
+            ],
+            timestamp: now(),
+        };
+
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
+            Some(Message::PlaylistReordered(reordered)) => {
+                assert_eq!(reordered.room_id, "room_test");
+                assert_eq!(reordered.media_ids, vec!["media_b", "media_a"]);
+                assert_eq!(reordered.reordered_by, "grace");
+                assert_eq!(reordered.reordered_by_user_id, "user_test");
+            }
+            other => panic!("Expected PlaylistReordered, got: {other:?}"),
         }
     }
 
@@ -5233,6 +5505,51 @@ mod tests {
         let lookup = Err(synctv_core::Error::Internal("db unavailable".to_string()));
 
         assert_eq!(super::initial_realtime_join_denial_reason(&lookup), None);
+    }
+
+    #[tokio::test]
+    async fn test_pre_join_after_registration_fails_closed_when_membership_revalidation_unavailable()
+    {
+        let cluster_manager =
+            test_cluster_manager("test_pre_join_membership_revalidation_unavailable").await;
+        let connection_manager = test_connection_manager();
+        let handler = test_message_handler(
+            FailingMessageSender::fail_after(usize::MAX),
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+        );
+
+        connection_manager
+            .register(handler.connection_id.clone(), handler.user_id.clone())
+            .await
+            .expect("register should succeed before final admission");
+
+        let error = handler
+            .pre_join_after_registration()
+            .await
+            .expect_err("membership revalidation outages must reject final realtime admission");
+
+        assert!(
+            error.contains("temporarily unavailable"),
+            "expected retryable membership revalidation error, got: {error}"
+        );
+        assert_eq!(
+            connection_manager.connection_count(),
+            0,
+            "failed final admission must roll back the registered connection"
+        );
+        assert_eq!(
+            connection_manager.room_connection_count(&handler.room_id),
+            0,
+            "failed final admission must not leave room membership behind"
+        );
+        assert_eq!(
+            connection_manager.user_connection_count(&handler.user_id),
+            0,
+            "failed final admission must not consume per-user capacity"
+        );
+
+        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
     }
 
     #[test]

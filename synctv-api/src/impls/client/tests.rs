@@ -263,7 +263,7 @@ fn test_room_list_backend_outage_maps_to_service_unavailable() {
         crate::impls::ApiError::from(synctv_core::Error::Database(sqlx::Error::PoolTimedOut));
 
     assert!(
-        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg.contains("pool timed out")),
+        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable. Please try again later."),
         "room list backend failures must remain service unavailable, got: {mapped:?}"
     );
 }

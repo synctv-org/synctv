@@ -144,6 +144,49 @@ async fn test_local_only_merge_dns_peers() {
     assert!(node_ids.contains("dns-peer-2"));
 }
 
+/// Test that local write paths invalidate the short-lived node view cache immediately.
+#[tokio::test]
+async fn test_local_only_writes_are_immediately_visible_through_get_all_nodes() {
+    let registry = NodeRegistry::new_local_only("test-node-cache".to_string(), 30, "cachetest:")
+        .expect("new_local_only should succeed");
+
+    let initial = registry
+        .get_all_nodes()
+        .await
+        .expect("initial get_all_nodes should succeed");
+    assert!(initial.is_empty(), "cache should start empty");
+
+    registry
+        .test_insert_local(NodeInfo::new(
+            "peer-node".to_string(),
+            "localhost:50060".to_string(),
+            "localhost:8088".to_string(),
+        ))
+        .await;
+
+    let after_insert = registry
+        .get_all_nodes()
+        .await
+        .expect("get_all_nodes after local insert should succeed");
+    assert_eq!(
+        after_insert.len(),
+        1,
+        "local insert must invalidate cached node view immediately"
+    );
+    assert_eq!(after_insert[0].node_id, "peer-node");
+
+    registry.test_remove_local("peer-node").await;
+
+    let after_remove = registry
+        .get_all_nodes()
+        .await
+        .expect("get_all_nodes after local removal should succeed");
+    assert!(
+        after_remove.is_empty(),
+        "local removal must invalidate cached node view immediately"
+    );
+}
+
 /// Test that local-only registry provides valid fencing token.
 #[tokio::test]
 async fn test_local_only_fencing_token() {

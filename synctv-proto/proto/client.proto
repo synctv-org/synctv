@@ -809,6 +809,8 @@ message ServerMessage {
         SfuMigrationStatus sfu_migration_status = 21;
         // User notification push (replaces NOTIFICATION_PUSH error code abuse)
         UserNotification notification = 22;
+        MediaUpdated media_updated = 23;
+        PlaylistReordered playlist_reordered = 24;
     }
 }
 
@@ -1121,6 +1123,14 @@ message MediaRemoved {
     string removed_by_user_id = 5; // User ID
 }
 
+message MediaUpdated {
+    string room_id = 1;
+    string media_id = 2;
+    string title = 3;
+    string updated_by = 4; // Username
+    string updated_by_user_id = 5; // User ID
+}
+
 message PermissionChanged {
     string room_id = 1;
     string user_id = 2;
@@ -1151,6 +1161,13 @@ message PlaylistUpdated {
 message PlaylistDeleted {
     string room_id = 1;
     string playlist_id = 2;
+}
+
+message PlaylistReordered {
+    string room_id = 1;
+    repeated string media_ids = 2;
+    string reordered_by = 3; // Username
+    string reordered_by_user_id = 4; // User ID
 }
 
 message PlayingChanged {

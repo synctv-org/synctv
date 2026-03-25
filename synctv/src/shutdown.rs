@@ -378,6 +378,26 @@ impl ShutdownHook for HealthMonitorShutdownHook {
     }
 }
 
+/// Shuts down the `ClusterManager`, ensuring node unregister and task drain run
+/// on startup rollback and normal process shutdown.
+pub struct ClusterManagerShutdownHook {
+    pub manager: Arc<synctv_cluster::sync::ClusterManager>,
+}
+
+impl ShutdownHook for ClusterManagerShutdownHook {
+    fn name(&self) -> &'static str {
+        "cluster_manager"
+    }
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(15)
+    }
+    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            self.manager.shutdown().await;
+        })
+    }
+}
+
 /// Stops the permission cache invalidation listener tasks.
 pub struct PermissionServiceShutdownHook {
     pub service: synctv_core::service::PermissionService,
@@ -728,6 +748,50 @@ mod tests {
         assert!(
             elapsed < Duration::from_millis(150),
             "cache invalidation shutdown should abort the local listener promptly instead of burning the hook timeout budget: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cluster_manager_shutdown_hook_runs_manager_shutdown() {
+        use synctv_cluster::sync::{cluster_manager::ClusterConfig, ClusterManager};
+
+        let manager = Arc::new(
+            ClusterManager::new(
+                ClusterConfig {
+                    redis_client: None,
+                    redis_conn: None,
+                    shared_redis_conn: None,
+                    cluster_enabled: false,
+                    node_id: "hook-test-node".to_string(),
+                    dedup_window: Duration::from_secs(1),
+                    cleanup_interval: Duration::from_secs(1),
+                    critical_channel_capacity: 16,
+                    publish_channel_capacity: 16,
+                    key_prefix: "hook-test:".to_string(),
+                    catchup_window_secs: 60,
+                    stream_max_length: 100,
+                    parent_cancel_token: None,
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("cluster manager should initialize"),
+        );
+
+        let cancel_token = manager.cancel_token().clone();
+        assert!(
+            !cancel_token.is_cancelled(),
+            "manager should start with an active cancel token"
+        );
+
+        let mut coord = ShutdownCoordinator::new(Duration::from_secs(1));
+        coord.register_hook(ClusterManagerShutdownHook { manager });
+        coord.shutdown().await;
+
+        assert!(
+            cancel_token.is_cancelled(),
+            "cluster manager shutdown hook must invoke ClusterManager::shutdown"
         );
     }
 }

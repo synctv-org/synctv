@@ -144,7 +144,7 @@ pub struct MemberService {
     audit_service: Option<Arc<AuditService>>,
     cache_invalidation: Option<Arc<CacheInvalidationService>>,
     notification_service: Option<NotificationService>,
-    event_broadcaster: Option<Arc<dyn MemberEventBroadcaster>>,
+    event_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn MemberEventBroadcaster>>>>,
 }
 
 impl std::fmt::Debug for MemberService {
@@ -154,6 +154,10 @@ impl std::fmt::Debug for MemberService {
 }
 
 impl MemberService {
+    fn uses_admin_overrides(role: RoomRole) -> bool {
+        matches!(role, RoomRole::Admin)
+    }
+
     /// Create a new member service
     #[must_use]
     pub fn new(
@@ -169,7 +173,7 @@ impl MemberService {
             audit_service: None,
             cache_invalidation: None,
             notification_service: None,
-            event_broadcaster: None,
+            event_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
@@ -196,8 +200,13 @@ impl MemberService {
     }
 
     /// Set the cluster event broadcaster for cross-replica kick/ban propagation
-    pub fn set_event_broadcaster(&mut self, broadcaster: Arc<dyn MemberEventBroadcaster>) {
-        self.event_broadcaster = Some(broadcaster);
+    pub fn set_event_broadcaster(&self, broadcaster: Arc<dyn MemberEventBroadcaster>) {
+        *self.event_broadcaster.write() = Some(broadcaster);
+    }
+
+    #[doc(hidden)]
+    pub fn has_event_broadcaster(&self) -> bool {
+        self.event_broadcaster.read().is_some()
     }
 
     /// Log an audit event if the audit service is configured.
@@ -310,7 +319,7 @@ impl MemberService {
             .await;
 
         // Broadcast kick event to cluster for cross-replica disconnect
-        if let Some(ref broadcaster) = self.event_broadcaster {
+        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
             broadcaster.broadcast_kick_from_room(&room_id, &user_id, "removed");
         }
 
@@ -369,7 +378,7 @@ impl MemberService {
         }
 
         // Broadcast kick event to all cluster replicas for cross-replica disconnect
-        if let Some(ref broadcaster) = self.event_broadcaster {
+        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
             broadcaster.broadcast_kick_from_room(&room_id, &target_user_id, "kicked");
         }
 
@@ -427,15 +436,28 @@ impl MemberService {
                     .ok_or_else(|| {
                         Error::NotFound("User is not a member of this room".to_string())
                     })?;
-                self.member_repo
-                    .update_permissions(
-                        &room_id,
-                        &target_user_id,
-                        added_permissions,
-                        removed_permissions,
-                        member.version,
-                    )
-                    .await
+
+                if Self::uses_admin_overrides(member.role) {
+                    self.member_repo
+                        .update_admin_permissions(
+                            &room_id,
+                            &target_user_id,
+                            added_permissions,
+                            removed_permissions,
+                            member.version,
+                        )
+                        .await
+                } else {
+                    self.member_repo
+                        .update_permissions(
+                            &room_id,
+                            &target_user_id,
+                            added_permissions,
+                            removed_permissions,
+                            member.version,
+                        )
+                        .await
+                }
             },
         )
         .await?;
@@ -479,11 +501,33 @@ impl MemberService {
             .check_permission_no_cache(&room_id, &granter_id, PermissionBits::GRANT_PERMISSION)
             .await?;
 
-        // Atomic grant in SQL (added_permissions |= permission)
-        let updated_member = self
+        let target_member = self
             .member_repo
-            .grant_permission_atomic(&room_id, &target_user_id, permission)
+            .get(&room_id, &target_user_id)
             .await?;
+        let target_member = target_member
+            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+
+        // Atomic grant in SQL against the override layer used by the target role.
+        let updated_member = if Self::uses_admin_overrides(target_member.role) {
+            self.member_repo
+                .grant_admin_permission_atomic_for_role(
+                    &room_id,
+                    &target_user_id,
+                    permission,
+                    target_member.role,
+                )
+                .await?
+        } else {
+            self.member_repo
+                .grant_permission_atomic_for_role(
+                    &room_id,
+                    &target_user_id,
+                    permission,
+                    target_member.role,
+                )
+                .await?
+        };
 
         // Invalidate permission cache for target user
         self.permission_service
@@ -523,11 +567,33 @@ impl MemberService {
             .check_permission_no_cache(&room_id, &granter_id, PermissionBits::GRANT_PERMISSION)
             .await?;
 
-        // Atomic revoke in SQL (removed_permissions |= permission)
-        let updated_member = self
+        let target_member = self
             .member_repo
-            .revoke_permission_atomic(&room_id, &target_user_id, permission)
+            .get(&room_id, &target_user_id)
             .await?;
+        let target_member = target_member
+            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+
+        // Atomic revoke in SQL against the override layer used by the target role.
+        let updated_member = if Self::uses_admin_overrides(target_member.role) {
+            self.member_repo
+                .revoke_admin_permission_atomic_for_role(
+                    &room_id,
+                    &target_user_id,
+                    permission,
+                    target_member.role,
+                )
+                .await?
+        } else {
+            self.member_repo
+                .revoke_permission_atomic_for_role(
+                    &room_id,
+                    &target_user_id,
+                    permission,
+                    target_member.role,
+                )
+                .await?
+        };
 
         // Invalidate permission cache for target user
         self.permission_service
@@ -716,7 +782,7 @@ impl MemberService {
         // Broadcast kick event to all cluster replicas for cross-replica disconnect.
         // The cluster event system handles propagation asynchronously; no need to
         // wait here as receivers process events independently.
-        if let Some(ref broadcaster) = self.event_broadcaster {
+        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
             broadcaster.broadcast_kick_from_room(
                 &room_id,
                 &target_user_id,
@@ -785,6 +851,13 @@ impl MemberService {
         target_user_id: UserId,
         role: RoomRole,
     ) -> Result<RoomMember> {
+        if role == RoomRole::Creator {
+            return Err(Error::InvalidInput(
+                "Creator role is bound to room ownership and cannot be assigned via set_member_role"
+                    .to_string(),
+            ));
+        }
+
         // Check if user is creator (only creator can change roles)
         let room = self
             .room_repo
@@ -795,6 +868,12 @@ impl MemberService {
         if room.created_by != creator_id {
             return Err(Error::Authorization(
                 "Only room creator can change member roles".to_string(),
+            ));
+        }
+
+        if target_user_id == room.created_by {
+            return Err(Error::InvalidInput(
+                "Cannot change the role of the room creator via set_member_role".to_string(),
             ));
         }
 
@@ -868,6 +947,50 @@ impl MemberService {
         target_user_id: UserId,
         status: MemberStatus,
     ) -> Result<RoomMember> {
+        match status {
+            MemberStatus::Banned => {
+                self.ban_member(
+                    room_id.clone(),
+                    admin_id,
+                    target_user_id.clone(),
+                    Some("status updated to banned".to_string()),
+                )
+                .await?;
+
+                return self
+                    .member_repo
+                    .get_any(&room_id, &target_user_id)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Internal(
+                            "Banned member missing after successful status update".to_string(),
+                        )
+                    });
+            }
+            MemberStatus::Active => {
+                if self.is_banned(&room_id, &target_user_id).await? {
+                    self.unban_member(room_id.clone(), admin_id, target_user_id.clone())
+                        .await?;
+
+                    return self.member_repo.get(&room_id, &target_user_id).await?.ok_or_else(
+                        || {
+                            Error::Internal(
+                                "Unbanned member missing after successful status update"
+                                    .to_string(),
+                            )
+                        },
+                    );
+                }
+            }
+            MemberStatus::Left => {
+                return Err(Error::InvalidInput(
+                    "Use remove_member or kick_member instead of set_member_status(..., Left)"
+                        .to_string(),
+                ));
+            }
+            MemberStatus::Pending => {}
+        }
+
         // Check admin permission without cache - security-critical status change
         self.permission_service
             .check_permission_no_cache(&room_id.clone(), &admin_id, PermissionBits::BAN_MEMBER)

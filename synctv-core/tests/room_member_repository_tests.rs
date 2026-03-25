@@ -618,6 +618,56 @@ async fn test_revoke_permission_atomic_left_member_returns_not_found() {
     assert!(matches!(err, Error::NotFound(_)));
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_role_guarded_admin_permission_updates_fail_when_role_changed() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_role_guard"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room Role Guard", &owner.id))
+        .await
+        .unwrap();
+    let user = user_repo
+        .create(&make_user("user_role_guard"))
+        .await
+        .unwrap();
+
+    member_repo
+        .add(&make_member(room.id.clone(), user.id.clone(), RoomRole::Admin))
+        .await
+        .unwrap();
+
+    let current = member_repo.get(&room.id, &user.id).await.unwrap().unwrap();
+    member_repo
+        .update_role(&room.id, &user.id, RoomRole::Member, current.version)
+        .await
+        .unwrap();
+
+    let grant_err = member_repo
+        .grant_admin_permission_atomic_for_role(&room.id, &user.id, 0x01, RoomRole::Admin)
+        .await
+        .unwrap_err();
+    assert!(matches!(grant_err, Error::OptimisticLockConflict));
+
+    let revoke_err = member_repo
+        .revoke_admin_permission_atomic_for_role(&room.id, &user.id, 0x02, RoomRole::Admin)
+        .await
+        .unwrap_err();
+    assert!(matches!(revoke_err, Error::OptimisticLockConflict));
+
+    let refreshed = member_repo.get(&room.id, &user.id).await.unwrap().unwrap();
+    assert_eq!(refreshed.role, RoomRole::Member);
+    assert_eq!(refreshed.admin_added_permissions, 0);
+    assert_eq!(refreshed.admin_removed_permissions, 0);
+}
+
 // ========== reset_permissions tests ==========
 
 #[tokio::test]

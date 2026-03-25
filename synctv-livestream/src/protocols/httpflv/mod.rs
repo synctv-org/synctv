@@ -128,9 +128,19 @@ async fn handle_flv_stream(
         tx,
     );
 
+    if let Err(e) = flv_session.start().await {
+        warn!(
+            room_id = %room_id,
+            media_id = %media_id,
+            error = %e,
+            "Failed to subscribe HTTP-FLV session to StreamHub before responding"
+        );
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     tokio::spawn(async move {
         let _guard = subscriber_guard; // held for the lifetime of this task
-        if let Err(e) = flv_session.run().await {
+        if let Err(e) = flv_session.run_after_start().await {
             error!("FLV session error: {}", e);
         }
     });
@@ -221,7 +231,7 @@ mod tests {
                 },
             )]),
         ));
-        let (event_sender, _) = tokio::sync::mpsc::channel(64);
+        let (event_sender, mut event_rx) = tokio::sync::mpsc::channel(64);
         let pull_manager = Arc::new(PullStreamManager::new(
             registry.clone(),
             event_sender.clone(),
@@ -244,6 +254,45 @@ mod tests {
         .with_local_node_id("node-local".to_string());
         let state = HttpFlvState::new(registry, event_sender).with_infrastructure(infrastructure);
 
+        let streamhub_task = tokio::spawn(async move {
+            let subscribe = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("subscribe event should be emitted")
+                .expect("event channel should stay open");
+
+            let result_sender = match subscribe {
+                synctv_xiu::streamhub::define::StreamHubEvent::Subscribe { result_sender, .. } => {
+                    result_sender
+                }
+                other => panic!("expected subscribe event, got {other:?}"),
+            };
+
+            let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(8);
+            result_sender
+                .send(Ok((
+                    synctv_xiu::streamhub::define::DataReceiver {
+                        frame_receiver: Some(frame_rx),
+                        packet_receiver: None,
+                    },
+                    None,
+                )))
+                .expect("subscribe result should be delivered");
+            drop(frame_tx);
+
+            let unsubscribe =
+                tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+                    .await
+                    .expect("unsubscribe event should be emitted")
+                    .expect("event channel should stay open");
+            assert!(
+                matches!(
+                    unsubscribe,
+                    synctv_xiu::streamhub::define::StreamHubEvent::UnSubscribe { .. }
+                ),
+                "expected unsubscribe event after spawned FLV session exits"
+            );
+        });
+
         let response = handle_flv_stream(
             Path("media1.flv".to_string()),
             Extension("room1".to_string()),
@@ -253,6 +302,10 @@ mod tests {
         .expect("local publisher should not require relay setup");
 
         assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::timeout(std::time::Duration::from_secs(1), streamhub_task)
+            .await
+            .expect("streamhub task should finish")
+            .expect("streamhub task should join");
     }
 
     #[tokio::test]
@@ -303,6 +356,38 @@ mod tests {
         assert!(
             matches!(response, Err(StatusCode::SERVICE_UNAVAILABLE)),
             "remote publishers must still go through relay setup, and invalid relay config should fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_flv_stream_fails_closed_when_streamhub_subscribe_cannot_start() {
+        let registry = Arc::new(MockStreamRegistry::with_publishers(
+            std::collections::HashMap::from([(
+                ("room1".to_string(), "media1".to_string()),
+                PublisherInfo {
+                    node_id: "node-local".to_string(),
+                    grpc_address: "127.0.0.1:50051".to_string(),
+                    app_name: "live".to_string(),
+                    user_id: String::new(),
+                    started_at: Utc::now(),
+                    epoch: 1,
+                },
+            )]),
+        ));
+        let (event_sender, event_rx) = tokio::sync::mpsc::channel(1);
+        drop(event_rx);
+        let state = HttpFlvState::new(registry, event_sender);
+
+        let response = handle_flv_stream(
+            Path("media1.flv".to_string()),
+            Extension("room1".to_string()),
+            State(state),
+        )
+        .await;
+
+        assert!(
+            matches!(response, Err(StatusCode::SERVICE_UNAVAILABLE)),
+            "HTTP-FLV must not return 200 OK before StreamHub subscription succeeds"
         );
     }
 }

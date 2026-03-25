@@ -554,35 +554,19 @@ impl SettingsRegistry {
 
     /// Set `room_must_need_pwd` with cross-validation against `room_must_no_need_pwd`.
     ///
-    /// Routes through `SettingsService::update_batch()` which reads the
-    /// contradictory setting from the database within a transaction, preventing
-    /// race conditions in multi-replica deployments where two replicas could
-    /// simultaneously set contradictory values based on stale cache reads.
+    /// Routes through the typed setting so the transactional cross-validation
+    /// and the local `SettingsStorage` snapshot stay in sync immediately.
     pub async fn set_room_must_need_pwd(&self, value: bool) -> crate::Result<()> {
-        self.storage
-            .settings_service()
-            .update_batch(vec![(
-                "room.room_must_need_pwd".to_string(),
-                value.to_string(),
-            )])
-            .await?;
+        self.room_must_need_pwd.set(value).await?;
         Ok(())
     }
 
     /// Set `room_must_no_need_pwd` with cross-validation against `room_must_need_pwd`.
     ///
-    /// Routes through `SettingsService::update_batch()` which reads the
-    /// contradictory setting from the database within a transaction, preventing
-    /// race conditions in multi-replica deployments where two replicas could
-    /// simultaneously set contradictory values based on stale cache reads.
+    /// Routes through the typed setting so the transactional cross-validation
+    /// and the local `SettingsStorage` snapshot stay in sync immediately.
     pub async fn set_room_must_no_need_pwd(&self, value: bool) -> crate::Result<()> {
-        self.storage
-            .settings_service()
-            .update_batch(vec![(
-                "room.room_must_no_need_pwd".to_string(),
-                value.to_string(),
-            )])
-            .await?;
+        self.room_must_no_need_pwd.set(value).await?;
         Ok(())
     }
 

@@ -13,15 +13,16 @@ use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        MemberStatus, PermissionBits, RoomId, RoomRole, RoomSettings, User, UserId, UserRole,
-        UserStatus,
+        Media, MediaId, MemberStatus, PermissionBits, RoomId, RoomRole, RoomSettings, User,
+        UserId, UserRole, UserStatus,
     },
     repository::{
-        RoomMemberRepository, RoomRepository, RoomSettingsRepository, SettingsRepository,
-        UserRepository,
+        MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
+        RoomSettingsRepository, SettingsRepository, UserRepository,
     },
     service::{
         auth::{BruteForceProtection, JwtService},
+        notification::{GuestKickReason, RoomEvent},
         InMemoryTokenBlacklistStore, RoomService, SettingsRegistry, SettingsService, UserService,
     },
     Error,
@@ -2167,6 +2168,7 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
+    let mut event_rx = room_service.notification_service().subscribe();
 
     let owner = user_repo
         .create(&make_user("guest_kick_owner"))
@@ -2203,6 +2205,7 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
 
     // Verify guest is a member
     assert!(member_repo.is_member(&room.id, &guest.id).await.unwrap());
+    let guest_version_before = room_service.get_room_guest_version(&room.id).await.unwrap();
 
     // Disable guest join - this should kick the guest
     let result = room_service
@@ -2214,14 +2217,34 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
         result.err()
     );
 
-    // Note: The actual guest kicking happens via notification service
-    // In a real test with notification service, the guest would be kicked
-    // Here we verify the setting was updated
     let settings = room_service.get_room_settings(&room.id).await.unwrap();
     assert!(
         !settings.allow_guest_join.0,
         "allow_guest_join should be false"
     );
+
+    assert!(
+        !member_repo.is_member(&room.id, &guest.id).await.unwrap(),
+        "guest-role members must be removed when room guest mode is disabled"
+    );
+    let guest_version_after = room_service.get_room_guest_version(&room.id).await.unwrap();
+    assert_eq!(
+        guest_version_after,
+        guest_version_before + 1,
+        "room guest version must be bumped so anonymous guest JWTs are revoked"
+    );
+
+    let (event_room_id, event) = event_rx.recv().await.unwrap();
+    assert_eq!(event_room_id, room.id);
+    match event {
+        RoomEvent::GuestKicked { reason, .. } => {
+            assert!(
+                matches!(reason, GuestKickReason::RoomGuestModeDisabled),
+                "unexpected guest kick reason: {reason:?}"
+            );
+        }
+        other => panic!("expected GuestKicked event, got: {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -2230,9 +2253,15 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let mut event_rx = room_service.notification_service().subscribe();
 
     let owner = user_repo
         .create(&make_user("pwd_kick_owner"))
+        .await
+        .unwrap();
+    let guest = user_repo
+        .create(&make_user("pwd_kick_guest"))
         .await
         .unwrap();
 
@@ -2254,6 +2283,14 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
         .await
         .unwrap();
 
+    room_service
+        .member_service()
+        .add_member(room.id.clone(), guest.id.clone(), RoomRole::Guest)
+        .await
+        .unwrap();
+    assert!(member_repo.is_member(&room.id, &guest.id).await.unwrap());
+    let guest_version_before = room_service.get_room_guest_version(&room.id).await.unwrap();
+
     // Set a password - this should trigger guest kick
     let new_hash = synctv_core::service::auth::password::hash_password("NewPassword123")
         .await
@@ -2269,6 +2306,105 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
     assert!(
         settings.require_password.0,
         "require_password should be true"
+    );
+
+    assert!(
+        !member_repo.is_member(&room.id, &guest.id).await.unwrap(),
+        "guest-role members must be removed when a room password is added"
+    );
+    let guest_version_after = room_service.get_room_guest_version(&room.id).await.unwrap();
+    assert_eq!(
+        guest_version_after,
+        guest_version_before + 1,
+        "room guest version must be bumped when adding a password"
+    );
+
+    let (event_room_id, event) = event_rx.recv().await.unwrap();
+    assert_eq!(event_room_id, room.id);
+    match event {
+        RoomEvent::GuestKicked { reason, .. } => {
+            assert!(
+                matches!(reason, GuestKickReason::RoomPasswordAdded),
+                "unexpected guest kick reason: {reason:?}"
+            );
+        }
+        other => panic!("expected GuestKicked event, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_remove_media_respects_admin_override_columns() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("remove_media_admin_owner"))
+        .await
+        .unwrap();
+    let admin = user_repo
+        .create(&make_user("remove_media_admin_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Admin Remove Media Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .member_service()
+        .add_member(room.id.clone(), admin.id.clone(), RoomRole::Admin)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "UPDATE room_members
+         SET admin_removed_permissions = admin_removed_permissions | $3,
+             added_permissions = 0,
+             removed_permissions = 0
+         WHERE room_id = $1 AND user_id = $2",
+    )
+    .bind(room.id.as_str())
+    .bind(admin.id.as_str())
+    .bind(PermissionBits::DELETE_MOVIE_ANY as i64)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let root_playlist = playlist_repo.get_root_playlist(&room.id).await.unwrap();
+    let now = Utc::now();
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: root_playlist.id.clone(),
+        room_id: room.id.clone(),
+        name: "Protected Media".to_string(),
+        position: 0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({}),
+        provider_instance_name: None,
+        creator_id: Some(owner.id.clone()),
+        added_at: now,
+        updated_at: now,
+        version: 0,
+    };
+    media_repo.create(&media).await.unwrap();
+
+    let result = room_service
+        .remove_media(room.id.clone(), admin.id.clone(), media.id.clone())
+        .await;
+    assert!(
+        matches!(result, Err(Error::Authorization(_))),
+        "admin DELETE_MOVIE_ANY revoke must be enforced by transactional SQL, got: {result:?}"
     );
 }
 
@@ -4109,7 +4245,7 @@ async fn test_create_room_rejects_no_password_when_must_need_pwd() {
     let registry = make_settings_registry(pool.clone()).await;
 
     // Enable room_must_need_pwd
-    registry.room_must_need_pwd.set(true).await.unwrap();
+    registry.set_room_must_need_pwd(true).await.unwrap();
     room_service.set_settings_registry(registry);
 
     let owner = user_repo
@@ -4148,7 +4284,7 @@ async fn test_create_room_allows_password_when_must_need_pwd() {
     let registry = make_settings_registry(pool.clone()).await;
 
     // Enable room_must_need_pwd
-    registry.room_must_need_pwd.set(true).await.unwrap();
+    registry.set_room_must_need_pwd(true).await.unwrap();
     room_service.set_settings_registry(registry);
 
     let owner = user_repo
@@ -4182,7 +4318,7 @@ async fn test_create_room_rejects_password_when_must_no_need_pwd() {
     let registry = make_settings_registry(pool.clone()).await;
 
     // Enable room_must_no_need_pwd
-    registry.room_must_no_need_pwd.set(true).await.unwrap();
+    registry.set_room_must_no_need_pwd(true).await.unwrap();
     room_service.set_settings_registry(registry);
 
     let owner = user_repo
@@ -4221,7 +4357,7 @@ async fn test_create_room_allows_no_password_when_must_no_need_pwd() {
     let registry = make_settings_registry(pool.clone()).await;
 
     // Enable room_must_no_need_pwd
-    registry.room_must_no_need_pwd.set(true).await.unwrap();
+    registry.set_room_must_no_need_pwd(true).await.unwrap();
     room_service.set_settings_registry(registry);
 
     let owner = user_repo

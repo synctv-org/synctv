@@ -718,9 +718,7 @@ impl RoomMessageHub {
                                     ReliableDeliveryOutcome::Delivered => {
                                         sent_count += 1;
                                     }
-                                    ReliableDeliveryOutcome::Deferred => {
-                                        sent_count += 1;
-                                    }
+                                    ReliableDeliveryOutcome::Deferred => {}
                                     ReliableDeliveryOutcome::Closed
                                     | ReliableDeliveryOutcome::TimedOut => {
                                         failed_connections.push(subscriber.connection_id.clone());
@@ -810,11 +808,14 @@ impl RoomMessageHub {
                         }
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             if is_critical {
-                                reliable_deliveries.push(deliver_reliable_event(
-                                    subscriber.sender.clone(),
-                                    event.clone(),
-                                    room_id.clone(),
+                                reliable_deliveries.push((
                                     subscriber.connection_id.clone(),
+                                    deliver_reliable_event(
+                                        subscriber.sender.clone(),
+                                        event.clone(),
+                                        room_id.clone(),
+                                        subscriber.connection_id.clone(),
+                                    ),
                                 ));
                             } else {
                                 let drops =
@@ -833,12 +834,14 @@ impl RoomMessageHub {
             }
         }
 
-        for delivery in reliable_deliveries {
+        for (connection_id, delivery) in reliable_deliveries {
             match delivery.await {
                 ReliableDeliveryOutcome::Delivered => {
                     sent_count += 1;
                 }
-                ReliableDeliveryOutcome::Closed | ReliableDeliveryOutcome::TimedOut => {}
+                ReliableDeliveryOutcome::Closed | ReliableDeliveryOutcome::TimedOut => {
+                    failed_connections.push(connection_id);
+                }
                 ReliableDeliveryOutcome::Unavailable | ReliableDeliveryOutcome::Deferred => {}
             }
         }
@@ -894,9 +897,7 @@ impl RoomMessageHub {
                                         ReliableDeliveryOutcome::Delivered => {
                                             sent_count += 1;
                                         }
-                                        ReliableDeliveryOutcome::Deferred => {
-                                            sent_count += 1;
-                                        }
+                                        ReliableDeliveryOutcome::Deferred => {}
                                         ReliableDeliveryOutcome::Closed
                                         | ReliableDeliveryOutcome::TimedOut => {
                                             failed_connections
@@ -1847,6 +1848,180 @@ mod tests {
             saw_room_deleted,
             "critical event must be queued before broadcast() returns success"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_broadcast_reliably_unsubscribes_connection_after_delivery_timeout() {
+        let hub = Arc::new(RoomMessageHub::new());
+        let room_id = RoomId::from_string("room-reliable-timeout".to_string());
+        let user_id = UserId::from_string("user-reliable-timeout".to_string());
+        let _rx = hub
+            .subscribe(
+                room_id.clone(),
+                user_id.clone(),
+                "conn-reliable-timeout".to_string(),
+            )
+            .await
+            .expect("subscribe should succeed");
+
+        for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+            let sent = hub.broadcast(
+                &room_id,
+                ClusterEvent::ChatMessage {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: room_id.clone(),
+                    user_id: UserId::from_string("filler-user".to_string()),
+                    username: "filler".to_string(),
+                    message: "fill".to_string(),
+                    timestamp: Utc::now(),
+                    position: None,
+                    color: None,
+                },
+            );
+            assert_eq!(sent, 1, "filler message should enqueue");
+        }
+
+        let hub_for_task = Arc::clone(&hub);
+        let room_for_task = room_id.clone();
+        let broadcast_task = tokio::spawn(async move {
+            hub_for_task
+                .broadcast_reliably(
+                    &room_for_task,
+                    ClusterEvent::RoomDeleted {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: room_for_task.clone(),
+                        deleted_by: UserId::from_string("deleter".to_string()),
+                        timestamp: Utc::now(),
+                    },
+                )
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(CRITICAL_EVENT_SEND_TIMEOUT + Duration::from_secs(1)).await;
+
+        let sent = broadcast_task
+            .await
+            .expect("reliable timeout task should not panic");
+        assert_eq!(sent, 0, "timed out reliable delivery must not count as sent");
+        assert_eq!(
+            hub.subscriber_count(&room_id),
+            0,
+            "timed out reliable delivery must unsubscribe the stuck connection"
+        );
+        assert_eq!(
+            hub.connection_count(),
+            0,
+            "timed out reliable delivery must clear connection tracking"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_does_not_count_deferred_critical_delivery_on_current_thread_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+
+        runtime.block_on(async {
+            let hub = RoomMessageHub::new();
+            let room_id = RoomId::from_string("room-critical-deferred".to_string());
+            let user_id = UserId::from_string("user-critical-deferred".to_string());
+
+            let _rx = hub
+                .subscribe(room_id.clone(), user_id, "conn-critical-deferred".to_string())
+                .await
+                .expect("subscribe should succeed");
+
+            for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+                let sent = hub.broadcast(
+                    &room_id,
+                    ClusterEvent::ChatMessage {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: room_id.clone(),
+                        user_id: UserId::from_string("filler-user".to_string()),
+                        username: "filler".to_string(),
+                        message: "fill".to_string(),
+                        timestamp: Utc::now(),
+                        position: None,
+                        color: None,
+                    },
+                );
+                assert_eq!(sent, 1, "filler message should enqueue");
+            }
+
+            let sent = hub.broadcast(
+                &room_id,
+                ClusterEvent::RoomDeleted {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: room_id.clone(),
+                    deleted_by: UserId::from_string("deleter".to_string()),
+                    timestamp: Utc::now(),
+                },
+            );
+
+            assert_eq!(
+                sent, 0,
+                "current-thread deferred critical delivery must not be reported as queued"
+            );
+        });
+    }
+
+    #[test]
+    fn test_broadcast_to_user_does_not_count_deferred_critical_delivery_on_current_thread_runtime()
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+
+        runtime.block_on(async {
+            let hub = RoomMessageHub::new();
+            let room_id = RoomId::from_string("room-targeted-deferred".to_string());
+            let user_id = UserId::from_string("user-targeted-deferred".to_string());
+
+            let _rx = hub
+                .subscribe(
+                    room_id.clone(),
+                    user_id.clone(),
+                    "conn-targeted-deferred".to_string(),
+                )
+                .await
+                .expect("subscribe should succeed");
+
+            for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+                let sent = hub.broadcast(
+                    &room_id,
+                    ClusterEvent::ChatMessage {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: room_id.clone(),
+                        user_id: UserId::from_string("filler-user".to_string()),
+                        username: "filler".to_string(),
+                        message: "fill".to_string(),
+                        timestamp: Utc::now(),
+                        position: None,
+                        color: None,
+                    },
+                );
+                assert_eq!(sent, 1, "filler message should enqueue");
+            }
+
+            let sent = hub.broadcast_to_user(
+                &room_id,
+                &user_id,
+                ClusterEvent::RoomDeleted {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: room_id.clone(),
+                    deleted_by: UserId::from_string("deleter".to_string()),
+                    timestamp: Utc::now(),
+                },
+            );
+
+            assert_eq!(
+                sent, 0,
+                "current-thread deferred targeted critical delivery must not be reported as queued"
+            );
+        });
     }
 
     #[tokio::test]

@@ -23,12 +23,18 @@ use synctv_core::Config;
 /// failures are treated as fatal and returned as `Err`. Previously, failures
 /// silently returned `(None, None, None)`, leaving the node in a ghost state
 /// where it believes it's in a cluster but has no registry or heartbeat.
+pub struct ClusterDiscoveryComponents {
+    pub registry: Arc<NodeRegistry>,
+    pub health_monitor: Arc<HealthMonitor>,
+    pub load_balancer: Arc<LoadBalancer>,
+}
+
 pub async fn init_cluster_components(
     redis_handles: &RedisHandles,
     cm: &Arc<ClusterManager>,
     config: &Config,
-    connection_manager: &ConnectionManager,
-) -> Result<(Arc<NodeRegistry>, Arc<HealthMonitor>, Arc<LoadBalancer>), anyhow::Error> {
+    _connection_manager: &ConnectionManager,
+) -> Result<ClusterDiscoveryComponents, anyhow::Error> {
     let node_id = cm.node_id().to_string();
     let heartbeat_timeout_secs: i64 = 30;
 
@@ -41,6 +47,36 @@ pub async fn init_cluster_components(
     .map(Arc::new)
     .map_err(|e| anyhow::anyhow!("Failed to create NodeRegistry: {e}"))?;
 
+    let health_monitor = Arc::new(HealthMonitor::with_cancellation_token_and_probe_config(
+        registry.clone(),
+        15,
+        &cm.cancel_token(),
+        HealthProbeConfig {
+            cluster_secret: config.server.cluster_secret.clone(),
+            ..HealthProbeConfig::default()
+        },
+    ));
+
+    let lb = Arc::new(
+        LoadBalancer::new(registry.clone(), LoadBalancingStrategy::LeastConnections)
+            .with_health_monitor(health_monitor.clone()),
+    );
+    info!("Load balancer initialized with LeastConnections strategy");
+
+    Ok(ClusterDiscoveryComponents {
+        registry,
+        health_monitor,
+        load_balancer: lb,
+    })
+}
+
+pub async fn activate_cluster_node(
+    config: &Config,
+    cm: &Arc<ClusterManager>,
+    connection_manager: &ConnectionManager,
+    registry: &Arc<NodeRegistry>,
+    health_monitor: &Arc<HealthMonitor>,
+) -> Result<(), anyhow::Error> {
     let advertise_grpc = config.advertise_grpc_address();
     let advertise_http = config.advertise_http_address();
 
@@ -50,7 +86,7 @@ pub async fn init_cluster_components(
         .map_err(|e| anyhow::anyhow!("Failed to register node in Redis: {e}"))?;
 
     info!(
-        node_id = %node_id,
+        node_id = %cm.node_id(),
         advertise_grpc = %advertise_grpc,
         advertise_http = %advertise_http,
         "Node registered in cluster"
@@ -65,38 +101,20 @@ pub async fn init_cluster_components(
     )
     .await;
 
-    let health_monitor = Arc::new(HealthMonitor::with_cancellation_token_and_probe_config(
-        registry.clone(),
-        15,
-        &cm.cancel_token(),
-        HealthProbeConfig {
-            cluster_secret: config.server.cluster_secret.clone(),
-            ..HealthProbeConfig::default()
-        },
-    ));
     match health_monitor.start().await {
         Ok(hm_handle) => {
             info!("Health monitor started");
             health_monitor.set_join_handle(hm_handle);
+            Ok(())
         }
         Err(e) => {
-            // Reuse the production shutdown path so heartbeat re-registration
-            // cannot race with node deregistration during startup rollback.
             cm.shutdown().await;
-            return Err(anyhow::anyhow!(
+            Err(anyhow::anyhow!(
                 "Failed to start health monitor: {e}. \
                  Health monitoring is required for cluster mode."
-            ));
+            ))
         }
     }
-
-    let lb = Arc::new(
-        LoadBalancer::new(registry.clone(), LoadBalancingStrategy::LeastConnections)
-            .with_health_monitor(health_monitor.clone()),
-    );
-    info!("Load balancer initialized with LeastConnections strategy");
-
-    Ok((registry, health_monitor, lb))
 }
 
 /// Initialize cluster discovery infrastructure (`NodeRegistry` + `HealthMonitor` + `LoadBalancer`).
@@ -140,11 +158,11 @@ pub async fn init_cluster_discovery(
                          Ensure HEADLESS_SERVICE_NAME, POD_NAMESPACE, and POD_IP env vars are set."
                         )
                     })?;
-            let (registry, hm, lb) =
+            let components =
                 init_cluster_components(redis_handles, cm, config, connection_manager).await?;
             let k8s_discovery = k8s_discovery
                 .with_cluster_secret(config.server.cluster_secret.clone())
-                .with_node_registry(registry.clone());
+                .with_node_registry(components.registry.clone());
 
             // Perform initial DNS resolution
             if let Err(e) = k8s_discovery.refresh().await {
@@ -161,9 +179,9 @@ pub async fn init_cluster_discovery(
             let dns_refresh_handle = k8s_discovery.start_refresh_loop(10, shutdown_token);
 
             Ok((
-                Some(registry),
-                Some(hm),
-                Some(lb),
+                Some(components.registry),
+                Some(components.health_monitor),
+                Some(components.load_balancer),
                 Some(dns_refresh_handle),
                 None,
             ))
@@ -175,7 +193,7 @@ pub async fn init_cluster_discovery(
         )),
         "static" => {
             info!("Using static peer discovery mode");
-            let (registry, hm, lb) =
+            let components =
                 init_cluster_components(redis_handles, cm, config, connection_manager).await?;
 
             // Start static discovery background probe loop
@@ -204,17 +222,33 @@ pub async fn init_cluster_discovery(
             };
 
             let static_discovery =
-                StaticDiscovery::new(static_config, registry.clone(), cm.cancel_token());
+                StaticDiscovery::new(
+                    static_config,
+                    components.registry.clone(),
+                    cm.cancel_token(),
+                );
 
             let handle = static_discovery.start();
             info!("Static peer discovery started");
 
-            Ok((Some(registry), Some(hm), Some(lb), Some(handle), None))
+            Ok((
+                Some(components.registry),
+                Some(components.health_monitor),
+                Some(components.load_balancer),
+                Some(handle),
+                None,
+            ))
         }
         "redis" => {
-            let (registry, hm, lb) =
+            let components =
                 init_cluster_components(redis_handles, cm, config, connection_manager).await?;
-            Ok((Some(registry), Some(hm), Some(lb), None, None))
+            Ok((
+                Some(components.registry),
+                Some(components.health_monitor),
+                Some(components.load_balancer),
+                None,
+                None,
+            ))
         }
         _ => unreachable!("cluster.discovery_mode is validated before startup: {discovery_mode}"),
     }

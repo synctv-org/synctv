@@ -332,7 +332,7 @@ mod tests {
             map_email_user_lookup_error(synctv_core::Error::Database(sqlx::Error::PoolTimedOut));
 
         assert!(
-            matches!(mapped, crate::impls::ApiError::ServiceUnavailable(ref msg) if msg.contains("pool timed out")),
+            matches!(mapped, crate::impls::ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable. Please try again later."),
             "email user lookup backend failures must remain service unavailable, got: {mapped:?}"
         );
     }
@@ -343,7 +343,7 @@ mod tests {
             map_email_mutation_error(synctv_core::Error::Database(sqlx::Error::PoolTimedOut));
 
         assert!(
-            matches!(mapped, crate::impls::ApiError::ServiceUnavailable(ref msg) if msg.contains("pool timed out")),
+            matches!(mapped, crate::impls::ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable. Please try again later."),
             "email mutation backend failures must remain service unavailable, got: {mapped:?}"
         );
     }

@@ -23,6 +23,7 @@ use synctv_core::{
 };
 
 use crate::shutdown::ShutdownCoordinator;
+use crate::app::ClusterActivation;
 
 /// Livestream server state (held for graceful shutdown).
 ///
@@ -79,6 +80,7 @@ pub struct Services {
     pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
+    pub(crate) cluster_activation: Option<ClusterActivation>,
     /// Shared Redis connection for playback caching (optional in standalone mode).
     pub redis_client: Option<redis::Client>,
     pub redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
@@ -331,6 +333,50 @@ async fn shutdown_after_startup_failure(
     coordinator.shutdown_with_deadline(deadline).await;
 }
 
+async fn shutdown_after_cluster_activation_failure(
+    server: &mut SyncTvServer,
+    shutdown_tx: &watch::Sender<bool>,
+    cleanup_cancel: &tokio_util::sync::CancellationToken,
+    cleanup_handle: Option<JoinHandle<()>>,
+    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    http_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    deadline: tokio::time::Instant,
+    coordinator: ShutdownCoordinator,
+) {
+    let _ = shutdown_tx.send(true);
+    cleanup_cancel.cancel();
+
+    if let Some(handle) = cleanup_handle {
+        await_task_shutdown(
+            "connection cleanup task",
+            handle,
+            remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT),
+        )
+        .await;
+    }
+
+    if let Some(handle) = grpc_handle {
+        let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
+        if timeout.is_zero() {
+            force_abort_runtime_server("gRPC server", handle).await;
+        } else {
+            await_runtime_server_shutdown("gRPC server", handle, timeout).await;
+        }
+    }
+
+    if let Some(handle) = http_handle {
+        let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
+        if timeout.is_zero() {
+            force_abort_runtime_server("HTTP server", handle).await;
+        } else {
+            await_runtime_server_shutdown("HTTP server", handle, timeout).await;
+        }
+    }
+
+    server.shutdown_startup_failure_components(deadline).await;
+    coordinator.shutdown_with_deadline(deadline).await;
+}
+
 async fn spawn_admin_event_listener(
     cluster_mgr: Arc<synctv_cluster::sync::ClusterManager>,
     infra: Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
@@ -379,6 +425,22 @@ async fn spawn_admin_event_listener(
                                     "Received cluster-wide user kick"
                                 );
                                 infra.kick_user_publishers(user_id.as_str()).await;
+                            }
+                            ClusterEvent::KickUserFromRoom {
+                                room_id,
+                                user_id,
+                                reason,
+                                ..
+                            } => {
+                                info!(
+                                    room_id = %room_id.as_str(),
+                                    user_id = %user_id.as_str(),
+                                    reason = %reason,
+                                    "Received room-scoped user kick"
+                                );
+                                infra
+                                    .kick_user_room_publishers(room_id.as_str(), user_id.as_str())
+                                    .await;
                             }
                             _ => {}
                         },
@@ -506,6 +568,40 @@ impl SyncTvServer {
             }
         };
         self.http_handle = Some(http_handle);
+
+        if let Some(cluster_activation) = &self.services.cluster_activation {
+            if let Err(err) = crate::bootstrap::cluster::activate_cluster_node(
+                &cluster_activation.config,
+                &cluster_activation.cluster_manager,
+                &cluster_activation.connection_manager,
+                &cluster_activation.node_registry,
+                &cluster_activation.health_monitor,
+            )
+            .await
+            {
+                let grpc_handle = self.grpc_handle.take();
+                let http_handle = self.http_handle.take();
+                let startup_cleanup_budget =
+                    Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
+                        .min(STARTUP_CLEANUP_TIMEOUT);
+                let startup_cleanup_deadline = tokio::time::Instant::now() + startup_cleanup_budget;
+                shutdown_after_cluster_activation_failure(
+                    &mut self,
+                    &shutdown_tx,
+                    &cleanup_cancel,
+                    Some(cleanup_handle),
+                    grpc_handle,
+                    http_handle,
+                    startup_cleanup_deadline,
+                    coordinator,
+                )
+                .await;
+                info!("Closing database connection pool after startup failure...");
+                self.pool.close().await;
+                info!("Database pool closed after startup failure");
+                return Err(err);
+            }
+        }
 
         // Spawn streaming event listener for cluster-wide kicks
         let admin_event_cancel = tokio_util::sync::CancellationToken::new();
@@ -1625,6 +1721,166 @@ mod tests {
         })
         .await
         .expect("kick listener should remove registry entry after processing");
+
+        cancel.cancel();
+        await_task_shutdown("admin event listener", handle, Duration::from_secs(1)).await;
+    }
+
+    #[tokio::test]
+    async fn test_admin_event_listener_kick_user_from_room_only_removes_room_local_publishers() {
+        use chrono::Utc;
+        use synctv_cluster::sync::{ClusterConfig, ClusterEvent, ClusterManager};
+        use synctv_core::models::{RoomId, UserId};
+        use synctv_livestream::api::StreamTracker;
+        use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+        use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
+        use tokio::sync::mpsc;
+
+        let cluster_manager = ClusterManager::new(
+            ClusterConfig {
+                redis_client: None,
+                redis_conn: None,
+                cluster_enabled: false,
+                node_id: "test-node".to_string(),
+                dedup_window: Duration::from_mins(1),
+                cleanup_interval: Duration::from_secs(30),
+                critical_channel_capacity: 8,
+                publish_channel_capacity: 8,
+                key_prefix: "test:".to_string(),
+                catchup_window_secs: 60,
+                stream_max_length: 100,
+                shared_redis_conn: None,
+                parent_cancel_token: None,
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("cluster manager should be created");
+
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        registry
+            .try_register_publisher(
+                "room-1",
+                "media-1",
+                "test-node",
+                "publisher-user",
+                "127.0.0.1:50051",
+            )
+            .await
+            .expect("room-1 publisher should register");
+        registry
+            .try_register_publisher(
+                "room-2",
+                "media-2",
+                "test-node",
+                "publisher-user",
+                "127.0.0.1:50051",
+            )
+            .await
+            .expect("room-2 publisher should register");
+
+        let tracker = Arc::new(StreamTracker::new());
+        tracker.insert(
+            "publisher-user".to_string(),
+            "room-1".to_string(),
+            "media-1".to_string(),
+            "room-1",
+            "media-1",
+        );
+        tracker.insert(
+            "publisher-user".to_string(),
+            "room-2".to_string(),
+            "media-2".to_string(),
+            "room-2",
+            "media-2",
+        );
+
+        let (event_sender, mut event_receiver) = mpsc::channel(8);
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                "test-node".to_string(),
+                event_sender.clone(),
+            )
+            .expect("failed to create ExternalPublishManager"),
+        );
+        let infra = Arc::new(synctv_livestream::api::LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender,
+            pull_manager,
+            external_publish_manager,
+            tracker.clone(),
+        ));
+        let cancel = CancellationToken::new();
+        let cluster_manager = Arc::new(cluster_manager);
+        let handle =
+            spawn_admin_event_listener(cluster_manager.clone(), infra, cancel.clone()).await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if cluster_manager
+                    .admin_event_tx()
+                    .send(ClusterEvent::KickUserFromRoom {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: RoomId::from_string("room-1".to_string()),
+                        user_id: UserId::from_string("publisher-user".to_string()),
+                        reason: "removed".to_string(),
+                        timestamp: Utc::now(),
+                    })
+                    .is_ok()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("kick user from room event should reach the listener");
+
+        tokio::time::timeout(Duration::from_secs(1), async move {
+            event_receiver
+                .recv()
+                .await
+                .expect("streamhub event channel should receive unpublish");
+        })
+        .await
+        .expect("listener should enqueue one room-scoped unpublish event");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let room1_missing = registry
+                    .get_publisher("room-1", "media-1")
+                    .await
+                    .expect("registry lookup should succeed")
+                    .is_none();
+                let room2_present = registry
+                    .get_publisher("room-2", "media-2")
+                    .await
+                    .expect("registry lookup should succeed")
+                    .is_some();
+                if room1_missing && room2_present {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("room-scoped kick listener should only remove the targeted publisher");
+
+        assert!(
+            tracker.get_stream_user("room-1", "media-1").is_none(),
+            "target room publisher must be removed from tracker"
+        );
+        assert_eq!(
+            tracker.get_stream_user("room-2", "media-2").as_deref(),
+            Some("publisher-user"),
+            "publisher in another room must remain tracked"
+        );
 
         cancel.cancel();
         await_task_shutdown("admin event listener", handle, Duration::from_secs(1)).await;

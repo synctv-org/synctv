@@ -615,6 +615,47 @@ impl RoomMemberRepository {
         }
     }
 
+    /// Update admin-specific Allow/Deny permissions with optimistic locking.
+    ///
+    /// Only updates members that are still active (`left_at IS NULL`). Members
+    /// who have left the room will not have their permissions modified; the call
+    /// returns `OptimisticLockConflict` in that case (same as a version mismatch).
+    pub async fn update_admin_permissions(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        added_permissions: u64,
+        removed_permissions: u64,
+        current_version: i64,
+    ) -> Result<RoomMember> {
+        let member = sqlx::query_as::<_, RoomMember>(
+            "UPDATE room_members
+             SET
+                admin_added_permissions = $3,
+                admin_removed_permissions = $4,
+                version = version + 1
+             WHERE room_id = $1 AND user_id = $2 AND version = $5 AND left_at IS NULL
+             RETURNING
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version,
+                banned_at, banned_by, banned_reason",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(added_permissions as i64)
+        .bind(removed_permissions as i64)
+        .bind(current_version)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
     /// Atomically grant permission bits (bitwise OR in SQL to avoid read-modify-write TOCTOU)
     ///
     /// Only applies to active members (`left_at IS NULL`). Returns `NotFound` if
@@ -650,6 +691,109 @@ impl RoomMemberRepository {
         }
     }
 
+    /// Atomically grant permission bits for an active member that still matches the expected role.
+    pub async fn grant_permission_atomic_for_role(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: u64,
+        role: RoomRole,
+    ) -> Result<RoomMember> {
+        let member = sqlx::query_as::<_, RoomMember>(
+            "UPDATE room_members
+             SET
+                added_permissions = added_permissions | $3,
+                version = version + 1
+             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL AND role = $4
+             RETURNING
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version,
+                banned_at, banned_by, banned_reason",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(permission as i64)
+        .bind(role)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    /// Atomically grant admin-specific permission bits.
+    ///
+    /// Only applies to active members (`left_at IS NULL`). Returns `NotFound` if
+    /// the member has left, preventing ghost permission grants on departed users.
+    pub async fn grant_admin_permission_atomic(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: u64,
+    ) -> Result<RoomMember> {
+        let member = sqlx::query_as::<_, RoomMember>(
+            "UPDATE room_members
+             SET
+                admin_added_permissions = admin_added_permissions | $3,
+                version = version + 1
+             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+             RETURNING
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version,
+                banned_at, banned_by, banned_reason",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(permission as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::NotFound("Active room member not found".to_string())),
+        }
+    }
+
+    /// Atomically grant admin-specific permission bits for an active admin that still matches the expected role.
+    pub async fn grant_admin_permission_atomic_for_role(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: u64,
+        role: RoomRole,
+    ) -> Result<RoomMember> {
+        let member = sqlx::query_as::<_, RoomMember>(
+            "UPDATE room_members
+             SET
+                admin_added_permissions = admin_added_permissions | $3,
+                version = version + 1
+             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL AND role = $4
+             RETURNING
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version,
+                banned_at, banned_by, banned_reason",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(permission as i64)
+        .bind(role)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
     /// Atomically revoke permission bits (bitwise OR on `removed_permissions` in SQL)
     ///
     /// Only applies to active members (`left_at IS NULL`). Returns `NotFound` if
@@ -682,6 +826,109 @@ impl RoomMemberRepository {
         match member {
             Some(m) => Ok(m),
             None => Err(Error::NotFound("Active room member not found".to_string())),
+        }
+    }
+
+    /// Atomically revoke permission bits for an active member that still matches the expected role.
+    pub async fn revoke_permission_atomic_for_role(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: u64,
+        role: RoomRole,
+    ) -> Result<RoomMember> {
+        let member = sqlx::query_as::<_, RoomMember>(
+            "UPDATE room_members
+             SET
+                removed_permissions = removed_permissions | $3,
+                version = version + 1
+             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL AND role = $4
+             RETURNING
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version,
+                banned_at, banned_by, banned_reason",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(permission as i64)
+        .bind(role)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    /// Atomically revoke admin-specific permission bits.
+    ///
+    /// Only applies to active members (`left_at IS NULL`). Returns `NotFound` if
+    /// the member has left, preventing ghost permission revokes on departed users.
+    pub async fn revoke_admin_permission_atomic(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: u64,
+    ) -> Result<RoomMember> {
+        let member = sqlx::query_as::<_, RoomMember>(
+            "UPDATE room_members
+             SET
+                admin_removed_permissions = admin_removed_permissions | $3,
+                version = version + 1
+             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+             RETURNING
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version,
+                banned_at, banned_by, banned_reason",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(permission as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::NotFound("Active room member not found".to_string())),
+        }
+    }
+
+    /// Atomically revoke admin-specific permission bits for an active admin that still matches the expected role.
+    pub async fn revoke_admin_permission_atomic_for_role(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: u64,
+        role: RoomRole,
+    ) -> Result<RoomMember> {
+        let member = sqlx::query_as::<_, RoomMember>(
+            "UPDATE room_members
+             SET
+                admin_removed_permissions = admin_removed_permissions | $3,
+                version = version + 1
+             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL AND role = $4
+             RETURNING
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version,
+                banned_at, banned_by, banned_reason",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(permission as i64)
+        .bind(role)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
         }
     }
 

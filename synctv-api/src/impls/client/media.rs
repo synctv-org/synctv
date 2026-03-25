@@ -225,9 +225,33 @@ impl ClientApiImpl {
 
         let media = self
             .room_service
-            .edit_media(rid.clone(), uid, mid, title)
+            .edit_media(rid.clone(), uid.clone(), mid, title)
             .await
             .map_err(ApiError::from)?;
+
+        if let Some(ref tx) = self.redis_publish_tx {
+            let username = self
+                .user_service
+                .get_user(&uid)
+                .await
+                .map(|u| u.username)
+                .unwrap_or_default();
+            let _ = crate::impls::try_publish_cluster_event(
+                tx,
+                synctv_cluster::sync::PublishRequest {
+                    event: synctv_cluster::sync::ClusterEvent::MediaUpdated {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: rid.clone(),
+                        user_id: uid.clone(),
+                        username,
+                        media_id: media.id.clone(),
+                        media_title: media.name.clone(),
+                        timestamp: chrono::Utc::now(),
+                    },
+                },
+            )
+            .await;
+        }
 
         // Invalidate room cache on other replicas so they see updated metadata
         if let Some(cache_invalidation) = cache_invalidation {

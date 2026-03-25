@@ -1,4 +1,4 @@
-//! Adapter bridging `synctv-cluster` and `synctv-core` playback broadcasting.
+//! Adapter bridging `synctv-cluster` and `synctv-core` broadcasting traits.
 //!
 //! `ClusterPlaybackBroadcaster` implements the `PlaybackBroadcaster` trait from
 //! `synctv-core` by delegating to `ClusterManager`, keeping the core crate
@@ -38,6 +38,45 @@ impl synctv_core::service::PlaybackBroadcaster for ClusterPlaybackBroadcaster {
             redis_sent: result.redis_sent,
             single_node,
         }
+    }
+}
+
+/// Adapter that implements `MemberEventBroadcaster` by delegating to `ClusterManager`.
+pub struct ClusterMemberEventBroadcaster {
+    pub cluster_manager: Arc<ClusterManager>,
+}
+
+impl synctv_core::service::MemberEventBroadcaster for ClusterMemberEventBroadcaster {
+    fn broadcast_kick_from_room(
+        &self,
+        room_id: &synctv_core::models::RoomId,
+        user_id: &synctv_core::models::UserId,
+        reason: &str,
+    ) {
+        let _ = self
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
+                event_id: nanoid::nanoid!(16),
+                room_id: room_id.clone(),
+                user_id: user_id.clone(),
+                reason: reason.to_string(),
+                timestamp: chrono::Utc::now(),
+            });
+    }
+
+    fn broadcast_kick_user(
+        &self,
+        user_id: &synctv_core::models::UserId,
+        reason: &str,
+    ) {
+        let _ = self
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::KickUser {
+                event_id: nanoid::nanoid!(16),
+                user_id: user_id.clone(),
+                reason: reason.to_string(),
+                timestamp: chrono::Utc::now(),
+            });
     }
 }
 

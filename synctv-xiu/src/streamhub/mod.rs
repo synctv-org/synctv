@@ -327,6 +327,9 @@ impl StreamDataTransceiver {
                 // events, causing permanently inflated counts when subscribers disconnect
                 // without sending UnSubscribe.
                 let mut stats = statistics_data.lock().await;
+                for id in &closed_ids {
+                    stats.subscribers.remove(id);
+                }
                 stats.subscriber_count = stats.subscriber_count.saturating_sub(closed_count);
             }
         }
@@ -429,6 +432,9 @@ impl StreamDataTransceiver {
 
                 // Decrement subscriber_count for subscribers removed by fan-out.
                 let mut stats = statistics_data.lock().await;
+                for id in &closed_ids {
+                    stats.subscribers.remove(id);
+                }
                 stats.subscriber_count = stats.subscriber_count.saturating_sub(closed_count);
             }
         }
@@ -1432,5 +1438,69 @@ mod tests {
         .expect_err("closed channel should surface send error");
 
         assert!(matches!(err.value, StreamHubErrorValue::SendError));
+    }
+
+    #[tokio::test]
+    async fn test_receive_frame_data_removes_closed_subscriber_statistics() {
+        let subscriber = test_subscriber();
+        let subscriber_id = subscriber.id;
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+
+        let frame_senders = Arc::new(Mutex::new(HashMap::from([(
+            subscriber_id,
+            SubscriberDropCounter {
+                sender,
+                drop_count: Arc::new(AtomicU64::new(0)),
+            },
+        )])));
+        let generation = Arc::new(AtomicU64::new(1));
+        let mut cached_snapshot = Vec::new();
+        let mut cached_gen = 0;
+        let statistics_data = Arc::new(Mutex::new(StatisticsStream::new(test_identifier())));
+        {
+            let mut stats = statistics_data.lock().await;
+            stats.subscriber_count = 1;
+            stats.subscribers.insert(
+                subscriber_id,
+                statistics::StatisticSubscriber {
+                    id: subscriber_id,
+                    start_time: chrono::Local::now(),
+                    remote_address: subscriber.notify_info.remote_addr.clone(),
+                    sub_type: subscriber.sub_type.clone(),
+                    send_bytes: 0,
+                    send_bitrate: 0,
+                    total_send_bytes: 0,
+                },
+            );
+        }
+
+        StreamDataTransceiver::receive_frame_data(
+            Some(FrameData::Video {
+                timestamp: 0,
+                data: bytes::Bytes::from_static(b"frame"),
+            }),
+            &frame_senders,
+            &generation,
+            &mut cached_snapshot,
+            &mut cached_gen,
+            &statistics_data,
+        )
+        .await;
+
+        assert!(
+            frame_senders.lock().await.is_empty(),
+            "closed subscriber sender should be removed from fan-out map"
+        );
+
+        let stats = statistics_data.lock().await;
+        assert_eq!(
+            stats.subscriber_count, 0,
+            "closed subscriber should no longer count toward subscriber_count"
+        );
+        assert!(
+            !stats.subscribers.contains_key(&subscriber_id),
+            "closed subscriber statistics entry must be removed to avoid zombie stats"
+        );
     }
 }

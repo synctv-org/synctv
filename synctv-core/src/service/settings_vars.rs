@@ -95,6 +95,13 @@ pub struct SettingsStorage {
 }
 
 impl SettingsStorage {
+    fn requires_transactional_cross_validation(key: &str) -> bool {
+        matches!(
+            key,
+            "room.room_must_need_pwd" | "room.room_must_no_need_pwd"
+        )
+    }
+
     #[must_use]
     pub fn new(settings_service: Arc<SettingsService>) -> Self {
         let setting_providers: Arc<RwLock<HashMap<String, Arc<dyn SettingProvider>>>> =
@@ -145,6 +152,19 @@ impl SettingsStorage {
         Ok(())
     }
 
+    async fn reload_all_from_service(&self) -> Result<()> {
+        let all_values = self
+            .settings_service
+            .get_all_values()
+            .await
+            .map_err(|e| crate::Error::Internal(format!("Failed to reload settings: {e}")))?;
+
+        let mut storage = self.inner.write();
+        *storage = all_values.into_iter().collect();
+
+        Ok(())
+    }
+
     /// Start a background task that listens for reload events from `SettingsService`
     /// and updates the inner `HashMap` accordingly.
     ///
@@ -155,7 +175,7 @@ impl SettingsStorage {
     /// graceful shutdown. When the token is cancelled the listener exits its
     /// loop cleanly without leaking the background task.
     pub fn start_reload_listener(&self, cancel: tokio_util::sync::CancellationToken) {
-        let inner = self.inner.clone();
+        let storage = self.clone();
         let mut receiver = self.settings_service.subscribe_reloads();
 
         crate::spawn::spawn_monitored("settings_reload_listener", async move {
@@ -170,18 +190,24 @@ impl SettingsStorage {
 
                 match recv_result {
                     Ok((key, Some(value))) => {
-                        inner.write().insert(key.clone(), value);
+                        storage.inner.write().insert(key.clone(), value);
                         debug!("SettingsStorage refreshed key '{}' from remote reload", key);
                     }
                     Ok((key, None)) => {
-                        inner.write().remove(&key);
+                        storage.inner.write().remove(&key);
                         debug!("SettingsStorage removed key '{}' from remote reload", key);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!(
-                            "SettingsStorage reload listener lagged by {} messages, some settings may be stale until next access",
+                            "SettingsStorage reload listener lagged by {} messages, forcing full snapshot refresh",
                             n
                         );
+                        if let Err(error) = storage.reload_all_from_service().await {
+                            warn!(
+                                error = %error,
+                                "Failed to refresh SettingsStorage after lagged notifications"
+                            );
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         debug!("SettingsStorage reload channel closed, stopping listener");
@@ -200,13 +226,24 @@ impl SettingsStorage {
 
     /// Set raw string value for a key, persisting to database before updating cache.
     pub async fn set_raw(&self, key: &str, value: String) -> Result<()> {
-        // Persist to database first — fail fast if the write fails
-        self.settings_service
-            .update(key, value.clone())
-            .await
-            .map_err(|e| {
-                crate::Error::Internal(format!("Failed to persist setting '{key}': {e}"))
-            })?;
+        // Persist to database first — fail fast if the write fails.
+        // Some settings participate in cross-key invariants and must route
+        // through the transactional batch API even for single-key writes.
+        if Self::requires_transactional_cross_validation(key) {
+            self.settings_service
+                .update_batch(vec![(key.to_string(), value.clone())])
+                .await
+                .map_err(|e| {
+                    crate::Error::Internal(format!("Failed to persist setting '{key}': {e}"))
+                })?;
+        } else {
+            self.settings_service
+                .update(key, value.clone())
+                .await
+                .map_err(|e| {
+                    crate::Error::Internal(format!("Failed to persist setting '{key}': {e}"))
+                })?;
+        }
 
         // Only update in-memory cache after successful DB write
         self.inner.write().insert(key.to_string(), value);
@@ -632,5 +669,83 @@ mod tests {
                 .is_err(),
             "Service should reject unparseable value"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_reload_all_from_service_replaces_stale_snapshot() {
+        let (_pg, pool) = synctv_core_testing::create_test_pool().await;
+        let repo = crate::repository::SettingsRepository::new(pool.clone());
+        let service = Arc::new(SettingsService::new(repo, pool.clone()));
+        let storage = Arc::new(SettingsStorage::new(service.clone()));
+
+        sqlx::query(
+            "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
+             ON CONFLICT (key) DO NOTHING",
+        )
+        .bind("room.room_must_need_pwd")
+        .bind("room")
+        .bind("true")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        service.initialize().await.unwrap();
+        storage.init().await.unwrap();
+        storage
+            .inner
+            .write()
+            .insert("room.room_must_need_pwd".to_string(), "false".to_string());
+
+        storage.reload_all_from_service().await.unwrap();
+
+        assert_eq!(
+            storage.get_raw("room.room_must_need_pwd").as_deref(),
+            Some("true"),
+            "full snapshot reload must overwrite stale in-memory values"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_setting_set_rejects_contradictory_room_password_policies() {
+        let (_pg, pool) = synctv_core_testing::create_test_pool().await;
+        let repo = crate::repository::SettingsRepository::new(pool.clone());
+        let service = Arc::new(SettingsService::new(repo, pool.clone()));
+        let storage = Arc::new(SettingsStorage::new(service));
+
+        for (key, group, value) in [
+            ("room.room_must_need_pwd", "room", "false"),
+            ("room.room_must_no_need_pwd", "room", "false"),
+        ] {
+            sqlx::query(
+                "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
+                 ON CONFLICT (key) DO NOTHING",
+            )
+            .bind(key)
+            .bind(group)
+            .bind(value)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        storage.init().await.unwrap();
+        let must_need = Setting::<bool>::new("room.room_must_need_pwd", storage.clone(), false);
+        let must_no_need =
+            Setting::<bool>::new("room.room_must_no_need_pwd", storage.clone(), false);
+
+        must_need.set(true).await.unwrap();
+        let err = must_no_need
+            .set(true)
+            .await
+            .expect_err("public Setting::set() must preserve the mutual exclusion invariant");
+
+        assert!(
+            matches!(err, crate::Error::Internal(ref msg) if msg.contains("cannot both be true")),
+            "expected invariant violation, got: {err:?}"
+        );
+        assert!(must_need.get().unwrap());
+        assert!(!must_no_need.get().unwrap());
     }
 }

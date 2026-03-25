@@ -599,7 +599,11 @@ impl OAuth2Service {
 
     /// Validate redirect URL to prevent open redirect vulnerabilities (CWE-601)
     ///
-    /// Only relative paths and URLs matching the configured allowed domains are accepted.
+    /// Accepted forms:
+    /// - Relative paths (`/dashboard`)
+    /// - Native-app custom schemes (`mysynctv://oauth2/callback`)
+    /// - Loopback HTTP URLs for native clients (`http://127.0.0.1:34567/callback`)
+    /// - Absolute HTTP/HTTPS URLs matching the configured allowlist
     fn validate_redirect_url_with_allowlist(url: &str, allowed_domains: &[String]) -> Result<()> {
         // Empty or whitespace-only URLs are rejected
         if url.trim().is_empty() {
@@ -623,13 +627,7 @@ impl OAuth2Service {
         // For absolute URLs, parse and validate
         match url::Url::parse(url) {
             Ok(parsed_url) => {
-                // Only allow http and https schemes
                 let scheme = parsed_url.scheme();
-                if scheme != "http" && scheme != "https" {
-                    return Err(Error::InvalidInput(format!(
-                        "Invalid URL scheme: {scheme}. Only http and https are allowed"
-                    )));
-                }
 
                 // Reject URLs with authentication credentials (user:pass@host)
                 if parsed_url.username() != "" || parsed_url.password().is_some() {
@@ -638,8 +636,21 @@ impl OAuth2Service {
                     ));
                 }
 
+                if scheme != "http" && scheme != "https" {
+                    if Self::is_native_custom_scheme_redirect(&parsed_url) {
+                        return Ok(());
+                    }
+
+                    return Err(Error::InvalidInput(format!(
+                        "Invalid URL scheme: {scheme}. Only http, https, or native-app custom schemes are allowed"
+                    )));
+                }
+
                 // Check against allowed domains allowlist
                 let host = parsed_url.host_str().unwrap_or("");
+                if Self::is_loopback_host(host) {
+                    return Ok(());
+                }
                 if allowed_domains.is_empty() {
                     return Err(Error::InvalidInput(
                         "Absolute redirect URLs are not allowed. Use a relative path instead."
@@ -677,6 +688,35 @@ impl OAuth2Service {
                 "Invalid redirect URL format: {url}"
             ))),
         }
+    }
+
+    fn is_native_custom_scheme_redirect(parsed_url: &url::Url) -> bool {
+        let scheme = parsed_url.scheme();
+        if matches!(scheme, "http" | "https" | "javascript" | "data" | "file" | "ftp") {
+            return false;
+        }
+
+        if scheme.len() < 2
+            || !scheme
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            return false;
+        }
+
+        if !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '+' || c == '.')
+        {
+            return false;
+        }
+
+        !parsed_url.path().is_empty() || parsed_url.host_str().is_some()
+    }
+
+    fn is_loopback_host(host: &str) -> bool {
+        matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
     }
 
     /// Verify `OAuth2` state during callback
@@ -1307,6 +1347,41 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_redirect_native_custom_scheme_allowed() {
+        let result = OAuth2Service::validate_redirect_url_with_allowlist(
+            "mysynctv://oauth2/callback",
+            &[],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_redirect_dangerous_non_http_schemes_rejected() {
+        for url in [
+            "javascript:alert(1)",
+            "data:text/html,hello",
+            "file:///tmp/callback",
+            "ftp://example.com/callback",
+        ] {
+            let result = OAuth2Service::validate_redirect_url_with_allowlist(url, &[]);
+            assert!(result.is_err(), "{url} must be rejected");
+        }
+    }
+
+    #[test]
+    fn test_redirect_loopback_url_allowed_without_domain_allowlist() {
+        let localhost = OAuth2Service::validate_redirect_url_with_allowlist(
+            "http://127.0.0.1:34567/oauth/callback",
+            &[],
+        );
+        assert!(localhost.is_ok());
+
+        let hostname =
+            OAuth2Service::validate_redirect_url_with_allowlist("http://localhost:8080/cb", &[]);
+        assert!(hostname.is_ok());
+    }
+
     // ========================================================================
     // Tests: State Management (in-memory, no Redis required)
     // ========================================================================
@@ -1626,6 +1701,41 @@ mod tests {
             .get_authorization_url("github", Some("https://evil.com/steal".to_string()))
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_authorization_url_accepts_native_client_redirects() {
+        let service = create_test_service();
+        service
+            .register_provider(
+                "github".to_string(),
+                OAuth2Provider::GitHub,
+                Box::new(MockOAuth2Provider::new()),
+            )
+            .await;
+
+        let (_, native_state_token) = service
+            .get_authorization_url("github", Some("mysynctv://oauth2/callback".to_string()))
+            .await
+            .expect("native custom schemes should not be rejected after HTTP validation");
+        let native_state = service.verify_state(&native_state_token).await.unwrap();
+        assert_eq!(
+            native_state.redirect_url.as_deref(),
+            Some("mysynctv://oauth2/callback")
+        );
+
+        let (_, loopback_state_token) = service
+            .get_authorization_url(
+                "github",
+                Some("http://127.0.0.1:34567/oauth/callback".to_string()),
+            )
+            .await
+            .expect("native loopback redirects should not require domain allowlist");
+        let loopback_state = service.verify_state(&loopback_state_token).await.unwrap();
+        assert_eq!(
+            loopback_state.redirect_url.as_deref(),
+            Some("http://127.0.0.1:34567/oauth/callback")
+        );
     }
 
     // ========================================================================

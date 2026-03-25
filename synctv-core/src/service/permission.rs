@@ -64,7 +64,7 @@ pub struct PermissionService {
     cache_degraded: Arc<AtomicBool>,
     /// Tracks last `invalidate_all()` time to rate-limit flushes
     last_flush_time: Arc<parking_lot::Mutex<Instant>>,
-    /// Tracks when cache degradation started for automatic recovery
+    /// Tracks when cache degradation started for diagnostics and tests
     degradation_started: Arc<parking_lot::Mutex<Option<Instant>>>,
     /// Shared lifecycle state for invalidation listener tasks.
     invalidation_runtime: Arc<PermissionInvalidationRuntime>,
@@ -84,9 +84,8 @@ impl PermissionService {
 
     /// Minimum interval between `invalidate_all()` calls (seconds)
     const FLUSH_RATE_LIMIT_SECS: u64 = 10;
-    /// Maximum duration to remain in degraded mode before automatic recovery (seconds)
-    /// After this time, the cache is re-enabled assuming Pub/Sub lag has resolved.
-    /// Reduced from 60s to 10s to minimize time spent in degraded mode.
+    /// Maximum duration to remain in degraded mode before forcing a full cache refresh.
+    /// After this timeout, both caches are flushed and the primary cache is re-enabled.
     const MAX_DEGRADATION_DURATION_SECS: u64 = 10;
     /// TTL for the degraded cache (seconds)
     /// Short enough to not serve stale data for too long, but long enough
@@ -347,6 +346,8 @@ impl PermissionService {
                 }
             });
 
+        let cache_for_recovery = self.cache.clone();
+        let degraded_cache_for_recovery = self.degraded_cache.clone();
         let cache_degraded_for_recovery = self.cache_degraded.clone();
         let degradation_started_for_recovery = self.degradation_started.clone();
         let recovery_cancel = self.invalidation_runtime.cancel.child_token();
@@ -360,27 +361,33 @@ impl PermissionService {
                             break;
                         }
                         _ = ticker.tick() => {
-                            if cache_degraded_for_recovery.load(Ordering::Acquire) {
-                                let should_recover = {
-                                    let started = degradation_started_for_recovery.lock();
-                                    started.is_some_and(|start_time| {
-                                        start_time.elapsed()
-                                            >= Duration::from_secs(Self::MAX_DEGRADATION_DURATION_SECS)
-                                    })
-                                };
-
-                                if should_recover {
-                                    tracing::warn!(
-                                        "Permission cache degraded for {} seconds, forcing recovery",
-                                        Self::MAX_DEGRADATION_DURATION_SECS
-                                    );
-                                    cache_degraded_for_recovery.store(false, Ordering::Release);
-                                    *degradation_started_for_recovery.lock() = None;
-                                    tracing::info!(
-                                        "Permission cache auto-recovered after max degradation duration"
-                                    );
-                                }
+                            if !cache_degraded_for_recovery.load(Ordering::Acquire) {
+                                continue;
                             }
+
+                            let should_recover = {
+                                let started = degradation_started_for_recovery.lock();
+                                started.is_some_and(|start_time| {
+                                    start_time.elapsed()
+                                        >= Duration::from_secs(Self::MAX_DEGRADATION_DURATION_SECS)
+                                })
+                            };
+
+                            if !should_recover {
+                                continue;
+                            }
+
+                            tracing::warn!(
+                                "Permission cache degraded for {} seconds, forcing cache refresh before recovery",
+                                Self::MAX_DEGRADATION_DURATION_SECS
+                            );
+                            cache_for_recovery.invalidate_all();
+                            degraded_cache_for_recovery.invalidate_all();
+                            cache_degraded_for_recovery.store(false, Ordering::Release);
+                            *degradation_started_for_recovery.lock() = None;
+                            tracing::info!(
+                                "Permission cache auto-recovered after full cache refresh"
+                            );
                         }
                     }
                 }
@@ -404,7 +411,6 @@ impl PermissionService {
         if let Some(handle) = recovery_handle {
             let _ = handle.await;
         }
-
         self.invalidation_runtime
             .started
             .store(false, Ordering::Release);
@@ -1683,6 +1689,80 @@ mod tests {
             !service.invalidation_tasks_started(),
             "shutdown() must reset invalidation runtime state"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_degraded_mode_auto_recovers_after_timeout_and_flushes_caches() {
+        let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
+        let room_id = RoomId("room1".to_string());
+        let user_id = UserId("user1".to_string());
+        let cache_key = PermissionService::cache_key(&room_id, &user_id);
+
+        service
+            .cache
+            .insert(cache_key.clone(), PermissionBits(PermissionBits::ALL))
+            .await;
+        service
+            .degraded_cache
+            .insert(cache_key.clone(), PermissionBits(PermissionBits::ALL))
+            .await;
+
+        service.cache_degraded.store(true, Ordering::Release);
+        *service.degradation_started.lock() = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(11))
+                .expect("backdating degradation start should succeed"),
+        );
+
+        service.start().await.expect("start should succeed");
+
+        tokio::task::yield_now().await;
+
+        assert!(
+            !service.cache_degraded.load(Ordering::Acquire),
+            "permission cache should leave degraded mode after the bounded recovery timeout"
+        );
+        assert!(
+            service.cache.get(&cache_key).await.is_none(),
+            "auto-recovery must clear the primary cache before re-enabling it"
+        );
+        assert!(
+            service.degraded_cache.get(&cache_key).await.is_none(),
+            "auto-recovery must clear degraded cache entries once recovery completes"
+        );
+        assert!(
+            service.degradation_started.lock().is_none(),
+            "auto-recovery must clear degradation start time"
+        );
+
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_degraded_mode_recovers_on_invalidation_message() {
+        let (service, invalidation_service) = make_service_with_invalidation_no_rt();
+
+        service.cache_degraded.store(true, Ordering::Release);
+        *service.degradation_started.lock() = Some(Instant::now());
+
+        service.start().await.expect("start should succeed");
+
+        invalidation_service
+            .broadcast_all(InvalidationMessage::All)
+            .await
+            .expect("local invalidation broadcast should succeed");
+        tokio::task::yield_now().await;
+
+        assert!(
+            !service.cache_degraded.load(Ordering::Acquire),
+            "permission cache must leave degraded mode after a real invalidation message arrives"
+        );
+        assert!(
+            service.degradation_started.lock().is_none(),
+            "recovery on a real invalidation message must clear degradation start time"
+        );
+
+        service.shutdown().await;
     }
 
     #[test]

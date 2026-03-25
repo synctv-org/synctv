@@ -225,6 +225,101 @@ async fn test_kick_member_creator_can_kick_admin() {
     assert!(!member_repo.is_member(&room.id, &admin.id).await.unwrap());
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_member_role_rejects_promoting_another_member_to_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("role_unique_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("role_unique_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Unique Creator Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    let result = room_service
+        .member_service()
+        .set_member_role(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            RoomRole::Creator,
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "set_member_role must not create a second Creator distinct from rooms.created_by"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_member_role_rejects_demoting_the_room_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("role_demote_creator"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Demote Creator Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let result = room_service
+        .member_service()
+        .set_member_role(
+            room.id.clone(),
+            creator.id.clone(),
+            creator.id.clone(),
+            RoomRole::Admin,
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "room creator must not be able to demote the membership row that represents ownership"
+    );
+
+    let creator_member = member_repo.get(&room.id, &creator.id).await.unwrap().unwrap();
+    assert_eq!(
+        creator_member.role,
+        RoomRole::Creator,
+        "creator membership must remain Creator to stay consistent with rooms.created_by"
+    );
+}
+
 // ========== Ban / Unban Tests ==========
 
 #[tokio::test]
@@ -343,6 +438,66 @@ async fn test_unban_clears_status() {
     assert!(
         member.banned_at.is_none(),
         "banned_at should be cleared after unban"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_member_status_banned_preserves_ban_semantics() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("status_ban_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("status_ban_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Status Ban Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    let member_service = room_service.member_service();
+    member_service
+        .set_member_status(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            MemberStatus::Banned,
+        )
+        .await
+        .unwrap();
+
+    let member = member_repo
+        .get_any(&room.id, &target.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(member.status, MemberStatus::Banned);
+    assert!(
+        member.left_at.is_some(),
+        "setting status to Banned must also evict the member from the active set"
+    );
+    assert!(
+        member.banned_at.is_some(),
+        "setting status to Banned must record ban metadata"
     );
 }
 
@@ -717,7 +872,7 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
     let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
     let perm_service = room_service.permission_service().clone();
 
-    let mut member_service =
+    let member_service =
         synctv_core::service::MemberService::new(member_repo, room_repo, perm_service);
     member_service.set_event_broadcaster(broadcaster);
 
@@ -747,6 +902,64 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "Ban operation should not take excessively long, took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_member_status_banned_broadcasts_disconnect_event() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("status_bc_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("status_bc_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Status Broadcast Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
+    let perm_service = room_service.permission_service().clone();
+    let member_service =
+        synctv_core::service::MemberService::new(member_repo, room_repo, perm_service);
+
+    let broadcaster = Arc::new(MockKickBroadcaster::new());
+    member_service.set_event_broadcaster(broadcaster.clone());
+
+    member_service
+        .set_member_status(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            MemberStatus::Banned,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        broadcaster.kick_from_room_count(),
+        1,
+        "banning via set_member_status must also disconnect active sessions across replicas"
     );
 }
 

@@ -676,6 +676,8 @@ const fn requires_state_resync(message: &ServerMessage) -> bool {
                 | Message::UserLeft(_)
                 | Message::MediaAdded(_)
                 | Message::MediaRemoved(_)
+                | Message::MediaUpdated(_)
+                | Message::PlaylistReordered(_)
                 | Message::PlaylistCreated(_)
                 | Message::PlaylistUpdated(_)
                 | Message::PlaylistDeleted(_)
@@ -697,7 +699,9 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
         Some(Message::Error(_)) => "Error",
         Some(Message::MediaAdded(_)) => "MediaAdded",
         Some(Message::MediaRemoved(_)) => "MediaRemoved",
+        Some(Message::MediaUpdated(_)) => "MediaUpdated",
         Some(Message::PermissionChanged(_)) => "PermissionChanged",
+        Some(Message::PlaylistReordered(_)) => "PlaylistReordered",
         Some(Message::PlaylistCreated(_)) => "PlaylistCreated",
         Some(Message::PlaylistUpdated(_)) => "PlaylistUpdated",
         Some(Message::PlaylistDeleted(_)) => "PlaylistDeleted",

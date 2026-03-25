@@ -29,11 +29,12 @@ use crate::bootstrap::cluster::init_cluster_discovery;
 use crate::bootstrap::livestream::init_livestream;
 use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
-use crate::cluster_bridge::ClusterPlaybackBroadcaster;
+use crate::cluster_bridge::{ClusterMemberEventBroadcaster, ClusterPlaybackBroadcaster};
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
-    AuditFlushHook, CacheInvalidationStopHook, HealthMonitorShutdownHook, ProviderInvalidationHook,
-    PermissionServiceShutdownHook, SettingsListenHook, ShutdownCoordinator,
+    AuditFlushHook, CacheInvalidationStopHook, ClusterManagerShutdownHook,
+    HealthMonitorShutdownHook, ProviderInvalidationHook, PermissionServiceShutdownHook,
+    SettingsListenHook, ShutdownCoordinator,
 };
 
 /// Infrastructure: Redis (optional), Database, `NodeID`.
@@ -62,6 +63,16 @@ struct ClusterState {
     redis_publish_tx: Option<tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
     node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
+    cluster_activation: Option<ClusterActivation>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ClusterActivation {
+    pub(crate) config: Config,
+    pub(crate) cluster_manager: Arc<ClusterManager>,
+    pub(crate) connection_manager: ConnectionManager,
+    pub(crate) node_registry: Arc<synctv_cluster::discovery::NodeRegistry>,
+    pub(crate) health_monitor: Arc<synctv_cluster::discovery::HealthMonitor>,
 }
 
 /// Server components (livestream, WebRTC, providers).
@@ -248,6 +259,18 @@ fn build_connection_manager(
         manager
     };
     Ok(manager)
+}
+
+fn wire_room_service_cluster_broadcasters(
+    room_service: &Arc<synctv_core::service::RoomService>,
+    cluster_manager: Arc<ClusterManager>,
+) {
+    room_service.set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
+        cluster_manager: cluster_manager.clone(),
+    }));
+    room_service.set_member_event_broadcaster(Arc::new(ClusterMemberEventBroadcaster {
+        cluster_manager,
+    }));
 }
 
 async fn build_local_cluster_manager(
@@ -456,19 +479,32 @@ impl Application {
 
     async fn init_schema(infra: &Infrastructure) -> Result<()> {
         // Run migrations with appropriate lock strategy:
-        // - Redis available: distributed lock (safe for multi-replica)
-        // - No Redis: PostgreSQL advisory lock (safe for single-node)
+        // - Standalone Redis: Redis distributed lock
+        // - Sentinel / no Redis: PostgreSQL advisory lock
+        //
+        // Sentinel failover can drop single-instance Redis locks, so correctness-
+        // critical startup migrations must not rely on that path.
         let migration_lock: Arc<dyn synctv_core::service::MigrationLock> =
             if let Some(ref rh) = infra.redis_handles {
-                info!("Using Redis distributed lock for migrations");
                 let is_sentinel = matches!(
                     infra.config.redis.deployment_mode,
                     synctv_core::config::RedisDeploymentMode::Sentinel
                 );
-                Arc::new(synctv_core::service::DistributedLock::new_shared_with_mode(
-                    rh.conn.clone(),
-                    is_sentinel,
-                ))
+                if is_sentinel {
+                    warn!(
+                        "Redis Sentinel deployment detected; using PostgreSQL advisory lock for \
+                         migrations because single-instance Redis locks are unsafe during failover"
+                    );
+                    Arc::new(synctv_core::service::PgAdvisoryMigrationLock::new(
+                        infra.pool.clone(),
+                    ))
+                } else {
+                    info!("Using Redis distributed lock for migrations");
+                    Arc::new(synctv_core::service::DistributedLock::new_shared_with_mode(
+                        rh.conn.clone(),
+                        false,
+                    ))
+                }
             } else {
                 info!("Using PostgreSQL advisory lock for migrations");
                 Arc::new(synctv_core::service::PgAdvisoryMigrationLock::new(
@@ -868,11 +904,10 @@ impl Application {
                 Some(core.services.room_service.permission_service().clone()),
             )
             .await?;
-            core.services
-                .room_service
-                .set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
-                    cluster_manager: cluster_manager.clone(),
-                }));
+            wire_room_service_cluster_broadcasters(
+                &core.services.room_service,
+                cluster_manager.clone(),
+            );
             info!("Cluster mode disabled — initialized local-only ClusterManager");
             return Ok(ClusterState {
                 cluster_manager: Some(cluster_manager),
@@ -880,6 +915,7 @@ impl Application {
                 redis_publish_tx: None,
                 node_registry: None,
                 health_monitor: None,
+                cluster_activation: None,
             });
         }
 
@@ -935,13 +971,12 @@ impl Application {
         cluster_manager.set_connection_manager(connection_manager.clone());
         cluster_manager.set_leader_elector(leader.leader_runtime.clone());
         let cluster_manager = Arc::new(cluster_manager);
+        shutdown.register_hook(ClusterManagerShutdownHook {
+            manager: cluster_manager.clone(),
+        });
 
         // Wire cluster broadcaster into PlaybackService
-        core.services
-            .room_service
-            .set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
-                cluster_manager: cluster_manager.clone(),
-            }));
+        wire_room_service_cluster_broadcasters(&core.services.room_service, cluster_manager.clone());
         info!("PlaybackService wired with cluster broadcaster");
 
         // Cluster discovery (NodeRegistry, HealthMonitor) — requires Redis
@@ -972,11 +1007,24 @@ impl Application {
         let redis_publish_tx = cluster_manager.redis_publish_tx().cloned();
 
         Ok(ClusterState {
-            cluster_manager: Some(cluster_manager),
-            connection_manager,
+            cluster_manager: Some(cluster_manager.clone()),
+            connection_manager: connection_manager.clone(),
             redis_publish_tx,
-            node_registry,
-            health_monitor,
+            node_registry: node_registry.clone(),
+            health_monitor: health_monitor.clone(),
+            cluster_activation: node_registry
+                .clone()
+                .zip(health_monitor.clone())
+                .map(|(node_registry, health_monitor)| {
+                    Some(ClusterActivation {
+                        config: infra.config.clone(),
+                        cluster_manager: cluster_manager.clone(),
+                        connection_manager: connection_manager.clone(),
+                        node_registry,
+                        health_monitor,
+                    })
+                })
+                .flatten(),
         })
     }
 
@@ -1074,6 +1122,7 @@ impl Application {
             turn_health_checker: servers.turn_health_checker,
             node_registry: cluster.node_registry,
             health_monitor: cluster.health_monitor,
+            cluster_activation: cluster.cluster_activation,
             redis_client: infra.redis_handles.as_ref().map(|h| h.client.clone()),
             redis_conn: core.services.redis_conn.clone(), // already Option
             credential_encryption: core.services.credential_encryption,
@@ -1092,6 +1141,7 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bootstrap::cluster::activate_cluster_node;
     use synctv_core::config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
         ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
@@ -1099,11 +1149,83 @@ mod tests {
         OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig, WebRTCConfig,
     };
     use synctv_core::{
+        cache::{KeyBuilder, NoopCacheL2, UsernameCache},
         models::{SignupMethod, User, UserRole, UserStatus},
         repository::UserRepository,
-        service::auth::hash_password,
+        service::{auth::hash_password, BruteForceProtection, InMemoryTokenBlacklistStore, UserService},
     };
     use tokio::sync::broadcast;
+
+    #[tokio::test]
+    async fn test_activate_cluster_node_registers_only_when_called() {
+        let cluster_manager = Arc::new(
+            ClusterManager::new(
+                ClusterConfig {
+                    redis_client: None,
+                    redis_conn: None,
+                    shared_redis_conn: None,
+                    cluster_enabled: false,
+                    node_id: "activation-test-node".to_string(),
+                    dedup_window: Duration::from_secs(1),
+                    cleanup_interval: Duration::from_secs(1),
+                    critical_channel_capacity: 16,
+                    publish_channel_capacity: 16,
+                    key_prefix: "activation-test:".to_string(),
+                    catchup_window_secs: 60,
+                    stream_max_length: 100,
+                    parent_cancel_token: None,
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("cluster manager should initialize"),
+        );
+        let connection_manager = ConnectionManager::new(ConnectionLimits::default());
+        let registry = Arc::new(
+            synctv_cluster::discovery::NodeRegistry::new_local_only(
+                "activation-test-node".to_string(),
+                30,
+                "activation-test:",
+            )
+            .expect("local registry"),
+        );
+        let health_monitor = Arc::new(
+            synctv_cluster::discovery::HealthMonitor::with_cancellation_token_and_probe_config(
+                registry.clone(),
+                15,
+                &cluster_manager.cancel_token(),
+                synctv_cluster::discovery::health_monitor::HealthProbeConfig::default(),
+            ),
+        );
+        let mut config = minimal_valid_startup_config();
+        config.server.advertise_host = "127.0.0.1".to_string();
+
+        let before = registry
+            .get_all_nodes()
+            .await
+            .expect("registry query should succeed");
+        assert!(before.is_empty(), "registry should start empty");
+
+        activate_cluster_node(
+            &config,
+            &cluster_manager,
+            &connection_manager,
+            &registry,
+            &health_monitor,
+        )
+        .await
+        .expect("activation should succeed");
+
+        let after = registry
+            .get_all_nodes()
+            .await
+            .expect("registry query should succeed");
+        assert_eq!(after.len(), 1, "activation should register the local node");
+
+        health_monitor.shutdown().await;
+        cluster_manager.shutdown().await;
+    }
 
     fn minimal_valid_startup_config() -> Config {
         Config {
@@ -1187,6 +1309,25 @@ mod tests {
         fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
             self.tx.subscribe()
         }
+    }
+
+    fn make_test_user_service(pool: PgPool) -> UserService {
+        let jwt_service = synctv_core::service::JwtService::new(
+            "test-jwt-secret-key-for-testing-minimum-length",
+        )
+        .expect("jwt service");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 64, 60);
+
+        UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            PasswordComplexityConfig::default(),
+            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            KeyBuilder::new("test"),
+            BruteForceProtection::in_memory("test".to_string()),
+        )
     }
 
     impl synctv_core::service::LeaderCheck for TestLeaderRuntime {
@@ -1366,6 +1507,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_sentinel_mode_uses_pg_advisory_migration_lock_strategy() {
+        let mut config = minimal_valid_startup_config();
+        config.redis.deployment_mode = synctv_core::config::RedisDeploymentMode::Sentinel;
+
+        let uses_pg_advisory = matches!(
+            config.redis.deployment_mode,
+            synctv_core::config::RedisDeploymentMode::Sentinel
+        );
+
+        assert!(
+            uses_pg_advisory,
+            "Sentinel deployments must avoid single-instance Redis migration locks"
+        );
+    }
+
     #[tokio::test]
     async fn test_build_local_cluster_manager_supports_single_node_realtime_paths() {
         let config = minimal_valid_startup_config();
@@ -1396,6 +1553,45 @@ mod tests {
         assert!(
             !metrics.redis_enabled,
             "local-only cluster manager must not require Redis"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wire_room_service_cluster_broadcasters_sets_member_runtime_bridge() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let room_service = Arc::new(synctv_core::service::RoomService::new(
+            pool.clone(),
+            make_test_user_service(pool),
+        ));
+        let cluster_manager = Arc::new(
+            ClusterManager::new(
+                ClusterConfig {
+                    redis_client: None,
+                    redis_conn: None,
+                    shared_redis_conn: None,
+                    cluster_enabled: false,
+                    node_id: "test-node".to_string(),
+                    dedup_window: Duration::from_secs(30),
+                    cleanup_interval: Duration::from_secs(30),
+                    critical_channel_capacity: 16,
+                    publish_channel_capacity: 16,
+                    key_prefix: "test:".to_string(),
+                    catchup_window_secs: 30,
+                    stream_max_length: 128,
+                    parent_cancel_token: None,
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("local cluster manager should build"),
+        );
+
+        wire_room_service_cluster_broadcasters(&room_service, cluster_manager);
+
+        assert!(
+            room_service.has_member_event_broadcaster(),
+            "cluster broadcaster wiring must cover member kicks/bans in addition to playback"
         );
     }
 
@@ -1696,7 +1892,9 @@ mod tests {
         let leader_runtime = Arc::new(TestLeaderRuntime::new(false));
         let cancel = tokio_util::sync::CancellationToken::new();
         let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let completed = Arc::new(tokio::sync::Notify::new());
         let ran_clone = ran.clone();
+        let completed_clone = completed.clone();
 
         let handle = spawn_on_leadership_gain(
             "test_leadership_regained",
@@ -1704,17 +1902,23 @@ mod tests {
             cancel.clone(),
             Arc::new(move || {
                 let ran = ran_clone.clone();
+                let completed = completed_clone.clone();
                 Box::pin(async move {
                     ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    completed.notify_one();
                 })
             }),
         );
 
         leader_runtime.gain_leadership();
-        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_secs(1), completed.notified())
+            .await
+            .expect("first leadership gain should run deferred startup work");
         leader_runtime.resign().await;
         leader_runtime.gain_leadership();
-        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_secs(1), completed.notified())
+            .await
+            .expect("leadership regain should rerun deferred startup work");
 
         cancel.cancel();
         handle.await.expect("task should join");

@@ -92,6 +92,24 @@ async fn test_security_requirement_outdated_version_must_be_rejected() {
     );
 }
 
+#[tokio::test]
+async fn test_security_requirement_policy_change_revokes_default_guest_tokens() {
+    let validator = create_test_validator_with_blacklist();
+    let jwt = create_test_jwt_service();
+    let room_id = RoomId::new();
+
+    // Legacy/default issuance path signs guest tokens with gv = 0.
+    let token = jwt.sign_guest_token(&room_id).unwrap();
+
+    // Once room guest version is bumped after a policy change, the old token
+    // must be rejected by the same validation path the middleware uses.
+    let result = validator.validate_with_version_async(&token, 1).await;
+    assert!(
+        result.is_err(),
+        "SECURITY REQUIREMENT: default guest tokens must be rejected after room-wide guest version bump"
+    );
+}
+
 /// Document the security requirement: Both checks must be performed together.
 ///
 /// The HTTP middleware must perform BOTH checks in the correct order:

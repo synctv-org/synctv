@@ -233,6 +233,11 @@ pub struct NodeRegistry {
 }
 
 impl NodeRegistry {
+    async fn invalidate_node_view_cache(&self) {
+        self.nodes_cache.invalidate(&()).await;
+        self.last_refreshed.store(0, Ordering::Relaxed);
+    }
+
     fn filter_routable_nodes(&self, nodes: Vec<NodeInfo>) -> Vec<NodeInfo> {
         if self.local_only {
             return nodes;
@@ -667,6 +672,7 @@ impl NodeRegistry {
 
             let mut nodes = self.local_nodes.write().await;
             nodes.insert(self.node_id.clone(), node_info);
+            self.invalidate_node_view_cache().await;
 
             // Reset backoff on successful registration
             self.reset_reregister_backoff();
@@ -765,6 +771,7 @@ impl NodeRegistry {
         node_info.last_heartbeat = Utc::now();
         let mut nodes = self.local_nodes.write().await;
         nodes.insert(self.node_id.clone(), node_info);
+        self.invalidate_node_view_cache().await;
 
         // Reset backoff on successful registration
         self.reset_reregister_backoff();
@@ -1006,6 +1013,7 @@ impl NodeRegistry {
         if let Some(node) = nodes.get_mut(&self.node_id) {
             node.last_heartbeat = Utc::now();
         }
+        self.invalidate_node_view_cache().await;
 
         // Reset backoff on successful heartbeat
         self.reset_reregister_backoff();
@@ -1021,6 +1029,7 @@ impl NodeRegistry {
         if self.local_only {
             let mut nodes = self.local_nodes.write().await;
             nodes.remove(&self.node_id);
+            self.invalidate_node_view_cache().await;
             return Ok(());
         }
 
@@ -1079,6 +1088,7 @@ impl NodeRegistry {
         // Remove from local cache
         let mut nodes = self.local_nodes.write().await;
         nodes.remove(&self.node_id);
+        self.invalidate_node_view_cache().await;
 
         Ok(())
     }
@@ -1148,6 +1158,7 @@ impl NodeRegistry {
 
         let mut nodes = self.local_nodes.write().await;
         nodes.insert(node_info.node_id.clone(), node_info);
+        self.invalidate_node_view_cache().await;
 
         Ok(())
     }
@@ -1190,6 +1201,7 @@ impl NodeRegistry {
             if let Ok(node_info) = serde_json::from_str::<NodeInfo>(&updated_json) {
                 let mut nodes = self.local_nodes.write().await;
                 nodes.insert(node_id.to_string(), node_info);
+                self.invalidate_node_view_cache().await;
             }
         }
 
@@ -1267,6 +1279,7 @@ impl NodeRegistry {
 
         let mut nodes = self.local_nodes.write().await;
         nodes.remove(node_id);
+        self.invalidate_node_view_cache().await;
 
         Ok(())
     }

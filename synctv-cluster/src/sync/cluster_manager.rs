@@ -185,6 +185,9 @@ pub struct ClusterManager {
     is_quarantined: Arc<AtomicBool>,
     /// Ensures shutdown work only runs once even if called multiple times.
     shutdown_started: Arc<AtomicBool>,
+    /// Controls whether Redis fan-out is still accepting new work.
+    /// Shutdown flips this after in-flight critical event producers have drained.
+    redis_publish_accepting: Arc<AtomicBool>,
     /// Leader elector for resigning leadership on epoch mismatch
     leader_elector: Option<Arc<dyn crate::leader::LeaderRuntime>>,
 }
@@ -393,6 +396,7 @@ impl ClusterManager {
             epoch_mismatch_count: Arc::new(AtomicU64::new(0)),
             is_quarantined: Arc::new(AtomicBool::new(false)),
             shutdown_started: Arc::new(AtomicBool::new(false)),
+            redis_publish_accepting: Arc::new(AtomicBool::new(true)),
             leader_elector: None,
         })
     }
@@ -611,6 +615,13 @@ impl ClusterManager {
             debug!(
                 event_type = %event_type,
                 "Skipping Redis publish because ClusterManager shutdown is in progress"
+            );
+            return false;
+        }
+        if !self.redis_publish_accepting.load(Ordering::Acquire) {
+            debug!(
+                event_type = %event_type,
+                "Skipping Redis publish because ClusterManager is draining publisher shutdown"
             );
             return false;
         }
@@ -835,7 +846,6 @@ impl ClusterManager {
 
         // Cancel heartbeat loop
         self.cancel_token.cancel();
-        self.critical_retry_tasks.close();
 
         {
             let mut state = self.heartbeat_state.lock().await;
@@ -858,6 +868,9 @@ impl ClusterManager {
                 }
             }
         }
+
+        self.redis_publish_accepting.store(false, Ordering::Release);
+        self.critical_retry_tasks.close();
 
         match tokio::time::timeout(Duration::from_secs(5), self.critical_retry_tasks.wait()).await {
             Ok(()) => {
@@ -931,6 +944,16 @@ impl ClusterManager {
             debug!(
                 event_type = %event_type,
                 "Skipping event because ClusterManager shutdown is in progress"
+            );
+            return BroadcastResult {
+                local_sent: 0,
+                redis_sent: false,
+            };
+        }
+        if !self.redis_publish_accepting.load(Ordering::Acquire) {
+            debug!(
+                event_type = %event_type,
+                "Skipping Redis fan-out because ClusterManager is draining publisher shutdown"
             );
             return BroadcastResult {
                 local_sent: 0,
@@ -1094,6 +1117,7 @@ impl Drop for ClusterManager {
         // and will notify all tasks holding a clone of this token to stop.
         // For graceful shutdown with awaiting, use the async shutdown() method instead.
         self.cancel_token.cancel();
+        self.redis_publish_accepting.store(false, Ordering::Release);
         self.critical_retry_tasks.close();
 
         if let Some(handle) = self.publisher_task.get_mut().take() {
@@ -1607,6 +1631,75 @@ mod tests {
         assert!(
             finished.load(Ordering::SeqCst),
             "tracked critical retry task should finish before shutdown returns"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_for_retries() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false,
+            node_id: "shutdown-drain-critical-window".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1,
+            publish_channel_capacity: 1,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            shared_redis_conn: None,
+            parent_cancel_token: None,
+        };
+
+        let mut manager = ClusterManager::new(config, None, None).await.unwrap();
+        let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(1);
+        critical_tx
+            .try_send(PublishRequest {
+                event: ClusterEvent::KickUser {
+                    event_id: nanoid::nanoid!(16),
+                    user_id: UserId::from_string("pre-filled".to_string()),
+                    reason: "fill queue".to_string(),
+                    timestamp: Utc::now(),
+                },
+            })
+            .expect("pre-fill critical queue");
+        manager.redis_critical_tx = Some(critical_tx);
+
+        manager.shutdown_started.store(true, Ordering::Release);
+        manager
+            .redis_publish_accepting
+            .store(false, Ordering::Release);
+
+        let event = ClusterEvent::KickUser {
+            event_id: nanoid::nanoid!(16),
+            user_id: UserId::from_string("late-critical".to_string()),
+            reason: "must not start new retry after drain closes".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        let result = manager.broadcast(event);
+
+        assert!(
+            !result.redis_sent,
+            "shutdown drain must reject new critical Redis work once retry waiting begins"
+        );
+        assert_eq!(
+            manager.critical_retry_tasks.len(),
+            0,
+            "rejecting post-drain fan-out must avoid spawning new tracked retry tasks"
+        );
+
+        let queued = critical_rx
+            .recv()
+            .await
+            .expect("pre-filled request should still be present");
+        assert_eq!(queued.event.event_type(), "kick_user");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), critical_rx.recv())
+                .await
+                .is_err(),
+            "no new critical publish should be enqueued after drain closes"
         );
     }
 

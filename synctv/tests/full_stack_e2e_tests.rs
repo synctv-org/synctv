@@ -28,7 +28,13 @@ fn reserve_local_port() -> u16 {
         .port()
 }
 
-fn test_config(database_url: String, redis_url: String, http_port: u16, grpc_port: u16, rtmp_port: u16) -> Config {
+fn test_config(
+    database_url: String,
+    redis_url: String,
+    http_port: u16,
+    grpc_port: u16,
+    rtmp_port: u16,
+) -> Config {
     let mut config = Config::default();
     config.server.host = "127.0.0.1".to_string();
     config.server.http_port = http_port;
@@ -36,7 +42,7 @@ fn test_config(database_url: String, redis_url: String, http_port: u16, grpc_por
     config.server.enable_reflection = false;
     config.server.metrics_enabled = false;
     config.server.advertise_host = "127.0.0.1".to_string();
-    config.server.shutdown_drain_timeout_seconds = 10;
+    config.server.shutdown_drain_timeout_seconds = 3;
     config.database.url = database_url;
     config.redis.url = redis_url;
     config.jwt.secret = "test-jwt-secret-key-for-full-stack-e2e-123456".to_string();
@@ -45,6 +51,35 @@ fn test_config(database_url: String, redis_url: String, http_port: u16, grpc_por
     config.bootstrap.root_password = "StrongPwd12345!".to_string();
     config.livestream.rtmp_port = rtmp_port;
     config.webrtc.enable_builtin_stun = false;
+
+    // Raise rate limits well above defaults for avoid cross-test interference
+    // when 20 tests share the same Redis + server.
+    config.grpc_rate_limits.auth_max_requests = 10_000;
+    config.grpc_rate_limits.auth_window_seconds = 1;
+    config.grpc_rate_limits.email_max_requests = 5_000;
+    config.grpc_rate_limits.email_window_seconds = 1;
+    config.grpc_rate_limits.media_max_requests = 5_000;
+    config.grpc_rate_limits.media_window_seconds = 1;
+    config.grpc_rate_limits.write_max_requests = 5_000;
+    config.grpc_rate_limits.write_window_seconds = 1;
+    config.grpc_rate_limits.admin_max_requests = 5_000;
+    config.grpc_rate_limits.admin_window_seconds = 1;
+    config.grpc_rate_limits.read_max_requests = 5_000;
+    config.grpc_rate_limits.read_window_seconds = 1;
+    config.http_rate_limits.auth_max_requests = 5_000;
+    config.http_rate_limits.auth_window_seconds = 1;
+    config.http_rate_limits.write_max_requests = 5_000;
+    config.http_rate_limits.write_window_seconds = 1;
+    config.http_rate_limits.read_max_requests = 5_000;
+    config.http_rate_limits.read_window_seconds = 1;
+    config.http_rate_limits.media_max_requests = 5_000;
+    config.http_rate_limits.media_window_seconds = 1;
+    config.http_rate_limits.admin_max_requests = 5_000;
+    config.http_rate_limits.admin_window_seconds = 1;
+    config.http_rate_limits.streaming_max_requests = 5_000;
+    config.http_rate_limits.streaming_window_seconds = 1;
+    config.http_rate_limits.websocket_max_requests = 5_000;
+    config.http_rate_limits.websocket_window_seconds = 1;
     config
 }
 
@@ -96,17 +131,20 @@ impl FullStackHarness {
             .timeout(Duration::from_secs(2))
             .build()
             .expect("HTTP client");
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + Duration::from_secs(10);
         let url = format!("{}/health/live", self.http_base_url);
 
         loop {
             match client.get(&url).send().await {
                 Ok(response) if response.status() == StatusCode::OK => return,
                 Ok(_) | Err(_) if Instant::now() < deadline => {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 Ok(response) => {
-                    panic!("health endpoint never became live, last status: {}", response.status())
+                    panic!(
+                        "health endpoint never became live, last status: {}",
+                        response.status()
+                    )
                 }
                 Err(error) => panic!("health endpoint never became live: {error}"),
             }
@@ -114,7 +152,7 @@ impl FullStackHarness {
     }
 
     async fn wait_until_grpc_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + Duration::from_secs(10);
 
         loop {
             let status = match tonic::transport::Endpoint::from_shared(self.grpc_base_url.clone())
@@ -151,7 +189,7 @@ impl FullStackHarness {
         }
 
         if let Some(task) = self.server_task.take() {
-            match tokio::time::timeout(Duration::from_secs(30), task).await {
+            match tokio::time::timeout(Duration::from_secs(15), task).await {
                 Ok(joined) => match joined {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => panic!("server exited with error: {error}"),
@@ -245,7 +283,8 @@ async fn ws_connect_with_ticket(
     ),
     tokio_tungstenite::tungstenite::Error,
 > {
-    tokio_tungstenite::connect_async(format!("ws://{addr}/ws/rooms/{room_id}?ticket={ticket}")).await
+    tokio_tungstenite::connect_async(format!("ws://{addr}/ws/rooms/{room_id}?ticket={ticket}"))
+        .await
 }
 
 async fn recv_server_message(
@@ -479,12 +518,10 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
             .len()
             > 10
     );
-    assert!(
-        member_ticket_body["usage"]
-            .as_str()
-            .expect("usage string")
-            .contains(&format!("/ws/rooms/{room_id}?ticket="))
-    );
+    assert!(member_ticket_body["usage"]
+        .as_str()
+        .expect("usage string")
+        .contains(&format!("/ws/rooms/{room_id}?ticket=")));
 
     harness.shutdown().await;
 }
@@ -492,7 +529,8 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
-    let harness = FullStackHarness::start("synctv_e2e_http_ws_ticket", "full-stack-http-ws-ticket").await;
+    let harness =
+        FullStackHarness::start("synctv_e2e_http_ws_ticket", "full-stack-http-ws-ticket").await;
     let client = test_http_client();
 
     let register = post_json(
@@ -566,14 +604,20 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
     let (mut ws, response) = ws_connect_with_ticket(addr, &room_id, &ticket)
         .await
         .expect("websocket connect with fresh ticket should succeed");
-    assert_eq!(response.status(), tungstenite::http::StatusCode::SWITCHING_PROTOCOLS);
+    assert_eq!(
+        response.status(),
+        tungstenite::http::StatusCode::SWITCHING_PROTOCOLS
+    );
 
     let initial = tokio::time::timeout(Duration::from_secs(5), recv_server_message(&mut ws))
         .await
         .expect("timed out waiting for websocket welcome message")
         .expect("websocket closed before first message");
     assert!(
-        matches!(initial.message, Some(server_message::Message::UserJoined(_))),
+        matches!(
+            initial.message,
+            Some(server_message::Message::UserJoined(_))
+        ),
         "expected initial UserJoined after ticket-authenticated upgrade, got: {initial:?}"
     );
 
@@ -582,7 +626,10 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
     let reused = ws_connect_with_ticket(addr, &room_id, &ticket).await;
     match reused {
         Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
-            assert_eq!(response.status(), tungstenite::http::StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                response.status(),
+                tungstenite::http::StatusCode::UNAUTHORIZED
+            );
         }
         other => panic!("expected reused ticket to be rejected with HTTP 401, got: {other:?}"),
     }
@@ -625,10 +672,7 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
         .await
         .expect("grpc login should succeed")
         .into_inner();
-    assert_eq!(
-        login.user.expect("logged in user").username,
-        "grpc_user",
-    );
+    assert_eq!(login.user.expect("logged in user").username, "grpc_user",);
     assert!(!login.access_token.is_empty());
     assert!(!login.refresh_token.is_empty());
 
@@ -735,9 +779,11 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         RegisterRequest,
     };
 
-    let harness =
-        FullStackHarness::start("synctv_e2e_grpc_room_context", "full-stack-grpc-room-context")
-            .await;
+    let harness = FullStackHarness::start(
+        "synctv_e2e_grpc_room_context",
+        "full-stack-grpc-room-context",
+    )
+    .await;
 
     let mut auth_client = AuthServiceClient::connect(harness.grpc_base_url.clone())
         .await
@@ -875,16 +921,18 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::client_message;
     use synctv_proto::client::room_service_client::RoomServiceClient;
-    use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::server_message;
+    use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{
         ClientMessage, CreateRoomRequest, HeartbeatMessage, JoinRoomRequest, LoginRequest,
         RegisterRequest,
     };
 
-    let harness =
-        FullStackHarness::start("synctv_e2e_grpc_message_stream", "full-stack-grpc-message-stream")
-            .await;
+    let harness = FullStackHarness::start(
+        "synctv_e2e_grpc_message_stream",
+        "full-stack-grpc-message-stream",
+    )
+    .await;
 
     let mut auth_client = AuthServiceClient::connect(harness.grpc_base_url.clone())
         .await
@@ -981,12 +1029,18 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .expect("message_stream should establish")
         .into_inner();
 
-    let initial = tokio::time::timeout(Duration::from_secs(5), recv_grpc_server_message(&mut inbound))
-        .await
-        .expect("timed out waiting for initial grpc stream message")
-        .expect("grpc stream ended before initial message");
+    let initial = tokio::time::timeout(
+        Duration::from_secs(5),
+        recv_grpc_server_message(&mut inbound),
+    )
+    .await
+    .expect("timed out waiting for initial grpc stream message")
+    .expect("grpc stream ended before initial message");
     assert!(
-        matches!(initial.message, Some(server_message::Message::UserJoined(_))),
+        matches!(
+            initial.message,
+            Some(server_message::Message::UserJoined(_))
+        ),
         "expected initial UserJoined message, got: {initial:?}"
     );
 
@@ -1148,9 +1202,10 @@ async fn full_stack_grpc_message_stream_requires_membership() {
     // Try to establish message_stream with room metadata without being a member
     let outbound = stream::iter(vec![ClientMessage::default()]);
     let mut request = tonic::Request::new(outbound);
-    request
-        .metadata_mut()
-        .insert("authorization", bearer_metadata(&outsider_login.access_token));
+    request.metadata_mut().insert(
+        "authorization",
+        bearer_metadata(&outsider_login.access_token),
+    );
     request
         .metadata_mut()
         .insert("x-room-id", room_id_metadata(&room_id));

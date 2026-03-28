@@ -33,7 +33,7 @@ use crate::cluster_bridge::{ClusterMemberEventBroadcaster, ClusterPlaybackBroadc
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
     AuditFlushHook, CacheInvalidationStopHook, ClusterManagerShutdownHook,
-    HealthMonitorShutdownHook, ProviderInvalidationHook, PermissionServiceShutdownHook,
+    HealthMonitorShutdownHook, PermissionServiceShutdownHook, ProviderInvalidationHook,
     SettingsListenHook, ShutdownCoordinator,
 };
 
@@ -268,9 +268,8 @@ fn wire_room_service_cluster_broadcasters(
     room_service.set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
         cluster_manager: cluster_manager.clone(),
     }));
-    room_service.set_member_event_broadcaster(Arc::new(ClusterMemberEventBroadcaster {
-        cluster_manager,
-    }));
+    room_service
+        .set_member_event_broadcaster(Arc::new(ClusterMemberEventBroadcaster { cluster_manager }));
 }
 
 async fn build_local_cluster_manager(
@@ -614,7 +613,9 @@ impl Application {
                 .permission_service()
                 .start()
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to start PermissionService invalidation runtime: {e}"))?;
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to start PermissionService invalidation runtime: {e}")
+                })?;
             shutdown.register_hook(PermissionServiceShutdownHook {
                 service: synctv_services.room_service.permission_service().clone(),
             });
@@ -976,7 +977,10 @@ impl Application {
         });
 
         // Wire cluster broadcaster into PlaybackService
-        wire_room_service_cluster_broadcasters(&core.services.room_service, cluster_manager.clone());
+        wire_room_service_cluster_broadcasters(
+            &core.services.room_service,
+            cluster_manager.clone(),
+        );
         info!("PlaybackService wired with cluster broadcaster");
 
         // Cluster discovery (NodeRegistry, HealthMonitor) — requires Redis
@@ -1152,8 +1156,11 @@ mod tests {
         cache::{KeyBuilder, NoopCacheL2, UsernameCache},
         models::{SignupMethod, User, UserRole, UserStatus},
         repository::UserRepository,
-        service::{auth::hash_password, BruteForceProtection, InMemoryTokenBlacklistStore, UserService},
+        service::{
+            auth::hash_password, BruteForceProtection, InMemoryTokenBlacklistStore, UserService,
+        },
     };
+    use synctv_core_testing::test_redis_key_prefix;
     use tokio::sync::broadcast;
 
     #[tokio::test]
@@ -1312,10 +1319,9 @@ mod tests {
     }
 
     fn make_test_user_service(pool: PgPool) -> UserService {
-        let jwt_service = synctv_core::service::JwtService::new(
-            "test-jwt-secret-key-for-testing-minimum-length",
-        )
-        .expect("jwt service");
+        let jwt_service =
+            synctv_core::service::JwtService::new("test-jwt-secret-key-for-testing-minimum-length")
+                .expect("jwt service");
         let username_cache =
             UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 64, 60);
 
@@ -1426,8 +1432,8 @@ mod tests {
         let (_postgres, pool) = synctv_core_testing::create_test_pool_with_options_and_label(
             "synctv_test",
             "startup-admin-precondition-missing",
-            5,
-            Duration::from_secs(5),
+            20,
+            Duration::from_secs(30),
         )
         .await;
 
@@ -1455,8 +1461,8 @@ mod tests {
         let (_postgres, pool) = synctv_core_testing::create_test_pool_with_options_and_label(
             "synctv_test",
             "startup-admin-precondition-existing",
-            5,
-            Duration::from_secs(5),
+            20,
+            Duration::from_secs(30),
         )
         .await;
 
@@ -1651,6 +1657,7 @@ mod tests {
         use redis::AsyncCommands;
         use synctv_core::models::{RoomId, UserId};
         let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
+        let prefix = test_redis_key_prefix("conn-mgr-wires");
         let app_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .expect("App connection manager should be created");
@@ -1659,7 +1666,7 @@ mod tests {
         let manager = build_connection_manager(
             ConnectionLimits::default(),
             Some(shared_conn),
-            "test-app:",
+            &prefix,
             true,
         )
         .expect("cluster mode should build Redis-backed connection manager");
@@ -1680,7 +1687,7 @@ mod tests {
             .await
             .expect("Verification connection should be created");
         let count: i64 = verify_conn
-            .get("test-app:connections:room:room-1")
+            .get(format!("{prefix}connections:room:room-1"))
             .await
             .expect("Redis room counter should exist when ConnectionManager is wired");
 
@@ -1699,6 +1706,7 @@ mod tests {
         use synctv_core::models::{RoomId, UserId};
 
         let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
+        let prefix = test_redis_key_prefix("conn-mgr-shared");
         let first_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .expect("initial app connection manager should be created");
@@ -1707,7 +1715,7 @@ mod tests {
         let manager = build_connection_manager(
             ConnectionLimits::default(),
             Some(shared_conn.clone()),
-            "test-shared-app:",
+            &prefix,
             true,
         )
         .expect("cluster mode should preserve shared Redis handle wiring");
@@ -1734,7 +1742,7 @@ mod tests {
             .await
             .expect("verification connection should be created");
         let count: i64 = verify_conn
-            .get("test-shared-app:connections:room:room-2")
+            .get(format!("{prefix}connections:room:room-2"))
             .await
             .expect("swapped shared Redis handle should still write distributed room counters");
 

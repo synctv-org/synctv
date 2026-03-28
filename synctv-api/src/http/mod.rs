@@ -1773,8 +1773,10 @@ mod tests {
     #[test]
     fn test_build_cors_layer_rejects_invalid_configured_origin() {
         let mut config = synctv_core::Config::default();
-        config.server.cors_allowed_origins =
-            vec!["https://example.com".to_string(), "not a valid origin".to_string()];
+        config.server.cors_allowed_origins = vec![
+            "https://example.com".to_string(),
+            "not a valid origin".to_string(),
+        ];
 
         let result = std::panic::catch_unwind(|| build_cors_layer(&config));
 

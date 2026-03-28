@@ -169,6 +169,9 @@ mod tests {
     fn test_provider_binds_backend_outage_maps_to_unavailable() {
         let status = map_provider_binds_error("Failed to query credentials: pool timed out".into());
         assert_eq!(status.code(), tonic::Code::Unavailable);
-        assert_eq!(status.message(), "Failed to query credentials: pool timed out");
+        assert_eq!(
+            status.message(),
+            "Failed to query credentials: pool timed out"
+        );
     }
 }

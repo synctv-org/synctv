@@ -54,8 +54,37 @@ fn standalone_test_config() -> Config {
         buffer_sizes: BufferSizesConfig::default(),
         cache: CacheConfig::default(),
         messaging_rate_limits: MessagingRateLimitConfig::default(),
-        http_rate_limits: HttpRateLimitConfig::default(),
-        grpc_rate_limits: GrpcRateLimitConfig::default(),
+        // Raise rate limits to avoid cross-test interference when running in parallel
+        http_rate_limits: HttpRateLimitConfig {
+            auth_max_requests: 5000,
+            auth_window_seconds: 1,
+            write_max_requests: 5000,
+            write_window_seconds: 1,
+            read_max_requests: 5000,
+            read_window_seconds: 1,
+            media_max_requests: 5000,
+            media_window_seconds: 1,
+            admin_max_requests: 5000,
+            admin_window_seconds: 1,
+            streaming_max_requests: 5000,
+            streaming_window_seconds: 1,
+            websocket_max_requests: 5000,
+            websocket_window_seconds: 1,
+        },
+        grpc_rate_limits: GrpcRateLimitConfig {
+            auth_max_requests: 5000,
+            auth_window_seconds: 1,
+            email_max_requests: 5000,
+            email_window_seconds: 1,
+            media_max_requests: 5000,
+            media_window_seconds: 1,
+            write_max_requests: 5000,
+            write_window_seconds: 1,
+            admin_max_requests: 5000,
+            admin_window_seconds: 1,
+            read_max_requests: 5000,
+            read_window_seconds: 1,
+        },
     }
 }
 
@@ -112,8 +141,37 @@ fn cluster_test_config() -> Config {
         buffer_sizes: BufferSizesConfig::default(),
         cache: CacheConfig::default(),
         messaging_rate_limits: MessagingRateLimitConfig::default(),
-        http_rate_limits: HttpRateLimitConfig::default(),
-        grpc_rate_limits: GrpcRateLimitConfig::default(),
+        // Raise rate limits to avoid cross-test interference when running in parallel
+        http_rate_limits: HttpRateLimitConfig {
+            auth_max_requests: 5000,
+            auth_window_seconds: 1,
+            write_max_requests: 5000,
+            write_window_seconds: 1,
+            read_max_requests: 5000,
+            read_window_seconds: 1,
+            media_max_requests: 5000,
+            media_window_seconds: 1,
+            admin_max_requests: 5000,
+            admin_window_seconds: 1,
+            streaming_max_requests: 5000,
+            streaming_window_seconds: 1,
+            websocket_max_requests: 5000,
+            websocket_window_seconds: 1,
+        },
+        grpc_rate_limits: GrpcRateLimitConfig {
+            auth_max_requests: 5000,
+            auth_window_seconds: 1,
+            email_max_requests: 5000,
+            email_window_seconds: 1,
+            media_max_requests: 5000,
+            media_window_seconds: 1,
+            write_max_requests: 5000,
+            write_window_seconds: 1,
+            admin_max_requests: 5000,
+            admin_window_seconds: 1,
+            read_max_requests: 5000,
+            read_window_seconds: 1,
+        },
     }
 }
 
@@ -268,12 +326,12 @@ fn test_standalone_mode_tolerates_missing_redis() {
 // ============================================================================
 
 mod p1_cluster_cleanup_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::Instant;
     use synctv::app::Application;
     use synctv_cluster::discovery::NodeRegistry;
     use synctv_core_testing::{create_test_database_url_with_label, start_redis_url_with_label};
-    use std::sync::Arc;
-    use std::time::Instant;
-    use std::time::Duration;
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
@@ -495,7 +553,9 @@ mod p1_cluster_cleanup_tests {
             nodes.iter().map(|n| n.node_id.as_str()).collect::<Vec<_>>()
         );
 
-        app.run_with_shutdown_signal(std::future::ready(())).await.ok();
+        app.run_with_shutdown_signal(std::future::ready(()))
+            .await
+            .ok();
         redis.cleanup().await;
         postgres.cleanup().await;
     }

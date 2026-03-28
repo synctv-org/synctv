@@ -939,7 +939,8 @@ mod tests {
 
     #[test]
     fn test_api_err_service_unavailable_stays_unavailable() {
-        let err = crate::impls::ApiError::ServiceUnavailable("user backend unavailable".to_string());
+        let err =
+            crate::impls::ApiError::ServiceUnavailable("user backend unavailable".to_string());
         let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::Unavailable);
     }

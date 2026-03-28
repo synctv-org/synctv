@@ -232,7 +232,11 @@ impl PermissionService {
             return Ok(());
         };
 
-        if self.invalidation_runtime.started.swap(true, Ordering::AcqRel) {
+        if self
+            .invalidation_runtime
+            .started
+            .swap(true, Ordering::AcqRel)
+        {
             return Ok(());
         }
 
@@ -253,8 +257,9 @@ impl PermissionService {
         let degradation_started = self.degradation_started.clone();
         let listener_cancel = self.invalidation_runtime.cancel.child_token();
 
-        let listener_handle =
-            crate::spawn::spawn_monitored("permission_invalidation_listener", async move {
+        let listener_handle = crate::spawn::spawn_monitored(
+            "permission_invalidation_listener",
+            async move {
                 loop {
                     tokio::select! {
                         () = listener_cancel.cancelled() => {
@@ -344,15 +349,17 @@ impl PermissionService {
                         }
                     }
                 }
-            });
+            },
+        );
 
         let cache_for_recovery = self.cache.clone();
         let degraded_cache_for_recovery = self.degraded_cache.clone();
         let cache_degraded_for_recovery = self.cache_degraded.clone();
         let degradation_started_for_recovery = self.degradation_started.clone();
         let recovery_cancel = self.invalidation_runtime.cancel.child_token();
-        let recovery_handle =
-            crate::spawn::spawn_monitored("permission_cache_recovery", async move {
+        let recovery_handle = crate::spawn::spawn_monitored(
+            "permission_cache_recovery",
+            async move {
                 let mut ticker = tokio::time::interval(Duration::from_secs(10));
                 loop {
                     tokio::select! {
@@ -391,7 +398,8 @@ impl PermissionService {
                         }
                     }
                 }
-            });
+            },
+        );
 
         *self.invalidation_runtime.listener_handle.lock().await = Some(listener_handle);
         *self.invalidation_runtime.recovery_handle.lock().await = Some(recovery_handle);
@@ -402,12 +410,22 @@ impl PermissionService {
     pub async fn shutdown(&self) {
         self.invalidation_runtime.cancel.cancel();
 
-        let listener_handle = self.invalidation_runtime.listener_handle.lock().await.take();
+        let listener_handle = self
+            .invalidation_runtime
+            .listener_handle
+            .lock()
+            .await
+            .take();
         if let Some(handle) = listener_handle {
             let _ = handle.await;
         }
 
-        let recovery_handle = self.invalidation_runtime.recovery_handle.lock().await.take();
+        let recovery_handle = self
+            .invalidation_runtime
+            .recovery_handle
+            .lock()
+            .await
+            .take();
         if let Some(handle) = recovery_handle {
             let _ = handle.await;
         }

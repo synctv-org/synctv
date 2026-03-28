@@ -22,8 +22,8 @@ use synctv_core::{
     Config,
 };
 
-use crate::shutdown::ShutdownCoordinator;
 use crate::app::ClusterActivation;
+use crate::shutdown::ShutdownCoordinator;
 
 /// Livestream server state (held for graceful shutdown).
 ///
@@ -478,7 +478,10 @@ impl SyncTvServer {
 
     /// Start all servers and wait for shutdown signal, using a `ShutdownCoordinator`
     /// for centralized shutdown orchestration.
-    pub async fn start_with_coordinator(self, coordinator: ShutdownCoordinator) -> anyhow::Result<()> {
+    pub async fn start_with_coordinator(
+        self,
+        coordinator: ShutdownCoordinator,
+    ) -> anyhow::Result<()> {
         self.start_with_coordinator_and_shutdown_signal(coordinator, shutdown_signal())
             .await
     }

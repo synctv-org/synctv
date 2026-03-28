@@ -775,8 +775,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         ))
         // RoomService - JWT + room_id metadata (inject RoomContext)
         .add_service(tonic::codegen::InterceptedService::new(
-            RoomServiceServer::new(client_service_clone2)
-                .with_message_size_limit(max_message_size),
+            RoomServiceServer::new(client_service_clone2).with_message_size_limit(max_message_size),
             move |req| room_interceptor1.inject_room(req),
         ))
         // PublicService (public room discovery)

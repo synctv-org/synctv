@@ -18,7 +18,8 @@ use tokio::sync::broadcast;
 
 mod integration_test_helpers;
 use integration_test_helpers::{
-    broadcast_until_all_clients_receive, broadcast_until_room_event, create_node, TestRedis,
+    broadcast_until_all_clients_receive, broadcast_until_room_event, create_node_with_prefix,
+    TestRedis,
 };
 
 async fn wait_for_stream_len(redis_url: &str, stream_key: &str, expected_min_len: usize) {
@@ -53,9 +54,10 @@ async fn wait_for_stream_len(redis_url: &str, stream_key: &str, expected_min_len
 #[ignore = "requires Docker"]
 async fn test_redis_pubsub_no_message_loss() {
     let redis = TestRedis::start().await;
+    let key_prefix = redis.key_prefix.clone();
 
-    let node_a = create_node(&redis.redis_url, "node_a").await;
-    let node_b = create_node(&redis.redis_url, "node_b").await;
+    let node_a = create_node_with_prefix(&redis.redis_url, "node_a", key_prefix.clone()).await;
+    let node_b = create_node_with_prefix(&redis.redis_url, "node_b", key_prefix).await;
 
     let room_id = RoomId::from_string("busy_room".to_string());
     let user_id = UserId::from_string("listener".to_string());
@@ -142,6 +144,7 @@ async fn test_redis_pubsub_no_message_loss() {
 #[ignore = "requires Docker"]
 async fn test_redis_stream_catchup() {
     let redis = TestRedis::start().await;
+    let key_prefix = redis.key_prefix.clone();
 
     // Use raw RedisPubSub to test catchup mechanism directly
     let message_hub = Arc::new(RoomMessageHub::new());
@@ -158,7 +161,8 @@ async fn test_redis_stream_catchup() {
         .expect("subscribe should succeed");
 
     // Create the publisher node separately to write events to Redis streams
-    let publisher = create_node(&redis.redis_url, "publisher_node").await;
+    let publisher =
+        create_node_with_prefix(&redis.redis_url, "publisher_node", key_prefix.clone()).await;
 
     // Publish events to Redis (they go into streams via dual-write)
     for i in 0..5 {
@@ -176,7 +180,12 @@ async fn test_redis_stream_catchup() {
     }
 
     // Wait until all historical events are durably written to the room stream.
-    wait_for_stream_len(&redis.redis_url, "synctv:room:catchup_room:events", 5).await;
+    wait_for_stream_len(
+        &redis.redis_url,
+        &format!("{key_prefix}room:{}:events", room_id.as_str()),
+        5,
+    )
+    .await;
 
     // Now start a subscriber node that connects to the same Redis.
     // On first connect it should replay recent stream history within the
@@ -184,14 +193,17 @@ async fn test_redis_stream_catchup() {
     let redis_client =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
     let subscriber_node = Arc::new(
-        RedisPubSub::new(
+        RedisPubSub::with_key_prefix(
             redis_client,
             message_hub.clone(),
             "subscriber_node".to_string(),
+            &key_prefix,
             admin_tx,
             None,
             None,
             dedup,
+            300,
+            10_000,
         )
         .expect("Failed to create subscriber RedisPubSub"),
     );
@@ -262,10 +274,12 @@ async fn test_redis_stream_catchup() {
 #[ignore = "requires Docker"]
 async fn test_redis_failure_and_recovery() {
     let redis = TestRedis::start().await;
+    let key_prefix = redis.key_prefix.clone();
 
     // Create two nodes
-    let node_a = create_node(&redis.redis_url, "recovery_node_a").await;
-    let node_b = create_node(&redis.redis_url, "recovery_node_b").await;
+    let node_a =
+        create_node_with_prefix(&redis.redis_url, "recovery_node_a", key_prefix.clone()).await;
+    let node_b = create_node_with_prefix(&redis.redis_url, "recovery_node_b", key_prefix).await;
 
     let room_id = RoomId::from_string("recovery_room".to_string());
 
@@ -426,9 +440,11 @@ async fn test_redis_failure_and_recovery() {
 #[ignore = "requires Docker"]
 async fn test_redis_reconnection_event_preservation() {
     let redis = TestRedis::start().await;
+    let key_prefix = redis.key_prefix.clone();
 
-    let node_a = create_node(&redis.redis_url, "reconnect_node_a").await;
-    let node_b = create_node(&redis.redis_url, "reconnect_node_b").await;
+    let node_a =
+        create_node_with_prefix(&redis.redis_url, "reconnect_node_a", key_prefix.clone()).await;
+    let node_b = create_node_with_prefix(&redis.redis_url, "reconnect_node_b", key_prefix).await;
 
     let room_id = RoomId::from_string("reconnect_room".to_string());
 
@@ -517,8 +533,9 @@ async fn test_redis_reconnection_event_preservation() {
 #[ignore = "requires Docker"]
 async fn test_cross_replica_deduplication() {
     let redis = TestRedis::start().await;
+    let key_prefix = redis.key_prefix.clone();
 
-    let node_a = create_node(&redis.redis_url, "node_a").await;
+    let node_a = create_node_with_prefix(&redis.redis_url, "node_a", key_prefix).await;
 
     let room_id = RoomId::from_string("dedup_room".to_string());
     let user_id = UserId::from_string("listener".to_string());

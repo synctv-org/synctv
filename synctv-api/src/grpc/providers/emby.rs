@@ -167,8 +167,12 @@ mod tests {
 
     #[test]
     fn test_provider_binds_backend_outage_maps_to_unavailable() {
-        let status = map_provider_binds_error("Failed to query credentials: redis unavailable".into());
+        let status =
+            map_provider_binds_error("Failed to query credentials: redis unavailable".into());
         assert_eq!(status.code(), tonic::Code::Unavailable);
-        assert_eq!(status.message(), "Failed to query credentials: redis unavailable");
+        assert_eq!(
+            status.message(),
+            "Failed to query credentials: redis unavailable"
+        );
     }
 }

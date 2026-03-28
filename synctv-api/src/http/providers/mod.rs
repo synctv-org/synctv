@@ -224,12 +224,16 @@ async fn validate_fresh_proxy_access(
 ) -> AppResult<()> {
     let user = state.user_service.get_user(user_id).await?;
     if user.status != synctv_core::models::UserStatus::Active || user.deleted_at.is_some() {
-        return Err(AppError::forbidden("Proxy URL is no longer valid for this user"));
+        return Err(AppError::forbidden(
+            "Proxy URL is no longer valid for this user",
+        ));
     }
 
     let room = state.proxy_services.room_service.get_room(room_id).await?;
     if room.is_banned || !room.status.is_active() {
-        return Err(AppError::forbidden("Proxy URL is no longer valid for this room"));
+        return Err(AppError::forbidden(
+            "Proxy URL is no longer valid for this room",
+        ));
     }
 
     state
@@ -248,9 +252,9 @@ mod tests {
     use bytes::Bytes;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use synctv_core::models::{RoomStatus, SignupMethod, UserStatus};
     use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
     use synctv_core::config::PasswordComplexityConfig;
+    use synctv_core::models::{RoomStatus, SignupMethod, UserStatus};
     use synctv_core::provider::error::ProviderError;
     use synctv_core::provider::proxy::{ProxyProviderRegistry, ProxyRequestContext};
     use synctv_core::provider::{
@@ -566,58 +570,61 @@ mod tests {
             live_proxy: Arc::new(LiveProxyProvider::new()),
         };
         let (audit_service, _audit_handle) = AuditService::new(pool.clone());
-        let mut state = crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
-            config: Arc::new(synctv_core::Config::default()),
-            user_service: user_service.clone(),
-            user_cache: Arc::new(
-                synctv_core::cache::UserCache::new(
-                    Arc::new(synctv_core::cache::NoopCacheL2),
-                    128,
-                    60,
-                    300,
-                    "test:user:".to_string(),
-                )
-                .expect("user cache"),
-            ),
-            room_service: room_service.clone(),
-            content_filter: ContentFilter::new(),
-            provider_instance_manager,
-            user_provider_credential_repository: Arc::new(
-                synctv_core::repository::UserProviderCredentialRepository::new(pool),
-            ),
-            providers,
-            cluster_manager: None,
-            connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
-                synctv_cluster::sync::ConnectionLimits::default(),
-            )),
-            jwt_service,
-            redis_publish_tx: None,
-            oauth2_service: None,
-            settings_service: None,
-            settings_registry: None,
-            email_service: None,
-            email_token_service: None,
-            publish_key_service: None,
-            notification_service: None,
-            chat_service: None,
-            audit_service: Arc::new(audit_service),
-            live_streaming_infrastructure: None,
-            rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
-            redis_conn: None,
-            builtin_stun_url: None,
-            turn_health_checker: None,
-            credential_encryption: None,
-            proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                SliceCacheConfig::default(),
-            )),
-            proxy_http_client: synctv_proxy::build_proxy_http_client()
-                .expect("proxy HTTP client should build for tests"),
-            messaging_rate_limit_config: RateLimitConfig::default(),
-            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
-            providers_manager: None,
-        })
-        .1;
+        let mut state =
+            crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
+                config: Arc::new(synctv_core::Config::default()),
+                user_service: user_service.clone(),
+                user_cache: Arc::new(
+                    synctv_core::cache::UserCache::new(
+                        Arc::new(synctv_core::cache::NoopCacheL2),
+                        128,
+                        60,
+                        300,
+                        "test:user:".to_string(),
+                    )
+                    .expect("user cache"),
+                ),
+                room_service: room_service.clone(),
+                content_filter: ContentFilter::new(),
+                provider_instance_manager,
+                user_provider_credential_repository: Arc::new(
+                    synctv_core::repository::UserProviderCredentialRepository::new(pool),
+                ),
+                providers,
+                cluster_manager: None,
+                connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
+                    synctv_cluster::sync::ConnectionLimits::default(),
+                )),
+                jwt_service,
+                redis_publish_tx: None,
+                oauth2_service: None,
+                settings_service: None,
+                settings_registry: None,
+                email_service: None,
+                email_token_service: None,
+                publish_key_service: None,
+                notification_service: None,
+                chat_service: None,
+                audit_service: Arc::new(audit_service),
+                live_streaming_infrastructure: None,
+                rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
+                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(
+                    None,
+                )),
+                redis_conn: None,
+                builtin_stun_url: None,
+                turn_health_checker: None,
+                credential_encryption: None,
+                proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+                    SliceCacheConfig::default(),
+                )),
+                proxy_http_client: synctv_proxy::build_proxy_http_client()
+                    .expect("proxy HTTP client should build for tests"),
+                messaging_rate_limit_config: RateLimitConfig::default(),
+                heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
+                providers_manager: None,
+            })
+            .1;
 
         let registry = ProxyProviderRegistry::new();
         registry.register("test-provider", Arc::new(TestProxyProvider));

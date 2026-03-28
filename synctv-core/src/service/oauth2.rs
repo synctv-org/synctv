@@ -692,7 +692,10 @@ impl OAuth2Service {
 
     fn is_native_custom_scheme_redirect(parsed_url: &url::Url) -> bool {
         let scheme = parsed_url.scheme();
-        if matches!(scheme, "http" | "https" | "javascript" | "data" | "file" | "ftp") {
+        if matches!(
+            scheme,
+            "http" | "https" | "javascript" | "data" | "file" | "ftp"
+        ) {
             return false;
         }
 
@@ -1349,10 +1352,8 @@ mod tests {
 
     #[test]
     fn test_redirect_native_custom_scheme_allowed() {
-        let result = OAuth2Service::validate_redirect_url_with_allowlist(
-            "mysynctv://oauth2/callback",
-            &[],
-        );
+        let result =
+            OAuth2Service::validate_redirect_url_with_allowlist("mysynctv://oauth2/callback", &[]);
         assert!(result.is_ok());
     }
 

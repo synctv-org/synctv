@@ -223,11 +223,12 @@ where
         let token = JwtValidator::extract_bearer_token(auth_str)
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
-        let map_guest_auth_error = |e: synctv_core::Error| match SecurityPipeline::classify_auth_error(&e) {
-            AuthErrorCategory::Authentication => AppError::unauthorized(format!("{e}")),
-            AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
-            AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
-        };
+        let map_guest_auth_error =
+            |e: synctv_core::Error| match SecurityPipeline::classify_auth_error(&e) {
+                AuthErrorCategory::Authentication => AppError::unauthorized(format!("{e}")),
+                AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
+                AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
+            };
 
         // Validate JWT first so we can derive the target room and then enforce
         // both the room-wide guest version and current guest access policy.
@@ -884,29 +885,31 @@ mod tests {
 
     #[test]
     fn test_guest_user_maps_service_unavailable_to_503() {
-        let err = match SecurityPipeline::classify_auth_error(&synctv_core::Error::ServiceUnavailable(
-            "Authentication service temporarily unavailable".to_string(),
-        )) {
-            AuthErrorCategory::Authentication => {
-                AppError::unauthorized("unexpected authentication classification")
-            }
-            AuthErrorCategory::Authorization => {
-                AppError::forbidden("unexpected authorization classification")
-            }
-            AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => {
-                AppError::from(synctv_core::Error::ServiceUnavailable(
-                    "Authentication service temporarily unavailable".to_string(),
-                ))
-            }
-        };
+        let err =
+            match SecurityPipeline::classify_auth_error(&synctv_core::Error::ServiceUnavailable(
+                "Authentication service temporarily unavailable".to_string(),
+            )) {
+                AuthErrorCategory::Authentication => {
+                    AppError::unauthorized("unexpected authentication classification")
+                }
+                AuthErrorCategory::Authorization => {
+                    AppError::forbidden("unexpected authorization classification")
+                }
+                AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => {
+                    AppError::from(synctv_core::Error::ServiceUnavailable(
+                        "Authentication service temporarily unavailable".to_string(),
+                    ))
+                }
+            };
 
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]
     fn test_guest_user_room_existence_backend_failure_maps_to_503() {
-        let room_lookup_error =
-            synctv_core::Error::ServiceUnavailable("room lookup temporarily unavailable".to_string());
+        let room_lookup_error = synctv_core::Error::ServiceUnavailable(
+            "room lookup temporarily unavailable".to_string(),
+        );
         let err = match SecurityPipeline::classify_auth_error(&room_lookup_error) {
             AuthErrorCategory::Authentication => {
                 AppError::unauthorized("unexpected authentication classification")

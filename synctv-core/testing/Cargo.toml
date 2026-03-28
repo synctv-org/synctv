@@ -7,7 +7,7 @@ edition.workspace = true
 synctv-core = { path = ".." }
 
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono", "uuid", "json"] }
-testcontainers = { workspace = true }
+testcontainers = { workspace = true, features = ["reusable-containers"] }
 testcontainers-modules = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 chrono = { workspace = true }

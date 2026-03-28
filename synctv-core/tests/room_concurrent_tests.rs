@@ -49,8 +49,8 @@ async fn create_test_pool() -> TestPostgres {
     let (container, pool) = create_test_pool_with_options_and_label(
         "synctv_test",
         "room-concurrent",
-        10,
-        std::time::Duration::from_secs(2),
+        30,
+        std::time::Duration::from_secs(30),
     )
     .await;
 
@@ -168,8 +168,14 @@ async fn get_creator_user_id(pool: &PgPool, room_id: &RoomId) -> UserId {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_join_respects_max_members() {
-    let infra = create_test_pool().await;
-    let pool = &infra.pool;
+    let (_container, pool) = create_test_pool_with_options_and_label(
+        "synctv_test",
+        "concurrent-join-max-members",
+        30,
+        std::time::Duration::from_secs(30),
+    )
+    .await;
+    let pool = &pool;
 
     // Create room with max_members = 10
     let (_owner, room, _settings) = setup_test_room(pool, "Concurrent Join Room", 10).await;

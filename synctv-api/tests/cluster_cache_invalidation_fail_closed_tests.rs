@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use std::sync::Arc;
+use synctv_api::impls::{ApiError, ClientApiImpl};
 use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
@@ -14,7 +15,6 @@ use synctv_core::{
     },
     Config,
 };
-use synctv_api::impls::{ApiError, ClientApiImpl};
 
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -347,7 +347,10 @@ async fn test_ban_member_fails_closed_when_cluster_fanout_fails() {
         .unwrap()
         .expect("ban must not commit before fanout reservation");
     assert_eq!(member.status, MemberStatus::Active);
-    assert!(member.banned_at.is_none(), "ban state must remain unchanged");
+    assert!(
+        member.banned_at.is_none(),
+        "ban state must remain unchanged"
+    );
 }
 
 #[tokio::test]

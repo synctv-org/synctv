@@ -13,8 +13,8 @@ use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        Media, MediaId, MemberStatus, PermissionBits, RoomId, RoomRole, RoomSettings, User,
-        UserId, UserRole, UserStatus,
+        Media, MediaId, MemberStatus, PermissionBits, RoomId, RoomRole, RoomSettings, User, UserId,
+        UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,

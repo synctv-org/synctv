@@ -311,8 +311,8 @@ mod permissions {
         BruteForceProtection, InMemoryTokenBlacklistStore, RoomService, UserService,
     };
     use synctv_core_testing::{
-        create_test_pool_with_db_and_label, start_redis_url_with_label, RedisContainer,
-        TestContainer,
+        create_test_pool_with_db_and_label, start_redis_url_with_label, test_redis_key_prefix,
+        RedisContainer, TestContainer,
     };
 
     struct ClientApiFixture {
@@ -327,6 +327,7 @@ mod permissions {
     async fn build_client_api_fixture(label: &str) -> ClientApiFixture {
         let (postgres, pool) = create_test_pool_with_db_and_label("synctv_test", label).await;
         let (redis, redis_url) = start_redis_url_with_label(label).await;
+        let redis_key_prefix = test_redis_key_prefix(label);
 
         let redis_client = redis::Client::open(redis_url.as_str()).expect("Redis client");
         let redis_conn = Arc::new(tokio::sync::RwLock::new(
@@ -336,11 +337,12 @@ mod permissions {
         ));
         let username_cache = UsernameCache::new(
             Arc::new(RedisCacheL2::new_shared(redis_conn.clone())),
-            "test_un:".to_string(),
+            format!("{redis_key_prefix}un:"),
             100,
             300,
         );
-        let brute_force = BruteForceProtection::with_redis(redis_conn.clone(), "test:".to_string());
+        let brute_force =
+            BruteForceProtection::with_redis(redis_conn.clone(), redis_key_prefix.clone());
         let jwt_service =
             JwtService::new("this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars")
                 .expect("JwtService");
@@ -353,7 +355,7 @@ mod permissions {
             username_cache,
             PasswordComplexityConfig::default(),
             token_blacklist,
-            KeyBuilder::new("test:".to_string()),
+            KeyBuilder::new(redis_key_prefix),
             brute_force,
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));

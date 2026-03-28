@@ -162,9 +162,9 @@ fn test_validate_password_for_verify_rejects_too_long() {
 
 #[test]
 fn test_check_room_password_room_lookup_backend_failure_must_not_map_to_not_found() {
-    let mapped = super::ClientApiImpl::map_room_lookup_error(synctv_core::Error::ServiceUnavailable(
-        "room lookup unavailable".to_string(),
-    ));
+    let mapped = super::ClientApiImpl::map_room_lookup_error(
+        synctv_core::Error::ServiceUnavailable("room lookup unavailable".to_string()),
+    );
 
     assert!(
         matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "room lookup unavailable"),

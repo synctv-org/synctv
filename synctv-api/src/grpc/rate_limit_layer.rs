@@ -228,11 +228,11 @@ fn user_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
         Some(
             "GetProfile"
-                | "GetUser"
-                | "GetRoom"
-                | "ListCreatedRooms"
-                | "ListParticipatedRooms"
-                | "GetSettings",
+            | "GetUser"
+            | "GetRoom"
+            | "ListCreatedRooms"
+            | "ListParticipatedRooms"
+            | "GetSettings",
         ) => GrpcRateLimitTier::Read,
         _ => GrpcRateLimitTier::Write,
     }
@@ -245,35 +245,15 @@ fn user_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
 fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
         Some(
-            "AddMedia"
-                | "DeleteMedia"
-                | "AddMediaBatch"
-                | "DeleteMediaBatch"
-                | "CreatePlaylist"
-                | "UpdatePlaylist"
-                | "DeletePlaylist"
-                | "ReorderMediaBatch"
-                | "StartPlayback"
-                | "StopPlayback"
-                | "UpdatePlayback"
-                | "MoveMedia"
-                | "SwapMedia"
-                | "EditMedia"
-                | "ClearPlaylist"
-                | "CreatePublishKey"
+            "AddMedia" | "DeleteMedia" | "AddMediaBatch" | "DeleteMediaBatch" | "CreatePlaylist"
+            | "UpdatePlaylist" | "DeletePlaylist" | "ReorderMediaBatch" | "StartPlayback"
+            | "StopPlayback" | "UpdatePlayback" | "MoveMedia" | "SwapMedia" | "EditMedia"
+            | "ClearPlaylist" | "CreatePublishKey",
         ) => GrpcRateLimitTier::Media,
         Some(
-            "GetRoomSettings"
-                | "GetRoomMembers"
-                | "GetChatHistory"
-                | "GetIceServers"
-                | "GetPlaylist"
-                | "GetPlayback"
-                | "GetStreamInfo"
-                | "ListRoomStreams"
-                | "ListPlaylists"
-                | "ListPlaylist"
-                | "ListPlaylistItems",
+            "GetRoomSettings" | "GetRoomMembers" | "GetChatHistory" | "GetIceServers"
+            | "GetPlaylist" | "GetPlayback" | "GetStreamInfo" | "ListRoomStreams" | "ListPlaylists"
+            | "ListPlaylist" | "ListPlaylistItems",
         ) => GrpcRateLimitTier::Read,
         _ => GrpcRateLimitTier::Write,
     }

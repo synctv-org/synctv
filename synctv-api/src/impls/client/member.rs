@@ -106,14 +106,10 @@ impl ClientApiImpl {
                 .get_member(&rid, &target_uid)
                 .await
                 .map_err(ApiError::from)?
-                .ok_or_else(|| {
-                    ApiError::NotFound("Target member not found".to_string())
-                })?;
+                .ok_or_else(|| ApiError::NotFound("Target member not found".to_string()))?;
 
-            let target_uses_admin_overrides = matches!(
-                target_member.role,
-                synctv_core::models::RoomRole::Admin
-            );
+            let target_uses_admin_overrides =
+                matches!(target_member.role, synctv_core::models::RoomRole::Admin);
 
             if target_uses_admin_overrides
                 && (req.added_permissions > 0 || req.removed_permissions > 0)
@@ -151,8 +147,13 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?;
         }
 
-        self.publish_permission_changed_with_reservation(&rid, &target_uid, &uid, permission_fanout)
-            .await?;
+        self.publish_permission_changed_with_reservation(
+            &rid,
+            &target_uid,
+            &uid,
+            permission_fanout,
+        )
+        .await?;
 
         // Get updated member directly instead of fetching all members
         let member = self
@@ -255,8 +256,13 @@ impl ClientApiImpl {
         }
 
         // Notify other replicas to invalidate permission cache
-        self.publish_permission_changed_with_reservation(&rid, &target_uid, &uid, permission_fanout)
-            .await?;
+        self.publish_permission_changed_with_reservation(
+            &rid,
+            &target_uid,
+            &uid,
+            permission_fanout,
+        )
+        .await?;
 
         Ok(crate::proto::client::KickMemberResponse { success: true })
     }
@@ -324,8 +330,13 @@ impl ClientApiImpl {
         }
 
         // Notify other replicas to invalidate permission cache
-        self.publish_permission_changed_with_reservation(&rid, &target_uid, &uid, permission_fanout)
-            .await?;
+        self.publish_permission_changed_with_reservation(
+            &rid,
+            &target_uid,
+            &uid,
+            permission_fanout,
+        )
+        .await?;
 
         Ok(crate::proto::client::BanMemberResponse { success: true })
     }
@@ -356,8 +367,13 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Notify other replicas to invalidate permission cache
-        self.publish_permission_changed_with_reservation(&rid, &target_uid, &uid, permission_fanout)
-            .await?;
+        self.publish_permission_changed_with_reservation(
+            &rid,
+            &target_uid,
+            &uid,
+            permission_fanout,
+        )
+        .await?;
 
         Ok(crate::proto::client::UnbanMemberResponse { success: true })
     }

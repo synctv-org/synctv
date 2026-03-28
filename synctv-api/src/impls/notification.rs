@@ -340,9 +340,8 @@ mod tests {
 
     #[test]
     fn test_notification_lookup_backend_outage_maps_to_service_unavailable() {
-        let mapped = map_notification_lookup_error(synctv_core::Error::Database(
-            sqlx::Error::PoolTimedOut,
-        ));
+        let mapped =
+            map_notification_lookup_error(synctv_core::Error::Database(sqlx::Error::PoolTimedOut));
 
         assert!(
             matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable. Please try again later."),

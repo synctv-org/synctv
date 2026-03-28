@@ -812,21 +812,18 @@ pub async fn websocket_handler(
     validate_websocket_runtime_dependencies(&state)?;
 
     let prepared = run_websocket_handshake_with_timeout(async {
-        let prepared = prepare_websocket_upgrade(
-            &state,
-            &room_id,
-            &query,
-            &headers,
-            connect_info.0.ip(),
-        )
-        .await?;
+        let prepared =
+            prepare_websocket_upgrade(&state, &room_id, &query, &headers, connect_info.0.ip())
+                .await?;
 
         commit_websocket_upgrade(&state, prepared).await
     })
     .await?;
 
-    let failed_upgrade_cleanup =
-        build_failed_upgrade_cleanup(state.connection_manager.clone(), prepared.reservation.clone());
+    let failed_upgrade_cleanup = build_failed_upgrade_cleanup(
+        state.connection_manager.clone(),
+        prepared.reservation.clone(),
+    );
 
     // Authentication and membership verified, upgrade to WebSocket.
     // Reservations are released inside handle_socket after join_room completes.
@@ -1719,7 +1716,10 @@ mod tests {
         );
 
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(err.message, "Server at capacity across all replicas (42 connections)");
+        assert_eq!(
+            err.message,
+            "Server at capacity across all replicas (42 connections)"
+        );
     }
 
     #[test]
@@ -1875,9 +1875,7 @@ mod tests {
     #[tokio::test]
     async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() {
         let state = crate::http::tests::test_app_state();
-        let ws_ticket_service = state
-            .ws_ticket_service
-            .clone();
+        let ws_ticket_service = state.ws_ticket_service.clone();
         let user_id = UserId::from_string("user-ticket-restore".to_string());
         let room_id = RoomId::from_string("room-ticket-restore".to_string());
         let reservation = HandshakeReservation {
@@ -1923,7 +1921,9 @@ mod tests {
         let cleanup = build_failed_upgrade_cleanup(state.connection_manager.clone(), reservation);
         cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
 
-        let validated = ws_ticket_service.validate_and_consume(&ticket, &room_id).await;
+        let validated = ws_ticket_service
+            .validate_and_consume(&ticket, &room_id)
+            .await;
         assert!(
             validated.is_err(),
             "failed upgrade cleanup must not resurrect a one-time ticket after the HTTP handshake succeeded"
@@ -1933,15 +1933,14 @@ mod tests {
     #[tokio::test]
     async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fails() {
         let state = crate::http::tests::test_app_state();
-        let ws_ticket_service = state
-            .ws_ticket_service
-            .clone();
+        let ws_ticket_service = state.ws_ticket_service.clone();
         let user_id = UserId::from_string("user-ticket-claim-fail".to_string());
         let room_id = RoomId::from_string("room-ticket-claim-fail".to_string());
 
-        let reservation = reserve_websocket_upgrade_slots(&state.connection_manager, &room_id, &user_id)
-            .await
-            .expect("handshake should reserve websocket capacity");
+        let reservation =
+            reserve_websocket_upgrade_slots(&state.connection_manager, &room_id, &user_id)
+                .await
+                .expect("handshake should reserve websocket capacity");
 
         let ticket = ws_ticket_service
             .create_ticket(&user_id, &room_id, 0)

@@ -15,37 +15,36 @@ use synctv_core::service::{
 use crate::proto::client::{
     auth_service_server::AuthService, email_service_server::EmailService,
     public_service_server::PublicService, room_service_server::RoomService,
-    user_service_server::UserService, AddMediaBatchRequest,
-    AddMediaBatchResponse, AddMediaRequest, AddMediaResponse, BanMemberRequest, BanMemberResponse,
-    CheckRoomPasswordRequest, CheckRoomPasswordResponse, CheckRoomRequest, CheckRoomResponse,
-    ClearPlaylistRequest, ClearPlaylistResponse, ClientMessage, ConfirmEmailRequest,
-    ConfirmEmailResponse, ConfirmPasswordResetRequest, ConfirmPasswordResetResponse,
-    CreatePlaylistRequest, CreatePlaylistResponse, CreatePublishKeyRequest,
-    CreatePublishKeyResponse, CreateRoomRequest, CreateRoomResponse, DeleteMediaBatchRequest,
-    DeleteMediaBatchResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistRequest,
-    DeletePlaylistResponse, DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest,
-    EditMediaResponse, GetChatHistoryRequest, GetChatHistoryResponse, GetHotRoomsRequest,
-    GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse, GetNetworkQualityRequest,
-    GetNetworkQualityResponse, GetPlaybackRequest, GetPlaybackResponse, GetPlaylistRequest,
-    GetPlaylistResponse, GetProfileRequest, GetProfileResponse, GetPublicSettingsRequest,
-    GetPublicSettingsResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest,
-    GetRoomResponse, GetRoomSettingsRequest, GetRoomSettingsResponse, GetStreamInfoRequest,
-    GetStreamInfoResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
-    KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse, ListCreatedRoomsRequest,
-    ListCreatedRoomsResponse, ListParticipatedRoomsRequest, ListParticipatedRoomsResponse,
-    ListPlaylistItemsRequest, ListPlaylistItemsResponse, ListPlaylistRequest, ListPlaylistResponse,
-    ListPlaylistsRequest, ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse,
-    ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest,
-    LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
-    ReorderMediaBatchRequest, ReorderMediaBatchResponse, RequestPasswordResetRequest,
-    RequestPasswordResetResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
-    SendVerificationEmailRequest, SendVerificationEmailResponse, ServerMessage, SetPasswordRequest,
-    SetPasswordResponse, SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest,
-    SetUsernameResponse, StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest,
-    StopPlaybackResponse, SwapMediaRequest, SwapMediaResponse, UnbanMemberRequest,
-    UnbanMemberResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
-    UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
-    UpdateRoomSettingsResponse,
+    user_service_server::UserService, AddMediaBatchRequest, AddMediaBatchResponse, AddMediaRequest,
+    AddMediaResponse, BanMemberRequest, BanMemberResponse, CheckRoomPasswordRequest,
+    CheckRoomPasswordResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
+    ClearPlaylistResponse, ClientMessage, ConfirmEmailRequest, ConfirmEmailResponse,
+    ConfirmPasswordResetRequest, ConfirmPasswordResetResponse, CreatePlaylistRequest,
+    CreatePlaylistResponse, CreatePublishKeyRequest, CreatePublishKeyResponse, CreateRoomRequest,
+    CreateRoomResponse, DeleteMediaBatchRequest, DeleteMediaBatchResponse, DeleteMediaRequest,
+    DeleteMediaResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
+    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, GetChatHistoryRequest,
+    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
+    GetIceServersResponse, GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest,
+    GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest,
+    GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
+    GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
+    GetRoomSettingsResponse, GetStreamInfoRequest, GetStreamInfoResponse, JoinRoomRequest,
+    JoinRoomResponse, KickMemberRequest, KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse,
+    ListCreatedRoomsRequest, ListCreatedRoomsResponse, ListParticipatedRoomsRequest,
+    ListParticipatedRoomsResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
+    ListPlaylistRequest, ListPlaylistResponse, ListPlaylistsRequest, ListPlaylistsResponse,
+    ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, RefreshTokenRequest,
+    RefreshTokenResponse, RegisterRequest, RegisterResponse, ReorderMediaBatchRequest,
+    ReorderMediaBatchResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
+    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendVerificationEmailRequest,
+    SendVerificationEmailResponse, ServerMessage, SetPasswordRequest, SetPasswordResponse,
+    SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse,
+    StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
+    SwapMediaRequest, SwapMediaResponse, UnbanMemberRequest, UnbanMemberResponse,
+    UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaylistRequest,
+    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -1443,7 +1442,8 @@ mod tests {
 
     #[test]
     fn test_create_publish_key_grpc_maps_service_unavailable() {
-        let err = crate::impls::ApiError::ServiceUnavailable("publish key backend unavailable".into());
+        let err =
+            crate::impls::ApiError::ServiceUnavailable("publish key backend unavailable".into());
         let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(status.message(), "publish key backend unavailable");
@@ -1459,7 +1459,8 @@ mod tests {
 
     #[test]
     fn test_list_room_streams_grpc_maps_service_unavailable() {
-        let err = crate::impls::ApiError::ServiceUnavailable("livestream registry unavailable".into());
+        let err =
+            crate::impls::ApiError::ServiceUnavailable("livestream registry unavailable".into());
         let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(status.message(), "livestream registry unavailable");
@@ -1475,7 +1476,8 @@ mod tests {
 
     #[test]
     fn test_request_password_reset_grpc_maps_service_unavailable() {
-        let err = crate::impls::ApiError::ServiceUnavailable("password reset backend unavailable".into());
+        let err =
+            crate::impls::ApiError::ServiceUnavailable("password reset backend unavailable".into());
         let status = map_email_flow_error(err);
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(status.message(), "password reset backend unavailable");
@@ -1731,7 +1733,10 @@ mod tests {
         let status =
             map_message_stream_join_error("Room at capacity (42 connections, max: 40)".to_string());
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
-        assert_eq!(status.message(), "Room at capacity (42 connections, max: 40)");
+        assert_eq!(
+            status.message(),
+            "Room at capacity (42 connections, max: 40)"
+        );
     }
 
     #[test]

@@ -8,8 +8,8 @@ fn process_env(name: &str) -> Option<String> {
 }
 
 pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
-    let parsed =
-        url::Url::parse(origin).map_err(|_| format!("CORS origin '{origin}' is not a valid URL"))?;
+    let parsed = url::Url::parse(origin)
+        .map_err(|_| format!("CORS origin '{origin}' is not a valid URL"))?;
 
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!(
@@ -18,9 +18,7 @@ pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
     }
 
     if parsed.host_str().is_none() {
-        return Err(format!(
-            "CORS origin '{origin}' must include a host"
-        ));
+        return Err(format!("CORS origin '{origin}' must include a host"));
     }
 
     if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
@@ -1910,7 +1908,6 @@ impl Config {
                         .to_string(),
                 ),
             }
-
         }
 
         if cluster_mode_active && self.cluster.leader_election_mode == "k8s_lease" {

@@ -640,7 +640,11 @@ async fn test_role_guarded_admin_permission_updates_fail_when_role_changed() {
         .unwrap();
 
     member_repo
-        .add(&make_member(room.id.clone(), user.id.clone(), RoomRole::Admin))
+        .add(&make_member(
+            room.id.clone(),
+            user.id.clone(),
+            RoomRole::Admin,
+        ))
         .await
         .unwrap();
 

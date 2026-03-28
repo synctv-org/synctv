@@ -28,8 +28,8 @@ async fn create_test_pool() -> TestPostgres {
     let (container, pool) = create_test_pool_with_options_and_label(
         "synctv_test",
         "database-deadlock",
-        5,
-        std::time::Duration::from_secs(2),
+        20,
+        std::time::Duration::from_secs(30),
     )
     .await;
 

@@ -2961,20 +2961,41 @@ mod tests {
 
         let registry: Arc<dyn StreamRegistryTrait> = Arc::new(InMemoryStreamRegistry::new());
         registry
-            .try_register_publisher("room-1", "shared-media", "node-a", "user-overlap", "127.0.0.1:50051")
+            .try_register_publisher(
+                "room-1",
+                "shared-media",
+                "node-a",
+                "user-overlap",
+                "127.0.0.1:50051",
+            )
             .await
             .expect("shared publisher should register");
         registry
-            .try_register_publisher("room-1", "remote-media", "node-b", "user-remote", "127.0.0.1:50052")
+            .try_register_publisher(
+                "room-1",
+                "remote-media",
+                "node-b",
+                "user-remote",
+                "127.0.0.1:50052",
+            )
             .await
             .expect("remote publisher should register");
         registry
-            .try_register_publisher("other-room", "other-media", "node-c", "user-other", "127.0.0.1:50053")
+            .try_register_publisher(
+                "other-room",
+                "other-media",
+                "node-c",
+                "user-other",
+                "127.0.0.1:50053",
+            )
             .await
             .expect("other room publisher should register");
 
         let (event_sender, _event_receiver) = mpsc::channel(64);
-        let pull_manager = Arc::new(PullStreamManager::new(registry.clone(), event_sender.clone()));
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
         let external_publish_manager = Arc::new(
             ExternalPublishManager::new(
                 registry.clone(),
@@ -2991,8 +3012,7 @@ mod tests {
             tracker,
         ));
 
-        let media_ids =
-            active_room_stream_media_ids_for_infra(Some(&infra), "room-1").await;
+        let media_ids = active_room_stream_media_ids_for_infra(Some(&infra), "room-1").await;
 
         assert_eq!(
             media_ids,

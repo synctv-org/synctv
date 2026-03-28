@@ -49,7 +49,7 @@ async fn create_test_pool() -> TestPostgres {
         "synctv_test",
         "room-concurrency",
         64,
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
     )
     .await;
 

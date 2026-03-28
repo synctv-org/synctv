@@ -718,7 +718,9 @@ impl RoomMessageHub {
                                     ReliableDeliveryOutcome::Delivered => {
                                         sent_count += 1;
                                     }
-                                    ReliableDeliveryOutcome::Deferred => {}
+                                    ReliableDeliveryOutcome::Deferred => {
+                                        sent_count += 1;
+                                    }
                                     ReliableDeliveryOutcome::Closed
                                     | ReliableDeliveryOutcome::TimedOut => {
                                         failed_connections.push(subscriber.connection_id.clone());
@@ -897,7 +899,9 @@ impl RoomMessageHub {
                                         ReliableDeliveryOutcome::Delivered => {
                                             sent_count += 1;
                                         }
-                                        ReliableDeliveryOutcome::Deferred => {}
+                                        ReliableDeliveryOutcome::Deferred => {
+                                            sent_count += 1;
+                                        }
                                         ReliableDeliveryOutcome::Closed
                                         | ReliableDeliveryOutcome::TimedOut => {
                                             failed_connections
@@ -1917,7 +1921,7 @@ mod tests {
     }
 
     #[test]
-    fn test_broadcast_does_not_count_deferred_critical_delivery_on_current_thread_runtime() {
+    fn test_broadcast_counts_deferred_critical_delivery_on_current_thread_runtime() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1928,7 +1932,7 @@ mod tests {
             let room_id = RoomId::from_string("room-critical-deferred".to_string());
             let user_id = UserId::from_string("user-critical-deferred".to_string());
 
-            let _rx = hub
+            let mut rx = hub
                 .subscribe(room_id.clone(), user_id, "conn-critical-deferred".to_string())
                 .await
                 .expect("subscribe should succeed");
@@ -1961,14 +1965,40 @@ mod tests {
             );
 
             assert_eq!(
-                sent, 0,
-                "current-thread deferred critical delivery must not be reported as queued"
+                sent, 1,
+                "current-thread deferred critical delivery should count as locally accepted"
+            );
+
+            assert_eq!(
+                hub.connection_count(),
+                1,
+                "deferred current-thread delivery must keep the subscriber registered"
+            );
+
+            let _drained = rx.recv().await.expect("prefill message should exist");
+            let mut delivered_delete = false;
+            for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+                let msg = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .expect(
+                        "deferred critical broadcast should eventually enqueue once capacity is available",
+                    )
+                    .expect("channel should remain open");
+                if matches!(msg, ClusterEvent::RoomDeleted { .. }) {
+                    delivered_delete = true;
+                    break;
+                }
+            }
+
+            assert!(
+                delivered_delete,
+                "current-thread broadcast fallback must still enqueue the critical event after capacity is freed"
             );
         });
     }
 
     #[test]
-    fn test_broadcast_to_user_does_not_count_deferred_critical_delivery_on_current_thread_runtime()
+    fn test_broadcast_to_user_counts_deferred_critical_delivery_on_current_thread_runtime()
     {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1980,7 +2010,7 @@ mod tests {
             let room_id = RoomId::from_string("room-targeted-deferred".to_string());
             let user_id = UserId::from_string("user-targeted-deferred".to_string());
 
-            let _rx = hub
+            let mut rx = hub
                 .subscribe(
                     room_id.clone(),
                     user_id.clone(),
@@ -2018,8 +2048,34 @@ mod tests {
             );
 
             assert_eq!(
-                sent, 0,
-                "current-thread deferred targeted critical delivery must not be reported as queued"
+                sent, 1,
+                "current-thread deferred targeted critical delivery should count as locally accepted"
+            );
+
+            assert_eq!(
+                hub.connection_count(),
+                1,
+                "deferred targeted delivery must keep the subscriber registered"
+            );
+
+            let _drained = rx.recv().await.expect("prefill message should exist");
+            let mut delivered_delete = false;
+            for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+                let msg = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .expect(
+                        "deferred targeted critical delivery should eventually enqueue once capacity is available",
+                    )
+                    .expect("channel should remain open");
+                if matches!(msg, ClusterEvent::RoomDeleted { .. }) {
+                    delivered_delete = true;
+                    break;
+                }
+            }
+
+            assert!(
+                delivered_delete,
+                "current-thread targeted fallback must still enqueue the critical event after capacity is freed"
             );
         });
     }

@@ -170,7 +170,9 @@ impl ClientApiImpl {
         ApiError::from(err)
     }
 
-    pub(super) fn map_livestream_backend_error(error: &(dyn std::error::Error + 'static)) -> ApiError {
+    pub(super) fn map_livestream_backend_error(
+        error: &(dyn std::error::Error + 'static),
+    ) -> ApiError {
         if let Some(stream_error) = error.downcast_ref::<synctv_livestream::error::StreamError>() {
             return match stream_error {
                 synctv_livestream::error::StreamError::NoPublisher(_)

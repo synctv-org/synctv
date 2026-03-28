@@ -98,13 +98,13 @@ async fn test_node_discovery_three_nodes() {
     let redis_client_c =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client C");
 
-    let registry_a = NodeRegistry::new(redis_client_a, "node_a".to_string(), 30, "synctv:")
+    let registry_a = NodeRegistry::new(redis_client_a, "node_a".to_string(), 30, &redis.key_prefix)
         .expect("Failed to create registry A");
 
-    let registry_b = NodeRegistry::new(redis_client_b, "node_b".to_string(), 30, "synctv:")
+    let registry_b = NodeRegistry::new(redis_client_b, "node_b".to_string(), 30, &redis.key_prefix)
         .expect("Failed to create registry B");
 
-    let registry_c = NodeRegistry::new(redis_client_c, "node_c".to_string(), 30, "synctv:")
+    let registry_c = NodeRegistry::new(redis_client_c, "node_c".to_string(), 30, &redis.key_prefix)
         .expect("Failed to create registry C");
 
     // Register all three nodes
@@ -214,7 +214,7 @@ async fn test_node_epoch_fencing() {
     let redis_client =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client");
 
-    let registry = NodeRegistry::new(redis_client, "fencing_node".to_string(), 30, "synctv:")
+    let registry = NodeRegistry::new(redis_client, "fencing_node".to_string(), 30, &redis.key_prefix)
         .expect("Failed to create registry");
 
     // First registration
@@ -307,11 +307,11 @@ async fn test_leader_election_single_leader() {
     };
 
     let elector_a =
-        LeaderElector::with_config(conn_a, "node_a".to_string(), config_a, "synctv:", false);
+        LeaderElector::with_config(conn_a, "node_a".to_string(), config_a, &redis.key_prefix, false);
     let elector_b =
-        LeaderElector::with_config(conn_b, "node_b".to_string(), config_b, "synctv:", false);
+        LeaderElector::with_config(conn_b, "node_b".to_string(), config_b, &redis.key_prefix, false);
     let elector_c =
-        LeaderElector::with_config(conn_c, "node_c".to_string(), config_c, "synctv:", false);
+        LeaderElector::with_config(conn_c, "node_c".to_string(), config_c, &redis.key_prefix, false);
 
     let cancel_a = CancellationToken::new();
     let cancel_b = CancellationToken::new();

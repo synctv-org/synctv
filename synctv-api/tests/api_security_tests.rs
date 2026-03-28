@@ -95,11 +95,7 @@ async fn test_b1_guest_blacklist_storage_error_surfaces_service_unavailable() {
             Ok(())
         }
 
-        async fn blacklist_if_not_exists(
-            &self,
-            _key: &str,
-            _ttl_secs: u64,
-        ) -> Result<bool, Error> {
+        async fn blacklist_if_not_exists(&self, _key: &str, _ttl_secs: u64) -> Result<bool, Error> {
             Ok(false)
         }
 

@@ -8,7 +8,7 @@ use std::time::Duration;
 use synctv_cluster::{ClusterConfig, ClusterManager};
 use synctv_core::cache::InvalidationMessage;
 use synctv_core_testing::redis::RedisContainer;
-use synctv_core_testing::start_redis_url_with_label;
+use synctv_core_testing::{start_redis_url_with_label, test_redis_key_prefix};
 
 /// Default Redis version for test containers
 #[allow(dead_code)]
@@ -38,6 +38,7 @@ fn docker_startup_timeout() -> Duration {
 #[allow(dead_code)]
 pub struct TestRedis {
     pub redis_url: String,
+    pub key_prefix: String,
     pub redis_container: Option<RedisContainer>,
 }
 
@@ -53,6 +54,26 @@ impl TestRedis {
 
         Self {
             redis_url,
+            key_prefix: test_redis_key_prefix("cluster-integration"),
+            redis_container: Some(redis_container),
+        }
+    }
+
+    /// Start a **dedicated** Redis container that is NOT shared with other tests.
+    ///
+    /// Use this for tests that terminate or destroy their Redis instance (e.g.
+    /// fail-closed tests).  The shared container must never be terminated because
+    /// other concurrent test processes depend on it.
+    #[allow(dead_code)]
+    pub async fn start_dedicated() -> Self {
+        let (redis_container, redis_url) =
+            synctv_core_testing::redis::start_dedicated_redis_url_with_label("cluster-dedicated")
+                .await;
+        Self::wait_until_ready(&redis_url).await;
+
+        Self {
+            redis_url,
+            key_prefix: test_redis_key_prefix("cluster-dedicated"),
             redis_container: Some(redis_container),
         }
     }
@@ -67,7 +88,7 @@ impl TestRedis {
     #[allow(dead_code)]
     pub async fn terminate_container(&mut self) {
         if let Some(redis) = self.redis_container.take() {
-            redis.cleanup().await;
+            redis.terminate().await;
         }
     }
 
@@ -119,6 +140,15 @@ impl TestRedis {
 /// Helper: create a `ClusterManager` connected to the given Redis URL.
 #[allow(dead_code)]
 pub async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
+    create_node_with_prefix(redis_url, node_id, test_redis_key_prefix("cluster-node")).await
+}
+
+#[allow(dead_code)]
+pub async fn create_node_with_prefix(
+    redis_url: &str,
+    node_id: &str,
+    key_prefix: String,
+) -> ClusterManager {
     let client = redis::Client::open(redis_url).expect("Failed to open Redis client");
     let conn = client
         .get_connection_manager()
@@ -134,7 +164,7 @@ pub async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        key_prefix: "synctv:".to_string(),
+        key_prefix,
         catchup_window_secs: 300,
         stream_max_length: 10_000,
         parent_cancel_token: None,
@@ -166,7 +196,7 @@ pub async fn create_node_with_config(
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        key_prefix: "synctv:".to_string(),
+        key_prefix: test_redis_key_prefix("cluster-node-config"),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
         parent_cancel_token: None,

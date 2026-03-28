@@ -495,7 +495,8 @@ impl RemoteProviderManager {
     ) -> crate::Result<RemoteProviderConnection> {
         let channel = self.create_grpc_channel(config).await?;
         let connection = Self::build_remote_connection(config, channel)?;
-        self.validate_management_connection(config, &connection).await?;
+        self.validate_management_connection(config, &connection)
+            .await?;
         Ok(connection)
     }
 
@@ -542,7 +543,8 @@ impl RemoteProviderManager {
         config: &ProviderInstance,
         connection: &RemoteProviderConnection,
     ) -> crate::Result<()> {
-        self.validate_management_connection(config, connection).await?;
+        self.validate_management_connection(config, connection)
+            .await?;
         self.validate_authenticated_provider_health(config, connection)
             .await
     }

@@ -312,7 +312,11 @@ async fn test_set_member_role_rejects_demoting_the_room_creator() {
         "room creator must not be able to demote the membership row that represents ownership"
     );
 
-    let creator_member = member_repo.get(&room.id, &creator.id).await.unwrap().unwrap();
+    let creator_member = member_repo
+        .get(&room.id, &creator.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         creator_member.role,
         RoomRole::Creator,

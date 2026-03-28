@@ -177,6 +177,12 @@ impl RoomService {
         &self.permission_service
     }
 
+    /// Get the user service used by room coordination flows.
+    #[must_use]
+    pub const fn user_service(&self) -> &UserService {
+        &self.user_service
+    }
+
     /// Set the distributed lock (enables multi-replica safety for room creation)
     pub fn set_distributed_lock(&mut self, lock: crate::service::DistributedLock) {
         self.distributed_lock = Some(lock);
@@ -1464,7 +1470,10 @@ impl RoomService {
     /// Anonymous guest JWTs embed this version at issuance time. Bumping it
     /// revokes every previously issued guest token for the room.
     pub async fn get_room_guest_version(&self, room_id: &RoomId) -> Result<i64> {
-        let key = self.user_service.key_builder().room_guest_version(room_id.as_str());
+        let key = self
+            .user_service
+            .key_builder()
+            .room_guest_version(room_id.as_str());
         Ok(self
             .user_service
             .token_blacklist_store()
@@ -2905,7 +2914,9 @@ impl RoomService {
     ) -> Result<()> {
         self.remove_guest_role_members(room_id).await?;
         self.bump_room_guest_version(room_id).await?;
-        self.notification_service.kick_all_guests(room_id, reason).await?;
+        self.notification_service
+            .kick_all_guests(room_id, reason)
+            .await?;
         Ok(())
     }
 
@@ -2915,7 +2926,10 @@ impl RoomService {
             .checked_add(1)
             .ok_or_else(|| Error::Internal("Room guest version overflowed".to_string()))?;
 
-        let key = self.user_service.key_builder().room_guest_version(room_id.as_str());
+        let key = self
+            .user_service
+            .key_builder()
+            .room_guest_version(room_id.as_str());
         self.user_service
             .token_blacklist_store()
             .set_family_revoked(&key, next, self.room_guest_version_ttl_secs())
@@ -3211,14 +3225,6 @@ impl RoomService {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::RoomService;
-    use crate::{
-        cache::{CacheInvalidationService, KeyBuilder, NoopCacheL2, UsernameCache},
-        config::PasswordComplexityConfig,
-        service::{
-            auth::{BruteForceProtection, JwtService},
-            InMemoryTokenBlacklistStore, UserService,
-        },
-    };
     use crate::models::{
         room_settings::{
             AllowGuestJoin, ChatEnabled, DanmakuEnabled, GuestAddedPermissions, MaxMembers,
@@ -3228,6 +3234,14 @@ mod tests {
     };
     use crate::test_helpers::RoomFixture;
     use crate::Error;
+    use crate::{
+        cache::{CacheInvalidationService, KeyBuilder, NoopCacheL2, UsernameCache},
+        config::PasswordComplexityConfig,
+        service::{
+            auth::{BruteForceProtection, JwtService},
+            InMemoryTokenBlacklistStore, UserService,
+        },
+    };
     use sqlx::PgPool;
     use std::sync::Arc;
 

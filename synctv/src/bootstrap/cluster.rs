@@ -221,12 +221,11 @@ pub async fn init_cluster_discovery(
                 default_http_port: config.server.http_port,
             };
 
-            let static_discovery =
-                StaticDiscovery::new(
-                    static_config,
-                    components.registry.clone(),
-                    cm.cancel_token(),
-                );
+            let static_discovery = StaticDiscovery::new(
+                static_config,
+                components.registry.clone(),
+                cm.cancel_token(),
+            );
 
             let handle = static_discovery.start();
             info!("Static peer discovery started");

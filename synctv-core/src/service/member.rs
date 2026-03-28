@@ -501,10 +501,7 @@ impl MemberService {
             .check_permission_no_cache(&room_id, &granter_id, PermissionBits::GRANT_PERMISSION)
             .await?;
 
-        let target_member = self
-            .member_repo
-            .get(&room_id, &target_user_id)
-            .await?;
+        let target_member = self.member_repo.get(&room_id, &target_user_id).await?;
         let target_member = target_member
             .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
 
@@ -567,10 +564,7 @@ impl MemberService {
             .check_permission_no_cache(&room_id, &granter_id, PermissionBits::GRANT_PERMISSION)
             .await?;
 
-        let target_member = self
-            .member_repo
-            .get(&room_id, &target_user_id)
-            .await?;
+        let target_member = self.member_repo.get(&room_id, &target_user_id).await?;
         let target_member = target_member
             .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
 
@@ -972,14 +966,16 @@ impl MemberService {
                     self.unban_member(room_id.clone(), admin_id, target_user_id.clone())
                         .await?;
 
-                    return self.member_repo.get(&room_id, &target_user_id).await?.ok_or_else(
-                        || {
+                    return self
+                        .member_repo
+                        .get(&room_id, &target_user_id)
+                        .await?
+                        .ok_or_else(|| {
                             Error::Internal(
                                 "Unbanned member missing after successful status update"
                                     .to_string(),
                             )
-                        },
-                    );
+                        });
                 }
             }
             MemberStatus::Left => {

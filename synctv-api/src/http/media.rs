@@ -100,9 +100,7 @@ pub async fn set_playing_media(
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
 ) -> AppResult<impl IntoResponse> {
-    let req = crate::proto::client::StartPlaybackRequest {
-        media_id,
-    };
+    let req = crate::proto::client::StartPlaybackRequest { media_id };
 
     let response = state
         .client_api

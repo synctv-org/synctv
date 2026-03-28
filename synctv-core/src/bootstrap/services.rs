@@ -12,9 +12,8 @@ use crate::{
         RoomCache, UserCache, UsernameCache,
     },
     repository::{
-        ChatRepository, NotificationRepository, ProviderInstanceRepository,
-        RoomMemberRepository, RoomRepository, RoomSettingsRepository as RoomSettingsRepo,
-        SettingsRepository,
+        ChatRepository, NotificationRepository, ProviderInstanceRepository, RoomMemberRepository,
+        RoomRepository, RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
         UserOAuthProviderRepository, UserProviderCredentialRepository,
     },
     service::{

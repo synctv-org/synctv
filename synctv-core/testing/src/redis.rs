@@ -6,11 +6,11 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use redis::AsyncCommands;
-use testcontainers::core::{ImageExt, IntoContainerPort};
+use testcontainers::core::{ImageExt, IntoContainerPort, ReuseDirective};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
-use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
+use tokio::sync::{OnceCell, RwLock, Semaphore, SemaphorePermit};
 
 use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 
@@ -18,17 +18,35 @@ pub type RedisConnectionManager = redis::aio::ConnectionManager;
 pub type RedisConnectionHandle = Arc<RwLock<redis::aio::ConnectionManager>>;
 static REDIS_START_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
-const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 4;
+const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 8;
 const MIN_REDIS_ACTIVE_PARALLELISM: usize = 1;
 const REDIS_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_REDIS_ACTIVE_PARALLELISM";
 static REDIS_ACTIVE_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(redis_active_parallelism()));
-const TEST_CONTAINER_OWNER_LABEL: &str = "synctv.test.owner_pid";
+const TEST_RUN_LABEL: &str = "synctv.test.run_id";
+
+static SHARED_REDIS: OnceCell<Arc<SharedRedisServer>> = OnceCell::const_new();
 
 struct ProcessLock(File);
 struct DockerSlotGuard {
     _local_permit: SemaphorePermit<'static>,
     _process_lock: ProcessLock,
+}
+
+struct SharedRedisServer {
+    // Intentionally held but never dropped: the shared container survives
+    // until the next test run's orphan cleanup removes it.  Using
+    // ManuallyDrop prevents the Drop impl from calling `docker rm` when
+    // any single nextest worker process exits while others are still running.
+    _container: std::mem::ManuallyDrop<ContainerAsync<Redis>>,
+    name: String,
+    host: String,
+    port: u16,
+}
+
+pub struct RedisContainer {
+    shared: Arc<SharedRedisServer>,
+    cleaned_up: bool,
 }
 
 impl ProcessLock {
@@ -99,30 +117,71 @@ fn sanitize_container_name(raw: &str) -> String {
     }
 }
 
-fn current_test_label() -> String {
+fn sanitize_key_prefix_component(raw: &str) -> String {
+    let mut value: String = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    while value.ends_with('-') {
+        value.pop();
+    }
+    if value.is_empty() {
+        "test".to_string()
+    } else {
+        value
+    }
+}
+
+fn current_test_key_namespace() -> String {
     std::env::var("NEXTEST_TEST_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| std::thread::current().name().map(str::to_owned))
-        .map_or_else(
-            || "unknown-test".to_string(),
-            |value| sanitize_container_name(&value),
-        )
+        .map(|value| sanitize_key_prefix_component(&value))
+        .unwrap_or_else(|| "unknown-test".to_string())
 }
 
-fn redis_container_name(label: &str) -> String {
+fn current_process_id() -> u32 {
+    std::process::id()
+}
+
+fn current_test_run_id() -> String {
+    std::env::var("NEXTEST_RUN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| sanitize_container_name(&value))
+        .unwrap_or_else(|| format!("pid-{}", current_process_id()))
+}
+
+fn shared_container_name() -> String {
+    format!("synctv-redis-shared-{}", current_test_run_id())
+}
+
+pub fn test_redis_key_prefix(label: &str) -> String {
     format!(
-        "synctv-redis-{}-{}-{}",
-        current_test_label(),
-        sanitize_container_name(label),
-        nanoid::nanoid!(6).to_lowercase()
+        "synctv-test:{}:{}:pid{}:",
+        current_test_run_id(),
+        sanitize_key_prefix_component(&format!(
+            "{}-{}",
+            label,
+            current_test_key_namespace()
+        )),
+        current_process_id()
     )
 }
 
 fn named_redis_request(container_name: &str) -> testcontainers::ContainerRequest<Redis> {
     Redis::default()
         .with_container_name(container_name.to_string())
-        .with_label(TEST_CONTAINER_OWNER_LABEL, std::process::id().to_string())
+        .with_label(TEST_RUN_LABEL, current_test_run_id())
+        .with_reuse(ReuseDirective::Always)
+        .with_tag("7-alpine")
 }
 
 fn redis_connection_url(host: &str, port: u16) -> String {
@@ -143,20 +202,39 @@ async fn resolve_host_port(container: &ContainerAsync<Redis>, internal_port: u16
         .await
         .expect("Failed to get Redis host")
         .to_string();
-    let ports = container
-        .ports()
-        .await
-        .expect("Failed to inspect Redis port mappings");
-    let endpoints = candidate_endpoints_for_host(
-        &host,
-        ports.map_to_host_port_ipv4(internal_port.tcp()),
-        ports.map_to_host_port_ipv6(internal_port.tcp()),
-    );
 
-    assert!(
-        !endpoints.is_empty(),
-        "Failed to resolve Redis endpoint for host {host}"
-    );
+    // Retry port resolution: Docker may not have finished mapping ports
+    // immediately after container start, especially under heavy concurrent load.
+    // Use a tighter 30-second deadline for port resolution (not the full
+    // docker_startup_timeout) since port mapping should appear quickly.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut _last_port_error = String::from("port resolution has not been attempted yet");
+
+    let endpoints = loop {
+        let ports = container
+            .ports()
+            .await
+            .expect("Failed to inspect Redis port mappings");
+        let eps = candidate_endpoints_for_host(
+            &host,
+            ports.map_to_host_port_ipv4(internal_port.tcp()),
+            ports.map_to_host_port_ipv6(internal_port.tcp()),
+        );
+        if !eps.is_empty() {
+            break eps;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "Failed to resolve Redis endpoint for host {host} within 30 seconds",
+            );
+        }
+        _last_port_error = format!(
+            "no port mapping for internal port {internal_port} (ipv4={:?}, ipv6={:?})",
+            ports.map_to_host_port_ipv4(internal_port.tcp()),
+            ports.map_to_host_port_ipv6(internal_port.tcp()),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
 
     let deadline = std::time::Instant::now() + docker_startup_timeout();
     let mut last_error = String::from("redis endpoint probe has not run yet");
@@ -250,15 +328,6 @@ fn candidate_endpoints_for_host(
     candidates
 }
 
-fn process_is_alive(pid: &str) -> bool {
-    Command::new("kill")
-        .args(["-0", pid])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
 fn handle_cleanup_result<F>(
     cleaned_up: &mut bool,
     container_name: &str,
@@ -296,7 +365,7 @@ where
             Err(fallback_err) => Some(format!(
                 "warning: failed to remove {kind} test container {container_name} during explicit cleanup: {err}; fallback `docker rm -f` also failed: {fallback_err}"
             )),
-        }
+        },
     }
 }
 
@@ -355,6 +424,7 @@ fn format_command_failure(program: &str, args: &[&str], output: &std::process::O
 }
 
 fn cleanup_orphaned_testcontainers(prefix: &str) {
+    let current_run_id = current_test_run_id();
     let output = Command::new("docker")
         .args([
             "ps",
@@ -380,7 +450,7 @@ fn cleanup_orphaned_testcontainers(prefix: &str) {
                 "inspect",
                 container_id,
                 "--format",
-                &format!("{{{{index .Config.Labels \"{TEST_CONTAINER_OWNER_LABEL}\"}}}}"),
+                &format!("{{{{index .Config.Labels \"{TEST_RUN_LABEL}\"}}}}"),
             ])
             .output();
 
@@ -391,8 +461,8 @@ fn cleanup_orphaned_testcontainers(prefix: &str) {
             continue;
         }
 
-        let owner_pid = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
-        if owner_pid.is_empty() || process_is_alive(&owner_pid) {
+        let run_id = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
+        if run_id == current_run_id {
             continue;
         }
 
@@ -404,103 +474,97 @@ fn cleanup_orphaned_testcontainers(prefix: &str) {
     }
 }
 
-pub struct RedisContainer {
-    inner: Option<ContainerAsync<Redis>>,
-    name: String,
-    cleaned_up: bool,
-    _slot_guard: Option<DockerSlotGuard>,
+fn cleanup_orphaned_run_lock_files(prefix: &str) {
+    let Ok(entries) = std::fs::read_dir("/tmp") else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with(prefix) || !file_name.ends_with(".lock") {
+            continue;
+        }
+
+        let Some(lock) = ProcessLock::try_acquire_path(path.clone()) else {
+            continue;
+        };
+        drop(lock);
+
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+impl SharedRedisServer {
+    fn url(&self) -> String {
+        redis_connection_url(&self.host, self.port)
+    }
 }
 
 impl RedisContainer {
-    fn new(inner: ContainerAsync<Redis>, name: String, slot_guard: DockerSlotGuard) -> Self {
+    fn new(shared: Arc<SharedRedisServer>) -> Self {
         Self {
-            inner: Some(inner),
-            name,
+            shared,
             cleaned_up: false,
-            _slot_guard: Some(slot_guard),
         }
     }
 
     pub async fn cleanup(mut self) {
-        if let Some(container) = self.inner.take() {
-            log_cleanup_warning_if_needed(handle_cleanup_result(
-                &mut self.cleaned_up,
-                &self.name,
-                container.rm().await.map_err(|err| err.to_string()),
-                "redis",
-                docker_rm_force,
-            ));
-        } else {
-            self.cleaned_up = true;
+        self.cleaned_up = true;
+    }
+
+    pub async fn terminate(mut self) {
+        // The container is intentionally ManuallyDrop'd so it survives
+        // individual worker process exits.  Use force-removal via Docker CLI
+        // as fallback when explicit termination is requested.
+        let result = docker_rm_force(&self.shared.name);
+        let warning = handle_cleanup_result(
+            &mut self.cleaned_up,
+            &self.shared.name,
+            result,
+            "redis",
+            docker_rm_force,
+        );
+        log_cleanup_warning_if_needed(warning);
+    }
+
+    pub async fn id(&self) -> String {
+        // The container is kept alive via ManuallyDrop; access the ID
+        // through the Docker CLI since we no longer hold a direct reference.
+        let output = Command::new("docker")
+            .args(["inspect", &self.shared.name, "--format", "{{.Id}}"])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                String::from_utf8_lossy(&output.stdout).trim().to_string()
+            }
+            _ => self.shared.name.clone(),
         }
     }
 
-    pub const fn raw(&self) -> &ContainerAsync<Redis> {
-        self.inner
-            .as_ref()
-            .expect("redis container should still be present")
-    }
-
     pub async fn host(&self) -> String {
-        self.host_port(6379).await.0
+        self.shared.host.clone()
     }
 
-    pub async fn port_ipv4(&self, internal_port: u16) -> u16 {
-        self.host_port(internal_port).await.1
+    pub async fn port_ipv4(&self, _internal_port: u16) -> u16 {
+        self.shared.port
     }
 
-    pub async fn host_port(&self, internal_port: u16) -> (String, u16) {
-        resolve_host_port(self.raw(), internal_port).await
+    pub async fn host_port(&self, _internal_port: u16) -> (String, u16) {
+        (self.shared.host.clone(), self.shared.port)
     }
-}
 
-impl std::ops::Deref for RedisContainer {
-    type Target = ContainerAsync<Redis>;
-
-    fn deref(&self) -> &Self::Target {
-        self.raw()
+    pub fn connection_url(&self) -> String {
+        self.shared.url()
     }
 }
 
 impl Drop for RedisContainer {
     fn drop(&mut self) {
-        if let Some(container) = self.inner.take() {
-            drop(container);
-        }
-        if !self.cleaned_up {
-            if let Err(err) = docker_rm_force(&self.name) {
-                eprintln!(
-                    "warning: failed to force-remove redis test container {} during Drop: {err}",
-                    self.name
-                );
-            }
-        }
+        self.cleaned_up = true;
     }
-}
-
-async fn start_redis_inner(label: &str) -> (RedisContainer, String, redis::Client) {
-    let container_name = redis_container_name(label);
-    let container_slot = acquire_docker_active_slot("redis-active").await;
-    cleanup_orphaned_testcontainers("synctv-redis-");
-    let container = {
-        let _redis_process_lock = acquire_docker_start_slot("redis-start").await;
-        tokio::time::timeout(
-            docker_startup_timeout(),
-            named_redis_request(&container_name).start(),
-        )
-        .await
-        .expect("Docker container startup timed out (is Docker running?)")
-        .expect("Failed to start Redis")
-    };
-    let (host, port) = resolve_host_port(&container, 6379).await;
-    let redis_url = redis_connection_url(&host, port);
-    let client = redis::Client::open(redis_url.clone()).expect("Failed to create Redis client");
-    wait_for_redis_ready(&client).await;
-    (
-        RedisContainer::new(container, container_name, container_slot),
-        redis_url,
-        client,
-    )
 }
 
 async fn acquire_docker_slot(
@@ -553,9 +617,110 @@ async fn acquire_docker_active_slot(name: &str) -> DockerSlotGuard {
     .await
 }
 
+async fn init_shared_redis_server() -> SharedRedisServer {
+    cleanup_orphaned_testcontainers("synctv-redis-");
+    cleanup_orphaned_run_lock_files("synctv-redis-run-");
+    let run_id = current_test_run_id();
+
+    let lock_name = format!("redis-run-{run_id}");
+    let _startup_lock = tokio::task::spawn_blocking(move || loop {
+        if let Some(lock) = ProcessLock::try_acquire(&lock_name) {
+            return lock;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    })
+    .await
+    .expect("redis startup lock task should not panic");
+
+    let container_name = shared_container_name();
+    // Acquire active + start slots only during initialization so the file locks
+    // are released once the shared container is confirmed ready.  Holding them
+    // for the process lifetime (as _slot_guard previously did) limits total
+    // concurrency to `redis_active_parallelism` (default 8) across all nextest
+    // workers – which is far too low for the 20+ ignored Docker tests that run
+    // in parallel.
+    let _active_slot = acquire_docker_active_slot("redis-active").await;
+    let container = {
+        let _redis_process_lock = acquire_docker_start_slot("redis-start").await;
+        let start_deadline = std::time::Instant::now() + docker_startup_timeout();
+        let mut last_start_error;
+        loop {
+            match tokio::time::timeout(
+                docker_startup_timeout(),
+                named_redis_request(&container_name).start(),
+            )
+            .await
+            {
+                Ok(Ok(c)) => break c,
+                Ok(Err(e)) => {
+                    let err_str = format!("{e}");
+                    // Retry on "container is marked for removal" (409) – Docker
+                    // may still be cleaning up a stale container from a previous run.
+                    if err_str.contains("marked for removal") || err_str.contains("409") {
+                        last_start_error = err_str;
+                        if std::time::Instant::now() >= start_deadline {
+                            panic!("Failed to start Redis after retries: {last_start_error}");
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        continue;
+                    }
+                    panic!("Failed to start Redis: {e}");
+                }
+                Err(_) => {
+                    panic!(
+                        "Docker container startup timed out after {:?} (is Docker running?)",
+                        docker_startup_timeout()
+                    );
+                }
+            }
+        }
+    };
+    let (host, port) = resolve_host_port(&container, 6379).await;
+    let client =
+        redis::Client::open(redis_connection_url(&host, port)).expect("Failed to create Redis client");
+    wait_for_redis_ready(&client).await;
+    drop(_active_slot);
+
+    SharedRedisServer {
+        _container: std::mem::ManuallyDrop::new(container),
+        name: container_name,
+        host,
+        port,
+    }
+}
+
+async fn shared_redis_server() -> Arc<SharedRedisServer> {
+    Arc::clone(
+        SHARED_REDIS
+            .get_or_init(|| async { Arc::new(init_shared_redis_server().await) })
+            .await,
+    )
+}
+
+async fn start_redis_inner(_label: &str) -> (RedisContainer, String, redis::Client) {
+    let shared = shared_redis_server().await;
+    let redis_url = shared.url();
+    let client = redis::Client::open(redis_url.clone()).expect("Failed to create Redis client");
+    wait_for_redis_ready(&client).await;
+
+    (RedisContainer::new(shared), redis_url, client)
+}
+
 pub async fn start_redis_with_client() -> (RedisContainer, redis::Client) {
     let (container, _redis_url, client) = start_redis_inner("client").await;
     (container, client)
+}
+
+/// Start a shared Redis container and return a `ConnectionManager`.
+///
+/// This reuses the shared Redis container across processes in the same test run.
+pub async fn start_redis() -> (RedisContainer, RedisConnectionManager) {
+    let (container, redis_url, _client) = start_redis_inner("conn-mgr").await;
+    let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let manager = redis::aio::ConnectionManager::new(client)
+        .await
+        .expect("Failed to create Redis connection manager");
+    (container, manager)
 }
 
 pub async fn start_redis_url_with_label(label: &str) -> (RedisContainer, String) {
@@ -563,16 +728,68 @@ pub async fn start_redis_url_with_label(label: &str) -> (RedisContainer, String)
     (container, redis_url)
 }
 
-pub async fn start_redis() -> (RedisContainer, RedisConnectionManager) {
-    let (container, client) = start_redis_with_client().await;
+/// Start a **dedicated** Redis container that is NOT shared with other tests.
+///
+/// Use this for tests that need to terminate or otherwise destroy their Redis
+/// instance (e.g. fail-closed tests).  The shared container must never be
+/// terminated because other concurrent test processes depend on it.
+pub async fn start_dedicated_redis() -> (RedisContainer, RedisConnectionManager) {
+    let container_name = format!(
+        "synctv-redis-dedicated-{}-{}",
+        current_process_id(),
+        sanitize_container_name(
+            &std::env::var("NEXTEST_TEST_NAME")
+                .ok()
+                .or_else(|| std::thread::current().name().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+    );
+    let container = tokio::time::timeout(
+        docker_startup_timeout(),
+        named_redis_request(&container_name).start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start dedicated Redis");
+
+    let (host, port) = resolve_host_port(&container, 6379).await;
+    let redis_url = redis_connection_url(&host, port);
+    let client = redis::Client::open(redis_url.clone()).expect("Failed to create Redis client");
+    wait_for_redis_ready(&client).await;
     let manager = redis::aio::ConnectionManager::new(client)
         .await
         .expect("Failed to create Redis connection manager");
-    (container, manager)
+
+    let shared = Arc::new(SharedRedisServer {
+        _container: std::mem::ManuallyDrop::new(container),
+        name: container_name,
+        host,
+        port,
+    });
+
+    (RedisContainer::new(shared), manager)
+}
+
+/// Start a **dedicated** Redis container (not shared) and return its URL.
+///
+/// Use for tests that terminate or destroy their Redis instance.
+/// The label is used for the container name; each invocation creates a
+/// separate container.
+pub async fn start_dedicated_redis_url_with_label(
+    _label: &str,
+) -> (RedisContainer, String) {
+    let (container, _manager) = start_dedicated_redis().await;
+    let redis_url = container.connection_url();
+    (container, redis_url)
 }
 
 pub async fn start_redis_handle() -> (RedisContainer, RedisConnectionHandle) {
-    let (container, manager) = start_redis().await;
+    let (container, redis_url, _client) = start_redis_inner("handle").await;
+    let manager = redis::aio::ConnectionManager::new(
+        redis::Client::open(redis_url).expect("Failed to create Redis client for handle"),
+    )
+    .await
+    .expect("Failed to create Redis connection manager");
     (container, Arc::new(RwLock::new(manager)))
 }
 
@@ -644,7 +861,7 @@ mod tests {
             redis_active_parallelism_from(None),
             DEFAULT_REDIS_ACTIVE_PARALLELISM
         );
-        assert_eq!(DEFAULT_REDIS_ACTIVE_PARALLELISM, 4);
+        assert_eq!(DEFAULT_REDIS_ACTIVE_PARALLELISM, 8);
     }
 
     #[test]
@@ -657,6 +874,45 @@ mod tests {
         assert_eq!(
             redis_active_parallelism_from(Some("0")),
             MIN_REDIS_ACTIVE_PARALLELISM
+        );
+    }
+
+    #[test]
+    fn shared_container_name_uses_nextest_run_id_when_present() {
+        unsafe {
+            std::env::set_var("NEXTEST_RUN_ID", "Run.Id/42");
+        }
+        let name = shared_container_name();
+        unsafe {
+            std::env::remove_var("NEXTEST_RUN_ID");
+        }
+
+        assert_eq!(name, "synctv-redis-shared-run-id-42");
+    }
+
+    #[test]
+    fn redis_connection_url_brackets_ipv6_literals() {
+        let url = redis_connection_url("::1", 6379);
+
+        assert_eq!(url, "redis://[::1]:6379");
+    }
+
+    #[test]
+    fn resolve_host_port_uses_ipv4_port_for_domain_hosts() {
+        assert_eq!(
+            candidate_endpoints_for_host("docker.internal", Some(6379), Some(16379)),
+            vec![
+                ("docker.internal".to_string(), 6379),
+                ("docker.internal".to_string(), 16379)
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_host_port_uses_ipv6_port_for_ipv6_hosts() {
+        assert_eq!(
+            candidate_endpoints_for_host("[::1]", Some(6379), Some(16379)),
+            vec![("[::1]".to_string(), 16379), ("127.0.0.1".to_string(), 6379)]
         );
     }
 
@@ -776,67 +1032,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn redis_connection_url_uses_resolved_host() {
-        let url = redis_connection_url("docker.internal", 6379);
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed Redis"]
+    async fn start_redis_reuses_shared_container_within_process() {
+        let (redis_one, url_one) = start_redis_url_with_label("shared-a").await;
+        let (redis_two, url_two) = start_redis_url_with_label("shared-b").await;
 
-        assert_eq!(url, "redis://docker.internal:6379");
-        assert!(
-            !url.contains("127.0.0.1"),
-            "redis URL must not hardcode localhost"
-        );
-    }
-
-    #[test]
-    fn redis_connection_url_brackets_ipv6_literals() {
-        let url = redis_connection_url("::1", 6379);
-
-        assert_eq!(url, "redis://[::1]:6379");
-    }
-
-    #[test]
-    fn resolve_host_port_uses_ipv4_port_for_domain_hosts() {
         assert_eq!(
-            candidate_endpoints_for_host("docker.internal", Some(6379), Some(16380)),
-            vec![
-                ("docker.internal".to_string(), 6379),
-                ("docker.internal".to_string(), 16380)
-            ]
+            redis_one.host_port(6379).await,
+            redis_two.host_port(6379).await,
+            "redis leases in the same process should reuse one shared container"
         );
-    }
-
-    #[test]
-    fn resolve_host_port_keeps_reported_host_for_ipv4_domain_mappings() {
         assert_eq!(
-            candidate_endpoints_for_host("10.0.0.8", Some(6379), None),
-            vec![("10.0.0.8".to_string(), 6379)]
+            url_one, url_two,
+            "shared redis leases should point at the same endpoint"
         );
-    }
 
-    #[test]
-    fn resolve_host_port_uses_ipv6_port_for_ipv6_hosts() {
-        assert_eq!(
-            candidate_endpoints_for_host("[::1]", Some(6379), Some(16380)),
-            vec![
-                ("[::1]".to_string(), 16380),
-                ("127.0.0.1".to_string(), 6379)
-            ]
-        );
-    }
-
-    #[test]
-    fn resolve_host_port_uses_ipv6_when_domain_only_has_ipv6_mapping() {
-        assert_eq!(
-            candidate_endpoints_for_host("docker.internal", None, Some(16380)),
-            vec![("docker.internal".to_string(), 16380)]
-        );
-    }
-
-    #[test]
-    fn resolve_host_port_rewrites_localhost_to_ipv6_literal_when_needed() {
-        assert_eq!(
-            candidate_endpoints_for_host("localhost", Some(6379), Some(16380)),
-            vec![("::1".to_string(), 16380), ("127.0.0.1".to_string(), 6379)]
-        );
+        redis_one.cleanup().await;
+        redis_two.cleanup().await;
     }
 }

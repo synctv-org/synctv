@@ -10,8 +10,9 @@ use synctv_core::models::id::{RoomId, UserId};
 
 mod integration_test_helpers;
 use integration_test_helpers::TestRedis;
+use synctv_core_testing::test_redis_key_prefix;
 
-async fn setup_redis() -> (TestRedis, redis::aio::ConnectionManager) {
+async fn setup_redis() -> (TestRedis, redis::aio::ConnectionManager, String) {
     let redis = TestRedis::start().await;
     let redis_client =
         redis::Client::open(redis.redis_url.as_str()).expect("Failed to create Redis client");
@@ -27,7 +28,8 @@ async fn setup_redis() -> (TestRedis, redis::aio::ConnectionManager) {
         .await
         .expect("Redis PING failed");
 
-    (redis, conn)
+    let key_prefix = test_redis_key_prefix("ttl-test");
+    (redis, conn, key_prefix)
 }
 
 fn uid(s: &str) -> UserId {
@@ -43,7 +45,7 @@ fn rid(s: &str) -> RoomId {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_ttl_refresh_moderate_connections() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
     let limits = ConnectionLimits {
         max_total: 500,
@@ -52,7 +54,7 @@ async fn test_ttl_refresh_moderate_connections() {
         ..Default::default()
     };
 
-    let manager = ConnectionManager::new(limits).with_redis(conn.clone(), "ttl_mod:");
+    let manager = ConnectionManager::new(limits).with_redis(conn.clone(), &prefix);
 
     // Register 100 connections with 10 users across 5 rooms
     let num_connections = 100;
@@ -83,7 +85,7 @@ async fn test_ttl_refresh_moderate_connections() {
 
     // Check a few user counter keys
     for i in 0..num_users {
-        let key = format!("ttl_mod:connections:user:user_{i}");
+        let key = format!("{prefix}connections:user:user_{i}");
         let ttl: i64 = redis::cmd("TTL")
             .arg(&key)
             .query_async(&mut test_conn)
@@ -94,7 +96,7 @@ async fn test_ttl_refresh_moderate_connections() {
 
     // Check a few room counter keys
     for i in 0..num_rooms {
-        let key = format!("ttl_mod:connections:room:room_{i}");
+        let key = format!("{prefix}connections:room:room_{i}");
         let ttl: i64 = redis::cmd("TTL")
             .arg(&key)
             .query_async(&mut test_conn)
@@ -104,7 +106,7 @@ async fn test_ttl_refresh_moderate_connections() {
     }
 
     // Check total counter
-    let total_key = "ttl_mod:connections:total";
+    let total_key = format!("{prefix}connections:total");
     let ttl: i64 = redis::cmd("TTL")
         .arg(total_key)
         .query_async(&mut test_conn)
@@ -117,9 +119,9 @@ async fn test_ttl_refresh_moderate_connections() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_ttl_refresh_empty_manager() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
-    let manager = ConnectionManager::default().with_redis(conn.clone(), "ttl_empty:");
+    let manager = ConnectionManager::default().with_redis(conn.clone(), &prefix);
 
     // Should not panic or error with no connections
     manager.test_refresh_distributed_counter_ttls().await;
@@ -131,9 +133,9 @@ async fn test_ttl_refresh_empty_manager() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_ttl_refresh_idempotent() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
-    let manager = ConnectionManager::default().with_redis(conn.clone(), "ttl_idem:");
+    let manager = ConnectionManager::default().with_redis(conn.clone(), &prefix);
 
     // Register a few connections
     for i in 0..5 {
@@ -152,7 +154,7 @@ async fn test_ttl_refresh_idempotent() {
 
     // Verify counter values are still correct
     let mut test_conn = conn.clone();
-    let total: Option<i64> = test_conn.get("ttl_idem:connections:total").await.unwrap();
+    let total: Option<i64> = test_conn.get(format!("{prefix}connections:total")).await.unwrap();
     assert_eq!(total, Some(5));
 }
 
@@ -169,10 +171,10 @@ async fn test_ttl_refresh_idempotent() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_shutdown_cancels_ttl_refresh_task() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
     let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), "shutdown_test:");
+        .with_redis(conn.clone(), &prefix);
 
     // Register a connection to ensure TTL task has work to do
     let user_id = uid("user_1");
@@ -202,10 +204,10 @@ async fn test_shutdown_cancels_ttl_refresh_task() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
     let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), "quick_shutdown:");
+        .with_redis(conn.clone(), &prefix);
 
     // Register some connections
     for i in 0..5 {
@@ -235,10 +237,10 @@ async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_ttl_shutdown_is_idempotent() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
     let manager =
-        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "idempotent:");
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     // Call shutdown multiple times
     manager.shutdown().await;
@@ -277,10 +279,10 @@ async fn test_manager_without_redis_works_without_shutdown() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_shutdown_during_active_operations() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
     let manager =
-        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), "active_ops:");
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), &prefix);
 
     // Register many connections concurrently with shutdown
     let manager_clone = manager.clone();
@@ -322,10 +324,10 @@ async fn test_shutdown_during_active_operations() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_shutdown_cancels_disconnect_retry_task() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
     let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), "disconnect_retry:");
+        .with_redis(conn.clone(), &prefix);
 
     // Register and then force disconnect signal
     let user_id = uid("disconnect_user");
@@ -355,10 +357,10 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
     let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), "reconcile_zero:");
+        .with_redis(conn.clone(), &prefix);
     let user_id = uid("user_zero");
     let room_id = rid("room_zero");
 
@@ -378,30 +380,30 @@ async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
 
     let mut redis_conn = conn.clone();
     let _: () = redis_conn
-        .set("reconcile_zero:connections:total", 1i64)
+        .set(format!("{prefix}connections:total"), 1i64)
         .await
         .unwrap();
     let _: () = redis_conn
-        .set("reconcile_zero:connections:user:user_zero", 1i64)
+        .set(format!("{prefix}connections:user:user_zero"), 1i64)
         .await
         .unwrap();
     let _: () = redis_conn
-        .set("reconcile_zero:connections:room:room_zero", 1i64)
+        .set(format!("{prefix}connections:room:room_zero"), 1i64)
         .await
         .unwrap();
 
     manager.reconcile_with_redis().await;
 
     let total: Option<i64> = redis_conn
-        .get("reconcile_zero:connections:total")
+        .get(format!("{prefix}connections:total"))
         .await
         .unwrap();
     let user: Option<i64> = redis_conn
-        .get("reconcile_zero:connections:user:user_zero")
+        .get(format!("{prefix}connections:user:user_zero"))
         .await
         .unwrap();
     let room: Option<i64> = redis_conn
-        .get("reconcile_zero:connections:room:room_zero")
+        .get(format!("{prefix}connections:room:room_zero"))
         .await
         .unwrap();
 
@@ -421,10 +423,10 @@ async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
     let manager =
-        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), "ttl_value:");
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), &prefix);
 
     // Register a connection
     let user_id = uid("user_ttl_test");
@@ -435,7 +437,7 @@ async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
 
     // Verify the TTL on the user counter key
     let mut test_conn = conn.clone();
-    let key = "ttl_value:connections:user:user_ttl_test";
+    let key = format!("{prefix}connections:user:user_ttl_test");
     let ttl: i64 = redis::cmd("TTL")
         .arg(key)
         .query_async(&mut test_conn)
@@ -457,10 +459,10 @@ async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_distributed_counter_expires_after_ttl() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
     let manager =
-        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), "ttl_expire:");
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), &prefix);
 
     // Register a connection
     let user_id = uid("user_expire_test");
@@ -471,13 +473,13 @@ async fn test_distributed_counter_expires_after_ttl() {
 
     // Verify counter exists and has value
     let mut test_conn = conn.clone();
-    let key = "ttl_expire:connections:user:user_expire_test";
-    let count: Option<i64> = test_conn.get(key).await.unwrap();
+    let key = format!("{prefix}connections:user:user_expire_test");
+    let count: Option<i64> = test_conn.get(&key).await.unwrap();
     assert_eq!(count, Some(1), "Counter should be 1 after registration");
 
     // Get initial TTL
     let initial_ttl: i64 = redis::cmd("TTL")
-        .arg(key)
+        .arg(&key)
         .query_async(&mut test_conn)
         .await
         .expect("Failed to get initial TTL");
@@ -488,7 +490,7 @@ async fn test_distributed_counter_expires_after_ttl() {
 
     // Manually reduce TTL to 2 seconds to simulate expiry
     let _: () = redis::cmd("EXPIRE")
-        .arg(key)
+        .arg(&key)
         .arg(2)
         .query_async(&mut test_conn)
         .await
@@ -498,7 +500,7 @@ async fn test_distributed_counter_expires_after_ttl() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify counter has expired
-    let count_after_expiry: Option<i64> = test_conn.get(key).await.unwrap();
+    let count_after_expiry: Option<i64> = test_conn.get(&key).await.unwrap();
     assert_eq!(
         count_after_expiry, None,
         "Counter should have expired after TTL"
@@ -512,10 +514,10 @@ async fn test_distributed_counter_expires_after_ttl() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_ttl_multiplier_provides_safety_margin() {
-    let (_container, conn) = setup_redis().await;
+    let (_container, conn, prefix) = setup_redis().await;
 
     let manager =
-        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), "ttl_margin:");
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), &prefix);
 
     // Register a connection
     let user_id = uid("user_margin_test");
@@ -526,7 +528,7 @@ async fn test_ttl_multiplier_provides_safety_margin() {
 
     // Get initial TTL
     let mut test_conn = conn.clone();
-    let key = "ttl_margin:connections:user:user_margin_test";
+    let key = format!("{prefix}connections:user:user_margin_test");
     let ttl: i64 = redis::cmd("TTL")
         .arg(key)
         .query_async(&mut test_conn)

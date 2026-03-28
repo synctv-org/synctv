@@ -129,9 +129,9 @@ impl AuthInterceptor {
             pv: claims.pv,
         };
         request.extensions_mut().insert(user_context.clone());
-        request.extensions_mut().insert(RoomContext {
-            room_id: room_id.0,
-        });
+        request
+            .extensions_mut()
+            .insert(RoomContext { room_id: room_id.0 });
 
         Ok(request)
     }

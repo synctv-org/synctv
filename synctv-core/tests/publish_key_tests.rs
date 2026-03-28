@@ -12,7 +12,7 @@ use synctv_core::service::{
     publish_key::{InMemoryJtiStore, PublishKeyService},
     JtiStore,
 };
-use synctv_core_testing::start_redis_with_client;
+use synctv_core_testing::{start_redis_with_client, test_redis_key_prefix};
 
 fn create_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890").unwrap()
@@ -225,8 +225,9 @@ async fn test_redis_jti_store_cross_service_dedup() {
         .expect("Failed to create Redis ConnectionManager");
 
     // Create two stores simulating two replicas
-    let store1 = RedisJtiStore::new(conn.clone(), "test:".to_string(), 300);
-    let store2 = RedisJtiStore::new(conn.clone(), "test:".to_string(), 300);
+    let prefix = test_redis_key_prefix("jti-store");
+    let store1 = RedisJtiStore::new(conn.clone(), prefix.clone(), 300);
+    let store2 = RedisJtiStore::new(conn.clone(), prefix, 300);
 
     // Claim on store1
     let result1 = store1.try_claim("cross_jti", 300).await.unwrap();
@@ -252,7 +253,8 @@ async fn test_publish_key_service_with_redis_full_lifecycle() {
 
     let jwt =
         JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890").unwrap();
-    let service = PublishKeyService::with_redis(jwt, 24, conn, "test_pk:".to_string());
+    let prefix = test_redis_key_prefix("publish-key");
+    let service = PublishKeyService::with_redis(jwt, 24, conn, prefix);
 
     let room_id = RoomId::new();
     let media_id = MediaId::new();

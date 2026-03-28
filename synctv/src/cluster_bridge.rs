@@ -53,22 +53,18 @@ impl synctv_core::service::MemberEventBroadcaster for ClusterMemberEventBroadcas
         user_id: &synctv_core::models::UserId,
         reason: &str,
     ) {
-        let _ = self
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
-                event_id: nanoid::nanoid!(16),
-                room_id: room_id.clone(),
-                user_id: user_id.clone(),
-                reason: reason.to_string(),
-                timestamp: chrono::Utc::now(),
-            });
+        let _ =
+            self.cluster_manager
+                .broadcast(synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: room_id.clone(),
+                    user_id: user_id.clone(),
+                    reason: reason.to_string(),
+                    timestamp: chrono::Utc::now(),
+                });
     }
 
-    fn broadcast_kick_user(
-        &self,
-        user_id: &synctv_core::models::UserId,
-        reason: &str,
-    ) {
+    fn broadcast_kick_user(&self, user_id: &synctv_core::models::UserId, reason: &str) {
         let _ = self
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::KickUser {

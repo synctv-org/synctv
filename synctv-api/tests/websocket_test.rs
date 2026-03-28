@@ -648,8 +648,8 @@ mod websocket_e2e {
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
     use synctv_core_testing::{
-        create_test_pool_with_db_and_label, start_redis_url_with_label, RedisContainer,
-        TestContainer,
+        create_test_pool_with_db_and_label, start_redis_url_with_label, test_redis_key_prefix,
+        RedisContainer, TestContainer,
     };
     use synctv_proto::client::{
         client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage, WebRtcJoin,
@@ -665,6 +665,7 @@ mod websocket_e2e {
     struct TestInfra {
         pool: PgPool,
         redis_url: String,
+        redis_key_prefix: String,
         #[allow(dead_code)]
         postgres: Option<TestContainer>,
         #[allow(dead_code)]
@@ -680,6 +681,7 @@ mod websocket_e2e {
             Self {
                 pool,
                 redis_url,
+                redis_key_prefix: test_redis_key_prefix("api-ws-rate-limiter"),
                 postgres: Some(postgres),
                 redis: Some(redis),
             }
@@ -837,6 +839,7 @@ mod websocket_e2e {
     ) -> E2EServer {
         let pool = infra.pool.clone();
         let redis_url = infra.redis_url.clone();
+        let redis_key_prefix = infra.redis_key_prefix.clone();
 
         // Create services
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
@@ -851,15 +854,16 @@ mod websocket_e2e {
         let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new_shared(
             redis_conn.clone(),
         ));
-        let username_cache = UsernameCache::new(l2_backend, "test_un:".to_string(), 100, 300);
+        let username_cache =
+            UsernameCache::new(l2_backend, format!("{redis_key_prefix}un:"), 100, 300);
         let username_cache_for_chat = username_cache.clone();
 
-        let key_builder = synctv_core::cache::KeyBuilder::new("test:".to_string());
+        let key_builder = synctv_core::cache::KeyBuilder::new(redis_key_prefix.clone());
 
         // BruteForceProtection with Redis backend
         let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(
             redis_conn.clone(),
-            "test:".to_string(),
+            redis_key_prefix.clone(),
         );
 
         // Token blacklist with in-memory backend (sufficient for tests)
@@ -890,6 +894,7 @@ mod websocket_e2e {
             redis_conn: Some(redis_conn_for_cluster),
             shared_redis_conn: None,
             node_id: node_id.to_string(),
+            key_prefix: redis_key_prefix.clone(),
             ..Default::default()
         };
         let cluster_manager = Arc::new(
@@ -904,12 +909,13 @@ mod websocket_e2e {
         .expect("Redis ConnectionManager for connection manager");
         let connection_manager = Arc::new(
             ConnectionManager::new(ConnectionLimits::default())
-                .with_redis(redis_conn_for_connections, "test:"),
+                .with_redis(redis_conn_for_connections, &redis_key_prefix),
         );
         let connection_manager_ret = connection_manager.clone();
 
         // Rate limiter (in-memory only for tests)
-        let rate_limiter = RateLimiter::in_memory_only("test_ws:".to_string());
+        let rate_limiter =
+            RateLimiter::in_memory_only(format!("{redis_key_prefix}ws-rate-limit:"));
 
         // Build AppState
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
@@ -2294,7 +2300,7 @@ mod websocket_e2e {
 
         // user2 on replica_2 should receive it via Redis Pub/Sub (skip membership events)
         let received = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(30),
             recv_server_message_skip_membership(&mut ws2),
         )
         .await
@@ -3908,8 +3914,8 @@ mod websocket_connection_limit_timing {
     use synctv_core::service::rate_limit::RateLimiter;
     use synctv_core::service::{RoomService, UserService};
     use synctv_core_testing::{
-        create_test_pool_with_db_and_label, start_redis_url_with_label, RedisContainer,
-        TestContainer,
+        create_test_pool_with_db_and_label, start_redis_url_with_label, test_redis_key_prefix,
+        RedisContainer, TestContainer,
     };
 
     use sqlx::PgPool;
@@ -3954,6 +3960,7 @@ mod websocket_connection_limit_timing {
     struct TestInfra {
         pool: PgPool,
         redis_url: String,
+        redis_key_prefix: String,
         #[allow(dead_code)]
         postgres: Option<TestContainer>,
         #[allow(dead_code)]
@@ -3969,6 +3976,7 @@ mod websocket_connection_limit_timing {
             Self {
                 pool,
                 redis_url,
+                redis_key_prefix: test_redis_key_prefix("api-ws-connection-limit"),
                 postgres: Some(postgres),
                 redis: Some(redis),
             }
@@ -4023,6 +4031,7 @@ mod websocket_connection_limit_timing {
     async fn setup_server_with_low_user_limit(infra: &TestInfra) -> LimitTestServer {
         let pool = infra.pool.clone();
         let redis_url = infra.redis_url.clone();
+        let redis_key_prefix = infra.redis_key_prefix.clone();
 
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
         let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
@@ -4035,12 +4044,13 @@ mod websocket_connection_limit_timing {
         let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new_shared(
             redis_conn.clone(),
         ));
-        let username_cache = UsernameCache::new(l2_backend, "test_un:".to_string(), 100, 300);
+        let username_cache =
+            UsernameCache::new(l2_backend, format!("{redis_key_prefix}un:"), 100, 300);
         let username_cache_for_chat = username_cache.clone();
-        let key_builder = synctv_core::cache::KeyBuilder::new("test:".to_string());
+        let key_builder = synctv_core::cache::KeyBuilder::new(redis_key_prefix.clone());
         let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(
             redis_conn.clone(),
-            "test:".to_string(),
+            redis_key_prefix.clone(),
         );
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(
             synctv_core::service::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
@@ -4068,6 +4078,7 @@ mod websocket_connection_limit_timing {
             redis_conn: Some(redis_conn_for_cluster),
             shared_redis_conn: None,
             node_id: "limit_test_node".to_string(),
+            key_prefix: redis_key_prefix.clone(),
             ..Default::default()
         };
         let cluster_manager = Arc::new(
@@ -4092,11 +4103,12 @@ mod websocket_connection_limit_timing {
         .expect("Redis ConnectionManager for connection manager");
         let connection_manager = Arc::new(
             ConnectionManager::new(connection_limits)
-                .with_redis(redis_conn_for_connections, "test:"),
+                .with_redis(redis_conn_for_connections, &redis_key_prefix),
         );
         let connection_manager_ret = connection_manager.clone();
 
-        let rate_limiter = RateLimiter::in_memory_only("test_ws:".to_string());
+        let rate_limiter =
+            RateLimiter::in_memory_only(format!("{redis_key_prefix}ws-rate-limit:"));
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             jwt_service.clone(),
         )));

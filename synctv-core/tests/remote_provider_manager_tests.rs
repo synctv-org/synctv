@@ -46,8 +46,8 @@ impl TestInfra {
         let (postgres, pool) = create_test_pool_with_options_and_label(
             "synctv_test",
             "remote-provider-manager",
-            5,
-            std::time::Duration::from_secs(2),
+            20,
+            std::time::Duration::from_secs(30),
         )
         .await;
         let (redis, redis_client) = start_redis_with_client().await;
@@ -1352,7 +1352,10 @@ async fn scenario_resolve_client_required_surfaces_existing_remote_instance_conf
     );
     let err = result.unwrap_err();
     assert!(
-        !matches!(err, synctv_core::provider::ProviderError::InstanceNotFound(_)),
+        !matches!(
+            err,
+            synctv_core::provider::ProviderError::InstanceNotFound(_)
+        ),
         "existing remote instance with bad config must not be reported as missing: {err:?}"
     );
 }
@@ -1371,7 +1374,11 @@ async fn scenario_resolve_client_required_preserves_retryable_repository_failure
     infra.pool.close().await;
 
     let err = manager
-        .resolve_client_required(Some("retryable-store-failure"), |_channel| "remote", || "local")
+        .resolve_client_required(
+            Some("retryable-store-failure"),
+            |_channel| "remote",
+            || "local",
+        )
         .await
         .expect_err("repository outages should surface as retryable remote resolution failures");
 
@@ -3085,7 +3092,8 @@ async fn test_add_alist_instance_does_not_require_fake_upstream_auth_for_managem
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation() {
+async fn test_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation(
+) {
     install_rustls_provider_once();
     scenario_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation()
         .await;

@@ -274,9 +274,7 @@ pub async fn delete_media(
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
 ) -> AppResult<Json<DeleteMediaResponse>> {
-    let proto_req = DeleteMediaRequest {
-        media_id,
-    };
+    let proto_req = DeleteMediaRequest { media_id };
     let response = state
         .client_api
         .delete_media(&auth.user_id.to_string(), &room_id, proto_req)
@@ -405,8 +403,7 @@ pub async fn stop_playback(
     Path(room_id): Path<String>,
     Json(_body): Json<StopPlaybackBody>,
 ) -> AppResult<Json<StopPlaybackResponse>> {
-    let req = StopPlaybackRequest {
-    };
+    let req = StopPlaybackRequest {};
     let response = state
         .client_api
         .stop_playback(&auth.user_id.to_string(), &room_id, req)
@@ -453,10 +450,7 @@ pub async fn get_room_members(
         .get_room_members(
             &auth.user_id.to_string(),
             &room_id,
-            crate::proto::client::GetRoomMembersRequest {
-                page,
-                page_size,
-            },
+            crate::proto::client::GetRoomMembersRequest { page, page_size },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -888,12 +882,10 @@ pub async fn update_media_batch(
 
     // Check for reorder operation
     if let Some(updates) = req.reorder {
-        let proto_req = ReorderMediaBatchRequest {
-                updates,
-            };
+        let proto_req = ReorderMediaBatchRequest { updates };
         let response = state
-                .client_api
-                .reorder_media_batch(&user_id, &room_id, proto_req)
+            .client_api
+            .reorder_media_batch(&user_id, &room_id, proto_req)
             .await
             .map_err(super::error::map_api_error)?;
 
@@ -1031,9 +1023,7 @@ pub async fn delete_playlist(
     State(state): State<AppState>,
     Path((room_id, playlist_id)): Path<(String, String)>,
 ) -> AppResult<Json<DeletePlaylistResponse>> {
-    let req = DeletePlaylistRequest {
-        playlist_id,
-    };
+    let req = DeletePlaylistRequest { playlist_id };
     let response = state
         .client_api
         .delete_playlist(&auth.user_id.to_string(), &room_id, req)

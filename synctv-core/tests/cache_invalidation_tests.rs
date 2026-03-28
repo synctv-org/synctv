@@ -576,8 +576,8 @@ async fn test_cache_invalidation_after_commit() {
     let (_postgres, pool) = create_test_pool_with_options_and_label(
         "synctv_test",
         "cache-invalidation-before-commit",
-        5,
-        std::time::Duration::from_secs(2),
+        20,
+        std::time::Duration::from_secs(30),
     )
     .await;
 
@@ -744,8 +744,8 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     let (_postgres, pool) = create_test_pool_with_options_and_label(
         "synctv_test",
         "cache-invalidation-rollback",
-        5,
-        std::time::Duration::from_secs(2),
+        20,
+        std::time::Duration::from_secs(30),
     )
     .await;
 

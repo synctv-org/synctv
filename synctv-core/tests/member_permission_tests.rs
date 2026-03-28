@@ -613,7 +613,11 @@ async fn test_stale_admin_role_grant_fails_closed_without_writing_override_colum
         .await
         .unwrap();
 
-    let stale_admin = member_repo.get(&room.id, &target.id).await.unwrap().unwrap();
+    let stale_admin = member_repo
+        .get(&room.id, &target.id)
+        .await
+        .unwrap()
+        .unwrap();
 
     room_service
         .member_service()
@@ -637,7 +641,11 @@ async fn test_stale_admin_role_grant_fails_closed_without_writing_override_colum
         .unwrap_err();
     assert!(matches!(err, synctv_core::Error::OptimisticLockConflict));
 
-    let refreshed = member_repo.get(&room.id, &target.id).await.unwrap().unwrap();
+    let refreshed = member_repo
+        .get(&room.id, &target.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(refreshed.admin_added_permissions, 0);
     assert_eq!(refreshed.added_permissions, 0);
 }

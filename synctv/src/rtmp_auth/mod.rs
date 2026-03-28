@@ -21,7 +21,9 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use percent_encoding::percent_decode_str;
+use std::collections::VecDeque;
 use synctv_livestream::api::UserStreamTracker;
 use synctv_livestream::relay::StreamRegistryTrait;
 use synctv_livestream::AuthCallback;
@@ -50,6 +52,17 @@ pub enum StreamLifecycleEvent {
         user_id: String,
     },
 }
+
+#[derive(Debug, Clone)]
+struct PendingPublishCleanup {
+    epoch: u64,
+    user_id: String,
+}
+
+/// Maximum number of pending publish cleanup entries retained per (room, media) key.
+/// This bounds memory growth under pathological retry scenarios while allowing
+/// a small number of retries to preserve their epoch fences.
+const MAX_PENDING_PUBLISH_CLEANUPS: usize = 3;
 
 /// RTMP authentication implementation for `SyncTV`
 ///
@@ -93,6 +106,9 @@ pub struct SyncTvRtmpAuth {
     ///
     /// On unpublish, the key is removed: `DEL {key_prefix}rtmp:user_stream:{user_id}`.
     redis_conn: Option<Arc<RwLock<redis::aio::ConnectionManager>>>,
+    /// Epochs captured after successful auth-phase registration and used to fence
+    /// later unpublish/rollback cleanup for the same logical stream.
+    pending_publish_cleanups: Arc<DashMap<(String, String), VecDeque<PendingPublishCleanup>>>,
 }
 
 impl SyncTvRtmpAuth {
@@ -120,6 +136,7 @@ impl SyncTvRtmpAuth {
             key_prefix,
             is_restarting: None,
             redis_conn: None,
+            pending_publish_cleanups: Arc::new(DashMap::new()),
         }
     }
 
@@ -153,6 +170,138 @@ impl SyncTvRtmpAuth {
     pub fn with_restarting_flag(mut self, is_restarting: Arc<AtomicBool>) -> Self {
         self.is_restarting = Some(is_restarting);
         self
+    }
+
+    fn remember_pending_publish_cleanup(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        attempt: PendingPublishCleanup,
+    ) {
+        let mut deque = self.pending_publish_cleanups
+            .entry((room_id.to_string(), media_id.to_string()))
+            .or_default();
+        if deque.len() >= MAX_PENDING_PUBLISH_CLEANUPS {
+            deque.pop_front();
+        }
+        deque.push_back(attempt);
+    }
+
+    fn peek_pending_publish_cleanup(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Option<PendingPublishCleanup> {
+        self.pending_publish_cleanups
+            .get(&(room_id.to_string(), media_id.to_string()))
+            .and_then(|attempts| attempts.front().cloned())
+    }
+
+    fn consume_pending_publish_cleanup(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Option<PendingPublishCleanup> {
+        let key = (room_id.to_string(), media_id.to_string());
+        self.pending_publish_cleanups.get_mut(&key).and_then(|mut attempts| {
+            let attempt = attempts.pop_front();
+            let empty = attempts.is_empty();
+            drop(attempts);
+            if empty {
+                self.pending_publish_cleanups.remove(&key);
+            }
+            attempt
+        })
+    }
+
+    async fn resolve_publish_cleanup(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        context: &'static str,
+    ) -> Result<Option<PendingPublishCleanup>, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(attempt) = self.peek_pending_publish_cleanup(room_id, media_id) {
+            return Ok(Some(attempt));
+        }
+
+        tracing::warn!(
+            room_id = %room_id,
+            media_id = %media_id,
+            "Skipping {context} cleanup because no in-memory publish fence is available"
+        );
+
+        Ok(None)
+    }
+
+    async fn lookup_registered_epoch(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        self.registry
+            .get_publisher(room_id, media_id)
+            .await
+            .map_err(|e| format!("Failed to fetch publisher epoch after registration: {e}"))?
+            .ok_or_else(|| {
+                format!(
+                    "Publisher registration disappeared before epoch capture: room={room_id}, media={media_id}"
+                )
+                .into()
+            })
+            .map(|publisher| publisher.epoch)
+    }
+
+    async fn cleanup_publisher_if_current_attempt(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        expected_epoch: u64,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let current = self
+            .registry
+            .get_publisher(room_id, media_id)
+            .await
+            .map_err(|e| format!("Failed to inspect current publisher before cleanup: {e}"))?;
+
+        let Some(current) = current else {
+            return Ok(true);
+        };
+
+        if current.epoch != expected_epoch {
+            return Ok(false);
+        }
+
+        self.registry
+            .unregister_publisher_if_epoch_matches(room_id, media_id, expected_epoch)
+            .await
+            .map_err(|e| format!("Failed to unregister publisher with epoch fence: {e}"))?;
+
+        let remaining = self
+            .registry
+            .get_publisher(room_id, media_id)
+            .await
+            .map_err(|e| format!("Failed to inspect current publisher after cleanup: {e}"))?;
+
+        Ok(remaining.is_none())
+    }
+
+    async fn delete_user_stream_key(&self, user_id: &str, context: &'static str) {
+        if user_id.is_empty() {
+            return;
+        }
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
+            let key = self.user_stream_key(user_id);
+            let result: Result<(), redis::RedisError> =
+                redis::cmd("DEL").arg(&key).query_async(&mut conn).await;
+            if let Err(e) = result {
+                tracing::warn!(
+                    user_id = %user_id,
+                    "Failed to remove rtmp:user_stream entry on {} (non-fatal): {}",
+                    context,
+                    e
+                );
+            }
+        }
     }
 }
 
@@ -225,80 +374,74 @@ impl AuthCallback for SyncTvRtmpAuth {
     }
 
     async fn on_unpublish(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
-        // Remove user→stream mapping from tracker (resolves RTMP identifiers to logical stream)
-        let tracked = self
-            .user_stream_tracker
-            .remove_by_app_stream(app_name, stream_name);
-
-        if let Some((ref user_id, ref room_id, ref media_id)) = tracked {
-            tracing::info!(
-                user_id = %user_id,
-                room_id = %room_id,
-                media_id = %media_id,
-                "Publisher unpublished, cleaning up"
-            );
-
-            // Unregister from Redis (publisher entry + stream:user_publishers Set)
-            if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
-                tracing::error!(
-                    room_id = %room_id,
-                    media_id = %media_id,
-                    "Failed to unregister publisher from Redis: {}",
-                    e
-                );
-            }
-
-            // Clean up the per-user Redis key ({key_prefix}rtmp:user_stream:{user_id})
-            if let Some(mut conn) = self.redis_conn_snapshot().await {
-                let key = self.user_stream_key(user_id);
-                let result: Result<(), redis::RedisError> =
-                    redis::cmd("DEL").arg(&key).query_async(&mut conn).await;
-                if let Err(e) = result {
-                    tracing::warn!(
-                        user_id = %user_id,
-                        "Failed to remove rtmp:user_stream entry on unpublish (non-fatal): {}",
-                        e
-                    );
-                }
-            }
-        } else {
-            // Tracker lookup failed -- the RTMP identifiers after AuthPublishRewrite are
-            // (room_id, media_id), so we can still attempt Redis cleanup directly.
-            // This handles edge cases where the tracker entry was lost (e.g., process
-            // restart, race condition) but Redis still has a stale publisher entry.
-            tracing::error!(
-                app_name = %app_name,
-                "on_unpublish: no matching stream found in tracker. \
-                 Attempting direct Redis cleanup using RTMP identifiers (room_id={}, media_id={}). \
-                 Redis TTL will serve as fallback if this also fails.",
-                app_name, stream_name
-            );
-
-            if let Err(e) = self
-                .registry
-                .unregister_publisher(app_name, stream_name)
-                .await
-            {
+        let Some(resolved) = (match self
+            .resolve_publish_cleanup(app_name, stream_name, "on_unpublish")
+            .await
+        {
+            Ok(cleanup) => cleanup,
+            Err(e) => {
                 tracing::error!(
                     room_id = %app_name,
                     media_id = %stream_name,
-                    "Failed fallback Redis cleanup on unpublish: {}. \
-                     Redis TTL will eventually expire the stale entry.",
+                    "Failed to resolve on_unpublish cleanup target: {}",
                     e
                 );
+                return;
             }
+        }) else {
+            return;
+        };
+        let attempt = resolved;
+
+        let should_cleanup = match self
+            .cleanup_publisher_if_current_attempt(app_name, stream_name, attempt.epoch)
+            .await
+        {
+            Ok(should_cleanup) => should_cleanup,
+            Err(e) => {
+                tracing::error!(
+                    room_id = %app_name,
+                    media_id = %stream_name,
+                    epoch = attempt.epoch,
+                    "Failed to fence publisher cleanup on unpublish; keeping pending cleanup for retry: {}",
+                    e
+                );
+                return;
+            }
+        };
+
+        if !should_cleanup {
+            let _ = self.consume_pending_publish_cleanup(app_name, stream_name);
+            tracing::info!(
+                room_id = %app_name,
+                media_id = %stream_name,
+                epoch = attempt.epoch,
+                "Ignoring stale on_unpublish cleanup for superseded publisher epoch"
+            );
+            return;
         }
 
-        // Always emit StreamStopped event, even if tracker removal failed.
-        // This ensures subscribers are notified regardless of tracker state.
+        let _ = self.consume_pending_publish_cleanup(app_name, stream_name);
+        let tracked_user = self
+            .user_stream_tracker
+            .remove_stream(app_name, stream_name);
+        tracing::info!(
+            user_id = %attempt.user_id,
+            room_id = %app_name,
+            media_id = %stream_name,
+            had_tracker_entry = tracked_user.is_some(),
+            "Publisher unpublished, fenced cleanup completed"
+        );
+
+        self.delete_user_stream_key(&attempt.user_id, "unpublish")
+            .await;
+
         if let Some(ref tx) = self.stream_event_tx {
-            if let Some((ref user_id, ref room_id, ref media_id)) = tracked {
-                let _ = tx.send(StreamLifecycleEvent::Stopped {
-                    room_id: room_id.clone(),
-                    media_id: media_id.clone(),
-                    user_id: user_id.clone(),
-                });
-            }
+            let _ = tx.send(StreamLifecycleEvent::Stopped {
+                room_id: app_name.to_string(),
+                media_id: stream_name.to_string(),
+                user_id: attempt.user_id,
+            });
         }
     }
 
@@ -317,40 +460,59 @@ impl AuthCallback for SyncTvRtmpAuth {
             "Rolling back publisher registration due to StreamHub failure"
         );
 
-        // 1. Unregister publisher from Redis
-        if let Err(e) = self
-            .registry
-            .unregister_publisher(app_name, stream_name)
+        let Some(resolved) = (match self
+            .resolve_publish_cleanup(app_name, stream_name, "rollback")
             .await
         {
-            tracing::warn!(
+            Ok(cleanup) => cleanup,
+            Err(e) => {
+                tracing::warn!(
+                    room_id = %app_name,
+                    media_id = %stream_name,
+                    error = %e,
+                    "Failed to resolve rollback cleanup target"
+                );
+                return;
+            }
+        }) else {
+            return;
+        };
+        let attempt = resolved;
+
+        let should_cleanup = match self
+            .cleanup_publisher_if_current_attempt(app_name, stream_name, attempt.epoch)
+            .await
+        {
+            Ok(should_cleanup) => should_cleanup,
+            Err(e) => {
+                tracing::warn!(
+                    room_id = %app_name,
+                    media_id = %stream_name,
+                    epoch = attempt.epoch,
+                    error = %e,
+                    "Failed to rollback publisher registration with epoch fence; keeping pending cleanup for retry"
+                );
+                return;
+            }
+        };
+
+        if !should_cleanup {
+            let _ = self.consume_pending_publish_cleanup(app_name, stream_name);
+            tracing::info!(
                 room_id = %app_name,
                 media_id = %stream_name,
-                error = %e,
-                "Failed to rollback publisher registration from Redis"
+                epoch = attempt.epoch,
+                "Ignoring stale rollback cleanup for superseded publisher epoch"
             );
+            return;
         }
 
-        // 2. Remove user->stream mapping from local tracker
-        let tracked = self
+        let _ = self.consume_pending_publish_cleanup(app_name, stream_name);
+        let _ = self
             .user_stream_tracker
-            .remove_by_app_stream(app_name, stream_name);
-
-        // 3. Clean up per-user Redis key
-        if let Some((ref user_id, _, _)) = tracked {
-            if let Some(mut conn) = self.redis_conn_snapshot().await {
-                let key = self.user_stream_key(user_id);
-                let result: Result<(), redis::RedisError> =
-                    redis::cmd("DEL").arg(&key).query_async(&mut conn).await;
-                if let Err(e) = result {
-                    tracing::warn!(
-                        user_id = %user_id,
-                        "Failed to remove rtmp:user_stream entry on rollback (non-fatal): {}",
-                        e
-                    );
-                }
-            }
-        }
+            .remove_stream(app_name, stream_name);
+        self.delete_user_stream_key(&attempt.user_id, "rollback")
+            .await;
 
         tracing::info!(
             room_id = %app_name,
@@ -677,13 +839,18 @@ impl SyncTvRtmpAuth {
             .into());
         }
 
+        let registered_epoch = self
+            .lookup_registered_epoch(&validated.room_id, &validated.media_id)
+            .await?;
+
         tracing::info!(
-            "Publisher authenticated and registered: user={}, room={}, media={}, node={}, auth={}",
+            "Publisher authenticated and registered: user={}, room={}, media={}, node={}, auth={}, epoch={}",
             validated.user_id,
             app_name,
             validated.media_id,
             self.node_id,
             validated.auth_level,
+            registered_epoch,
         );
 
         // Write an additional cross-replica user→stream mapping to Redis.
@@ -721,7 +888,11 @@ impl SyncTvRtmpAuth {
                 );
                 if let Err(unreg_err) = self
                     .registry
-                    .unregister_publisher(&validated.room_id, &validated.media_id)
+                    .unregister_publisher_if_epoch_matches(
+                        &validated.room_id,
+                        &validated.media_id,
+                        registered_epoch,
+                    )
                     .await
                 {
                     tracing::error!(
@@ -753,6 +924,15 @@ impl SyncTvRtmpAuth {
                 user_id: validated.user_id.clone(),
             });
         }
+
+        self.remember_pending_publish_cleanup(
+            &validated.room_id,
+            &validated.media_id,
+            PendingPublishCleanup {
+                epoch: registered_epoch,
+                user_id: validated.user_id.clone(),
+            },
+        );
 
         Ok(())
     }
@@ -805,7 +985,140 @@ impl SyncTvRtmpAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use synctv_livestream::relay::{InMemoryStreamRegistry, PublisherInfo, StreamRegistryTrait};
     use tokio::sync::RwLock;
+
+    #[derive(Debug)]
+    struct FlakyUnregisterRegistry {
+        inner: Arc<InMemoryStreamRegistry>,
+        fail_unregister_if_epoch_matches_times: AtomicUsize,
+    }
+
+    impl FlakyUnregisterRegistry {
+        fn new(inner: Arc<InMemoryStreamRegistry>) -> Self {
+            Self {
+                inner,
+                fail_unregister_if_epoch_matches_times: AtomicUsize::new(0),
+            }
+        }
+
+        fn set_fail_unregister_if_epoch_matches_times(&self, times: usize) {
+            self.fail_unregister_if_epoch_matches_times
+                .store(times, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StreamRegistryTrait for FlakyUnregisterRegistry {
+        async fn register_publisher(
+            &self,
+            room_id: &str,
+            media_id: &str,
+            node_id: &str,
+            app_name: &str,
+            grpc_address: &str,
+        ) -> anyhow::Result<bool> {
+            self.inner
+                .register_publisher(room_id, media_id, node_id, app_name, grpc_address)
+                .await
+        }
+
+        async fn try_register_publisher(
+            &self,
+            room_id: &str,
+            media_id: &str,
+            node_id: &str,
+            user_id: &str,
+            grpc_address: &str,
+        ) -> anyhow::Result<bool> {
+            self.inner
+                .try_register_publisher(room_id, media_id, node_id, user_id, grpc_address)
+                .await
+        }
+
+        async fn refresh_publisher_ttl(
+            &self,
+            room_id: &str,
+            media_id: &str,
+            user_id: &str,
+        ) -> anyhow::Result<synctv_livestream::relay::registry_trait::PublisherRefreshOutcome>
+        {
+            self.inner
+                .refresh_publisher_ttl(room_id, media_id, user_id)
+                .await
+        }
+
+        async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> anyhow::Result<()> {
+            self.inner.unregister_publisher(room_id, media_id).await
+        }
+
+        async fn unregister_publisher_if_epoch_matches(
+            &self,
+            room_id: &str,
+            media_id: &str,
+            expected_epoch: u64,
+        ) -> anyhow::Result<()> {
+            let remaining_failures = self
+                .fail_unregister_if_epoch_matches_times
+                .load(Ordering::SeqCst);
+            if remaining_failures > 0 {
+                self.fail_unregister_if_epoch_matches_times
+                    .fetch_sub(1, Ordering::SeqCst);
+                return Err(anyhow::anyhow!(
+                    "simulated Redis failure in unregister_publisher_if_epoch_matches"
+                ));
+            }
+
+            self.inner
+                .unregister_publisher_if_epoch_matches(room_id, media_id, expected_epoch)
+                .await
+        }
+
+        async fn get_publisher(
+            &self,
+            room_id: &str,
+            media_id: &str,
+        ) -> anyhow::Result<Option<PublisherInfo>> {
+            self.inner.get_publisher(room_id, media_id).await
+        }
+
+        async fn is_stream_active(&self, room_id: &str, media_id: &str) -> anyhow::Result<bool> {
+            self.inner.is_stream_active(room_id, media_id).await
+        }
+
+        async fn list_active_streams(&self) -> anyhow::Result<Vec<(String, String)>> {
+            self.inner.list_active_streams().await
+        }
+
+        async fn list_streams_for_room(&self, room_id: &str) -> anyhow::Result<Vec<String>> {
+            self.inner.list_streams_for_room(room_id).await
+        }
+
+        async fn get_user_publishers(&self, user_id: &str) -> anyhow::Result<Vec<(String, String)>> {
+            self.inner.get_user_publishers(user_id).await
+        }
+
+        async fn unregister_all_user_publishers(&self, user_id: &str) -> anyhow::Result<()> {
+            self.inner.unregister_all_user_publishers(user_id).await
+        }
+
+        async fn validate_epoch(
+            &self,
+            room_id: &str,
+            media_id: &str,
+            epoch: u64,
+        ) -> anyhow::Result<bool> {
+            self.inner.validate_epoch(room_id, media_id, epoch).await
+        }
+
+        async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> anyhow::Result<()> {
+            self.inner.cleanup_all_publishers_for_node(node_id).await
+        }
+    }
 
     // ========== extract_token_from_query ==========
 
@@ -1006,6 +1319,412 @@ mod tests {
             err.to_string().contains("StreamHub is restarting"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_delayed_unpublish_does_not_remove_newer_registration() {
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let auth = make_test_auth_with_registry(registry.clone());
+
+        let room_id = "room-delayed-unpublish";
+        let media_id = "media-delayed-unpublish";
+        let second_user_id = "user-second";
+
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, "user-first"),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("first publish registration should succeed");
+
+        let first_epoch = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .expect("first publisher lookup should succeed")
+            .expect("first publisher should exist")
+            .epoch;
+
+        registry
+            .unregister_publisher_if_epoch_matches(room_id, media_id, first_epoch)
+            .await
+            .expect("test setup should remove first publisher");
+
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, second_user_id),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("second publish registration should succeed");
+
+        auth.on_unpublish(room_id, media_id, None).await;
+
+        let current = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .expect("publisher lookup should succeed after stale unpublish")
+            .expect("stale unpublish must not remove the replacement publisher");
+        assert_eq!(current.user_id, second_user_id);
+        assert_eq!(
+            auth.user_stream_tracker.get_stream_user(room_id, media_id),
+            Some(second_user_id.to_string()),
+            "stale unpublish must not remove the replacement stream tracker entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delayed_unpublish_preserves_newer_rollback_fence() {
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let auth = make_test_auth_with_registry(registry.clone());
+
+        let room_id = "room-delayed-fence";
+        let media_id = "media-delayed-fence";
+
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, "user-first"),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("first publish registration should succeed");
+
+        let first_epoch = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .expect("first publisher lookup should succeed")
+            .expect("first publisher should exist")
+            .epoch;
+
+        registry
+            .unregister_publisher_if_epoch_matches(room_id, media_id, first_epoch)
+            .await
+            .expect("test setup should remove first publisher");
+
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, "user-second"),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("second publish registration should succeed");
+
+        auth.on_unpublish(room_id, media_id, None).await;
+        auth.on_publish_rollback(room_id, media_id, None).await;
+
+        assert!(
+            !registry
+                .is_stream_active(room_id, media_id)
+                .await
+                .expect("publisher activity lookup should succeed"),
+            "stale unpublish must not consume the newer rollback fence"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delayed_rollback_does_not_remove_newer_registration() {
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let auth = make_test_auth_with_registry(registry.clone());
+
+        let room_id = "room-delayed-rollback";
+        let media_id = "media-delayed-rollback";
+        let second_user_id = "user-second";
+
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, "user-first"),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("first publish registration should succeed");
+
+        let first_epoch = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .expect("first publisher lookup should succeed")
+            .expect("first publisher should exist")
+            .epoch;
+
+        registry
+            .unregister_publisher_if_epoch_matches(room_id, media_id, first_epoch)
+            .await
+            .expect("test setup should remove first publisher");
+
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, second_user_id),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("second publish registration should succeed");
+
+        auth.on_publish_rollback(room_id, media_id, None).await;
+
+        let current = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .expect("publisher lookup should succeed after stale rollback")
+            .expect("stale rollback must not remove the replacement publisher");
+        assert_eq!(current.user_id, second_user_id);
+    }
+
+    #[tokio::test]
+    async fn test_unpublish_retry_preserves_fence_until_cleanup_succeeds() {
+        let registry = Arc::new(FlakyUnregisterRegistry::new(Arc::new(
+            InMemoryStreamRegistry::new(),
+        )));
+        let auth = make_test_auth_with_registry_dyn(registry.clone());
+
+        let room_id = "room-retry-unpublish";
+        let media_id = "media-retry-unpublish";
+
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, "user-retry"),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("publish registration should succeed");
+
+        registry.set_fail_unregister_if_epoch_matches_times(1);
+
+        auth.on_unpublish(room_id, media_id, None).await;
+        assert!(
+            registry
+                .is_stream_active(room_id, media_id)
+                .await
+                .expect("publisher activity lookup should succeed after failed cleanup"),
+            "failed cleanup attempt should leave publisher registered for retry"
+        );
+
+        auth.on_unpublish(room_id, media_id, None).await;
+        assert!(
+            !registry
+                .is_stream_active(room_id, media_id)
+                .await
+                .expect("publisher activity lookup should succeed after retry"),
+            "retry must still have access to the fenced cleanup and remove the stale publisher"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_rollback_retry_preserves_fence_until_cleanup_succeeds() {
+        let registry = Arc::new(FlakyUnregisterRegistry::new(Arc::new(
+            InMemoryStreamRegistry::new(),
+        )));
+        let auth = make_test_auth_with_registry_dyn(registry.clone());
+
+        let room_id = "room-retry-rollback";
+        let media_id = "media-retry-rollback";
+
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, "user-retry"),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("publish registration should succeed");
+
+        registry.set_fail_unregister_if_epoch_matches_times(1);
+
+        auth.on_publish_rollback(room_id, media_id, None).await;
+        assert!(
+            registry
+                .is_stream_active(room_id, media_id)
+                .await
+                .expect("publisher activity lookup should succeed after failed rollback"),
+            "failed rollback attempt should leave publisher registered for retry"
+        );
+
+        auth.on_publish_rollback(room_id, media_id, None).await;
+        assert!(
+            !registry
+                .is_stream_active(room_id, media_id)
+                .await
+                .expect("publisher activity lookup should succeed after rollback retry"),
+            "rollback retry must still have access to the fenced cleanup and remove the stale publisher"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unpublish_without_in_memory_fence_does_not_guess_cleanup_target() {
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let auth = make_test_auth_with_registry(registry.clone());
+        let restarted_auth = make_test_auth_with_registry(registry.clone());
+
+        let room_id = "room-restarted-unpublish";
+        let media_id = "media-restarted-unpublish";
+        let user_id = "user-restarted";
+
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, user_id), room_id, media_id)
+            .await
+            .expect("publish registration should succeed");
+
+        restarted_auth.on_unpublish(room_id, media_id, None).await;
+
+        assert!(
+            registry
+                .is_stream_active(room_id, media_id)
+                .await
+                .expect("publisher activity lookup should succeed after restarted unpublish"),
+            "restarted unpublish must not guess a cleanup epoch from the live publisher"
+        );
+        assert!(
+            restarted_auth
+                .get_user_stream(user_id)
+                .await
+                .is_some(),
+            "restarted unpublish must leave the persisted user stream mapping intact without a fence"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_rollback_without_in_memory_fence_does_not_guess_cleanup_target() {
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let auth = make_test_auth_with_registry(registry.clone());
+        let restarted_auth = make_test_auth_with_registry(registry.clone());
+
+        let room_id = "room-restarted-rollback";
+        let media_id = "media-restarted-rollback";
+        let user_id = "user-restarted-rollback";
+
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, user_id), room_id, media_id)
+            .await
+            .expect("publish registration should succeed");
+
+        restarted_auth
+            .on_publish_rollback(room_id, media_id, None)
+            .await;
+
+        assert!(
+            registry
+                .is_stream_active(room_id, media_id)
+                .await
+                .expect("publisher activity lookup should succeed after restarted rollback"),
+            "restarted rollback must not guess a cleanup epoch from the live publisher"
+        );
+        assert!(
+            restarted_auth
+                .get_user_stream(user_id)
+                .await
+                .is_some(),
+            "restarted rollback must leave the persisted user stream mapping intact without a fence"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restarted_unpublish_does_not_remove_replacement_publisher() {
+        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let auth = make_test_auth_with_registry(registry.clone());
+        let restarted_auth = make_test_auth_with_registry(registry.clone());
+
+        let room_id = "room-restarted-stale-unpublish";
+        let media_id = "media-restarted-stale-unpublish";
+        let first_user_id = "user-first";
+        let second_user_id = "user-second";
+
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, first_user_id),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("first publish registration should succeed");
+
+        let first_epoch = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .expect("first publisher lookup should succeed")
+            .expect("first publisher should exist")
+            .epoch;
+
+        registry
+            .unregister_publisher_if_epoch_matches(room_id, media_id, first_epoch)
+            .await
+            .expect("test setup should remove first publisher");
+
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, second_user_id),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("second publish registration should succeed");
+
+        restarted_auth.on_unpublish(room_id, media_id, None).await;
+
+        let current = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .expect("publisher lookup should succeed after restarted stale unpublish")
+            .expect("restarted stale unpublish must not remove the replacement publisher");
+        assert_eq!(current.user_id, second_user_id);
+        assert_eq!(
+            restarted_auth.get_user_stream(second_user_id).await,
+            Some((room_id.to_string(), media_id.to_string())),
+            "replacement publisher mapping must remain after restarted stale unpublish"
+        );
+    }
+
+    fn validated_publish(room_id: &str, media_id: &str, user_id: &str) -> ValidatedPublish {
+        ValidatedPublish {
+            room_id: room_id.to_string(),
+            media_id: media_id.to_string(),
+            user_id: user_id.to_string(),
+            auth_level: "test",
+        }
+    }
+
+    fn make_test_auth_with_registry(registry: Arc<InMemoryStreamRegistry>) -> SyncTvRtmpAuth {
+        make_test_auth_with_registry_dyn(registry)
+    }
+
+    fn make_test_auth_with_registry_dyn(
+        registry: Arc<dyn StreamRegistryTrait>,
+    ) -> SyncTvRtmpAuth {
+        let lazy_pool = || {
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                .expect("lazy pool")
+        };
+        let make_user_service = || {
+            UserService::new(
+                lazy_pool(),
+                synctv_core::service::JwtService::new(
+                    "test-secret-key-for-http-router-tests-minimum-32-chars",
+                )
+                .expect("jwt"),
+                synctv_core::cache::UsernameCache::new(
+                    Arc::new(synctv_core::cache::NoopCacheL2),
+                    "test:username:".to_string(),
+                    16,
+                    60,
+                ),
+                synctv_core::config::PasswordComplexityConfig::default(),
+                Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                    128, 3600, 86400,
+                )),
+                synctv_core::cache::KeyBuilder::new("test"),
+                synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string()),
+            )
+        };
+
+        SyncTvRtmpAuth::new(
+            Arc::new(RoomService::new(lazy_pool(), make_user_service())),
+            Arc::new(make_user_service()),
+            Arc::new(synctv_core::service::PublishKeyService::with_default_ttl(
+                synctv_core::service::JwtService::new(
+                    "test-secret-key-for-http-router-tests-minimum-32-chars",
+                )
+                .expect("jwt"),
+            )),
+            Arc::new(synctv_livestream::api::StreamTracker::new()),
+            registry,
+            "node-1".to_string(),
+            "127.0.0.1:50051".to_string(),
+            None,
+            "test:".to_string(),
+        )
     }
 
     #[test]

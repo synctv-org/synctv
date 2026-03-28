@@ -103,7 +103,9 @@ pub async fn reserve_cluster_event_publish(
         return Ok(None);
     }
 
-    let tx = tx.expect("cluster_fanout_required checked tx presence").clone();
+    let tx = tx
+        .expect("cluster_fanout_required checked tx presence")
+        .clone();
     match tx.try_reserve_owned() {
         Ok(permit) => Ok(Some(ClusterEventPublishReservation { permit })),
         Err(tokio::sync::mpsc::error::TrySendError::Full(tx)) => {
@@ -1187,8 +1189,7 @@ mod tests {
 
     #[test]
     fn test_api_error_from_core_redis_maps_to_service_unavailable() {
-        let redis_err =
-            redis::RedisError::from((redis::ErrorKind::Io, "connection reset by peer"));
+        let redis_err = redis::RedisError::from((redis::ErrorKind::Io, "connection reset by peer"));
         let api_err = ApiError::from(synctv_core::Error::Redis(redis_err));
         assert!(
             matches!(api_err, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable. Please try again later."),

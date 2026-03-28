@@ -22,6 +22,7 @@ use integration_test_helpers::{
 #[ignore = "requires Docker"]
 async fn test_cross_replica_cache_invalidation() {
     let redis = TestRedis::start().await;
+    let key_prefix = redis.key_prefix.clone();
 
     // Create a CacheInvalidationService for node A (local-only, no Redis stream)
     let cache_svc_a =
@@ -44,7 +45,7 @@ async fn test_cross_replica_cache_invalidation() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        key_prefix: "synctv:".to_string(),
+        key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
         shared_redis_conn: None,
@@ -54,7 +55,9 @@ async fn test_cross_replica_cache_invalidation() {
         .await
         .expect("Failed to create node A");
 
-    let node_b = create_node(&redis.redis_url, "node_b").await;
+    let node_b =
+        integration_test_helpers::create_node_with_prefix(&redis.redis_url, "node_b", key_prefix)
+            .await;
 
     let mut received_user = false;
     let mut received_room = false;
@@ -170,6 +173,7 @@ async fn test_cross_replica_permission_changed() {
 #[ignore = "requires Docker"]
 async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
     let redis = TestRedis::start().await;
+    let key_prefix = redis.key_prefix.clone();
 
     // Create a CacheInvalidationService for node A
     let cache_svc_a =
@@ -192,7 +196,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        key_prefix: "synctv:".to_string(),
+        key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
         shared_redis_conn: None,
@@ -202,7 +206,9 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         .await
         .expect("Failed to create node A");
 
-    let node_b = create_node(&redis.redis_url, "node_b").await;
+    let node_b =
+        integration_test_helpers::create_node_with_prefix(&redis.redis_url, "node_b", key_prefix)
+            .await;
 
     let mut received_target = false;
     broadcast_until_cache_invalidation(
@@ -243,17 +249,18 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
 #[ignore = "requires Docker"]
 async fn test_cluster_permission_cache_consistency() {
     let redis = TestRedis::start().await;
+    let key_prefix = redis.key_prefix.clone();
 
     // Create cache invalidation services for both nodes
     let cache_svc_a = CacheInvalidationService::new(
         None,
         "perm_node_a".to_string(),
-        "test:perm:cache".to_string(),
+        format!("{key_prefix}perm:cache"),
     );
     let cache_svc_b = CacheInvalidationService::new(
         None,
         "perm_node_b".to_string(),
-        "test:perm:cache".to_string(),
+        format!("{key_prefix}perm:cache"),
     );
 
     let mut rx_a = cache_svc_a.subscribe();
@@ -275,7 +282,7 @@ async fn test_cluster_permission_cache_consistency() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        key_prefix: "synctv:".to_string(),
+        key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
         shared_redis_conn: None,
@@ -300,7 +307,7 @@ async fn test_cluster_permission_cache_consistency() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        key_prefix: "synctv:".to_string(),
+        key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
         shared_redis_conn: None,
@@ -406,22 +413,23 @@ async fn test_concurrent_permission_cache_updates() {
     use std::sync::Arc;
 
     let redis = TestRedis::start().await;
+    let key_prefix = redis.key_prefix.clone();
 
     // Create three nodes with cache invalidation
     let cache_svc_a = CacheInvalidationService::new(
         None,
         "concurrent_node_a".to_string(),
-        "test:concurrent:cache".to_string(),
+        format!("{key_prefix}concurrent:cache"),
     );
     let cache_svc_b = CacheInvalidationService::new(
         None,
         "concurrent_node_b".to_string(),
-        "test:concurrent:cache".to_string(),
+        format!("{key_prefix}concurrent:cache"),
     );
     let cache_svc_c = CacheInvalidationService::new(
         None,
         "concurrent_node_c".to_string(),
-        "test:concurrent:cache".to_string(),
+        format!("{key_prefix}concurrent:cache"),
     );
 
     let mut rx_a = cache_svc_a.subscribe();
@@ -443,7 +451,7 @@ async fn test_concurrent_permission_cache_updates() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        key_prefix: "synctv:".to_string(),
+        key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
         shared_redis_conn: None,
@@ -469,7 +477,7 @@ async fn test_concurrent_permission_cache_updates() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        key_prefix: "synctv:".to_string(),
+        key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
         shared_redis_conn: None,
@@ -495,7 +503,7 @@ async fn test_concurrent_permission_cache_updates() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        key_prefix: "synctv:".to_string(),
+        key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
         shared_redis_conn: None,

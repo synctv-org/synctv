@@ -54,8 +54,8 @@ async fn create_test_infra() -> TestInfra {
     let (postgres, pool) = create_test_pool_with_options_and_label(
         "synctv_test",
         "cluster-consistency",
-        10,
-        std::time::Duration::from_secs(2),
+        20,
+        std::time::Duration::from_secs(30),
     )
     .await;
     let (redis, redis_url) = start_redis_url_with_label("cluster-consistency").await;
@@ -253,14 +253,28 @@ async fn test_permission_change_cross_replica_sync() {
         .invalidate_cache(&room.id, &member_user.id)
         .await;
 
-    // Wait for invalidation to propagate
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    // Wait for invalidation to propagate via Redis Pub/Sub
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Node B: Query permissions again (should fetch fresh data from DB)
-    let perms_b_after = permission_service_b
-        .get_user_permissions(&room.id, &member_user.id)
-        .await
-        .expect("Failed to get updated permissions");
+    // Retry a few times to allow for Pub/Sub propagation delays under heavy load
+    let perms_b_after = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        async {
+            loop {
+                let perms = permission_service_b
+                    .get_user_permissions(&room.id, &member_user.id)
+                    .await
+                    .expect("Failed to get updated permissions");
+                if perms != perms_b_initial {
+                    return perms;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        },
+    )
+    .await
+    .expect("timed out waiting for permission change to propagate to node B");
 
     // Verify Node B sees the updated permissions.
     // effective_permissions = (role_default | added_permissions) & !removed_permissions

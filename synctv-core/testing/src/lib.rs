@@ -18,9 +18,10 @@ pub use postgres::{
     create_test_pool_with_db_and_label, create_test_pool_with_options_and_label, TestContainer,
 };
 pub use redis::{
-    start_redis, start_redis_handle, start_redis_url, start_redis_url_with_label,
-    start_redis_with_client, wait_for_redis_ready, RedisConnectionHandle, RedisConnectionManager,
-    RedisContainer,
+    start_dedicated_redis, start_dedicated_redis_url_with_label, start_redis,
+    start_redis_handle, start_redis_url, start_redis_url_with_label, start_redis_with_client,
+    test_redis_key_prefix, wait_for_redis_ready, RedisConnectionHandle,
+    RedisConnectionManager, RedisContainer,
 };
 pub use services::{
     create_test_attempt_tracker, create_test_brute_force_protection, create_test_jwt_service,

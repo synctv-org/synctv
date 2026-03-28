@@ -12,7 +12,7 @@ const MIGRATION_MAX_WAIT: Duration = Duration::from_mins(5);
 
 /// Maximum time to wait for the `PostgreSQL` advisory lock in the Redis-fallback
 /// path before giving up with an error.
-const PG_ADVISORY_LOCK_MAX_WAIT: Duration = Duration::from_mins(1);
+const PG_ADVISORY_LOCK_MAX_WAIT: Duration = MIGRATION_MAX_WAIT;
 /// Initial backoff before the first retry of `pg_try_advisory_lock`.
 const PG_ADVISORY_LOCK_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 /// Maximum per-retry backoff for `pg_try_advisory_lock`.
@@ -172,6 +172,19 @@ async fn run_migrations_with_lock(
     allow_pg_fallback: bool,
     migrate: &(dyn for<'a> Fn(&'a PgPool) -> MigrateFuture<'a> + Send + Sync),
 ) -> Result<()> {
+    // Fast path: if migrations are already applied, skip lock acquisition
+    // entirely.  This avoids thundering-herd pressure on Redis when many
+    // test processes start simultaneously against databases cloned from a
+    // pre-migrated template.  Use a short timeout so that pools with lazy
+    // connections to unreachable hosts do not block startup.
+    let already_applied = tokio::time::timeout(Duration::from_millis(500), migrations_already_applied(pool))
+        .await
+        .unwrap_or(false);
+    if already_applied {
+        info!("Migrations already applied, skipping lock acquisition");
+        return Ok(());
+    }
+
     let migration_lock_key = format!("{key_prefix}migration");
 
     match lock.acquire(&migration_lock_key, MIGRATION_LOCK_TTL).await {
@@ -299,6 +312,35 @@ async fn run_migrations_with_pg_advisory_lock(pool: &PgPool) -> Result<()> {
     }
 }
 
+/// Check whether a Redis error is transient (e.g. broken pipe, connection
+/// reset) and worth retrying rather than failing immediately.
+fn is_transient_redis_error(err: &anyhow::Error) -> bool {
+    // Try to inspect the typed redis error for a reliable classification.
+    if let Some(redis_err) = err.downcast_ref::<redis::RedisError>() {
+        use redis::ServerErrorKind;
+        return match redis_err.kind() {
+            // Network / IO errors (broken pipe, connection reset, refused, etc.)
+            redis::ErrorKind::Io => true,
+            // Cluster connection not yet established — retryable.
+            redis::ErrorKind::ClusterConnectionNotFound => true,
+            // Server asked us to retry (TRYAGAIN / BUSYLOADING).
+            redis::ErrorKind::Server(ServerErrorKind::TryAgain) => true,
+            redis::ErrorKind::Server(ServerErrorKind::BusyLoading) => true,
+            _ => false,
+        };
+    }
+
+    // Fallback: the MigrationLock implementation may wrap the redis error
+    // with additional context that obscures the original type.  Fall back to
+    // string matching for the patterns we know indicate a transient fault.
+    let s = err.to_string();
+    s.contains("broken pipe")
+        || s.contains("Connection reset")
+        || s.contains("connection refused")
+        || s.contains("timed out")
+        || s.contains("Unexpected EOF")
+}
+
 /// Another node holds the lock. Poll until it is released, then verify whether
 /// migrations still need to run.
 async fn wait_for_lock_and_migrate(
@@ -312,6 +354,8 @@ async fn wait_for_lock_and_migrate(
 
     let max_attempts = (MIGRATION_MAX_WAIT.as_secs() / MIGRATION_POLL_INTERVAL.as_secs()) as u32;
     let mut attempts: u32 = 0;
+    let mut consecutive_redis_errors: u32 = 0;
+    const MAX_CONSECUTIVE_REDIS_ERRORS: u32 = 5;
 
     loop {
         tokio::time::sleep(MIGRATION_POLL_INTERVAL).await;
@@ -338,7 +382,10 @@ async fn wait_for_lock_and_migrate(
                 release_lock(lock.as_ref(), lock_key, &lock_value).await;
                 return result;
             }
-            Ok(None) if attempts < max_attempts => continue,
+            Ok(None) if attempts < max_attempts => {
+                consecutive_redis_errors = 0;
+                continue;
+            }
             Ok(None) => {
                 return Err(anyhow::anyhow!(
                     "Timed out waiting for migration lock after {}s",
@@ -346,6 +393,16 @@ async fn wait_for_lock_and_migrate(
                 ));
             }
             Err(e) => {
+                consecutive_redis_errors += 1;
+                if is_transient_redis_error(&e)
+                    && consecutive_redis_errors < MAX_CONSECUTIVE_REDIS_ERRORS
+                    && attempts < max_attempts
+                {
+                    warn!(
+                        "Transient Redis error while waiting for migration lock (attempt {consecutive_redis_errors}/{MAX_CONSECUTIVE_REDIS_ERRORS}): {e}"
+                    );
+                    continue;
+                }
                 let mode_message = if cluster_mode {
                     "cluster.enabled=true requires Redis migration locking"
                 } else {
@@ -486,7 +543,7 @@ async fn release_lock(lock: &dyn MigrationLock, lock_key: &str, lock_value: &str
 mod tests {
     use super::{
         migrations_match_applied_set, run_migrations_with_mode, run_migrations_with_runner,
-        MIGRATION_LOCK_TTL,
+        MIGRATION_LOCK_TTL, MIGRATION_MAX_WAIT, PG_ADVISORY_LOCK_MAX_WAIT,
     };
     use anyhow::anyhow;
     use sqlx::Row;
@@ -708,6 +765,14 @@ mod tests {
         assert_eq!(lock.release_calls.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn pg_advisory_lock_wait_budget_matches_primary_migration_wait_budget() {
+        assert_eq!(
+            PG_ADVISORY_LOCK_MAX_WAIT, MIGRATION_MAX_WAIT,
+            "PostgreSQL advisory lock fallback must wait as long as the primary migration lock path"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn migration_runner_fails_when_keepalive_loses_lock() {
         let pool = PgPoolOptions::new()
@@ -848,7 +913,7 @@ mod tests {
             "synctv_test",
             "migration-pg-lock-single-conn",
             1,
-            Duration::from_secs(1),
+            Duration::from_secs(30),
         )
         .await;
         let lock = Arc::new(FailingMigrationLock {

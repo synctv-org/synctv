@@ -18,7 +18,7 @@ use std::time::Duration;
 use synctv_cluster::sync::{ClusterEvent, ClusterManager, ConnectionManager};
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{MemberStatus, PermissionBits, RoomId, UserId},
+    models::{MemberStatus, PermissionBits, RoomId, RoomStatus, UserId, UserStatus},
     service::{ChatService, ContentFilter, RateLimitConfig, RateLimiter, RoomService},
 };
 use tokio::sync::Semaphore;
@@ -360,7 +360,8 @@ pub struct StreamMessageHandler {
     /// Room event receiver created during `pre_join()` so transports do not expose
     /// a window where the connection is joined in `ConnectionManager` but not yet
     /// subscribed in `RoomMessageHub`.
-    pending_room_event_rx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<ClusterEvent>>>>,
+    pending_room_event_rx:
+        Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<ClusterEvent>>>>,
     /// Instance-level concurrency configuration for backpressure control.
     /// This replaces the global `MESSAGE_PROCESSING_SEMAPHORE` with per-AppState configuration.
     concurrency_config: Arc<MessageConcurrencyConfig>,
@@ -642,6 +643,69 @@ impl StreamMessageHandler {
         self.membership_cache.invalidate(&cache_key);
     }
 
+    async fn final_realtime_admission_denial_reason(&self) -> Result<Option<&'static str>, String> {
+        let user = self
+            .room_service
+            .user_service()
+            .get_user(&self.user_id)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %self.room_id.as_str(),
+                    user_id = %self.user_id.as_str(),
+                    "Failed to re-validate user access during pre_join; rejecting connection because final admission must fail closed"
+                );
+                "User re-validation temporarily unavailable".to_string()
+            })?;
+
+        if user.status == UserStatus::Banned || user.status == UserStatus::Pending {
+            return Ok(Some("User is no longer allowed to use real-time messaging"));
+        }
+        if user.deleted_at.is_some() {
+            return Ok(Some("User account is no longer available"));
+        }
+
+        let room = self.room_service.get_room(&self.room_id).await.map_err(|error| {
+            tracing::warn!(
+                error = %error,
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                "Failed to re-validate room access during pre_join; rejecting connection because final admission must fail closed"
+            );
+            "Room re-validation temporarily unavailable".to_string()
+        })?;
+
+        if room.is_banned {
+            return Ok(Some("This room has been banned"));
+        }
+        if room.status == RoomStatus::Closed {
+            return Ok(Some(
+                "This room is closed and not accepting new connections",
+            ));
+        }
+
+        let membership_lookup = self
+            .room_service
+            .member_service()
+            .get_member(&self.room_id, &self.user_id)
+            .await;
+        if let Some(reason) = initial_realtime_join_denial_reason(&membership_lookup) {
+            return Ok(Some(reason));
+        }
+        if let Err(error) = membership_lookup {
+            tracing::warn!(
+                error = %error,
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                "Failed to re-validate membership during pre_join; rejecting connection because final admission must fail closed"
+            );
+            return Err("Membership re-validation temporarily unavailable".to_string());
+        }
+
+        Ok(None)
+    }
+
     /// Register the connection and join the room, enforcing connection limits.
     ///
     /// Call this **before** returning the gRPC response stream so that limit
@@ -671,16 +735,24 @@ impl StreamMessageHandler {
             .join_room(&self.connection_id, self.room_id.clone())
             .await
         {
-            self.connection_manager.unregister(&self.connection_id).await;
+            self.connection_manager
+                .unregister(&self.connection_id)
+                .await;
             return Err(e);
         }
 
-        let membership_lookup = self
-            .room_service
-            .member_service()
-            .get_member(&self.room_id, &self.user_id)
-            .await;
-        if let Some(reason) = initial_realtime_join_denial_reason(&membership_lookup) {
+        let denial_reason = match self.final_realtime_admission_denial_reason().await {
+            Ok(reason) => reason,
+            Err(error) => {
+                self.skip_cleanup_user_left
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.connection_manager
+                    .unregister(&self.connection_id)
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Some(reason) = denial_reason {
             self.skip_cleanup_user_left
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             self.connection_manager
@@ -688,22 +760,15 @@ impl StreamMessageHandler {
                 .await;
             return Err(reason.to_string());
         }
-        if let Err(error) = membership_lookup {
-            tracing::warn!(
-                error = %error,
-                room_id = %self.room_id.as_str(),
-                user_id = %self.user_id.as_str(),
-                "Failed to re-validate membership during pre_join; rejecting connection because final admission must fail closed"
-            );
+
+        if let Err(error) = self.cache_room_event_subscription().await {
             self.skip_cleanup_user_left
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             self.connection_manager
                 .unregister(&self.connection_id)
                 .await;
-            return Err("Membership re-validation temporarily unavailable".to_string());
+            return Err(error);
         }
-
-        self.cache_room_event_subscription().await?;
 
         Ok(())
     }
@@ -1795,19 +1860,10 @@ impl StreamMessageHandler {
             .register(self.connection_id.clone(), self.user_id.clone())
             .await?;
 
-        // Associate connection with the room (enforces per-room connection limit)
-        if let Err(e) = self
-            .connection_manager
-            .join_room(&self.connection_id, self.room_id.clone())
-            .await
-        {
-            self.connection_manager
-                .unregister(&self.connection_id)
-                .await;
-            return Err(e);
-        }
+        self.pre_join_after_registration().await?;
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
+        let room_id_str = self.room_id.as_str().to_string();
 
         // E6 fix: Fetch member data ONCE and pass to both methods
         let member_lookup = self
@@ -1818,9 +1874,7 @@ impl StreamMessageHandler {
         if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
             self.skip_cleanup_user_left
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.connection_manager
-                .unregister(&self.connection_id)
-                .await;
+            self.cleanup(&room_id_str).await;
             return Err(reason.to_string());
         }
         let member_data = match member_lookup {
@@ -1837,7 +1891,6 @@ impl StreamMessageHandler {
         };
 
         // Send initial UserJoined message to the client (mirrors run() behavior)
-        let room_id_str = self.room_id.as_str().to_string();
         let initial_msg = self.create_user_joined_message(&room_id_str, member_data.as_ref());
         if let Err(e) = self.sender.send(initial_msg) {
             tracing::error!("Failed to send initial UserJoined message in start(): {e}");
@@ -1859,7 +1912,13 @@ impl StreamMessageHandler {
         let room_id_str = room_id.as_str().to_string();
         let event_connection_id = self.connection_id.clone();
         let event_user_id = self.user_id.clone();
-        let mut rx_events = self.take_room_event_subscription().await?;
+        let mut rx_events = match self.take_room_event_subscription().await {
+            Ok(rx_events) => rx_events,
+            Err(error) => {
+                self.cleanup(&room_id_str).await;
+                return Err(error);
+            }
+        };
         let sender = self.sender.clone();
 
         let event_token = cancel_token.clone();
@@ -3507,6 +3566,7 @@ mod tests {
         PermissionService, RateLimitConfig, RateLimiter, RoomService, RoomSettingsService,
         UserService,
     };
+    use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
 
     fn room_id() -> RoomId {
         RoomId("room_test".to_string())
@@ -3826,6 +3886,41 @@ mod tests {
         )
     }
 
+    async fn test_cluster_manager_with_redis(
+        node_id: &str,
+        redis_url: &str,
+    ) -> Arc<ClusterManager> {
+        let redis_client = redis::Client::open(redis_url).expect("Redis client");
+        let redis_conn = redis_client
+            .get_connection_manager()
+            .await
+            .expect("Redis connection manager");
+
+        Arc::new(
+            ClusterManager::new(
+                ClusterConfig {
+                    redis_client: Some(redis_client),
+                    redis_conn: Some(redis_conn),
+                    shared_redis_conn: None,
+                    cluster_enabled: false,
+                    node_id: node_id.to_string(),
+                    dedup_window: Duration::from_mins(1),
+                    cleanup_interval: Duration::from_secs(10),
+                    critical_channel_capacity: 100,
+                    publish_channel_capacity: 1000,
+                    key_prefix: "synctv:".to_string(),
+                    catchup_window_secs: 300,
+                    stream_max_length: 1000,
+                    parent_cancel_token: None,
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("cluster manager with redis"),
+        )
+    }
+
     fn test_connection_manager() -> ConnectionManager {
         ConnectionManager::new(ConnectionLimits::default())
     }
@@ -3853,6 +3948,84 @@ mod tests {
             Duration::from_millis(10),
             Duration::from_mins(1),
         ))
+    }
+
+    /// Creates a StreamMessageHandler backed by a real PostgreSQL database with a
+    /// registered user, created room, and accepted membership so that
+    /// `start()` (which calls `pre_join_after_registration`) can pass the
+    /// admission revalidation checks.
+    async fn create_start_handler_fixture(
+        node_id: &str,
+        sender: Arc<dyn MessageSender>,
+    ) -> StartTestFixture {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let cluster_manager = test_cluster_manager(node_id).await;
+        let connection_manager = test_connection_manager();
+        let room_service = test_room_service(pool.clone());
+        let user_service = room_service.user_service().clone();
+
+        let user = user_service
+            .register(
+                format!("fixture-user-{node_id}"),
+                Some(format!("fixture-{node_id}@test.invalid")),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("fixture user should register")
+            .0;
+
+        let (room, _) = room_service
+            .create_room(
+                format!("Fixture Room {node_id}"),
+                "test".to_string(),
+                user.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("fixture room should be created");
+
+        let handler = StreamMessageHandler::new(
+            room.id.clone(),
+            user.id.clone(),
+            user.username.clone(),
+            Arc::clone(&room_service),
+            test_chat_service(pool.clone()),
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+            Arc::new(RateLimiter::in_memory_only(format!("test:fixture:{node_id}:"))),
+            Arc::new(RateLimitConfig::default()),
+            Arc::new(ContentFilter::new()),
+            sender,
+        )
+        .with_heartbeat_schedule(HeartbeatSchedule::for_tests(
+            Duration::from_millis(10),
+            Duration::from_mins(1),
+        ));
+
+        StartTestFixture {
+            _container,
+            pool,
+            cluster_manager,
+            connection_manager,
+            handler,
+        }
+    }
+
+    struct StartTestFixture {
+        _container: synctv_core_testing::TestContainer,
+        pool: sqlx::PgPool,
+        cluster_manager: Arc<ClusterManager>,
+        connection_manager: ConnectionManager,
+        handler: StreamMessageHandler,
+    }
+
+    impl StartTestFixture {
+        async fn shutdown(self) {
+            shutdown_test_runtime_resources(self.cluster_manager, self.connection_manager).await;
+            self.pool.close().await;
+        }
     }
 
     async fn prepare_handler_for_run_after_join(
@@ -3937,10 +4110,7 @@ mod tests {
         .expect("run_after_join should be ready");
     }
 
-    async fn wait_for_recorded_message_count(
-        stream_state: &RecordingStreamState,
-        expected: usize,
-    ) {
+    async fn wait_for_recorded_message_count(stream_state: &RecordingStreamState, expected: usize) {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if stream_state.sent_messages().len() >= expected {
@@ -3986,32 +4156,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_cancels_and_cleans_up_when_initial_send_fails() {
-        let cluster_manager = test_cluster_manager("test_start_initial_send_failure").await;
-        let connection_manager = test_connection_manager();
         let sender = FailingMessageSender::immediate();
-        let handler = test_message_handler(
-            sender,
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
-        );
+        let fixture = create_start_handler_fixture("start_initial_send_fail", sender).await;
+        let StartTestFixture { handler, connection_manager, .. } = &fixture;
 
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
-        wait_for_start_cleanup(&handler, &connection_manager, &cancel_token, true).await;
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        wait_for_start_cleanup(handler, connection_manager, &cancel_token, true).await;
+        fixture.shutdown().await;
     }
 
     #[tokio::test]
     async fn test_start_does_not_broadcast_presence_events_when_initial_send_fails() {
-        let cluster_manager =
-            test_cluster_manager("test_start_no_broadcast_on_initial_failure").await;
-        let connection_manager = test_connection_manager();
         let sender = FailingMessageSender::immediate();
-        let handler = test_message_handler(
-            sender,
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
-        );
+        let fixture =
+            create_start_handler_fixture("start_no_broadcast_on_initial_failure", sender).await;
+        let StartTestFixture { handler, connection_manager, cluster_manager, .. } = &fixture;
 
         let room = handler.room_id.clone();
         let user = handler.user_id.clone();
@@ -4030,27 +4190,22 @@ mod tests {
         );
 
         cluster_manager.unsubscribe(&conn_id);
-        wait_for_start_cleanup(&handler, &connection_manager, &cancel_token, true).await;
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        wait_for_start_cleanup(handler, connection_manager, &cancel_token, true).await;
+        fixture.shutdown().await;
     }
 
     #[tokio::test]
     async fn test_start_cancels_and_cleans_up_when_cluster_event_send_fails() {
-        let cluster_manager = test_cluster_manager("test_start_event_send_failure").await;
-        let connection_manager = test_connection_manager();
         let sender = FailingMessageSender::fail_after(1);
         let sender_for_assert = Arc::clone(&sender);
-        let handler = test_message_handler(
-            sender,
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
-        );
+        let fixture = create_start_handler_fixture("start_event_send_failure", sender).await;
+        let StartTestFixture { handler, connection_manager, cluster_manager, .. } = &fixture;
 
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if cluster_manager_subscriber_count(&cluster_manager, &handler.room_id) == 1 {
+                if cluster_manager_subscriber_count(cluster_manager, &handler.room_id) == 1 {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -4070,31 +4225,27 @@ mod tests {
             color: None,
         });
 
-        wait_for_start_cleanup(&handler, &connection_manager, &cancel_token, true).await;
+        wait_for_start_cleanup(handler, connection_manager, &cancel_token, true).await;
         assert!(
             sender_for_assert.send_calls() >= 2,
             "initial join send + failing event send should both be attempted"
         );
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        fixture.shutdown().await;
     }
 
     #[tokio::test]
     async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
-        let cluster_manager = test_cluster_manager("test_start_admin_notification_failure").await;
-        let connection_manager = test_connection_manager();
         let sender = FailingMessageSender::fail_after(1);
         let sender_for_assert = Arc::clone(&sender);
-        let handler = test_message_handler(
-            sender,
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
-        );
+        let fixture =
+            create_start_handler_fixture("start_admin_notification_failure", sender).await;
+        let StartTestFixture { handler, connection_manager, cluster_manager, .. } = &fixture;
 
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if cluster_manager_subscriber_count(&cluster_manager, &handler.room_id) == 1 {
+                if cluster_manager_subscriber_count(cluster_manager, &handler.room_id) == 1 {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -4113,12 +4264,12 @@ mod tests {
             timestamp: now(),
         });
 
-        wait_for_start_cleanup(&handler, &connection_manager, &cancel_token, true).await;
+        wait_for_start_cleanup(handler, connection_manager, &cancel_token, true).await;
         assert!(
             sender_for_assert.send_calls() >= 2,
             "initial join send + failing admin notification send should both be attempted"
         );
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        fixture.shutdown().await;
     }
 
     #[tokio::test]
@@ -5508,8 +5659,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pre_join_after_registration_fails_closed_when_membership_revalidation_unavailable()
-    {
+    async fn test_pre_join_after_registration_fails_closed_when_membership_revalidation_unavailable(
+    ) {
         let cluster_manager =
             test_cluster_manager("test_pre_join_membership_revalidation_unavailable").await;
         let connection_manager = test_connection_manager();
@@ -5550,6 +5701,289 @@ mod tests {
         );
 
         shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+    }
+
+    #[tokio::test]
+    async fn test_pre_join_after_registration_rejects_closed_room_on_final_revalidation() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let cluster_manager =
+            test_cluster_manager("test_pre_join_room_closed_final_revalidation").await;
+        let connection_manager = test_connection_manager();
+        let room_service = test_room_service(pool.clone());
+        let user_service = room_service.user_service().clone();
+        let owner = user_service
+            .register(
+                "room-owner".to_string(),
+                Some("owner@test.invalid".to_string()),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("owner should register")
+            .0;
+        let member = user_service
+            .register(
+                "room-member".to_string(),
+                Some("member@test.invalid".to_string()),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("member should register")
+            .0;
+        let (room, _) = room_service
+            .create_room(
+                "Realtime Room".to_string(),
+                "test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+        room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("member should join room");
+
+        let handler = super::StreamMessageHandler::new(
+            room.id.clone(),
+            member.id.clone(),
+            member.username.clone(),
+            Arc::clone(&room_service),
+            test_chat_service(pool.clone()),
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+            Arc::new(RateLimiter::in_memory_only(
+                "test:pre-join-room-closed:".to_string(),
+            )),
+            Arc::new(RateLimitConfig::default()),
+            Arc::new(ContentFilter::new()),
+            FailingMessageSender::fail_after(usize::MAX),
+        );
+
+        connection_manager
+            .register(handler.connection_id.clone(), handler.user_id.clone())
+            .await
+            .expect("register should succeed before final admission");
+
+        room_service
+            .update_room_status(&room.id, RoomStatus::Closed)
+            .await
+            .expect("closing room should succeed");
+
+        let error = handler
+            .pre_join_after_registration()
+            .await
+            .expect_err("closed room must fail final realtime admission");
+
+        assert!(
+            error.contains("closed"),
+            "expected closed-room error, got: {error}"
+        );
+        assert_eq!(connection_manager.connection_count(), 0);
+        assert_eq!(connection_manager.room_connection_count(&room.id), 0);
+        assert_eq!(connection_manager.user_connection_count(&member.id), 0);
+
+        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidation() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let cluster_manager =
+            test_cluster_manager("test_pre_join_user_banned_final_revalidation").await;
+        let connection_manager = test_connection_manager();
+        let room_service = test_room_service(pool.clone());
+        let user_service = room_service.user_service().clone();
+        let owner = user_service
+            .register(
+                "room-owner-ban".to_string(),
+                Some("owner-ban@test.invalid".to_string()),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("owner should register")
+            .0;
+        let member = user_service
+            .register(
+                "room-member-ban".to_string(),
+                Some("member-ban@test.invalid".to_string()),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("member should register")
+            .0;
+        let (room, _) = room_service
+            .create_room(
+                "Realtime Room Ban".to_string(),
+                "test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+        room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("member should join room");
+
+        let handler = super::StreamMessageHandler::new(
+            room.id.clone(),
+            member.id.clone(),
+            member.username.clone(),
+            Arc::clone(&room_service),
+            test_chat_service(pool.clone()),
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+            Arc::new(RateLimiter::in_memory_only(
+                "test:pre-join-user-banned:".to_string(),
+            )),
+            Arc::new(RateLimitConfig::default()),
+            Arc::new(ContentFilter::new()),
+            FailingMessageSender::fail_after(usize::MAX),
+        );
+
+        connection_manager
+            .register(handler.connection_id.clone(), handler.user_id.clone())
+            .await
+            .expect("register should succeed before final admission");
+
+        user_service
+            .set_user_status(&member.id, UserStatus::Banned)
+            .await
+            .expect("banning user should succeed");
+
+        let error = handler
+            .pre_join_after_registration()
+            .await
+            .expect_err("banned user must fail final realtime admission");
+
+        assert!(
+            error.contains("no longer allowed"),
+            "expected banned-user error, got: {error}"
+        );
+        assert_eq!(connection_manager.connection_count(), 0);
+        assert_eq!(connection_manager.room_connection_count(&room.id), 0);
+        assert_eq!(connection_manager.user_connection_count(&member.id), 0);
+
+        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
+    async fn test_pre_join_after_registration_rolls_back_when_room_event_subscription_caching_fails(
+    ) {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let (redis, redis_url): (RedisContainer, String) =
+            start_redis_url_with_label("msg-pre-join-subscription-fail").await;
+        let cluster_manager = test_cluster_manager_with_redis(
+            "test_pre_join_subscription_cache_failure",
+            &redis_url,
+        )
+        .await;
+        let connection_manager = test_connection_manager();
+        let room_service = test_room_service(pool.clone());
+        let user_service = room_service.user_service().clone();
+        let owner = user_service
+            .register(
+                "room-owner-sub-fail".to_string(),
+                Some("owner-sub-fail@test.invalid".to_string()),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("owner should register")
+            .0;
+        let member = user_service
+            .register(
+                "room-member-sub-fail".to_string(),
+                Some("member-sub-fail@test.invalid".to_string()),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("member should register")
+            .0;
+        let (room, _) = room_service
+            .create_room(
+                "Realtime Room Subscription Fail".to_string(),
+                "test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+        room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("member should join room");
+
+        let handler = super::StreamMessageHandler::new(
+            room.id.clone(),
+            member.id.clone(),
+            member.username.clone(),
+            Arc::clone(&room_service),
+            test_chat_service(pool.clone()),
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+            Arc::new(RateLimiter::in_memory_only(
+                "test:pre-join-subscription-fail:".to_string(),
+            )),
+            Arc::new(RateLimitConfig::default()),
+            Arc::new(ContentFilter::new()),
+            FailingMessageSender::fail_after(usize::MAX),
+        );
+
+        connection_manager
+            .register(handler.connection_id.clone(), handler.user_id.clone())
+            .await
+            .expect("register should succeed before subscription caching");
+
+        redis.terminate().await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            handler.pre_join_after_registration(),
+        )
+        .await
+        .expect("pre_join_after_registration should not hang after Redis disappears")
+        .expect_err("subscription caching failure must reject final realtime admission");
+
+        assert!(
+            error.contains("Failed to subscribe to cluster events during pre_join"),
+            "expected room subscription caching error, got: {error}"
+        );
+        assert_eq!(
+            connection_manager.connection_count(),
+            0,
+            "failed subscription caching must roll back the registered connection"
+        );
+        assert_eq!(
+            connection_manager.room_connection_count(&room.id),
+            0,
+            "failed subscription caching must not leave room membership behind"
+        );
+        assert_eq!(
+            connection_manager.user_connection_count(&member.id),
+            0,
+            "failed subscription caching must not consume per-user capacity"
+        );
+        assert_eq!(
+            cluster_manager_subscriber_count(&cluster_manager, &room.id),
+            0,
+            "failed subscription caching must not leave local room subscribers behind"
+        );
+
+        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        pool.close().await;
     }
 
     #[test]

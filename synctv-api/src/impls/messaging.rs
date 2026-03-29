@@ -3566,7 +3566,9 @@ mod tests {
         PermissionService, RateLimitConfig, RateLimiter, RoomService, RoomSettingsService,
         UserService,
     };
-    use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
+    use synctv_core_testing::{
+        start_dedicated_redis_url_with_label, start_redis_url_with_label, RedisContainer,
+    };
 
     fn room_id() -> RoomId {
         RoomId("room_test".to_string())
@@ -5880,8 +5882,9 @@ mod tests {
     async fn test_pre_join_after_registration_rolls_back_when_room_event_subscription_caching_fails(
     ) {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        // Use dedicated Redis since this test terminates the container
         let (redis, redis_url): (RedisContainer, String) =
-            start_redis_url_with_label("msg-pre-join-subscription-fail").await;
+            start_dedicated_redis_url_with_label("msg-pre-join-subscription-fail").await;
         let cluster_manager = test_cluster_manager_with_redis(
             "test_pre_join_subscription_cache_failure",
             &redis_url,

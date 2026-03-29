@@ -185,6 +185,7 @@ impl From<Error> for tonic::Status {
             Error::ServiceUnavailable(msg) => Self::unavailable(msg),
             Error::OptimisticLockConflict => Self::aborted("Resource modified concurrently"),
             Error::LockConflict(msg) => Self::aborted(msg),
+            Error::Timeout(msg) => Self::deadline_exceeded(msg),
             other => {
                 tracing::error!("Internal error: {other}");
                 Self::internal("Internal error")
@@ -626,9 +627,8 @@ mod tests {
         let provider_err = crate::provider::ProviderError::NetworkError("timeout".to_string());
         let core_err: Error = provider_err.into();
         let status: tonic::Status = core_err.into();
-        // Timeout errors don't have a direct tonic code, so they become Internal
-        assert_eq!(status.code(), tonic::Code::Internal);
-
+        // Timeout errors map to DeadlineExceeded
+        assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
         // Auth error -> Authentication -> Unauthenticated
         let provider_err = crate::provider::ProviderError::AuthRequired;
         let core_err: Error = provider_err.into();

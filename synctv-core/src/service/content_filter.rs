@@ -1,5 +1,5 @@
-use ammonia::clean;
-use std::collections::HashSet;
+use ammonia::{clean, Builder, UrlRelative};
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 /// Content filtering error
@@ -150,25 +150,18 @@ impl ContentFilter {
 
     /// Strip all HTML tags from text
     ///
-    /// This is more aggressive than ammonia's cleaning - removes ALL HTML
+    /// Uses ammonia with an empty allowed-tags set, which removes ALL HTML
+    /// elements and attributes, decodes entities, and produces plain text.
     fn strip_all_html(&self, text: &str) -> String {
-        // Use ammonia to decode entities first, then strip tags
-        let cleaned = clean(text);
-
-        // Simple state machine to strip HTML tags
-        let mut result = String::with_capacity(cleaned.len());
-        let mut in_tag = false;
-
-        for ch in cleaned.chars() {
-            match ch {
-                '<' => in_tag = true,
-                '>' => in_tag = false,
-                _ if !in_tag => result.push(ch),
-                _ => {}
-            }
-        }
-
-        result.trim().to_string()
+        Builder::default()
+            .tags(HashSet::new())
+            .tag_attributes(HashMap::new())
+            .generic_attributes(HashSet::new())
+            .url_relative(UrlRelative::Deny)
+            .clean(text)
+            .to_string()
+            .trim()
+            .to_string()
     }
 
     /// Validate username

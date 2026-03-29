@@ -77,29 +77,16 @@ impl ClientApiImpl {
         )
         .await?;
 
-        // Handle role update if provided (non-zero = specified).
-        // The service layer enforces creator-only authorization for role changes,
-        // so no separate permission check is needed here.
-        if req.role != synctv_proto::common::RoomMemberRole::Unspecified as i32 {
-            let new_role = proto_role_to_room_role(req.role)?;
-            self.room_service
-                .member_service()
-                .set_member_role(rid.clone(), uid.clone(), target_uid.clone(), new_role)
-                .await
-                .map_err(ApiError::from)?;
-        }
-
-        // Handle permission updates if any permission fields are set
+        // Fetch current target member state BEFORE any mutations.
+        // This prevents partial mutation when role change + permission update
+        // are requested together and validation fails after the role commit.
         let has_permission_changes = req.added_permissions > 0
             || req.removed_permissions > 0
             || req.admin_added_permissions > 0
             || req.admin_removed_permissions > 0;
 
-        if has_permission_changes {
-            // L1 fix: GRANT_PERMISSION check removed from API layer.
-            // The service layer (set_member_permissions) already enforces it
-            // as the single source of truth via check_permission_no_cache.
-
+        if has_permission_changes || req.role != synctv_proto::common::RoomMemberRole::Unspecified as i32
+        {
             let target_member = self
                 .room_service
                 .member_service()
@@ -108,43 +95,72 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Target member not found".to_string()))?;
 
-            let target_uses_admin_overrides =
-                matches!(target_member.role, synctv_core::models::RoomRole::Admin);
-
-            if target_uses_admin_overrides
-                && (req.added_permissions > 0 || req.removed_permissions > 0)
-            {
-                return Err(ApiError::Authorization(
-                    "Admin members must use admin_added_permissions/admin_removed_permissions"
-                        .to_string(),
-                ));
-            }
-
-            if !target_uses_admin_overrides
-                && (req.admin_added_permissions > 0 || req.admin_removed_permissions > 0)
-            {
-                return Err(ApiError::Authorization(
-                    "Only admin members use admin_added_permissions/admin_removed_permissions"
-                        .to_string(),
-                ));
-            }
-
-            let added = if target_uses_admin_overrides {
-                req.admin_added_permissions
+            // Determine the effective role AFTER potential mutation.
+            // When the request changes the role, we must use the NEW role
+            // (not the current role) to decide which permission columns
+            // to validate against and write to.
+            let role_is_changing =
+                req.role != synctv_proto::common::RoomMemberRole::Unspecified as i32;
+            let effective_is_admin = if role_is_changing {
+                let new_role = proto_role_to_room_role(req.role)?;
+                matches!(new_role, synctv_core::models::RoomRole::Admin)
             } else {
-                req.added_permissions
+                matches!(target_member.role, synctv_core::models::RoomRole::Admin)
             };
 
-            let removed = if target_uses_admin_overrides {
-                req.admin_removed_permissions
-            } else {
-                req.removed_permissions
-            };
+            if has_permission_changes {
+                if effective_is_admin
+                    && (req.added_permissions > 0 || req.removed_permissions > 0)
+                {
+                    return Err(ApiError::Authorization(
+                        "Admin members must use admin_added_permissions/admin_removed_permissions"
+                            .to_string(),
+                    ));
+                }
+                if !effective_is_admin
+                    && (req.admin_added_permissions > 0 || req.admin_removed_permissions > 0)
+                {
+                    return Err(ApiError::Authorization(
+                        "Only admin members use admin_added_permissions/admin_removed_permissions"
+                            .to_string(),
+                    ));
+                }
+            }
 
-            self.room_service
-                .set_member_permission(rid.clone(), uid.clone(), target_uid.clone(), added, removed)
-                .await
-                .map_err(ApiError::from)?;
+            // All validation passed — apply mutations now.
+
+            // Handle role update if provided (non-zero = specified).
+            if role_is_changing {
+                let new_role = proto_role_to_room_role(req.role)?;
+                self.room_service
+                    .member_service()
+                    .set_member_role(rid.clone(), uid.clone(), target_uid.clone(), new_role)
+                    .await
+                    .map_err(ApiError::from)?;
+            }
+
+            // Handle permission updates
+            if has_permission_changes {
+                // The service layer (set_member_permissions) already enforces
+                // GRANT_PERMISSION as the single source of truth via
+                // check_permission_no_cache.
+                let added = if effective_is_admin {
+                    req.admin_added_permissions
+                } else {
+                    req.added_permissions
+                };
+
+                let removed = if effective_is_admin {
+                    req.admin_removed_permissions
+                } else {
+                    req.removed_permissions
+                };
+
+                self.room_service
+                    .set_member_permission(rid.clone(), uid.clone(), target_uid.clone(), added, removed)
+                    .await
+                    .map_err(ApiError::from)?;
+            }
         }
 
         self.publish_permission_changed_with_reservation(

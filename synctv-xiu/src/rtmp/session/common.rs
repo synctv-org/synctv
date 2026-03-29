@@ -41,6 +41,7 @@ use {
 // Fixed #107: Rate limiting constants for DoS prevention
 const MAX_VIDEO_FRAMES_PER_SECOND: usize = 120; // Max 120 FPS video (generous for 60 FPS + margin)
 const MAX_AUDIO_FRAMES_PER_SECOND: usize = 200; // Max 200 FPS audio (AAC 48kHz ~47fps, with generous margin)
+const MAX_METADATA_FRAMES_PER_SECOND: usize = 10; // Metadata updates are infrequent; 10/s is generous
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
 const STREAM_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -49,6 +50,7 @@ const STREAM_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 enum FrameType {
     Video,
     Audio,
+    Metadata,
 }
 
 pub struct Common {
@@ -80,6 +82,7 @@ pub struct Common {
     // (e.g. AAC 48kHz) do not exhaust the video budget and vice versa.
     video_timestamps: VecDeque<Instant>,
     audio_timestamps: VecDeque<Instant>,
+    metadata_timestamps: VecDeque<Instant>,
 }
 
 impl Common {
@@ -105,6 +108,7 @@ impl Common {
             statistic_data_sender: None,
             video_timestamps: VecDeque::with_capacity(MAX_VIDEO_FRAMES_PER_SECOND),
             audio_timestamps: VecDeque::with_capacity(MAX_AUDIO_FRAMES_PER_SECOND),
+            metadata_timestamps: VecDeque::with_capacity(MAX_METADATA_FRAMES_PER_SECOND),
         }
     }
 
@@ -115,6 +119,7 @@ impl Common {
         let (timestamps, max_fps) = match frame_type {
             FrameType::Video => (&mut self.video_timestamps, MAX_VIDEO_FRAMES_PER_SECOND),
             FrameType::Audio => (&mut self.audio_timestamps, MAX_AUDIO_FRAMES_PER_SECOND),
+            FrameType::Metadata => (&mut self.metadata_timestamps, MAX_METADATA_FRAMES_PER_SECOND),
         };
 
         let now = Instant::now();
@@ -345,6 +350,14 @@ impl Common {
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
+        if !self.check_rate_limit(FrameType::Metadata) {
+            tracing::warn!(
+                "Metadata frame dropped: rate limit exceeded ({} /s max)",
+                MAX_METADATA_FRAMES_PER_SECOND
+            );
+            return Ok(()); // Drop frame silently (same as video/audio)
+        }
+
         // Save to cache first (borrows data), then zero-copy into channel.
         self.stream_handler.save_metadata(data, *timestamp);
 

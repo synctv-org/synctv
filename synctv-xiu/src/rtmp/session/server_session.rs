@@ -205,7 +205,22 @@ impl ServerSession {
                 })?;
             self.bytesio_data =
                 match tokio::time::timeout(remaining, self.io.lock().await.read()).await {
-                    Ok(result) => result?,
+                    Ok(result) => {
+                        let data = result?;
+                        // Cap single read to MAX_HANDSHAKE_BUFFER to prevent
+                        // a large TCP read from blowing past the total limit.
+                        if data.len() > MAX_HANDSHAKE_BUFFER {
+                            tracing::warn!(
+                                read_size = data.len(),
+                                max = MAX_HANDSHAKE_BUFFER,
+                                "RTMP handshake single read exceeded buffer limit"
+                            );
+                            return Err(SessionError {
+                                value: super::errors::SessionErrorValue::Timeout,
+                            });
+                        }
+                        data
+                    }
                     Err(_) => {
                         return Err(SessionError {
                             value: super::errors::SessionErrorValue::Timeout,

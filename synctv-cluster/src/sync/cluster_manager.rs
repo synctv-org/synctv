@@ -693,10 +693,10 @@ impl ClusterManager {
                             Ok(HeartbeatResult::Ok) => {
                                 debug!("Heartbeat sent successfully");
                                 // Reset consecutive failure counter on success (for partition detection)
-                                failure_count.store(0, Ordering::Relaxed);
+                                failure_count.store(0, Ordering::Release);
                                 synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.set(0);
                                 // Exit quarantine on successful heartbeat
-                                epoch_mismatch_count.store(0, Ordering::Relaxed);
+                                epoch_mismatch_count.store(0, Ordering::Release);
                                 is_quarantined.store(false, Ordering::Release);
                                 synctv_core::metrics::cluster::CLUSTER_EPOCH_MISMATCH_QUARANTINE.set(0);
                             }
@@ -721,7 +721,7 @@ impl ClusterManager {
                             }
                             Ok(HeartbeatResult::EpochMismatch(remote_epoch)) => {
                                 // Increment epoch mismatch counter
-                                let mismatches = epoch_mismatch_count.fetch_add(1, Ordering::Relaxed) + 1;
+                                let mismatches = epoch_mismatch_count.fetch_add(1, Ordering::AcqRel) + 1;
                                 warn!(
                                     remote_epoch = remote_epoch,
                                     consecutive_mismatches = mismatches,
@@ -741,7 +741,7 @@ impl ClusterManager {
                                 } else {
                                     info!("Re-registration with stored addresses succeeded after epoch mismatch");
                                     // Reset epoch mismatch counter on successful re-registration
-                                    epoch_mismatch_count.store(0, Ordering::Relaxed);
+                                    epoch_mismatch_count.store(0, Ordering::Release);
                                     is_quarantined.store(false, Ordering::Release);
                                     synctv_core::metrics::cluster::CLUSTER_EPOCH_MISMATCH_QUARANTINE.set(0);
                                     continue;
@@ -793,7 +793,7 @@ impl ClusterManager {
                             }
                             Err(e) => {
                                 // Increment independent failure counter for business logic
-                                let failures = failure_count.fetch_add(1, Ordering::Relaxed) + 1;
+                                let failures = failure_count.fetch_add(1, Ordering::AcqRel) + 1;
                                 // Update Prometheus gauge for monitoring only (never read for decisions)
                                 synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.set(failures as i64);
                                 error!(

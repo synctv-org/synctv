@@ -783,8 +783,20 @@ impl LeaderElector {
         self.set_leader(false, None);
         *self.lock_value.lock().await = None;
 
-        // Get current Redis timestamp to avoid clock skew issues
-        let redis_ts = self.get_redis_time().await.unwrap_or(0);
+        // Get current Redis timestamp to avoid clock skew issues.
+        // Fall back to local time if Redis TIME fails (e.g., during Sentinel
+        // failover). Using 0 would make saturating_sub(0) skip the grace
+        // period entirely once Redis recovers, while local time preserves the
+        // intended grace period duration (minor clock skew is acceptable).
+        let redis_ts = self
+            .get_redis_time()
+            .await
+            .unwrap_or_else(|_| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            });
         *self.leadership_lost_at_redis_ts.lock().await = Some(redis_ts);
 
         if was_leader {

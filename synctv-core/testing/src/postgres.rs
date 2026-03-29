@@ -44,6 +44,12 @@ struct SharedPostgresServer {
     // ManuallyDrop prevents the Drop impl from calling `docker rm` when
     // any single nextest worker process exits while others are still running.
     _container: std::mem::ManuallyDrop<ContainerAsync<Postgres>>,
+    // Dedicated runtime for the admin pool.  Individual `#[tokio::test]`
+    // runtimes are created and destroyed per-test; if the pool is created
+    // on one of those, its IO driver dies when the test finishes, causing
+    // subsequent tests to see "A Tokio 1.x context was found, but it is
+    // being shutdown."  Keeping a dedicated runtime alive prevents this.
+    _pool_runtime: tokio::runtime::Runtime,
     host: String,
     port: u16,
     admin_pool: PgPool,
@@ -739,18 +745,39 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
         .database(ADMIN_DATABASE)
         .ssl_mode(PgSslMode::Disable);
 
-    let admin_pool = PgPoolOptions::new()
-        .acquire_timeout(Duration::from_secs(30))
-        .max_connections(2)
-        .connect_with(admin_connect_options.clone())
-        .await
-        .expect("shared postgres admin pool creation should succeed");
-
+    // Create the admin pool on a dedicated runtime that outlives any
+    // individual test's tokio runtime.  `spawn_blocking` runs on the
+    // tokio blocking thread pool so we don't block the async runtime.
     let template_database = template_database_name();
-    recreate_template_database(&admin_pool, &template_database, admin_connect_options).await;
+    let template_db = template_database.clone();
+    let (admin_pool, _pool_runtime) = tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("dedicated pool runtime should build");
+
+        let pool = rt.block_on(async {
+            PgPoolOptions::new()
+                .acquire_timeout(Duration::from_secs(30))
+                .max_connections(2)
+                .connect_with(admin_connect_options.clone())
+                .await
+                .expect("shared postgres admin pool creation should succeed")
+        });
+
+        rt.block_on(async {
+            recreate_template_database(&pool, &template_db, admin_connect_options).await;
+        });
+
+        (pool, rt)
+    })
+    .await
+    .expect("pool initialization thread should not panic");
 
     SharedPostgresServer {
         _container: std::mem::ManuallyDrop::new(postgres),
+        _pool_runtime,
         host,
         port,
         admin_pool,

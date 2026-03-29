@@ -188,14 +188,20 @@ pub async fn proxy_with_cache_enabled(
     }
 
     // ------ Range request: slice-cache path ------
-    // SAFETY: range_header.is_none() was checked above.
-    let range_str = range_header.expect("range_header checked above");
+    let Some(range_str) = range_header else {
+        unreachable!("range_header.is_none() was checked above");
+    };
 
     // Total size needed for range parsing.
     // Reuse cached metadata when available to avoid a HEAD request on every
     // range request, even when the slice data is already cached (L4 fix).
     let total_size = match cache.get_resource_meta(url, provider_headers).await {
-        Some(meta) if meta.total_size.is_some() => meta.total_size.expect("checked above"),
+        Some(meta) if meta.total_size.is_some() => {
+            let Some(size) = meta.total_size else {
+                unreachable!("meta.total_size.is_some() was checked above");
+            };
+            size
+        }
         _ => head_content_length(cache.client(), url, provider_headers).await?,
     };
 

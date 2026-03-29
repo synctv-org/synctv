@@ -16,9 +16,9 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
 
-        // Check membership and playlist management permission
+        // Check membership and add media permission
         self.room_service
-            .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
+            .check_permission(&rid, &uid, PermissionBits::ADD_MEDIA)
             .await
             .map_err(Self::map_room_access_error)?;
 

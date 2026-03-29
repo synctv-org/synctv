@@ -12,7 +12,7 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::{User, UserId, UserRole, UserStatus},
     service::{
-        auth::{BruteForceProtection, JwtService},
+        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
 };
@@ -32,7 +32,7 @@ pub fn make_user_service(pool: PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    let mut svc = UserService::new(
         pool,
         jwt_service,
         username_cache,
@@ -40,7 +40,9 @@ pub fn make_user_service(pool: PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-    )
+    );
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc
 }
 
 /// Creates a `RoomService` for testing
@@ -49,7 +51,9 @@ pub fn make_user_service(pool: PgPool) -> UserService {
 #[must_use]
 pub fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(pool.clone());
-    RoomService::new(pool, user_service)
+    let mut svc = RoomService::new(pool, user_service);
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc
 }
 
 /// Creates a test User with default values

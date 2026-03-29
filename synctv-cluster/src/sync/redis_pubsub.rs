@@ -442,9 +442,12 @@ impl RedisPubSub {
         const MAX_RETRY_BUFFER: usize = 10000;
 
         /// Maximum number of critical events to buffer separately.
-        /// Critical events (kick/ban) are never dropped - this buffer has no limit
-        /// but a warning is logged if it exceeds this threshold.
-        const CRITICAL_BUFFER_WARN_THRESHOLD: usize = 1000;
+        /// Beyond this threshold, the oldest critical events are dropped
+        /// to prevent OOM during prolonged Redis outages.
+        const MAX_CRITICAL_BUFFER: usize = 5000;
+
+        /// Warning threshold for critical buffer (50% of MAX_CRITICAL_BUFFER)
+        const CRITICAL_BUFFER_WARN_THRESHOLD: usize = 2500;
 
         /// Warning threshold for normal buffer (80% of MAX_RETRY_BUFFER)
         const BUFFER_WARN_THRESHOLD: usize = (MAX_RETRY_BUFFER as f64 * 0.8) as usize;
@@ -596,7 +599,14 @@ impl RedisPubSub {
                         );
                         critical_retry_buffer = failed;
                         update_pressure(retry_buffer.len(), critical_retry_buffer.len());
-                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                        let cancelled = tokio::select! {
+                            () = cancel_publisher.cancelled() => true,
+                            () = tokio::time::sleep(Duration::from_secs(backoff_secs)) => false,
+                        };
+                        if cancelled {
+                            info!("Redis publisher task cancelled during critical retry backoff");
+                            return;
+                        }
                         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                         continue;
                     }
@@ -621,7 +631,14 @@ impl RedisPubSub {
                     if !failed.is_empty() {
                         retry_buffer = failed;
                         update_pressure(retry_buffer.len(), critical_retry_buffer.len());
-                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                        let cancelled = tokio::select! {
+                            () = cancel_publisher.cancelled() => true,
+                            () = tokio::time::sleep(Duration::from_secs(backoff_secs)) => false,
+                        };
+                        if cancelled {
+                            info!("Redis publisher task cancelled during normal retry backoff");
+                            return;
+                        }
                         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                         continue;
                     }
@@ -774,6 +791,14 @@ impl RedisPubSub {
                                 }
                                 // Route failed request to appropriate buffer based on criticality
                                 if req.event.is_critical() {
+                                    if critical_retry_buffer.len() >= MAX_CRITICAL_BUFFER {
+                                        warn!(
+                                            critical_buffer_len = critical_retry_buffer.len(),
+                                            max = MAX_CRITICAL_BUFFER,
+                                            "Critical event buffer full, dropping oldest event"
+                                        );
+                                        critical_retry_buffer.remove(0);
+                                    }
                                     critical_retry_buffer.push(req);
                                 } else {
                                     retry_buffer.push(req);
@@ -786,7 +811,16 @@ impl RedisPubSub {
                                     let event_type = req.event.event_type();
 
                                     if is_critical {
-                                        // CRITICAL events are NEVER dropped - always buffered
+                                        // Critical events are buffered with a hard cap
+                                        // to prevent OOM during prolonged outages.
+                                        if critical_retry_buffer.len() >= MAX_CRITICAL_BUFFER {
+                                            warn!(
+                                                critical_buffer_len = critical_retry_buffer.len(),
+                                                max = MAX_CRITICAL_BUFFER,
+                                                "Critical event buffer full, dropping oldest event"
+                                            );
+                                            critical_retry_buffer.remove(0);
+                                        }
                                         critical_retry_buffer.push(req);
 
                                         // Warn if critical buffer is growing large
@@ -848,7 +882,14 @@ impl RedisPubSub {
                 }
 
                 // Wait before reconnecting
-                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                let cancelled = tokio::select! {
+                    () = cancel_publisher.cancelled() => true,
+                    () = tokio::time::sleep(Duration::from_secs(backoff_secs)) => false,
+                };
+                if cancelled {
+                    info!("Redis publisher task cancelled during reconnection backoff");
+                    return;
+                }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
             }
         });
@@ -1139,10 +1180,6 @@ impl RedisPubSub {
             subscribed_rooms.len()
         );
 
-        if let Some(ready_tx) = subscriber_ready_tx.take() {
-            let _ = ready_tx.send(());
-        }
-
         // Note: lifecycle_rx is passed from outside so it persists across reconnections.
         // Any pending lifecycle events were already drained into pending_subscriptions
         // before this call, and we'll handle new events in the message loop below.
@@ -1376,6 +1413,16 @@ impl RedisPubSub {
                     "Caught up on missed events from per-room streams"
                 );
             }
+        }
+
+        // Signal readiness AFTER catch-up completes so that callers can rely on
+        // the subscriber having processed all historical events before considering
+        // it ready. Firing before catch-up (the previous location) could cause
+        // events to be published between the signal and snapshot completion,
+        // leading to them being delivered via PubSub while catch-up is still
+        // in progress and potentially processed out of order.
+        if let Some(ready_tx) = subscriber_ready_tx.take() {
+            let _ = ready_tx.send(());
         }
 
         // Process incoming messages with dynamic room subscription management.

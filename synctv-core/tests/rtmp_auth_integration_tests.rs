@@ -30,7 +30,7 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
-        auth::{jwt::JwtService, BruteForceProtection},
+        auth::{jwt::JwtService, BruteForceProtection, TestPasswordHasher},
         InMemoryTokenBlacklistStore, PublishKeyService, RoomService, UserService,
     },
 };
@@ -66,7 +66,7 @@ fn create_user_service(pool: sqlx::PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    let mut svc = UserService::new(
         pool,
         jwt_service,
         username_cache,
@@ -74,12 +74,16 @@ fn create_user_service(pool: sqlx::PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-    )
+    );
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc
 }
 
 fn create_room_service(pool: sqlx::PgPool) -> RoomService {
     let user_service = create_user_service(pool.clone());
-    RoomService::new(pool, user_service)
+    let mut svc = RoomService::new(pool, user_service);
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc
 }
 
 fn create_publish_key_service() -> PublishKeyService {

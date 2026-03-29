@@ -1,7 +1,7 @@
 -- Migration: Media Provider Instances
 -- Purpose: Store gRPC media provider instance configurations for cross-region deployment
 
-CREATE TABLE media_provider_instances (
+CREATE TABLE IF NOT EXISTS media_provider_instances (
     -- Primary Key
     name VARCHAR(64) PRIMARY KEY,
 

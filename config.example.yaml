@@ -13,7 +13,7 @@ server:
   host: "0.0.0.0"
   grpc_port: 50051
   http_port: 8080
-  enable_reflection: true
+  enable_reflection: false
   # Maximum gRPC message size in bytes (both incoming and outgoing).
   # Prevents OOM attacks from oversized messages. Default: 16MB (16777216 bytes).
   # Minimum: 1MB (1048576 bytes), Maximum: 1GB (1073741824 bytes).

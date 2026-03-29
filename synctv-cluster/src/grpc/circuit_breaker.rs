@@ -5,7 +5,7 @@
 
 use failsafe::{backoff, failure_policy, Config as CbConfig, StateMachine};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -14,6 +14,11 @@ use tracing::{debug, warn};
 /// Circuit breaker state for a single gRPC endpoint.
 type EndpointCircuitBreaker =
     StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()>;
+
+/// Maximum time (in seconds) a probe can remain in-flight before being
+/// automatically reset. This prevents a permanently wedged circuit breaker
+/// when the caller panics or drops without calling `on_success`/`on_error`.
+const PROBE_STUCK_TIMEOUT_SECS: u64 = 60;
 
 /// Wrapper around `EndpointCircuitBreaker` that adds a `probe_in_flight` flag
 /// to prevent the half-open race condition where multiple concurrent callers
@@ -37,7 +42,19 @@ struct EndpointBreaker {
     ///   wins the half-open probe race.
     /// - Reset to `false` when the probe completes via `on_success` or
     ///   `on_error`, allowing the next cooldown window to try again.
+    /// - Automatically reset if stuck for longer than
+    ///   `PROBE_STUCK_TIMEOUT_SECS` (panic/drop safety).
     probe_in_flight: AtomicBool,
+    /// Unix timestamp (seconds) when `probe_in_flight` was last set to `true`.
+    /// Used to detect and recover from stuck probes.
+    probe_started_at: AtomicU64,
+}
+
+/// Get current Unix timestamp in seconds.
+fn current_timestamp_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 impl EndpointBreaker {
@@ -46,6 +63,7 @@ impl EndpointBreaker {
             breaker,
             was_open: AtomicBool::new(false),
             probe_in_flight: AtomicBool::new(false),
+            probe_started_at: AtomicU64::new(0),
         }
     }
 
@@ -74,18 +92,41 @@ impl EndpointBreaker {
             return true;
         }
 
+        // Safety: reset a stuck probe if the caller panicked or dropped
+        // without calling on_success/on_error, preventing permanent wedge.
+        if self.probe_in_flight.load(Ordering::Acquire) {
+            let started = self.probe_started_at.load(Ordering::Acquire);
+            let now = current_timestamp_secs();
+            if started > 0 && now.saturating_sub(started) > PROBE_STUCK_TIMEOUT_SECS {
+                warn!(
+                    elapsed_secs = now - started,
+                    "Circuit breaker probe stuck for longer than {}s; resetting. \
+                     Caller may have panicked without calling on_success/on_error.",
+                    PROBE_STUCK_TIMEOUT_SECS
+                );
+                self.probe_in_flight.store(false, Ordering::Release);
+            }
+        }
+
         // Circuit is (or was) open and has now entered the half-open window.
         // Use compare_exchange so only the first concurrent caller is allowed
         // through as the probe; all others are rejected.
-        self.probe_in_flight
+        let claimed = self
+            .probe_in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+            .is_ok();
+        if claimed {
+            self.probe_started_at
+                .store(current_timestamp_secs(), Ordering::Release);
+        }
+        claimed
     }
 
     fn on_success(&self) {
-        // Probe succeeded: circuit closes.  Clear both flags so subsequent
+        // Probe succeeded: circuit closes.  Clear all flags so subsequent
         // closed-state callers are never blocked by the half-open guard.
         self.probe_in_flight.store(false, Ordering::Release);
+        self.probe_started_at.store(0, Ordering::Release);
         self.was_open.store(false, Ordering::Release);
         self.breaker.on_success();
     }
@@ -95,6 +136,7 @@ impl EndpointBreaker {
         // slot so the next cooldown window can attempt a fresh probe.
         // Keep `was_open = true` if the underlying breaker just re-opened.
         self.probe_in_flight.store(false, Ordering::Release);
+        self.probe_started_at.store(0, Ordering::Release);
         self.breaker.on_error();
         // Reflect the open state: after on_error the failsafe breaker may
         // have transitioned to Open.  Check via is_call_permitted — if it
@@ -469,5 +511,39 @@ mod tests {
             !registry.is_endpoint_open_known("node-unknown:50051").await,
             "unknown endpoints must remain queryable during degraded mode"
         );
+    }
+
+    #[tokio::test]
+    async fn test_probe_in_flight_resets_on_success_and_error() {
+        let breaker = create_endpoint_breaker();
+
+        // Simulate half-open: set was_open and claim a probe
+        breaker.was_open.store(true, Ordering::Release);
+        assert!(
+            breaker
+                .probe_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        );
+
+        // on_success should clear probe_in_flight and probe_started_at
+        breaker.on_success();
+        assert!(!breaker.probe_in_flight.load(Ordering::Acquire));
+        assert_eq!(breaker.probe_started_at.load(Ordering::Acquire), 0);
+        assert!(!breaker.was_open.load(Ordering::Acquire));
+
+        // Simulate re-open: claim another probe
+        breaker.was_open.store(true, Ordering::Release);
+        assert!(
+            breaker
+                .probe_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        );
+
+        // on_error should also clear flags
+        breaker.on_error();
+        assert!(!breaker.probe_in_flight.load(Ordering::Acquire));
+        assert_eq!(breaker.probe_started_at.load(Ordering::Acquire), 0);
     }
 }

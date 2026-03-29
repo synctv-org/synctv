@@ -182,6 +182,18 @@ fn named_redis_request(container_name: &str) -> testcontainers::ContainerRequest
         .with_label(TEST_RUN_LABEL, current_test_run_id())
         .with_reuse(ReuseDirective::Always)
         .with_tag("7-alpine")
+        .with_cmd([
+            // --- Disable persistence (ephemeral test data) ---
+            "--save", "",
+            "--appendonly", "no",
+            // --- Capacity ---
+            "--maxclients", "10000",
+            "--maxmemory", "512mb",
+            "--maxmemory-policy", "noeviction",
+            // --- Threading ---
+            "--io-threads", "4",
+            "--io-threads-do-reads", "yes",
+        ])
 }
 
 fn redis_connection_url(host: &str, port: u16) -> String {
@@ -385,7 +397,7 @@ fn docker_rm_force(container_ref: &str) -> Result<(), String> {
 }
 
 fn docker_rm_force_with_program(program: &str, container_ref: &str) -> Result<(), String> {
-    let args = ["rm", "-f", container_ref];
+    let args = ["rm", "-v", "-f", container_ref];
     let output = Command::new(program).args(args).output().map_err(|err| {
         format!("failed to spawn `{program}` for `{container_ref}` cleanup: {err}")
     })?;
@@ -1013,7 +1025,7 @@ mod tests {
             .expect_err("failed command must surface as an error");
 
         assert!(
-            err.contains("command `false rm -f synctv-redis-test` exited with status"),
+            err.contains("command `false rm -v -f synctv-redis-test` exited with status"),
             "error should include the failing command line: {err}"
         );
     }

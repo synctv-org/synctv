@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     title VARCHAR(255) NOT NULL,
     content TEXT NOT NULL,
     data JSONB DEFAULT '{}', -- Additional metadata (room_id, etc.)
-    is_read BOOLEAN DEFAULT FALSE,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id, created_at)  -- Partition key must be in PK

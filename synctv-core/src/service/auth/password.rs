@@ -1,11 +1,158 @@
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{
+        rand_core::OsRng, PasswordHash, PasswordVerifier, SaltString,
+    },
     Argon2, ParamsBuilder, Version,
 };
+use argon2::password_hash::PasswordHasher as Argon2PasswordHasher;
+use async_trait::async_trait;
 use std::sync::LazyLock;
 use tokio::task;
 
 use crate::{Error, Result};
+
+// ---------------------------------------------------------------------------
+// PasswordHasherService trait
+// ---------------------------------------------------------------------------
+
+/// Trait for password hashing and verification.
+///
+/// Allows dependency injection for testing with lightweight Argon2 parameters
+/// while keeping production-grade security in normal operation.
+#[async_trait]
+pub trait PasswordHasherService: Send + Sync {
+    /// Hash a password, returning the PHC-format hash string.
+    async fn hash_password(&self, password: &str) -> Result<String>;
+
+    /// Verify a password against a stored PHC-format hash.
+    async fn verify_password(&self, password: &str, hash: &str) -> Result<bool>;
+
+    /// Return a pre-computed dummy hash for timing-attack mitigation.
+    fn dummy_hash(&self) -> &'static str;
+}
+
+// ---------------------------------------------------------------------------
+// Production implementation (m_cost=64MB, t_cost=3, p_cost=4)
+// ---------------------------------------------------------------------------
+
+/// Production Argon2id password hasher with full-strength parameters.
+pub struct ProdPasswordHasher {
+    params: argon2::Params,
+}
+
+impl ProdPasswordHasher {
+    /// Create a new production hasher.
+    ///
+    /// Parameters: m_cost=65536 (64 MB), t_cost=3, p_cost=4.
+    #[must_use]
+    pub fn new() -> Result<Self> {
+        let params = ParamsBuilder::new()
+            .m_cost(65536)
+            .t_cost(3)
+            .p_cost(4)
+            .output_len(32)
+            .build()
+            .map_err(|e| Error::Internal(format!("Failed to build Argon2 params: {e}")))?;
+        Ok(Self { params })
+    }
+}
+
+impl Default for ProdPasswordHasher {
+    fn default() -> Self {
+        Self::new().expect("default ProdPasswordHasher should build")
+    }
+}
+
+#[async_trait]
+impl PasswordHasherService for ProdPasswordHasher {
+    async fn hash_password(&self, password: &str) -> Result<String> {
+        let password = password.to_string();
+        let params = self.params.clone();
+        task::spawn_blocking(move || {
+            let salt = SaltString::generate(&mut OsRng);
+            let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
+            hash_password_with_argon2(&password, &salt, &argon2)
+        })
+        .await
+        .map_err(|e| Error::Internal(format!("Password hashing task failed: {e}")))?
+    }
+
+    async fn verify_password(&self, password: &str, hash: &str) -> Result<bool> {
+        let password = password.to_string();
+        let hash = hash.to_string();
+        let params = self.params.clone();
+        task::spawn_blocking(move || {
+            let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
+            verify_password_with_argon2(&password, &hash, &argon2)
+        })
+        .await
+        .map_err(|e| Error::Internal(format!("Password verification task failed: {e}")))?
+    }
+
+    fn dummy_hash(&self) -> &'static str {
+        dummy_password_hash()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test implementation (m_cost=8MB, t_cost=1, p_cost=1)
+// ---------------------------------------------------------------------------
+
+/// Lightweight Argon2id password hasher for tests.
+///
+/// Uses reduced parameters for fast test execution:
+/// - Memory: 8 MB (vs 64 MB production)
+/// - Iterations: 1 (vs 3)
+/// - Parallelism: 1 (vs 4)
+pub struct TestPasswordHasher {
+    params: argon2::Params,
+}
+
+impl TestPasswordHasher {
+    /// Create a new test hasher with lightweight parameters.
+    #[must_use]
+    pub fn new() -> Self {
+        let params = ParamsBuilder::new()
+            .m_cost(8 * 1024)
+            .t_cost(1)
+            .p_cost(1)
+            .output_len(32)
+            .build()
+            .expect("test Argon2 params should build");
+        Self { params }
+    }
+}
+
+#[async_trait]
+impl PasswordHasherService for TestPasswordHasher {
+    async fn hash_password(&self, password: &str) -> Result<String> {
+        let password = password.to_string();
+        let params = self.params.clone();
+        task::spawn_blocking(move || {
+            let salt = SaltString::generate(&mut OsRng);
+            let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
+            hash_password_with_argon2(&password, &salt, &argon2)
+        })
+        .await
+        .map_err(|e| Error::Internal(format!("Password hashing task failed: {e}")))?
+    }
+
+    async fn verify_password(&self, password: &str, hash: &str) -> Result<bool> {
+        let password = password.to_string();
+        let hash = hash.to_string();
+        let params = self.params.clone();
+        task::spawn_blocking(move || {
+            let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
+            verify_password_with_argon2(&password, &hash, &argon2)
+        })
+        .await
+        .map_err(|e| Error::Internal(format!("Password verification task failed: {e}")))?
+    }
+
+    fn dummy_hash(&self) -> &'static str {
+        dummy_password_hash()
+    }
+}
 
 fn build_argon2() -> Result<Argon2<'static>> {
     let params = ParamsBuilder::new()

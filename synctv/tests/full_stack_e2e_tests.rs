@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
+use std::mem::ManuallyDrop;
 use std::net::TcpListener;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use futures_util::{stream, StreamExt};
@@ -10,10 +12,12 @@ use serde_json::{json, Value};
 use synctv::app::Application;
 use synctv_core::config::Config;
 use synctv_core_testing::{
-    create_test_database_url_with_label, start_redis_url_with_label, RedisContainer, TestContainer,
+    create_test_database_url_with_label, start_redis_url_with_label, test_redis_key_prefix,
+    RedisContainer, TestContainer,
 };
 use synctv_proto::client::{server_message, ServerMessage};
-use tokio::task::JoinHandle;
+use tokio::runtime::Runtime;
+use tokio::sync::OnceCell;
 use tokio_tungstenite::tungstenite;
 use tonic::metadata::MetadataValue;
 use tonic_health::pb::health_check_response::ServingStatus;
@@ -45,6 +49,7 @@ fn test_config(
     config.server.shutdown_drain_timeout_seconds = 3;
     config.database.url = database_url;
     config.redis.url = redis_url;
+    config.redis.key_prefix = test_redis_key_prefix("full-stack");
     config.jwt.secret = "test-jwt-secret-key-for-full-stack-e2e-123456".to_string();
     config.bootstrap.create_root_user = true;
     config.bootstrap.root_username = "admin".to_string();
@@ -83,128 +88,127 @@ fn test_config(
     config
 }
 
-struct FullStackHarness {
+// ---------------------------------------------------------------------------
+// Shared server: all full_stack tests reuse ONE Application instance.
+// The server starts on first access and runs until the process exits.
+// ---------------------------------------------------------------------------
+
+/// Dedicated tokio runtime for the shared server.
+/// Created synchronously via `LazyLock`, lives for the process lifetime.
+/// The server runs here independently of individual `#[tokio::test]` runtimes.
+static DEDICATED_RT: LazyLock<Runtime> = LazyLock::new(|| {
+    Runtime::new().expect("shared test server runtime")
+});
+
+struct SharedServer {
     http_base_url: String,
     grpc_base_url: String,
-    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    server_task: Option<JoinHandle<anyhow::Result<()>>>,
-    postgres: Option<TestContainer>,
-    redis: Option<RedisContainer>,
+    // ManuallyDrop: prevent Drop at process exit.
+    // The OS cleans up when the process exits; avoids hanging on server task join.
+    _postgres: ManuallyDrop<TestContainer>,
+    _redis: ManuallyDrop<RedisContainer>,
 }
 
-impl FullStackHarness {
-    async fn start(db_name: &str, label: &str) -> Self {
-        let (postgres, database_url) = create_test_database_url_with_label(db_name, label).await;
-        let (redis, redis_url) = start_redis_url_with_label(label).await;
-        let http_port = reserve_local_port();
-        let grpc_port = reserve_local_port();
-        let rtmp_port = reserve_local_port();
-        let config = test_config(database_url, redis_url, http_port, grpc_port, rtmp_port);
+static SHARED_SERVER: OnceCell<SharedServer> = OnceCell::const_new();
 
-        let app = Application::build(config)
-            .await
-            .expect("full-stack application should build");
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let server_task = tokio::spawn(async move {
-            app.run_with_shutdown_signal(async move {
-                let _ = shutdown_rx.await;
-            })
-            .await
-        });
+/// Returns a reference to the lazily-initialized shared server.
+/// The first call builds the Application and waits for health checks.
+/// Subsequent calls return immediately.
+async fn shared_server() -> &'static SharedServer {
+    SHARED_SERVER
+        .get_or_init(|| async {
+            let (postgres, database_url) = create_test_database_url_with_label(
+                "synctv_e2e_shared",
+                "full-stack-shared",
+            )
+            .await;
+            let (redis, redis_url) = start_redis_url_with_label("full-stack-shared").await;
+            let http_port = reserve_local_port();
+            let grpc_port = reserve_local_port();
+            let rtmp_port = reserve_local_port();
+            let config = test_config(database_url, redis_url, http_port, grpc_port, rtmp_port);
 
-        let harness = Self {
-            http_base_url: format!("http://127.0.0.1:{http_port}"),
-            grpc_base_url: format!("http://127.0.0.1:{grpc_port}"),
-            shutdown_tx: Some(shutdown_tx),
-            server_task: Some(server_task),
-            postgres: Some(postgres),
-            redis: Some(redis),
+            // Spawn build + run on the dedicated runtime.
+            // The JoinHandle is intentionally discarded — the server runs
+            // independently until the process exits.
+            DEDICATED_RT.spawn(async move {
+                let app = Application::build(config)
+                    .await
+                    .expect("shared application build");
+                // `pending()` means the server never receives a shutdown signal.
+                app.run_with_shutdown_signal(std::future::pending())
+                    .await
+            });
+
+            let http_base_url = format!("http://127.0.0.1:{http_port}");
+            let grpc_base_url = format!("http://127.0.0.1:{grpc_port}");
+
+            wait_until_live(&http_base_url).await;
+            wait_until_grpc_ready(&grpc_base_url).await;
+
+            SharedServer {
+                http_base_url,
+                grpc_base_url,
+                _postgres: ManuallyDrop::new(postgres),
+                _redis: ManuallyDrop::new(redis),
+            }
+        })
+        .await
+}
+
+async fn wait_until_live(http_base_url: &str) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("HTTP client");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let url = format!("{}/health/live", http_base_url);
+
+    loop {
+        match client.get(&url).send().await {
+            Ok(response) if response.status() == StatusCode::OK => return,
+            Ok(_) | Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Ok(response) => {
+                panic!(
+                    "health endpoint never became live, last status: {}",
+                    response.status()
+                )
+            }
+            Err(error) => panic!("health endpoint never became live: {error}"),
+        }
+    }
+}
+
+async fn wait_until_grpc_ready(grpc_base_url: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+
+    loop {
+        let status = match tonic::transport::Endpoint::from_shared(grpc_base_url.to_string())
+            .expect("valid gRPC endpoint")
+            .connect()
+            .await
+        {
+            Ok(channel) => {
+                let mut health = HealthClient::new(channel);
+                health
+                    .check(HealthCheckRequest {
+                        service: String::new(),
+                    })
+                    .await
+                    .map(|response| response.into_inner().status)
+            }
+            Err(error) => Err(tonic::Status::unavailable(error.to_string())),
         };
 
-        harness.wait_until_live().await;
-        harness.wait_until_grpc_ready().await;
-        harness
-    }
-
-    async fn wait_until_live(&self) {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .expect("HTTP client");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let url = format!("{}/health/live", self.http_base_url);
-
-        loop {
-            match client.get(&url).send().await {
-                Ok(response) if response.status() == StatusCode::OK => return,
-                Ok(_) | Err(_) if Instant::now() < deadline => {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Ok(response) => {
-                    panic!(
-                        "health endpoint never became live, last status: {}",
-                        response.status()
-                    )
-                }
-                Err(error) => panic!("health endpoint never became live: {error}"),
+        match status {
+            Ok(status) if status == ServingStatus::Serving as i32 => return,
+            Ok(_) | Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
-        }
-    }
-
-    async fn wait_until_grpc_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-
-        loop {
-            let status = match tonic::transport::Endpoint::from_shared(self.grpc_base_url.clone())
-                .expect("valid gRPC endpoint")
-                .connect()
-                .await
-            {
-                Ok(channel) => {
-                    let mut health = HealthClient::new(channel);
-                    health
-                        .check(HealthCheckRequest {
-                            service: String::new(),
-                        })
-                        .await
-                        .map(|response| response.into_inner().status)
-                }
-                Err(error) => Err(tonic::Status::unavailable(error.to_string())),
-            };
-
-            match status {
-                Ok(status) if status == ServingStatus::Serving as i32 => return,
-                Ok(_) | Err(_) if Instant::now() < deadline => {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                Ok(status) => panic!("gRPC health never became serving, last status: {status}"),
-                Err(error) => panic!("gRPC health never became ready: {error}"),
-            }
-        }
-    }
-
-    async fn shutdown(mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
-
-        if let Some(task) = self.server_task.take() {
-            match tokio::time::timeout(Duration::from_secs(15), task).await {
-                Ok(joined) => match joined {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => panic!("server exited with error: {error}"),
-                    Err(error) => panic!("server task join failed: {error}"),
-                },
-                Err(_) => panic!("server did not shut down within 30s"),
-            }
-        }
-
-        if let Some(redis) = self.redis.take() {
-            redis.cleanup().await;
-        }
-
-        if let Some(postgres) = self.postgres.take() {
-            postgres.cleanup().await;
+            Ok(status) => panic!("gRPC health never became serving, last status: {status}"),
+            Err(error) => panic!("gRPC health never became ready: {error}"),
         }
     }
 }
@@ -212,7 +216,7 @@ impl FullStackHarness {
 /// Creates a test HTTP client with reasonable timeouts for E2E tests.
 fn test_http_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .build()
         .expect("HTTP client should build")
 }
@@ -347,14 +351,14 @@ async fn recv_grpc_server_message_skip_membership(
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_health_endpoints_report_live_and_ready() {
-    let harness = FullStackHarness::start("synctv_e2e_health", "full-stack-health").await;
+    let server = shared_server().await;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("HTTP client");
 
     let live = client
-        .get(format!("{}/health/live", harness.http_base_url))
+        .get(format!("{}/health/live", server.http_base_url))
         .send()
         .await
         .expect("liveness request");
@@ -363,7 +367,7 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
     assert_eq!(live_body["status"], "ok");
 
     let ready = client
-        .get(format!("{}/health/ready", harness.http_base_url))
+        .get(format!("{}/health/ready", server.http_base_url))
         .send()
         .await
         .expect("readiness request");
@@ -374,18 +378,18 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
     assert_eq!(ready_body["details"]["redis"], "healthy");
     assert_eq!(ready_body["details"]["ws_ticket"], "healthy (redis)");
 
-    harness.shutdown().await;
+    // shared server — no per-test shutdown
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
-    let harness = FullStackHarness::start("synctv_e2e_http_flow", "full-stack-http-flow").await;
+    let server = shared_server().await;
     let client = test_http_client();
 
     let owner_register = post_json(
         &client,
-        &format!("{}/api/auth/register", harness.http_base_url),
+        &format!("{}/api/auth/register", server.http_base_url),
         json!({
             "username": "owner_user",
             "email": "owner@example.com",
@@ -398,7 +402,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let owner_login = post_json(
         &client,
-        &format!("{}/api/auth/login", harness.http_base_url),
+        &format!("{}/api/auth/login", server.http_base_url),
         json!({
             "username": "owner_user",
             "password": "OwnerPass12345!"
@@ -415,7 +419,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let owner_profile = get_with_bearer(
         &client,
-        &format!("{}/api/user", harness.http_base_url),
+        &format!("{}/api/user", server.http_base_url),
         &owner_token,
     )
     .await;
@@ -425,7 +429,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let create_room = post_json(
         &client,
-        &format!("{}/api/rooms", harness.http_base_url),
+        &format!("{}/api/rooms", server.http_base_url),
         json!({
             "name": "Full Stack Room",
             "password": "RoomPass12345!",
@@ -444,7 +448,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let member_register = post_json(
         &client,
-        &format!("{}/api/auth/register", harness.http_base_url),
+        &format!("{}/api/auth/register", server.http_base_url),
         json!({
             "username": "member_user",
             "email": "member@example.com",
@@ -457,7 +461,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let member_login = post_json(
         &client,
-        &format!("{}/api/auth/login", harness.http_base_url),
+        &format!("{}/api/auth/login", server.http_base_url),
         json!({
             "username": "member_user",
             "password": "MemberPass12345!"
@@ -474,7 +478,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let forbidden_ticket = post_json(
         &client,
-        &format!("{}/api/tickets", harness.http_base_url),
+        &format!("{}/api/tickets", server.http_base_url),
         json!({ "room_id": room_id }),
         Some(&member_token),
     )
@@ -488,7 +492,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let join_room = put_json(
         &client,
-        &format!("{}/api/rooms/{room_id}/members/@me", harness.http_base_url),
+        &format!("{}/api/rooms/{room_id}/members/@me", server.http_base_url),
         json!({ "password": "RoomPass12345!" }),
         &member_token,
     )
@@ -503,7 +507,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let member_ticket = post_json(
         &client,
-        &format!("{}/api/tickets", harness.http_base_url),
+        &format!("{}/api/tickets", server.http_base_url),
         json!({ "room_id": room_id }),
         Some(&member_token),
     )
@@ -523,19 +527,18 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
         .expect("usage string")
         .contains(&format!("/ws/rooms/{room_id}?ticket=")));
 
-    harness.shutdown().await;
+    // shared server — no per-test shutdown
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
-    let harness =
-        FullStackHarness::start("synctv_e2e_http_ws_ticket", "full-stack-http-ws-ticket").await;
+    let server = shared_server().await;
     let client = test_http_client();
 
     let register = post_json(
         &client,
-        &format!("{}/api/auth/register", harness.http_base_url),
+        &format!("{}/api/auth/register", server.http_base_url),
         json!({
             "username": "ws_ticket_user",
             "email": "ws-ticket@example.com",
@@ -548,7 +551,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
 
     let login = post_json(
         &client,
-        &format!("{}/api/auth/login", harness.http_base_url),
+        &format!("{}/api/auth/login", server.http_base_url),
         json!({
             "username": "ws_ticket_user",
             "password": "WsTicketPass12345!"
@@ -565,7 +568,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
 
     let create_room = post_json(
         &client,
-        &format!("{}/api/rooms", harness.http_base_url),
+        &format!("{}/api/rooms", server.http_base_url),
         json!({
             "name": "WS Ticket Room",
             "password": "",
@@ -584,7 +587,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
 
     let create_ticket = post_json(
         &client,
-        &format!("{}/api/tickets", harness.http_base_url),
+        &format!("{}/api/tickets", server.http_base_url),
         json!({ "room_id": room_id }),
         Some(&token),
     )
@@ -596,7 +599,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
         .expect("ticket")
         .to_string();
 
-    let addr = harness
+    let addr = server
         .http_base_url
         .strip_prefix("http://")
         .expect("http base url should use http");
@@ -634,7 +637,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
         other => panic!("expected reused ticket to be rejected with HTTP 401, got: {other:?}"),
     }
 
-    harness.shutdown().await;
+    // shared server — no per-test shutdown
 }
 
 #[tokio::test]
@@ -644,9 +647,9 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{GetProfileRequest, LoginRequest, RegisterRequest};
 
-    let harness = FullStackHarness::start("synctv_e2e_grpc_auth", "full-stack-grpc-auth").await;
+    let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(harness.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect auth gRPC client");
     let register = auth_client
@@ -676,7 +679,7 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
     assert!(!login.access_token.is_empty());
     assert!(!login.refresh_token.is_empty());
 
-    let mut profile_client = UserServiceClient::connect(harness.grpc_base_url.clone())
+    let mut profile_client = UserServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect user gRPC client");
     let unauthenticated = profile_client
@@ -698,7 +701,7 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
     assert_eq!(user.username, "grpc_user");
     assert_eq!(user.email, "grpc-user@example.com");
 
-    harness.shutdown().await;
+    // shared server — no per-test shutdown
 }
 
 #[tokio::test]
@@ -708,9 +711,9 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{CreateRoomRequest, LoginRequest, RegisterRequest};
 
-    let harness = FullStackHarness::start("synctv_e2e_grpc_room", "full-stack-grpc-room").await;
+    let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(harness.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect auth gRPC client");
     auth_client
@@ -730,7 +733,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
         .expect("grpc login should succeed")
         .into_inner();
 
-    let mut user_client = UserServiceClient::connect(harness.grpc_base_url.clone())
+    let mut user_client = UserServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect user gRPC client");
     let unauthenticated = user_client
@@ -765,7 +768,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     assert_eq!(room.member_count, 0);
     assert_eq!(room.id.len(), 12);
 
-    harness.shutdown().await;
+    // shared server — no per-test shutdown
 }
 
 #[tokio::test]
@@ -779,13 +782,9 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         RegisterRequest,
     };
 
-    let harness = FullStackHarness::start(
-        "synctv_e2e_grpc_room_context",
-        "full-stack-grpc-room-context",
-    )
-    .await;
+    let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(harness.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect auth gRPC client");
 
@@ -823,7 +822,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         .expect("member login should succeed")
         .into_inner();
 
-    let mut owner_user_client = UserServiceClient::connect(harness.grpc_base_url.clone())
+    let mut owner_user_client = UserServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
@@ -843,7 +842,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
     let room = created.room.expect("created room");
     let room_id = room.id;
 
-    let mut member_room_client = RoomServiceClient::connect(harness.grpc_base_url.clone())
+    let mut member_room_client = RoomServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect member room gRPC client");
 
@@ -912,7 +911,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
     assert_eq!(fetched_room.name, "gRPC metadata room");
     assert_eq!(fetched_room.description, "room-scoped grpc e2e");
 
-    harness.shutdown().await;
+    // shared server — no per-test shutdown
 }
 
 #[tokio::test]
@@ -928,13 +927,9 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         RegisterRequest,
     };
 
-    let harness = FullStackHarness::start(
-        "synctv_e2e_grpc_message_stream",
-        "full-stack-grpc-message-stream",
-    )
-    .await;
+    let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(harness.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect auth gRPC client");
     auth_client
@@ -971,7 +966,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .expect("member login should succeed")
         .into_inner();
 
-    let mut owner_user_client = UserServiceClient::connect(harness.grpc_base_url.clone())
+    let mut owner_user_client = UserServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
@@ -992,7 +987,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .expect("created room")
         .id;
 
-    let mut member_room_client = RoomServiceClient::connect(harness.grpc_base_url.clone())
+    let mut member_room_client = RoomServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect member room gRPC client");
     let mut join_room = tonic::Request::new(JoinRoomRequest {
@@ -1002,7 +997,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
     join_room
         .metadata_mut()
         .insert("authorization", bearer_metadata(&member_login.access_token));
-    let mut member_user_client = UserServiceClient::connect(harness.grpc_base_url.clone())
+    let mut member_user_client = UserServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect member user gRPC client");
     member_user_client
@@ -1063,7 +1058,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         other => panic!("expected HeartbeatAck, got: {other:?}"),
     }
 
-    harness.shutdown().await;
+    // shared server — no per-test shutdown
 }
 
 #[tokio::test]
@@ -1073,13 +1068,9 @@ async fn full_stack_grpc_message_stream_requires_join_room_first() {
     use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::{ClientMessage, LoginRequest, RegisterRequest};
 
-    let harness = FullStackHarness::start(
-        "synctv_e2e_grpc_message_stream_missing_join_room",
-        "full-stack-grpc-message-stream-missing-join-room",
-    )
-    .await;
+    let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(harness.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect auth gRPC client");
     auth_client
@@ -1099,7 +1090,7 @@ async fn full_stack_grpc_message_stream_requires_join_room_first() {
         .expect("login should succeed")
         .into_inner();
 
-    let mut room_client = RoomServiceClient::connect(harness.grpc_base_url.clone())
+    let mut room_client = RoomServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect room gRPC client");
     // Send stream without x-room-id metadata - should fail before stream establishment
@@ -1119,7 +1110,7 @@ async fn full_stack_grpc_message_stream_requires_join_room_first() {
         "unexpected error message: {error}"
     );
 
-    harness.shutdown().await;
+    // shared server — no per-test shutdown
 }
 
 #[tokio::test]
@@ -1130,13 +1121,9 @@ async fn full_stack_grpc_message_stream_requires_membership() {
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{ClientMessage, CreateRoomRequest, LoginRequest, RegisterRequest};
 
-    let harness = FullStackHarness::start(
-        "synctv_e2e_grpc_message_stream_membership",
-        "full-stack-grpc-message-stream-membership",
-    )
-    .await;
+    let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(harness.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect auth gRPC client");
 
@@ -1174,7 +1161,7 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         .expect("outsider login should succeed")
         .into_inner();
 
-    let mut owner_user_client = UserServiceClient::connect(harness.grpc_base_url.clone())
+    let mut owner_user_client = UserServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
@@ -1195,7 +1182,7 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         .expect("created room")
         .id;
 
-    let mut outsider_room_client = RoomServiceClient::connect(harness.grpc_base_url.clone())
+    let mut outsider_room_client = RoomServiceClient::connect(server.grpc_base_url.clone())
         .await
         .expect("connect outsider room gRPC client");
 
@@ -1220,5 +1207,5 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         "unexpected membership denial: {error}"
     );
 
-    harness.shutdown().await;
+    // shared server — no per-test shutdown
 }

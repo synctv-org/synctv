@@ -12,7 +12,7 @@ use crate::{
     models::{SignupMethod, User, UserId, UserStatus},
     repository::{UserOAuthProviderRepository, UserRepository},
     service::auth::{
-        hash_password, verify_password, BruteForceProtection, JwtService, TokenBlacklistStore,
+        BruteForceProtection, JwtService, TokenBlacklistStore,
         TokenType,
     },
     service::rate_limit::RateLimiter,
@@ -61,6 +61,9 @@ pub struct UserService {
     refresh_rate_limit_config: RefreshRateLimitConfig,
     /// Optional settings registry for reading signup_need_review and email_whitelist
     settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+    /// Password hasher (Argon2id). Defaults to production params;
+    /// inject `TestPasswordHasher` in integration tests for speed.
+    password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
 }
 
 impl std::fmt::Debug for UserService {
@@ -179,6 +182,9 @@ impl UserService {
             refresh_rate_limiter,
             refresh_rate_limit_config: RefreshRateLimitConfig::default(),
             settings_registry: None,
+            password_hasher: Arc::new(
+                crate::service::auth::ProdPasswordHasher::default(),
+            ),
         }
     }
 
@@ -190,6 +196,14 @@ impl UserService {
     /// Set the cache invalidation service for cross-replica user cache sync
     pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
         self.cache_invalidation = Some(service);
+    }
+
+    /// Override the password hasher (e.g. inject `TestPasswordHasher` in tests).
+    pub fn set_password_hasher(
+        &mut self,
+        hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
+    ) {
+        self.password_hasher = hasher;
     }
 
     /// Enable email verification requirement for login (call when email service is configured)
@@ -391,7 +405,7 @@ impl UserService {
         }
 
         // Hash password
-        let password_hash = hash_password(&password).await?;
+        let password_hash = self.password_hasher.hash_password(&password).await?;
 
         // Set initial status based on email verification config and signup_need_review setting.
         // Priority: email verification required -> Pending (must verify email first)
@@ -487,7 +501,7 @@ impl UserService {
             self.validate_email(email)?;
         }
         self.validate_password(&password)?;
-        let password_hash = hash_password(&password).await?;
+        let password_hash = self.password_hasher.hash_password(&password).await?;
         // OAuth2 users are already authenticated by the provider, so they
         // start as Active. Email registrations go through the normal
         // email-verification flow (Pending when verification is required).
@@ -534,7 +548,7 @@ impl UserService {
         }
         self.validate_password(&password)?;
 
-        let password_hash = hash_password(&password).await?;
+        let password_hash = self.password_hasher.hash_password(&password).await?;
         let mut user = User::new(username.clone(), email, password_hash, SignupMethod::Email);
         if let Some(role) = role {
             user.role = role;
@@ -593,12 +607,12 @@ impl UserService {
         // If the user doesn't exist, verify against a dummy hash so the response
         // time is indistinguishable from a real verification.
         let (is_valid, user) = if let Some(user) = maybe_user {
-            let valid = verify_password(&password, &user.password_hash).await?;
+            let valid = self.password_hasher.verify_password(&password, &user.password_hash).await?;
             (valid, Some(user))
         } else {
             // Dummy Argon2 verification to match timing of real verification.
             // This hash is pre-computed and never matches any real password.
-            let _ = verify_password(&password, crate::service::auth::dummy_password_hash()).await;
+            let _ = self.password_hasher.verify_password(&password, self.password_hasher.dummy_hash()).await;
             (false, None)
         };
 
@@ -903,7 +917,7 @@ impl UserService {
         self.validate_password(new_password)?;
 
         // Hash new password
-        let password_hash = hash_password(new_password).await?;
+        let password_hash = self.password_hasher.hash_password(new_password).await?;
 
         let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
 
@@ -974,14 +988,14 @@ impl UserService {
         if let Some(new_password) = new_password {
             let provided_old_password = old_password.expect("old_password validated above");
             let is_valid =
-                verify_password(&provided_old_password, &current_user.password_hash).await?;
+                self.password_hasher.verify_password(&provided_old_password, &current_user.password_hash).await?;
             if !is_valid {
                 return Err(Error::Authentication(
                     "Invalid current password".to_string(),
                 ));
             }
 
-            new_password_hash = Some(hash_password(&new_password).await?);
+            new_password_hash = Some(self.password_hasher.hash_password(&new_password).await?);
         }
 
         let updated_user = self
@@ -1300,7 +1314,7 @@ impl UserService {
         let random_password = nanoid::nanoid!(32);
         let user_email = email.map(std::string::ToString::to_string);
         // Hash password
-        let password_hash = hash_password(&random_password).await?;
+        let password_hash = self.password_hasher.hash_password(&random_password).await?;
 
         for candidate in &candidates {
             let user = User::new_with_status(

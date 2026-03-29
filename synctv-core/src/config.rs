@@ -1543,8 +1543,10 @@ impl Config {
         // Validate JWT secret
         if self.jwt.secret.is_empty() {
             errors.push("JWT secret is empty".to_string());
-        } else if self.jwt.secret == "change-me-in-production" {
-            errors.push("JWT secret is set to default value 'change-me-in-production'. Set SYNCTV_JWT_SECRET environment variable".to_string());
+        } else if self.jwt.secret == "change-me-in-production"
+            || self.jwt.secret.starts_with("CHANGE_ME_")
+        {
+            errors.push("JWT secret appears to be a placeholder. Set SYNCTV_JWT_SECRET to a strong random value (openssl rand -base64 48)".to_string());
         } else if self.jwt.secret.len() < 32 {
             errors.push(format!(
                 "JWT secret is too short ({} chars). Minimum 32 characters required for security. \
@@ -2004,6 +2006,21 @@ impl Config {
                  and set it as SYNCTV_SERVER_CLUSTER_SECRET or server.cluster_secret in your config."
                     .to_string(),
             );
+        }
+
+        // Validate cluster_secret strength when set.
+        if !self.server.cluster_secret.is_empty() {
+            const MIN_CLUSTER_SECRET_LEN: usize = 16;
+            if self.server.cluster_secret.len() < MIN_CLUSTER_SECRET_LEN {
+                errors.push(
+                    format!(
+                        "server.cluster_secret is too short ({} chars, minimum {}). \
+                         Use: openssl rand -hex 16",
+                        self.server.cluster_secret.len(),
+                        MIN_CLUSTER_SECRET_LEN
+                    )
+                );
+            }
         }
 
         if self.cluster.enabled && self.advertise_host_with(get_env) == "0.0.0.0" {
@@ -3311,7 +3328,7 @@ jwt:
     fn test_validate_cluster_secret_without_cluster_enabled_is_standalone() {
         let mut config = valid_prod_config();
         // cluster_secret alone must not implicitly enable cluster mode
-        config.server.cluster_secret = "shared-secret".to_string();
+        config.server.cluster_secret = "shared-secret-long-enough".to_string();
         config.redis.url = String::new();
         config.livestream.hls_shared_storage = false;
         config.webrtc.stun_external_addr = String::new();
@@ -3388,6 +3405,21 @@ jwt:
         assert!(
             config.validate().is_ok(),
             "Expected Ok with cluster mode + cluster_secret set"
+        );
+    }
+
+    #[test]
+    fn test_validate_cluster_secret_too_short_rejected() {
+        // cluster_secret too short must be rejected
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.server.cluster_secret = "short".to_string();
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("cluster_secret is too short")),
+            "Expected short cluster_secret error, got: {errors:?}"
         );
     }
 

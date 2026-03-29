@@ -18,7 +18,7 @@ use synctv_core::{
     models::{OAuth2Provider, UserId},
     repository::{UserOAuthProviderRepository, UserRepository},
     service::{
-        auth::jwt::JwtService, BruteForceProtection, InMemoryOAuthStateStore,
+        auth::{jwt::JwtService, TestPasswordHasher}, BruteForceProtection, InMemoryOAuthStateStore,
         InMemoryTokenBlacklistStore, OAuth2Service, RateLimiter, TokenBlacklistStore, UserService,
     },
     Error,
@@ -39,7 +39,7 @@ fn create_user_service_with_components(
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    let mut svc = UserService::new(
         pool,
         jwt,
         username_cache,
@@ -47,7 +47,9 @@ fn create_user_service_with_components(
         token_blacklist,
         key_builder,
         brute_force,
-    )
+    );
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc
 }
 
 fn create_user_service_with_blacklist(

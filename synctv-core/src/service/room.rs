@@ -82,7 +82,6 @@ use crate::{
     },
     service::{
         audit::{AuditAction, AuditService, AuditTargetType},
-        auth::password::{hash_password, verify_password},
         media::MediaService,
         member::MemberService,
         notification::NotificationService,
@@ -140,6 +139,10 @@ pub struct RoomService {
     /// Optional user notification service for sending admin notifications
     /// (e.g., pending room review alerts)
     user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
+
+    /// Password hasher (Argon2id). Defaults to production params;
+    /// inject `TestPasswordHasher` in integration tests for speed.
+    password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
 }
 
 impl std::fmt::Debug for RoomService {
@@ -334,6 +337,9 @@ impl RoomService {
             brute_force_service: None,
             settings_registry: None,
             user_notification_service: None,
+            password_hasher: Arc::new(
+                crate::service::auth::ProdPasswordHasher::default(),
+            ),
         }
     }
 
@@ -397,6 +403,14 @@ impl RoomService {
         service: Arc<crate::service::UserNotificationService>,
     ) {
         self.user_notification_service = Some(service);
+    }
+
+    /// Override the password hasher (e.g. inject `TestPasswordHasher` in tests).
+    pub fn set_password_hasher(
+        &mut self,
+        hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
+    ) {
+        self.password_hasher = hasher;
     }
 
     /// Log an audit event if the audit service is configured.
@@ -553,7 +567,7 @@ impl RoomService {
 
         // Hash password outside the transaction (CPU-intensive bcrypt work)
         let pwd_hash = if let Some(ref pwd) = password {
-            Some(hash_password(pwd).await?)
+            Some(self.password_hasher.hash_password(pwd).await?)
         } else {
             None
         };
@@ -754,7 +768,7 @@ impl RoomService {
                     Error::Authorization("Password required".to_string())
                 })?;
 
-                if !verify_password(provided_password, hash).await? {
+                if !self.password_hasher.verify_password(provided_password, hash).await? {
                     tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided");
                     return Err(Error::Authorization("Invalid password".to_string()));
                 }
@@ -809,7 +823,7 @@ impl RoomService {
                                 Error::Authorization("Password required".to_string())
                             })?;
 
-                            if !verify_password(&provided_password, hash).await? {
+                            if !self.password_hasher.verify_password(&provided_password, hash).await? {
                                 tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided under lock (password changed during join)");
                                 return Err(Error::Authorization("Invalid password".to_string()));
                             }
@@ -1647,7 +1661,7 @@ impl RoomService {
         let password_hash = self.room_settings_repo.get_password_hash(room_id).await?;
 
         match password_hash {
-            Some(stored) => verify_password(password, &stored)
+            Some(stored) => self.password_hasher.verify_password(password, &stored)
                 .await
                 .internal_with_err("Password verification failed"),
             None => Err(Error::InvalidInput("Room has no password set".to_string())),
@@ -1699,7 +1713,7 @@ impl RoomService {
         // Verify the password
         let password_hash = self.room_settings_repo.get_password_hash(room_id).await?;
         let is_valid = match password_hash {
-            Some(stored) => verify_password(password, &stored)
+            Some(stored) => self.password_hasher.verify_password(password, &stored)
                 .await
                 .internal_with_err("Password verification failed"),
             None => Ok(false),
@@ -2864,7 +2878,7 @@ impl RoomService {
         // Hash new password outside transaction (CPU-intensive)
         let password_is_being_set = new_password.is_some();
         let hashed_password = match new_password {
-            Some(pwd) => Some(hash_password(pwd).await?),
+            Some(pwd) => Some(self.password_hasher.hash_password(pwd).await?),
             None => None,
         };
 

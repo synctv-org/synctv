@@ -1,7 +1,7 @@
 -- Migration: User Media Provider Credentials
 -- Purpose: Store user credentials for media providers (Bilibili, Alist, Emby)
 
-CREATE TABLE user_media_provider_credentials (
+CREATE TABLE IF NOT EXISTS user_media_provider_credentials (
     -- Primary Key
     id CHAR(12) PRIMARY KEY,  -- nanoid(12)
 

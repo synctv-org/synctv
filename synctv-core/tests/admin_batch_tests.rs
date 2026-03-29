@@ -13,7 +13,7 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::{UserId, UserStatus},
     service::{
-        auth::{BruteForceProtection, JwtService},
+        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         InMemoryTokenBlacklistStore, UserService,
     },
     Error,
@@ -40,7 +40,7 @@ fn create_user_service(pool: PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    let mut svc = UserService::new(
         pool,
         jwt,
         username_cache,
@@ -48,7 +48,9 @@ fn create_user_service(pool: PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-    )
+    );
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc
 }
 
 /// Helper to create multiple test users

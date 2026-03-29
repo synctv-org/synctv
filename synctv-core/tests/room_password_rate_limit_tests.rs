@@ -26,7 +26,7 @@ use synctv_core::{
     models::{User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        auth::{BruteForceProtection, JwtService},
+        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
 };
@@ -41,7 +41,7 @@ fn make_user_service(pool: PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    let mut svc = UserService::new(
         pool,
         jwt_service,
         username_cache,
@@ -49,12 +49,17 @@ fn make_user_service(pool: PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-    )
+    );
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc
 }
 
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(pool.clone());
     let mut room_service = RoomService::new(pool, user_service);
+
+    // Use lightweight password hasher for fast tests
+    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
 
     // Set up brute-force protection for rate limiting tests
     let brute_force = BruteForceProtection::in_memory("test_room_password".to_string());
@@ -404,6 +409,7 @@ async fn test_password_verification_succeeds_when_reset_fails_in_fallback_mode()
     // Create room service with in-memory brute force (always succeeds)
     let user_service = make_user_service(pool.clone());
     let mut room_service = RoomService::new(pool.clone(), user_service);
+    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let brute_force = BruteForceProtection::in_memory("test_fallback_mode".to_string());
     room_service.set_brute_force_service(brute_force);
 

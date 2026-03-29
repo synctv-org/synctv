@@ -26,7 +26,7 @@ use synctv_core::{
     models::UserStatus,
     repository::UserRepository,
     service::{
-        auth::{jwt::JwtService, SecurityPipeline},
+        auth::{jwt::JwtService, SecurityPipeline, TestPasswordHasher},
         BruteForceProtection, InMemoryTokenBlacklistStore, TokenBlacklistStore, UserService,
     },
     Error, KeyBuilder,
@@ -46,7 +46,7 @@ fn create_user_service(pool: PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    let mut svc = UserService::new(
         pool,
         jwt_service,
         username_cache,
@@ -54,7 +54,9 @@ fn create_user_service(pool: PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-    )
+    );
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc
 }
 
 // ============================================================================

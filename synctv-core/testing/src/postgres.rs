@@ -290,7 +290,7 @@ fn docker_rm_force(container_ref: &str) -> Result<(), String> {
 }
 
 fn docker_rm_force_with_program(program: &str, container_ref: &str) -> Result<(), String> {
-    let args = ["rm", "-f", container_ref];
+    let args = ["rm", "-v", "-f", container_ref];
     let output = Command::new(program).args(args).output().map_err(|err| {
         format!("failed to spawn `{program}` for `{container_ref}` cleanup: {err}")
     })?;
@@ -427,6 +427,23 @@ fn named_postgres_request(
         .with_container_name(container_name.to_string())
         .with_label(TEST_RUN_LABEL, run_id)
         .with_reuse(ReuseDirective::Always)
+        .with_cmd([
+            // --- Performance (safe for ephemeral test data) ---
+            "-c", "fsync=off",
+            "-c", "synchronous_commit=off",
+            "-c", "full_page_writes=off",
+            "-c", "checkpoint_timeout=1h",
+            "-c", "max_wal_size=4GB",
+            // --- Capacity ---
+            "-c", "max_connections=500",
+            // --- Memory ---
+            "-c", "shared_buffers=256MB",
+            "-c", "work_mem=4MB",
+            "-c", "maintenance_work_mem=128MB",
+            "-c", "effective_cache_size=256MB",
+            // --- Planner ---
+            "-c", "random_page_cost=1.0",
+        ])
         .with_ready_conditions(postgres_ready_conditions())
 }
 
@@ -1039,7 +1056,7 @@ mod tests {
             .expect_err("failed command must surface as an error");
 
         assert!(
-            err.contains("command `false rm -f synctv-pg-test` exited with status"),
+            err.contains("command `false rm -v -f synctv-pg-test` exited with status"),
             "error should include the failing command line: {err}"
         );
     }

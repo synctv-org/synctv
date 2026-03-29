@@ -27,7 +27,7 @@ server:
 
   # Enable gRPC reflection (useful for grpcurl and development)
   # Set to false in production
-  enable_reflection: true
+  enable_reflection: false
 
   # Development mode (disables some security checks)
   # WARNING: Never enable in production! Only for local development.

@@ -280,7 +280,7 @@ async fn test_password_change_invalidates_tokens() {
         .expect("Failed to verify old token");
 
     // Change password
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
     let new_password = "NewPassword123!";
     let new_password_hash = hash_password(new_password)

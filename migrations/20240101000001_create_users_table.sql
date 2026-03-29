@@ -27,8 +27,8 @@ CREATE TABLE IF NOT EXISTS users (
 -- Partial unique indexes: usernames and emails can be reused after soft-delete.
 -- Only active (non-deleted) users enforce uniqueness.
 -- For email, NULL values don't count as duplicates (multiple users can have NULL email)
-CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
-CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE deleted_at IS NULL;
 CREATE INDEX idx_users_created_at ON users(created_at);
 CREATE INDEX idx_users_deleted_at ON users(deleted_at) WHERE deleted_at IS NOT NULL;
 

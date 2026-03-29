@@ -43,10 +43,10 @@ CREATE TABLE IF NOT EXISTS media (
 );
 
 -- Unique index: enforce uniqueness on media names within a playlist
-CREATE UNIQUE INDEX unique_media_name ON media (playlist_id, name);
+CREATE UNIQUE INDEX IF NOT EXISTS unique_media_name ON media (playlist_id, name);
 
 -- Unique index: prevent duplicate positions within the same playlist
-CREATE UNIQUE INDEX unique_media_position ON media (playlist_id, position);
+CREATE UNIQUE INDEX IF NOT EXISTS unique_media_position ON media (playlist_id, position);
 
 -- Create indexes
 CREATE INDEX idx_media_room ON media(room_id);

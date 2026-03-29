@@ -849,22 +849,19 @@ impl ClusterManager {
 
         {
             let mut state = self.heartbeat_state.lock().await;
+            // Stop the heartbeat loop first to prevent it from re-registering
+            // the node between unregister and shutdown completion (TOCTOU race).
+            if let Some(handle) = state.handle.take() {
+                await_shutdown_handle("Heartbeat task", handle, self.heartbeat_shutdown_timeout())
+                    .await;
+            }
+            // Unregister only after heartbeat has stopped, ensuring the
+            // registration won't be re-created by a concurrent heartbeat tick.
             if let Some(ref registry) = state.node_registry {
                 if let Err(e) = registry.unregister().await {
                     warn!(error = %e, "Failed to unregister node during shutdown");
                 } else {
                     info!("Node unregistered from Redis during shutdown");
-                }
-            }
-            if let Some(handle) = state.handle.take() {
-                await_shutdown_handle("Heartbeat task", handle, self.heartbeat_shutdown_timeout())
-                    .await;
-            }
-            if let Some(ref registry) = state.node_registry {
-                if let Err(e) = registry.unregister().await {
-                    warn!(error = %e, "Failed to confirm node unregistration after heartbeat shutdown");
-                } else {
-                    info!("Node unregistered from Redis after heartbeat shutdown");
                 }
             }
         }
@@ -1502,7 +1499,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_shutdown_unregisters_node_before_waiting_for_heartbeat_exit() {
+    async fn test_shutdown_unregisters_node_after_heartbeat_stops() {
         let config = ClusterConfig {
             redis_client: None,
             redis_conn: None,
@@ -1560,22 +1557,27 @@ mod tests {
             shutdown_manager.shutdown().await;
         });
 
+        // Shutdown should be waiting for the heartbeat handle to complete.
         cancel_seen_rx
             .await
             .expect("shutdown should cancel heartbeat task promptly");
+        // Node is still registered because shutdown awaits heartbeat before unregistering.
         assert!(
-            registry.test_get_local("shutdown-race-node").await.is_none(),
-            "shutdown must unregister the node before waiting for heartbeat completion"
+            registry.test_get_local("shutdown-race-node").await.is_some(),
+            "shutdown should still be waiting for heartbeat, node not yet unregistered"
         );
 
+        // Allow the heartbeat task to finish (and re-register the node).
         allow_finish_tx
             .send(())
             .expect("heartbeat task should still be waiting to finish");
+        // Now shutdown can proceed: heartbeat stopped → unregister.
         shutdown_handle.await.unwrap();
 
+        // The late re-registration must be cleaned up by unregister.
         assert!(
             registry.test_get_local("shutdown-race-node").await.is_none(),
-            "shutdown must not leave the node registered after a late heartbeat re-registration"
+            "shutdown must unregister the node even after a late heartbeat re-registration"
         );
     }
 

@@ -1,6 +1,6 @@
 -- Create playlists table (supporting tree structure and dynamic folders)
 
-CREATE TABLE playlists (
+CREATE TABLE IF NOT EXISTS playlists (
     id CHAR(12) PRIMARY KEY,
 
     -- Basic information
@@ -65,7 +65,7 @@ CREATE INDEX idx_playlists_created_at ON playlists(created_at DESC);
 
 -- Partial unique index for non-root playlists (parent_id IS NOT NULL).
 -- Ensures no duplicate names within the same parent directory.
-CREATE UNIQUE INDEX idx_playlists_unique_child_name
+CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique_child_name
     ON playlists(room_id, parent_id, name)
     WHERE parent_id IS NOT NULL;
 
@@ -73,7 +73,7 @@ CREATE UNIQUE INDEX idx_playlists_unique_child_name
 -- PostgreSQL treats NULLs as distinct in UNIQUE constraints, so a table-level
 -- UNIQUE(room_id, parent_id, name) cannot prevent duplicate root names.
 -- This partial index ensures at most one root playlist per room with a given name.
-CREATE UNIQUE INDEX idx_playlists_unique_root_name
+CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique_root_name
     ON playlists(room_id, name)
     WHERE parent_id IS NULL;
 
@@ -81,7 +81,7 @@ CREATE UNIQUE INDEX idx_playlists_unique_root_name
 -- unique_playlist_position on (room_id, parent_id, position) does not
 -- prevent duplicates when parent_id IS NULL. This partial index ensures
 -- unique positions among root-level playlists in a room.
-CREATE UNIQUE INDEX idx_playlists_unique_root_position
+CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique_root_position
     ON playlists(room_id, position)
     WHERE parent_id IS NULL;
 

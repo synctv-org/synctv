@@ -9,7 +9,10 @@ pub mod validator;
 pub use brute_force::{BruteForceConfig, BruteForceProtection};
 pub use guest_validator::GuestTokenValidator;
 pub use jwt::{Claims, GuestClaims, JwtService, TokenType};
-pub use password::{dummy_password_hash, hash_password, verify_password};
+pub use password::{
+    dummy_password_hash, hash_password, verify_password, PasswordHasherService,
+    ProdPasswordHasher, TestPasswordHasher,
+};
 pub use security_pipeline::{
     AuthErrorCategory, AuthenticatedToken, BlacklistEnforcement, SecurityPipeline,
     SecurityPipelineBuildError, SecurityPipelineBuilder,

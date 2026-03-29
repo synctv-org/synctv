@@ -384,6 +384,17 @@ impl StreamRegistryTrait for MockStreamRegistry {
     }
 }
 
+impl MockStreamRegistry {
+    /// Test helper: manually set epoch for a publisher (to simulate stale epoch scenarios)
+    #[cfg(test)]
+    pub async fn set_epoch(&self, room_id: &str, media_id: &str, epoch: u64) {
+        let mut publishers = self.publishers.lock().await;
+        if let Some(info) = publishers.get_mut(&(room_id.to_string(), media_id.to_string())) {
+            info.epoch = epoch;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

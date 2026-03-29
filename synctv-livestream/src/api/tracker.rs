@@ -27,6 +27,14 @@ use tracing::{debug, info};
 #[must_use = "dropping the guard immediately would decrement the subscriber count right away"]
 pub struct StreamSubscriberGuard(Option<Box<dyn FnOnce() + Send>>);
 
+impl std::fmt::Debug for StreamSubscriberGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamSubscriberGuard")
+            .field("armed", &self.0.is_some())
+            .finish()
+    }
+}
+
 impl StreamSubscriberGuard {
     /// Create a new guard that runs `on_drop` when dropped.
     ///

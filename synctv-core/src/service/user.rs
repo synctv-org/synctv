@@ -502,9 +502,9 @@ impl UserService {
         }
         self.validate_password(&password)?;
         let password_hash = self.password_hasher.hash_password(&password).await?;
-        // OAuth2 users are already authenticated by the provider, so they
-        // start as Active. Email registrations go through the normal
-        // email-verification flow (Pending when verification is required).
+        // OAuth2 and AdminCreated users are pre-authenticated, but still need to respect
+        // signup_need_review. Email/Password registrations go through email-verification
+        // flow (Pending when verification is required).
         let signup_need_review = self
             .settings_registry
             .as_ref()
@@ -512,7 +512,13 @@ impl UserService {
             .unwrap_or(false);
 
         let initial_status = match signup_method {
-            SignupMethod::OAuth2 | SignupMethod::AdminCreated => crate::models::UserStatus::Active,
+            SignupMethod::OAuth2 | SignupMethod::AdminCreated => {
+                if signup_need_review {
+                    crate::models::UserStatus::Pending
+                } else {
+                    crate::models::UserStatus::Active
+                }
+            }
             SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
                 if self.email_verification_required || signup_need_review {
                     crate::models::UserStatus::Pending
@@ -2197,15 +2203,21 @@ mod tests {
         );
     }
 
-    /// Verify that OAuth2 signups are NOT affected by signup_need_review.
+    /// Verify that OAuth2 signups respect signup_need_review.
     #[test]
-    fn test_register_with_executor_oauth2_ignores_signup_need_review() {
+    fn test_register_with_executor_oauth2_respects_signup_need_review() {
         let email_verification_required = false;
         let signup_need_review = true;
         let signup_method = SignupMethod::OAuth2;
 
         let initial_status = match signup_method {
-            SignupMethod::OAuth2 | SignupMethod::AdminCreated => crate::models::UserStatus::Active,
+            SignupMethod::OAuth2 | SignupMethod::AdminCreated => {
+                if signup_need_review {
+                    crate::models::UserStatus::Pending
+                } else {
+                    crate::models::UserStatus::Active
+                }
+            }
             SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
                 if email_verification_required || signup_need_review {
                     crate::models::UserStatus::Pending
@@ -2217,8 +2229,8 @@ mod tests {
 
         assert_eq!(
             initial_status,
-            crate::models::UserStatus::Active,
-            "OAuth2 registration should always be Active regardless of signup_need_review"
+            crate::models::UserStatus::Pending,
+            "OAuth2 registration with signup_need_review=true must produce Pending status"
         );
     }
 
@@ -2230,7 +2242,13 @@ mod tests {
         let signup_method = SignupMethod::Email;
 
         let initial_status = match signup_method {
-            SignupMethod::OAuth2 | SignupMethod::AdminCreated => crate::models::UserStatus::Active,
+            SignupMethod::OAuth2 | SignupMethod::AdminCreated => {
+                if signup_need_review {
+                    crate::models::UserStatus::Pending
+                } else {
+                    crate::models::UserStatus::Active
+                }
+            }
             SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
                 if email_verification_required || signup_need_review {
                     crate::models::UserStatus::Pending
@@ -2244,6 +2262,37 @@ mod tests {
             initial_status,
             crate::models::UserStatus::Active,
             "Email registration with no review/verification should be Active"
+        );
+    }
+
+    /// Verify that OAuth2 signups are Active when signup_need_review is false.
+    #[test]
+    fn test_register_with_executor_oauth2_active_when_no_review() {
+        let email_verification_required = false;
+        let signup_need_review = false;
+        let signup_method = SignupMethod::OAuth2;
+
+        let initial_status = match signup_method {
+            SignupMethod::OAuth2 | SignupMethod::AdminCreated => {
+                if signup_need_review {
+                    crate::models::UserStatus::Pending
+                } else {
+                    crate::models::UserStatus::Active
+                }
+            }
+            SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
+                if email_verification_required || signup_need_review {
+                    crate::models::UserStatus::Pending
+                } else {
+                    crate::models::UserStatus::Active
+                }
+            }
+        };
+
+        assert_eq!(
+            initial_status,
+            crate::models::UserStatus::Active,
+            "OAuth2 registration with signup_need_review=false should be Active"
         );
     }
 }

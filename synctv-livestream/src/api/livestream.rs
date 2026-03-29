@@ -30,7 +30,7 @@ use bytes::Bytes;
 use std::sync::Arc;
 use synctv_xiu::streamhub::define::StreamHubEventSender;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub use super::tracker::{StreamSubscriberGuard, StreamTracker, UserStreamTracker};
 
@@ -251,8 +251,40 @@ impl LiveStreamingInfrastructure {
         if let Some(publisher_info) = publisher {
             let is_local =
                 !self.local_node_id.is_empty() && publisher_info.node_id == self.local_node_id;
+
             if is_local {
-                return Ok(StreamSubscriberGuard::new(|| {}));
+                // LIVE-003 fix: Even for local publishers, validate epoch to detect
+                // stale streams from crashed and restarted publishers
+                match self.registry.validate_epoch(room_id, media_id, publisher_info.epoch).await {
+                    Ok(true) => {
+                        tracing::debug!(
+                            "Epoch {} validated for local publisher {}/{}",
+                            publisher_info.epoch, room_id, media_id
+                        );
+                        return Ok(StreamSubscriberGuard::new(|| {}));
+                    }
+                    Ok(false) => {
+                        warn!(
+                            "Epoch {} is stale for local publisher {}/{}, publisher may have changed",
+                            publisher_info.epoch, room_id, media_id
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Stale epoch {} for local publisher {}/{}",
+                            publisher_info.epoch, room_id, media_id
+                        ));
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to validate epoch for local publisher {}/{}: {}. \
+                             Rejecting to prevent potential split-brain.",
+                            room_id, media_id, e
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Epoch validation failed for local publisher {}/{}: {e}",
+                            room_id, media_id
+                        ));
+                    }
+                }
             }
 
             // Publisher found in Redis -- create gRPC relay pull stream
@@ -367,6 +399,55 @@ mod tests {
             .expect("local publisher should not require a relay stream");
 
         drop(guard);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_pull_stream_validates_epoch_for_local_publisher() {
+        use std::collections::HashMap;
+
+        // Test that local publisher goes through epoch validation
+        let registry = Arc::new(MockStreamRegistry::with_publishers(HashMap::from([(
+            ("room1".to_string(), "media1".to_string()),
+            PublisherInfo {
+                node_id: "node-local".to_string(),
+                grpc_address: String::new(),
+                app_name: "live".to_string(),
+                user_id: String::new(),
+                started_at: Utc::now(),
+                epoch: 1,
+            },
+        )])));
+
+        let (event_sender, _event_receiver) = mpsc::channel(1);
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::new(
+                registry.clone(),
+                "node-local".to_string(),
+                event_sender.clone(),
+            )
+            .expect("external publish manager should build"),
+        );
+
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry,
+            event_sender,
+            pull_manager,
+            external_publish_manager,
+            Arc::new(StreamTracker::new()),
+        )
+        .with_local_node_id("node-local".to_string());
+
+        // Local publisher with valid epoch should succeed
+        let result = infrastructure.ensure_pull_stream("room1", "media1", None).await;
+        assert!(
+            result.is_ok(),
+            "Local publisher with valid epoch should succeed, got error: {:?}",
+            result.err()
+        );
     }
 
     #[tokio::test]

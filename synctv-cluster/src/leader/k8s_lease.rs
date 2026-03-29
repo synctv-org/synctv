@@ -27,6 +27,12 @@ use tracing::{debug, info, warn};
 /// Default base grace period in seconds before attempting re-acquisition.
 const DEFAULT_GRACE_PERIOD_BASE_SECS: u64 = 5;
 
+/// Clock drift tolerance in seconds to add to lease duration checks.
+/// This prevents premature leader takeovers due to NTP adjustments or
+/// clock skew between nodes. A 5-second tolerance is reasonable for
+/// most NTP-synchronized environments.
+const CLOCK_DRIFT_TOLERANCE_SECS: i64 = 5;
+
 /// Default maximum grace period in seconds (cap for exponential backoff).
 const DEFAULT_GRACE_PERIOD_MAX_SECS: u64 = 60;
 
@@ -270,11 +276,15 @@ impl K8sLeaderElector {
         let is_our_lease = holder == Some(self.identity.as_str());
 
         // Check if the lease has expired
+        // CLUSTER-002: Add clock drift tolerance to prevent premature takeovers
+        // due to NTP adjustments or clock skew between nodes
         let lease_expired = if let Some(renew) = renew_time {
             let renew_time = renew.0;
             let now = chrono::Utc::now();
             let elapsed = now.signed_duration_since(renew_time);
-            elapsed.num_seconds() > i64::from(duration)
+            // Add tolerance to lease duration to account for clock drift
+            let effective_duration = i64::from(duration) + CLOCK_DRIFT_TOLERANCE_SECS;
+            elapsed.num_seconds() > effective_duration
         } else {
             true // No renew time means expired
         };

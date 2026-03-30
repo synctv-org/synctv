@@ -449,7 +449,14 @@ impl RemoteProviderManager {
         })?;
 
         let normalized_scheme = match url.scheme() {
-            "grpc" | "http" => "http",
+            "grpc" => {
+                if config.tls {
+                    "https"
+                } else {
+                    "http"
+                }
+            }
+            "http" => "http",
             "https" => "https",
             scheme => {
                 return Err(crate::Error::InvalidInput(format!(
@@ -497,7 +504,7 @@ impl RemoteProviderManager {
                         config.endpoint
                     )));
                 }
-                ("http" | "grpc", true) => {
+                ("http", true) => {
                     return Err(crate::Error::InvalidInput(format!(
                         "Remote provider endpoint '{}' requires tls=false to match its {}:// scheme",
                         config.endpoint,
@@ -1466,6 +1473,17 @@ mod tests {
             RemoteConfigValidationMode::RequireAuthSecret,
         )
         .expect("grpc:// endpoint with tls=true should remain valid");
+    }
+
+    #[test]
+    fn normalized_transport_endpoint_maps_grpc_with_tls_to_https() {
+        let mut config = remote_instance("grpc://provider.example.com:50051");
+        config.tls = true;
+
+        let normalized = RemoteProviderManager::normalized_transport_endpoint(&config)
+            .expect("grpc:// endpoint with tls=true should normalize to an https transport URL");
+
+        assert_eq!(normalized, "https://provider.example.com:50051");
     }
 
     #[test]

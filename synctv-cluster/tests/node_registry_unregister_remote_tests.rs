@@ -85,24 +85,16 @@ async fn test_unregister_remote_stale_epoch_does_not_delete_reregistered_node() 
 
     registry
         .register_remote(
-            synctv_cluster::NodeInfo::new(
-                "peer-node".to_string(),
-                "10.0.0.2:50051".to_string(),
-                "10.0.0.2:8080".to_string(),
-            )
-            .with_epoch(5),
+            synctv_cluster::NodeInfo::new("peer-node".to_string(), "10.0.0.2:8080".to_string())
+                .with_epoch(5),
         )
         .await
         .expect("initial remote registration should succeed");
 
     registry
         .register_remote(
-            synctv_cluster::NodeInfo::new(
-                "peer-node".to_string(),
-                "10.0.0.3:50051".to_string(),
-                "10.0.0.3:8080".to_string(),
-            )
-            .with_epoch(6),
+            synctv_cluster::NodeInfo::new("peer-node".to_string(), "10.0.0.3:8080".to_string())
+                .with_epoch(6),
         )
         .await
         .expect("re-registration with higher epoch should succeed");
@@ -131,8 +123,8 @@ async fn test_unregister_remote_stale_epoch_does_not_delete_reregistered_node() 
         "stale unregister must not delete newer registration"
     );
     assert_eq!(
-        node["grpc_address"].as_str(),
-        Some("10.0.0.3:50051"),
+        node["api_address"].as_str(),
+        Some("10.0.0.3:8080"),
         "newer registration must remain intact"
     );
 }
@@ -157,7 +149,6 @@ async fn test_remote_writes_invalidate_cached_node_view_immediately() {
 
     let remote = synctv_cluster::NodeInfo::new(
         "peer-node".to_string(),
-        "10.0.0.9:50051".to_string(),
         "10.0.0.9:8080".to_string(),
     )
     .with_epoch(1);

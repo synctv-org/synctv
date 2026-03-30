@@ -4,12 +4,13 @@ metadata:
   name: {{ include "synctv.configMapName" . }}
   labels:
     {{- include "synctv.labels" . | nindent 4 }}
+{{- $connectionLimits := .Values.config.connectionLimits | default dict }}
+{{- $messagingRateLimits := .Values.config.messagingRateLimits | default dict }}
 data:
   config.yaml: |
     server:
       host: {{ .Values.config.server.host | quote }}
-      http_port: {{ .Values.config.server.httpPort }}
-      grpc_port: {{ .Values.config.server.grpcPort }}
+      port: {{ .Values.config.server.port }}
       enable_reflection: {{ .Values.config.server.enableReflection | default false }}
       metrics_enabled: {{ .Values.metrics.enabled | default false }}
       {{- if .Values.config.server.trustedProxies }}
@@ -86,17 +87,17 @@ data:
       enable_bandwidth_estimation: {{ .Values.config.webrtc.enableBandwidthEstimation | default true }}
 
     connection_limits:
-      max_per_user: {{ .Values.config.connectionLimits.maxPerUser | default 5 }}
-      max_per_room: {{ .Values.config.connectionLimits.maxPerRoom | default 200 }}
-      max_total: {{ .Values.config.connectionLimits.maxTotal | default 10000 }}
-      idle_timeout_seconds: {{ .Values.config.connectionLimits.idleTimeoutSeconds | default 300 }}
-      max_duration_seconds: {{ .Values.config.connectionLimits.maxDurationSeconds | default 86400 }}
-      ws_message_rate_limit_per_second: {{ .Values.config.connectionLimits.wsMessageRateLimitPerSecond | default 50 }}
+      max_per_user: {{ $connectionLimits.maxPerUser | default 5 }}
+      max_per_room: {{ $connectionLimits.maxPerRoom | default 200 }}
+      max_total: {{ $connectionLimits.maxTotal | default 10000 }}
+      idle_timeout_seconds: {{ $connectionLimits.idleTimeoutSeconds | default 300 }}
+      max_duration_seconds: {{ $connectionLimits.maxDurationSeconds | default 86400 }}
+      ws_message_rate_limit_per_second: {{ $connectionLimits.wsMessageRateLimitPerSecond | default 50 }}
 
     messaging_rate_limits:
-      chat_per_second: {{ .Values.config.messagingRateLimits.chatPerSecond | default 10 }}
-      danmaku_per_second: {{ .Values.config.messagingRateLimits.danmakuPerSecond | default 3 }}
-      window_seconds: {{ .Values.config.messagingRateLimits.windowSeconds | default 1 }}
+      chat_per_second: {{ $messagingRateLimits.chatPerSecond | default 10 }}
+      danmaku_per_second: {{ $messagingRateLimits.danmakuPerSecond | default 3 }}
+      window_seconds: {{ $messagingRateLimits.windowSeconds | default 1 }}
 
     bootstrap:
       create_root_user: {{ .Values.config.bootstrap.createRootUser | default false }}

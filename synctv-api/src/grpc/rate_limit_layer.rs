@@ -16,8 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use axum::http;
-use tonic::body::Body as TonicBody;
+use axum::{body::Body as AxumBody, extract::ConnectInfo, http};
 use tower::{Layer, Service};
 use tracing::warn;
 
@@ -145,7 +144,7 @@ fn rate_limit_error_response(
     err: RateLimitError,
     service_label: &str,
     method_label: &str,
-) -> http::Response<TonicBody> {
+) -> http::Response<AxumBody> {
     let status = match err {
         RateLimitError::RateLimitExceeded { .. } => {
             tonic::Status::resource_exhausted("Rate limit exceeded. Please retry later.")
@@ -163,7 +162,7 @@ fn rate_limit_error_response(
     synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
         .with_label_values(&[service_label, method_label, status_label])
         .inc();
-    status.into_http()
+    status.into_http::<tonic::body::Body>().map(AxumBody::new)
 }
 
 /// Best-effort gRPC status label extraction that never consumes the response body.
@@ -173,7 +172,7 @@ fn rate_limit_error_response(
 /// finishes before returning headers to the client. For observability we prefer a
 /// conservative label over interfering with transport semantics, so this helper only
 /// inspects response headers and falls back to the HTTP status code.
-fn grpc_status_label_from_response(resp: &http::Response<TonicBody>) -> &'static str {
+fn grpc_status_label_from_response(resp: &http::Response<AxumBody>) -> &'static str {
     if let Some(status_val) = resp.headers().get("grpc-status") {
         return grpc_status_code_to_label(status_val.to_str().unwrap_or(""));
     }
@@ -367,9 +366,14 @@ fn extract_client_id<B>(
     // For anonymous requests, extract the peer address from tonic's connection metadata.
     let remote_addr = req
         .extensions()
-        .get::<tonic::transport::server::TcpConnectInfo>()
-        .and_then(tonic::transport::server::TcpConnectInfo::remote_addr)
-        .map(|addr| addr.ip());
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip())
+        .or_else(|| {
+            req.extensions()
+                .get::<tonic::transport::server::TcpConnectInfo>()
+                .and_then(tonic::transport::server::TcpConnectInfo::remote_addr)
+                .map(|addr| addr.ip())
+        });
 
     // Only trust X-Forwarded-For/X-Real-IP when from a trusted proxy or in dev mode
     let should_trust_headers = remote_addr.is_some_and(|ip| config.server.is_trusted_proxy(&ip));
@@ -407,9 +411,9 @@ fn extract_client_id<B>(
     "anon:unknown".to_string()
 }
 
-impl<S> Service<http::Request<TonicBody>> for GrpcRateLimitService<S>
+impl<S> Service<http::Request<AxumBody>> for GrpcRateLimitService<S>
 where
-    S: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>>
+    S: Service<http::Request<AxumBody>, Response = http::Response<AxumBody>>
         + Clone
         + Send
         + 'static,
@@ -430,7 +434,7 @@ where
     // All registered gRPC services pass through this tower layer before reaching handlers.
     // When the rate limit is exceeded, `tonic::Status::resource_exhausted` is returned
     // immediately without calling `inner.call()`, so the request is fully rejected.
-    fn call(&mut self, req: http::Request<TonicBody>) -> Self::Future {
+    fn call(&mut self, req: http::Request<AxumBody>) -> Self::Future {
         // Clone the inner service (tower best practice: swap ready clone out)
         let mut inner = self.inner.clone();
         std::mem::swap(&mut self.inner, &mut inner);
@@ -541,17 +545,17 @@ mod tests {
     use synctv_core::Result as CoreResult;
     use tower::service_fn;
 
-    fn request_with_headers(headers: http::HeaderMap) -> http::Request<TonicBody> {
+    fn request_with_headers(headers: http::HeaderMap) -> http::Request<AxumBody> {
         let request = http::Request::builder()
             .uri("/synctv.client.AuthService/Login")
-            .body(TonicBody::empty())
+            .body(AxumBody::empty())
             .unwrap();
         let (mut parts, body) = request.into_parts();
         parts.headers = headers;
         http::Request::from_parts(parts, body)
     }
 
-    fn request_with_peer(headers: http::HeaderMap, peer: SocketAddr) -> http::Request<TonicBody> {
+    fn request_with_peer(headers: http::HeaderMap, peer: SocketAddr) -> http::Request<AxumBody> {
         let mut request = request_with_headers(headers);
         request
             .extensions_mut()
@@ -1334,7 +1338,7 @@ mod tests {
 
     async fn call_layer_with_strict_result(
         strict_result: StubStrictResult,
-    ) -> http::Response<TonicBody> {
+    ) -> http::Response<AxumBody> {
         let jwt_service = create_test_jwt_service();
         let jwt_validator = create_test_jwt_validator(&jwt_service);
         let rate_limiter = RateLimiter::from_backend(
@@ -1343,13 +1347,17 @@ mod tests {
         );
         let layer =
             GrpcRateLimitLayer::new(rate_limiter, Arc::new(cluster_mode_config()), jwt_validator);
-        let mut svc = layer.layer(service_fn(|_req: http::Request<TonicBody>| async move {
-            Ok::<_, Infallible>(tonic::Status::ok("ok").into_http())
+        let mut svc = layer.layer(service_fn(|_req: http::Request<AxumBody>| async move {
+            Ok::<_, Infallible>(
+                tonic::Status::ok("ok")
+                    .into_http::<tonic::body::Body>()
+                    .map(AxumBody::new),
+            )
         }));
 
         let request = http::Request::builder()
             .uri("/synctv.client.AuthService/Login")
-            .body(TonicBody::empty())
+            .body(AxumBody::empty())
             .unwrap();
 
         svc.call(request).await.unwrap()
@@ -1395,9 +1403,9 @@ mod tests {
             jwt_validator,
         );
 
-        let mut svc = layer.layer(service_fn(|_req: http::Request<TonicBody>| async move {
+        let mut svc = layer.layer(service_fn(|_req: http::Request<AxumBody>| async move {
             let stream = stream::pending::<Result<Frame<bytes::Bytes>, Infallible>>();
-            let body = TonicBody::new(StreamBody::new(stream));
+            let body = AxumBody::new(StreamBody::new(stream));
             Ok::<_, Infallible>(
                 http::Response::builder()
                     .status(http::StatusCode::OK)
@@ -1408,7 +1416,7 @@ mod tests {
 
         let request = http::Request::builder()
             .uri("/synctv.client.RoomService/MessageStream")
-            .body(TonicBody::empty())
+            .body(AxumBody::empty())
             .unwrap();
 
         let result =

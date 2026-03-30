@@ -28,7 +28,6 @@ async fn test_stale_node_overrides_healthy() {
     // Create a stale node (heartbeat 120 seconds ago)
     let mut stale_node = NodeInfo::new(
         "node-1".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
     stale_node.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(120);
@@ -61,7 +60,6 @@ async fn test_unhealthy_not_overridden_by_fresh_heartbeat() {
     // Create a fresh node (recent heartbeat)
     let fresh_node = NodeInfo::new(
         "node-1".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
 
@@ -86,7 +84,6 @@ async fn test_stale_then_fresh_stays_unhealthy_until_probed() {
     // Step 1: Fresh node gets marked Healthy (no prior entry)
     let fresh_node = NodeInfo::new(
         "node-1".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
     HealthMonitor::process_heartbeats(&health_status, std::slice::from_ref(&fresh_node), 30).await;
@@ -110,7 +107,6 @@ async fn test_stale_then_fresh_stays_unhealthy_until_probed() {
     // status is preserved (NOT overridden by heartbeat)
     let recovered = NodeInfo::new(
         "node-1".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
     HealthMonitor::process_heartbeats(&health_status, &[recovered], 30).await;
@@ -137,7 +133,6 @@ async fn test_degraded_preserved_through_heartbeat() {
 
     let fresh_node = NodeInfo::new(
         "node-1".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
 
@@ -162,7 +157,6 @@ async fn test_new_fresh_node_gets_healthy() {
 
     let fresh_node = NodeInfo::new(
         "node-new".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
 
@@ -193,20 +187,17 @@ async fn test_multiple_nodes_mixed_states() {
     // node-a becomes stale, node-b stays fresh, node-c is new and fresh
     let mut stale_a = NodeInfo::new(
         "node-a".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
     stale_a.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(60);
 
     let fresh_b = NodeInfo::new(
         "node-b".to_string(),
-        "localhost:50052".to_string(),
         "localhost:8081".to_string(),
     );
 
     let fresh_c = NodeInfo::new(
         "node-c".to_string(),
-        "localhost:50053".to_string(),
         "localhost:8082".to_string(),
     );
 

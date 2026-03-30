@@ -35,7 +35,7 @@ spec:
               service:
                 name: {{ include "synctv.fullname" $ }}
                 port:
-                  name: http
+                  name: api
           {{- end }}
     {{- end }}
 {{- end }}
@@ -78,7 +78,7 @@ spec:
               service:
                 name: {{ include "synctv.fullname" $ }}
                 port:
-                  name: grpc
+                  name: api
           {{- end }}
     {{- end }}
 {{- end }}

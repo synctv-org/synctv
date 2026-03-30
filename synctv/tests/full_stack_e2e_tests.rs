@@ -35,14 +35,12 @@ fn reserve_local_port() -> u16 {
 fn test_config(
     database_url: String,
     redis_url: String,
-    http_port: u16,
-    grpc_port: u16,
+    api_port: u16,
     rtmp_port: u16,
 ) -> Config {
     let mut config = Config::default();
     config.server.host = "127.0.0.1".to_string();
-    config.server.http_port = http_port;
-    config.server.grpc_port = grpc_port;
+    config.server.port = api_port;
     config.server.enable_reflection = false;
     config.server.metrics_enabled = false;
     config.server.advertise_host = "127.0.0.1".to_string();
@@ -101,8 +99,7 @@ static DEDICATED_RT: LazyLock<Runtime> = LazyLock::new(|| {
 });
 
 struct SharedServer {
-    http_base_url: String,
-    grpc_base_url: String,
+    api_base_url: String,
     // ManuallyDrop: prevent Drop at process exit.
     // The OS cleans up when the process exits; avoids hanging on server task join.
     _postgres: ManuallyDrop<TestContainer>,
@@ -123,10 +120,9 @@ async fn shared_server() -> &'static SharedServer {
             )
             .await;
             let (redis, redis_url) = start_redis_url_with_label("full-stack-shared").await;
-            let http_port = reserve_local_port();
-            let grpc_port = reserve_local_port();
+            let api_port = reserve_local_port();
             let rtmp_port = reserve_local_port();
-            let config = test_config(database_url, redis_url, http_port, grpc_port, rtmp_port);
+            let config = test_config(database_url, redis_url, api_port, rtmp_port);
 
             // Spawn build + run on the dedicated runtime.
             // The JoinHandle is intentionally discarded — the server runs
@@ -140,15 +136,13 @@ async fn shared_server() -> &'static SharedServer {
                     .await
             });
 
-            let http_base_url = format!("http://127.0.0.1:{http_port}");
-            let grpc_base_url = format!("http://127.0.0.1:{grpc_port}");
+            let api_base_url = format!("http://127.0.0.1:{api_port}");
 
-            wait_until_live(&http_base_url).await;
-            wait_until_grpc_ready(&grpc_base_url).await;
+            wait_until_live(&api_base_url).await;
+            wait_until_grpc_ready(&api_base_url).await;
 
             SharedServer {
-                http_base_url,
-                grpc_base_url,
+                api_base_url,
                 _postgres: ManuallyDrop::new(postgres),
                 _redis: ManuallyDrop::new(redis),
             }
@@ -358,7 +352,7 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
         .expect("HTTP client");
 
     let live = client
-        .get(format!("{}/health/live", server.http_base_url))
+        .get(format!("{}/health/live", server.api_base_url))
         .send()
         .await
         .expect("liveness request");
@@ -367,7 +361,7 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
     assert_eq!(live_body["status"], "ok");
 
     let ready = client
-        .get(format!("{}/health/ready", server.http_base_url))
+        .get(format!("{}/health/ready", server.api_base_url))
         .send()
         .await
         .expect("readiness request");
@@ -389,7 +383,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let owner_register = post_json(
         &client,
-        &format!("{}/api/auth/register", server.http_base_url),
+        &format!("{}/api/auth/register", server.api_base_url),
         json!({
             "username": "owner_user",
             "email": "owner@example.com",
@@ -402,7 +396,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let owner_login = post_json(
         &client,
-        &format!("{}/api/auth/login", server.http_base_url),
+        &format!("{}/api/auth/login", server.api_base_url),
         json!({
             "username": "owner_user",
             "password": "OwnerPass12345!"
@@ -419,7 +413,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let owner_profile = get_with_bearer(
         &client,
-        &format!("{}/api/user", server.http_base_url),
+        &format!("{}/api/user", server.api_base_url),
         &owner_token,
     )
     .await;
@@ -429,7 +423,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let create_room = post_json(
         &client,
-        &format!("{}/api/rooms", server.http_base_url),
+        &format!("{}/api/rooms", server.api_base_url),
         json!({
             "name": "Full Stack Room",
             "password": "RoomPass12345!",
@@ -448,7 +442,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let member_register = post_json(
         &client,
-        &format!("{}/api/auth/register", server.http_base_url),
+        &format!("{}/api/auth/register", server.api_base_url),
         json!({
             "username": "member_user",
             "email": "member@example.com",
@@ -461,7 +455,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let member_login = post_json(
         &client,
-        &format!("{}/api/auth/login", server.http_base_url),
+        &format!("{}/api/auth/login", server.api_base_url),
         json!({
             "username": "member_user",
             "password": "MemberPass12345!"
@@ -478,7 +472,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let forbidden_ticket = post_json(
         &client,
-        &format!("{}/api/tickets", server.http_base_url),
+        &format!("{}/api/tickets", server.api_base_url),
         json!({ "room_id": room_id }),
         Some(&member_token),
     )
@@ -492,7 +486,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let join_room = put_json(
         &client,
-        &format!("{}/api/rooms/{room_id}/members/@me", server.http_base_url),
+        &format!("{}/api/rooms/{room_id}/members/@me", server.api_base_url),
         json!({ "password": "RoomPass12345!" }),
         &member_token,
     )
@@ -507,7 +501,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 
     let member_ticket = post_json(
         &client,
-        &format!("{}/api/tickets", server.http_base_url),
+        &format!("{}/api/tickets", server.api_base_url),
         json!({ "room_id": room_id }),
         Some(&member_token),
     )
@@ -538,7 +532,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
 
     let register = post_json(
         &client,
-        &format!("{}/api/auth/register", server.http_base_url),
+        &format!("{}/api/auth/register", server.api_base_url),
         json!({
             "username": "ws_ticket_user",
             "email": "ws-ticket@example.com",
@@ -551,7 +545,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
 
     let login = post_json(
         &client,
-        &format!("{}/api/auth/login", server.http_base_url),
+        &format!("{}/api/auth/login", server.api_base_url),
         json!({
             "username": "ws_ticket_user",
             "password": "WsTicketPass12345!"
@@ -568,7 +562,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
 
     let create_room = post_json(
         &client,
-        &format!("{}/api/rooms", server.http_base_url),
+        &format!("{}/api/rooms", server.api_base_url),
         json!({
             "name": "WS Ticket Room",
             "password": "",
@@ -587,7 +581,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
 
     let create_ticket = post_json(
         &client,
-        &format!("{}/api/tickets", server.http_base_url),
+        &format!("{}/api/tickets", server.api_base_url),
         json!({ "room_id": room_id }),
         Some(&token),
     )
@@ -600,7 +594,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
         .to_string();
 
     let addr = server
-        .http_base_url
+        .api_base_url
         .strip_prefix("http://")
         .expect("http base url should use http");
 
@@ -649,7 +643,7 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
 
     let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
     let register = auth_client
@@ -679,7 +673,7 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
     assert!(!login.access_token.is_empty());
     assert!(!login.refresh_token.is_empty());
 
-    let mut profile_client = UserServiceClient::connect(server.grpc_base_url.clone())
+    let mut profile_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect user gRPC client");
     let unauthenticated = profile_client
@@ -713,7 +707,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
 
     let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
     auth_client
@@ -733,7 +727,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
         .expect("grpc login should succeed")
         .into_inner();
 
-    let mut user_client = UserServiceClient::connect(server.grpc_base_url.clone())
+    let mut user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect user gRPC client");
     let unauthenticated = user_client
@@ -784,7 +778,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
 
     let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
 
@@ -822,7 +816,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         .expect("member login should succeed")
         .into_inner();
 
-    let mut owner_user_client = UserServiceClient::connect(server.grpc_base_url.clone())
+    let mut owner_user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
@@ -842,7 +836,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
     let room = created.room.expect("created room");
     let room_id = room.id;
 
-    let mut member_room_client = RoomServiceClient::connect(server.grpc_base_url.clone())
+    let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect member room gRPC client");
 
@@ -929,7 +923,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
 
     let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
     auth_client
@@ -966,7 +960,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .expect("member login should succeed")
         .into_inner();
 
-    let mut owner_user_client = UserServiceClient::connect(server.grpc_base_url.clone())
+    let mut owner_user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
@@ -987,7 +981,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .expect("created room")
         .id;
 
-    let mut member_room_client = RoomServiceClient::connect(server.grpc_base_url.clone())
+    let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect member room gRPC client");
     let mut join_room = tonic::Request::new(JoinRoomRequest {
@@ -997,7 +991,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
     join_room
         .metadata_mut()
         .insert("authorization", bearer_metadata(&member_login.access_token));
-    let mut member_user_client = UserServiceClient::connect(server.grpc_base_url.clone())
+    let mut member_user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect member user gRPC client");
     member_user_client
@@ -1070,7 +1064,7 @@ async fn full_stack_grpc_message_stream_requires_join_room_first() {
 
     let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
     auth_client
@@ -1090,7 +1084,7 @@ async fn full_stack_grpc_message_stream_requires_join_room_first() {
         .expect("login should succeed")
         .into_inner();
 
-    let mut room_client = RoomServiceClient::connect(server.grpc_base_url.clone())
+    let mut room_client = RoomServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect room gRPC client");
     // Send stream without x-room-id metadata - should fail before stream establishment
@@ -1123,7 +1117,7 @@ async fn full_stack_grpc_message_stream_requires_membership() {
 
     let server = shared_server().await;
 
-    let mut auth_client = AuthServiceClient::connect(server.grpc_base_url.clone())
+    let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
 
@@ -1161,7 +1155,7 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         .expect("outsider login should succeed")
         .into_inner();
 
-    let mut owner_user_client = UserServiceClient::connect(server.grpc_base_url.clone())
+    let mut owner_user_client = UserServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
@@ -1182,7 +1176,7 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         .expect("created room")
         .id;
 
-    let mut outsider_room_client = RoomServiceClient::connect(server.grpc_base_url.clone())
+    let mut outsider_room_client = RoomServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect outsider room gRPC client");
 

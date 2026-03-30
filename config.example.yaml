@@ -11,8 +11,7 @@
 
 server:
   host: "0.0.0.0"
-  grpc_port: 50051
-  http_port: 8080
+  port: 8080
   enable_reflection: false
   # Maximum gRPC message size in bytes (both incoming and outgoing).
   # Prevents OOM attacks from oversized messages. Default: 16MB (16777216 bytes).
@@ -284,15 +283,15 @@ cluster:
   # --- Static Discovery Configuration ---
   # When discovery_mode is "static", list peers explicitly.
   # Each peer requires a gRPC address; http_address is optional and will be
-  # derived from the gRPC address (replacing the port with default_http_port)
+  # derived from the gRPC address (replacing the port with default_api_port)
   # if not specified.
   #
   # static_peers:
-  #   - grpc_address: "node2.example.com:50051"
+  #   - grpc_address: "node2.example.com:8080"
   #     http_address: "node2.example.com:8080"   # optional
-  #   - grpc_address: "node3.example.com:50051"
+  #   - grpc_address: "node3.example.com:8080"
   #     # http_address omitted: derived as node3.example.com:8080
-  # default_http_port: 8080
+  # default_api_port: 8080
 
   # Leader election mode for singleton operations.
   # - "redis": Use Redis-based distributed locks (default, works everywhere)

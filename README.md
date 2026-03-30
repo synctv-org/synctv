@@ -56,9 +56,8 @@ export SYNCTV_JWT_SECRET="your-secure-RANDOM-string-WITH-mixed-CASE-123-and-SPEC
 # Redis (Recommended for production)
 export SYNCTV_REDIS_URL="redis://localhost:6379"
 
-# Server (Optional, these are defaults)
-export SYNCTV_SERVER_GRPC_PORT=50051
-export SYNCTV_SERVER_HTTP_PORT=8080
+# Server (Optional, default API port)
+export SYNCTV_SERVER_PORT=8080
 ```
 
 📚 **See [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md) for complete reference** including all available options, examples for different environments, and troubleshooting.
@@ -89,7 +88,7 @@ export SYNCTV_JWT_SECRET="your-secure-random-string-at-least-32-chars"
 cargo run --bin synctv
 ```
 
-The gRPC server will start on `0.0.0.0:50051` and HTTP on `0.0.0.0:8080`.
+HTTP/REST and gRPC share a single API port, defaulting to `0.0.0.0:8080`.
 
 ## Development
 
@@ -118,8 +117,8 @@ cargo build --release --workspace
 Use gRPC reflection to explore the API:
 
 ```bash
-grpcurl -plaintext localhost:50051 list
-grpcurl -plaintext localhost:50051 list synctv.client.ClientService
+grpcurl -plaintext localhost:8080 list
+grpcurl -plaintext localhost:8080 list synctv.client.ClientService
 ```
 
 ### Example: Register User
@@ -129,7 +128,7 @@ grpcurl -plaintext -d '{
   "username": "alice",
   "email": "alice@example.com",
   "password": "securepassword123"
-}' localhost:50051 synctv.client.ClientService/Register
+}' localhost:8080 synctv.client.ClientService/Register
 ```
 
 ### Example: Login
@@ -138,7 +137,7 @@ grpcurl -plaintext -d '{
 grpcurl -plaintext -d '{
   "username": "alice",
   "password": "securepassword123"
-}' localhost:50051 synctv.client.ClientService/Login
+}' localhost:8080 synctv.client.ClientService/Login
 ```
 
 ## Configuration
@@ -166,8 +165,7 @@ View the complete file: [`config.yaml`](config.yaml)
 ```yaml
 server:
   host: "0.0.0.0"
-  grpc_port: 50051
-  http_port: 8080
+  port: 8080
 
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"

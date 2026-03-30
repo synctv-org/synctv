@@ -21,7 +21,7 @@ spec:
     matchNames:
       - {{ .Release.Namespace }}
   endpoints:
-    - port: http
+    - port: api
       path: {{ .Values.metrics.path | default "/metrics" }}
       interval: {{ .Values.metrics.serviceMonitor.interval | default "30s" }}
       {{- with .Values.metrics.serviceMonitor.scrapeTimeout }}

@@ -30,8 +30,7 @@ async fn main() -> Result<()> {
     let config = load_config()?;
     let _log_guard = synctv_core::logging::init_logging(&config.logging)?;
     info!("SyncTV server starting...");
-    info!("gRPC address: {}", config.grpc_address());
-    info!("HTTP address: {}", config.http_address());
+    info!("API address: {}", config.api_address());
 
     let app = app::Application::build(config).await?;
     app.run().await

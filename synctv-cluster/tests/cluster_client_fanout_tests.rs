@@ -310,7 +310,7 @@ async fn test_cluster_client_no_remote_nodes_fan_out() {
 async fn test_cluster_client_fan_out_fails_closed_when_degraded_cache_is_stale() {
     let registry = Arc::new(
         NodeRegistry::new(
-            redis::Client::open("redis://localhost:6379").unwrap(),
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
             "self-node".to_string(),
             30,
             "fanout-stale:",
@@ -321,14 +321,12 @@ async fn test_cluster_client_fan_out_fails_closed_when_degraded_cache_is_stale()
     registry
         .test_insert_local(NodeInfo::new(
             "self-node".to_string(),
-            "127.0.0.1:50051".to_string(),
             "http://127.0.0.1:8080".to_string(),
         ))
         .await;
     registry
         .test_insert_local(NodeInfo::new(
             "peer-node".to_string(),
-            "127.0.0.1:50052".to_string(),
             "http://127.0.0.1:8081".to_string(),
         ))
         .await;

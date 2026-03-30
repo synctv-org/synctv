@@ -357,7 +357,7 @@ impl HealthMonitor {
         let probe_timeout = probe_config.probe_timeout_secs;
         let secret = probe_config.cluster_secret.clone();
         let probe_results: Vec<_> = futures::future::join_all(nodes_to_probe.iter().map(|node| {
-            let addr = node.grpc_address.clone();
+            let addr = node.api_address.clone();
             let secret = secret.clone();
             async move { Self::probe_node_grpc(&addr, probe_timeout, &secret).await }
         }))
@@ -590,7 +590,6 @@ mod tests {
         registry
             .test_insert_local(NodeInfo::new(
                 "self".to_string(),
-                "localhost:50051".to_string(),
                 "localhost:8080".to_string(),
             ))
             .await;
@@ -611,7 +610,6 @@ mod tests {
         registry
             .test_insert_local(NodeInfo::new(
                 "self".to_string(),
-                "localhost:50051".to_string(),
                 "localhost:8080".to_string(),
             ))
             .await;
@@ -771,7 +769,6 @@ mod tests {
         registry
             .test_insert_local(NodeInfo::new(
                 "self".to_string(),
-                "127.0.0.1:50051".to_string(),
                 "127.0.0.1:8080".to_string(),
             ))
             .await;

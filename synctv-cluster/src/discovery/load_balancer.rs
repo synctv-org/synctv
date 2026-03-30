@@ -203,22 +203,14 @@ mod tests {
         // Register "self" first
         nodes.insert(
             "self".to_string(),
-            NodeInfo::new(
-                "self".to_string(),
-                "localhost:50051".to_string(),
-                "localhost:8080".to_string(),
-            ),
+            NodeInfo::new("self".to_string(), "localhost:8080".to_string()),
         );
 
         // Add remote nodes
         for i in 1..count {
             nodes.insert(
                 format!("node-{i}"),
-                NodeInfo::new(
-                    format!("node-{i}"),
-                    format!("localhost:{}", 50051 + i),
-                    format!("localhost:{}", 8080 + i),
-                ),
+                NodeInfo::new(format!("node-{i}"), format!("localhost:{}", 8080 + i)),
             );
         }
     }

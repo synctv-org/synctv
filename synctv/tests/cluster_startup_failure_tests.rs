@@ -19,8 +19,7 @@ fn standalone_test_config() -> Config {
     Config {
         server: ServerConfig {
             host: "127.0.0.1".to_string(),
-            grpc_port: 50051,
-            http_port: 8080,
+            port: 8080,
             enable_reflection: false,
             metrics_enabled: false,
             metrics_bearer_token: String::new(),
@@ -93,8 +92,7 @@ fn cluster_test_config() -> Config {
     Config {
         server: ServerConfig {
             host: "127.0.0.1".to_string(),
-            grpc_port: 50051,
-            http_port: 8080,
+            port: 8080,
             enable_reflection: false,
             metrics_enabled: false,
             metrics_bearer_token: String::new(),
@@ -102,7 +100,7 @@ fn cluster_test_config() -> Config {
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
             cluster_secret: "test-cluster-secret-key-1234567890".to_string(),
-            advertise_host: String::new(),
+            advertise_host: "127.0.0.1".to_string(),
             shutdown_drain_timeout_seconds: 30,
         },
         database: DatabaseConfig::default(),
@@ -385,7 +383,6 @@ mod p1_cluster_cleanup_tests {
         registry
             .test_insert_local(NodeInfo::new(
                 "cancel-test-node".to_string(),
-                "localhost:50051".to_string(),
                 "localhost:8080".to_string(),
             ))
             .await;
@@ -393,7 +390,6 @@ mod p1_cluster_cleanup_tests {
         manager
             .start_heartbeat_loop(
                 registry.clone(),
-                "localhost:50051".to_string(),
                 "localhost:8080".to_string(),
                 None::<fn() -> usize>,
             )
@@ -449,7 +445,6 @@ mod p1_cluster_cleanup_tests {
         registry
             .test_insert_local(NodeInfo::new(
                 "unregister-test-node".to_string(),
-                "localhost:50051".to_string(),
                 "localhost:8080".to_string(),
             ))
             .await;
@@ -506,8 +501,7 @@ mod p1_cluster_cleanup_tests {
         let mut config = super::cluster_test_config();
         config.database.url = database_url;
         config.redis.url = redis_url.clone();
-        config.server.http_port = reserve_unused_port().await;
-        config.server.grpc_port = reserve_unused_port().await;
+        config.server.port = reserve_unused_port().await;
         config.livestream.rtmp_port = reserve_unused_port().await;
         config.server.advertise_host = "127.0.0.1".to_string();
 
@@ -559,8 +553,7 @@ mod p1_cluster_cleanup_tests {
         let occupied_addr = occupied_rtmp
             .local_addr()
             .expect("reserved RTMP listener should have local addr");
-        config.server.http_port = occupied_addr.port().saturating_add(1);
-        config.server.grpc_port = occupied_addr.port().saturating_add(2);
+        config.server.port = occupied_addr.port().saturating_add(1);
         config.livestream.rtmp_port = occupied_addr.port();
         config.server.advertise_host = "127.0.0.1".to_string();
 

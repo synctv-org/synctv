@@ -77,8 +77,7 @@ pub fn load_config() -> Result<Config> {
     }
 
     eprintln!("Configuration loaded and validated successfully");
-    eprintln!("gRPC address: {}", config.grpc_address());
-    eprintln!("HTTP address: {}", config.http_address());
+    eprintln!("API address: {}", config.api_address());
 
     Ok(config)
 }

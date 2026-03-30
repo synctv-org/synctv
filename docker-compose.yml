@@ -47,7 +47,7 @@ services:
     container_name: synctv-app
     ports:
       - "8080:8080" # HTTP/REST API
-      - "50051:50051" # gRPC
+      - "8080:8080" # Unified API (HTTP/1 + HTTP/2 gRPC)
       - "1935:1935" # RTMP (livestream)
       - "3478:3478/udp" # STUN (WebRTC NAT traversal)
     environment:
@@ -57,8 +57,7 @@ services:
       SYNCTV_DATABASE_URL: postgresql://synctv:${POSTGRES_PASSWORD:-synctv}@postgres:5432/synctv
       SYNCTV_REDIS_URL: redis://redis:6379
       SYNCTV_SERVER_HOST: 0.0.0.0
-      SYNCTV_SERVER_HTTP_PORT: 8080
-      SYNCTV_SERVER_GRPC_PORT: 50051
+      SYNCTV_SERVER_PORT: 8080
       SYNCTV_JWT_SECRET: ${SYNCTV_JWT_SECRET:?SYNCTV_JWT_SECRET must be set (min 32 chars)}
       SYNCTV_SERVER_CLUSTER_SECRET: ${SYNCTV_SERVER_CLUSTER_SECRET:-changeme-generate-a-random-secret}
       RUST_LOG: ${RUST_LOG:-info}

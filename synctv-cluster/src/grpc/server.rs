@@ -107,7 +107,7 @@ impl ClusterServer {
     fn discovery_to_proto_node(&self, discovery: &DiscoveryNodeInfo) -> NodeInfo {
         NodeInfo {
             node_id: discovery.node_id.clone(),
-            address: discovery.grpc_address.clone(),
+            address: discovery.api_address.clone(),
             region: String::new(),
             status: NodeStatus::Active as i32,
             // Use last_heartbeat as proxy for registered_at since

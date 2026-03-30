@@ -12,8 +12,8 @@ spec:
   selector:
     {{- include "synctv.selectorLabels" . | nindent 4 }}
   ports:
-    - name: grpc
-      port: {{ .Values.config.server.grpcPort }}
-      targetPort: grpc
+    - name: api
+      port: {{ .Values.config.server.port }}
+      targetPort: api
       protocol: TCP
 {{- end }}

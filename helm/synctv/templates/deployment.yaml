@@ -45,11 +45,8 @@ spec:
           image: {{ include "synctv.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - name: http
-              containerPort: {{ .Values.config.server.httpPort }}
-              protocol: TCP
-            - name: grpc
-              containerPort: {{ .Values.config.server.grpcPort }}
+            - name: api
+              containerPort: {{ .Values.config.server.port }}
               protocol: TCP
             - name: rtmp
               containerPort: {{ .Values.config.livestream.rtmpPort }}

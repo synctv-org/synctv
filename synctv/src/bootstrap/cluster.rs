@@ -77,26 +77,23 @@ pub async fn activate_cluster_node(
     registry: &Arc<NodeRegistry>,
     health_monitor: &Arc<HealthMonitor>,
 ) -> Result<(), anyhow::Error> {
-    let advertise_grpc = config.advertise_grpc_address();
-    let advertise_http = config.advertise_http_address();
+    let advertise_api = config.advertise_api_address();
 
     registry
-        .register(advertise_grpc.clone(), advertise_http.clone())
+        .register(advertise_api.clone())
         .await
         .map_err(|e| anyhow::anyhow!("Failed to register node in Redis: {e}"))?;
 
     info!(
         node_id = %cm.node_id(),
-        advertise_grpc = %advertise_grpc,
-        advertise_http = %advertise_http,
+        advertise_api = %advertise_api,
         "Node registered in cluster"
     );
 
     let conn_mgr_for_hb = connection_manager.clone();
     cm.start_heartbeat_loop(
         registry.clone(),
-        advertise_grpc,
-        advertise_http,
+        advertise_api,
         Some(move || conn_mgr_for_hb.connection_count()),
     )
     .await;
@@ -150,14 +147,12 @@ pub async fn init_cluster_discovery(
         #[cfg(feature = "k8s")]
         "k8s_dns" => {
             info!("Using K8s DNS discovery mode");
-            let k8s_discovery =
-                K8sDnsDiscovery::from_env(config.server.grpc_port, config.server.http_port)
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to initialize K8s DNS discovery: {e}. \
+            let k8s_discovery = K8sDnsDiscovery::from_env(config.server.port).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to initialize K8s DNS discovery: {e}. \
                          Ensure HEADLESS_SERVICE_NAME, POD_NAMESPACE, and POD_IP env vars are set."
-                        )
-                    })?;
+                )
+            })?;
             let components =
                 init_cluster_components(redis_handles, cm, config, connection_manager).await?;
             let k8s_discovery = k8s_discovery
@@ -202,8 +197,7 @@ pub async fn init_cluster_discovery(
                 .peers
                 .iter()
                 .map(|addr| StaticPeerConfig {
-                    grpc_address: addr.clone(),
-                    http_address: None,
+                    api_address: addr.clone(),
                 })
                 .collect();
 
@@ -218,7 +212,7 @@ pub async fn init_cluster_discovery(
                 probe_interval_secs: 10,
                 connect_timeout: Duration::from_secs(3),
                 cluster_secret: config.server.cluster_secret.clone(),
-                default_http_port: config.server.http_port,
+                default_api_port: config.server.port,
             };
 
             let static_discovery = StaticDiscovery::new(
@@ -269,8 +263,7 @@ mod tests {
     fn test_cluster_config() -> Config {
         let mut config = Config::default();
         config.server.host = "127.0.0.1".to_string();
-        config.server.grpc_port = 50051;
-        config.server.http_port = 8080;
+        config.server.port = 8080;
         config.server.cluster_secret.clear();
         config.redis.url = "redis://127.0.0.1:6379".to_string();
         config.cluster.discovery_mode = "k8s_dns".to_string();

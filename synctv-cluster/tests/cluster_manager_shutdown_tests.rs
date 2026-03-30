@@ -65,19 +65,13 @@ async fn test_shutdown_waits_for_heartbeat_task_completion() {
     registry
         .test_insert_local(NodeInfo::new(
             "shutdown-test-node".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(
-            registry,
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-            None::<fn() -> usize>,
-        )
+        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
         .await;
 
     // Give the heartbeat task a moment to start
@@ -109,19 +103,13 @@ async fn test_shutdown_has_timeout_for_heartbeat_task() {
     registry
         .test_insert_local(NodeInfo::new(
             "timeout-test-node".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(
-            registry,
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-            None::<fn() -> usize>,
-        )
+        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
         .await;
 
     // Give the heartbeat task a moment to start
@@ -162,19 +150,13 @@ async fn test_shutdown_handles_task_error_gracefully() {
     registry
         .test_insert_local(NodeInfo::new(
             "error-test-node".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(
-            registry,
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-            None::<fn() -> usize>,
-        )
+        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
         .await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -228,19 +210,13 @@ async fn test_shutdown_is_idempotent() {
     registry
         .test_insert_local(NodeInfo::new(
             "idempotent-node".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(
-            registry,
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-            None::<fn() -> usize>,
-        )
+        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
         .await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -277,19 +253,13 @@ async fn test_shutdown_completes_within_timeout() {
     registry
         .test_insert_local(NodeInfo::new(
             "timeout-complete-node".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(
-            registry,
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-            None::<fn() -> usize>,
-        )
+        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
         .await;
 
     // Give the heartbeat task a moment to start
@@ -335,19 +305,13 @@ async fn test_shutdown_pattern_matches_publisher_task() {
     registry
         .test_insert_local(NodeInfo::new(
             "pattern-test-node".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(
-            registry,
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-            None::<fn() -> usize>,
-        )
+        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
         .await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;

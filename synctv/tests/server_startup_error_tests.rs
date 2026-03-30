@@ -1,6 +1,6 @@
 //! Server startup error handling tests.
 //!
-//! Verifies that HTTP and gRPC server startup errors are properly propagated
+//! Verifies that unified API server startup errors are properly propagated
 //! rather than being silently ignored. This includes:
 //! 1. Port already in use (binding failure)
 //! 2. Server startup success verification via oneshot channel
@@ -36,10 +36,10 @@ async fn find_available_port() -> Option<SocketAddr> {
     }
 }
 
-/// Test that binding to an already-bound HTTP port fails immediately.
+/// Test that binding to an already-bound API port fails immediately.
 /// This verifies the pre-binding behavior catches port conflicts.
 #[tokio::test]
-async fn test_http_port_already_bound_fails_immediately() {
+async fn test_api_port_already_bound_fails_immediately() {
     // Occupy a port
     let Some(addr) = find_available_port().await else {
         return;
@@ -68,9 +68,9 @@ async fn test_http_port_already_bound_fails_immediately() {
     );
 }
 
-/// Test that binding to an available HTTP port succeeds.
+/// Test that binding to an available API port succeeds.
 #[tokio::test]
-async fn test_http_port_available_succeeds() {
+async fn test_api_port_available_succeeds() {
     let Some(addr) = find_available_port().await else {
         return;
     };
@@ -84,7 +84,7 @@ async fn test_http_port_available_succeeds() {
     }
 }
 
-/// Test oneshot channel for HTTP server startup signaling.
+/// Test oneshot channel for unified API server startup signaling.
 /// This pattern should be used to propagate startup success/failure.
 #[tokio::test]
 async fn test_oneshot_startup_signal_success() {
@@ -124,7 +124,7 @@ async fn test_oneshot_startup_signal_success() {
     }
 }
 
-/// Test oneshot channel for HTTP server startup failure signaling.
+/// Test oneshot channel for unified API server startup failure signaling.
 #[tokio::test]
 async fn test_oneshot_startup_signal_failure() {
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
@@ -165,14 +165,14 @@ async fn test_oneshot_startup_signal_failure() {
     );
 }
 
-/// Test that gRPC address parsing succeeds for valid addresses.
+/// Test that API socket address parsing succeeds for valid addresses.
 #[test]
-fn test_grpc_address_parsing_valid() {
+fn test_api_address_parsing_valid() {
     let valid_addresses = vec![
-        "127.0.0.1:50051",
-        "0.0.0.0:50051",
-        "[::1]:50051",
-        "[::]:50051",
+        "127.0.0.1:8080",
+        "0.0.0.0:8080",
+        "[::1]:8080",
+        "[::]:8080",
         "192.168.1.1:9090",
     ];
 
@@ -185,12 +185,12 @@ fn test_grpc_address_parsing_valid() {
     }
 }
 
-/// Test that gRPC address parsing fails for invalid addresses.
+/// Test that API socket address parsing fails for invalid addresses.
 #[test]
-fn test_grpc_address_parsing_invalid() {
+fn test_api_address_parsing_invalid() {
     let invalid_addresses = vec![
         "not an address",
-        "256.256.256.256:50051",
+        "256.256.256.256:8080",
         ":invalid",
         "",
         "localhost:notaport",
@@ -209,65 +209,40 @@ fn test_grpc_address_parsing_invalid() {
 /// This is the pattern that should be implemented in server.rs.
 #[tokio::test]
 async fn test_full_startup_sequence_pattern() {
-    let (http_tx, http_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-    let (grpc_tx, grpc_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let (api_tx, api_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
 
-    let Some(http_addr) = find_available_port().await else {
-        return;
-    };
-    let Some(grpc_addr) = find_available_port().await else {
+    let Some(api_addr) = find_available_port().await else {
         return;
     };
 
-    // Spawn HTTP server task
-    let http_handle = tokio::spawn(async move {
-        match TcpListener::bind(http_addr).await {
+    // Spawn unified API server task
+    let api_handle = tokio::spawn(async move {
+        match TcpListener::bind(api_addr).await {
             Ok(listener) => {
-                let _ = http_tx.send(Ok(()));
+                let _ = api_tx.send(Ok(()));
                 // Server would run here, but we just drop it for test
                 drop(listener);
             }
             Err(e) => {
-                let _ = http_tx.send(Err(e.to_string()));
+                let _ = api_tx.send(Err(e.to_string()));
             }
         }
     });
 
-    // Spawn gRPC server task
-    let grpc_handle = tokio::spawn(async move {
-        match TcpListener::bind(grpc_addr).await {
-            Ok(listener) => {
-                let _ = grpc_tx.send(Ok(()));
-                drop(listener);
-            }
-            Err(e) => {
-                let _ = grpc_tx.send(Err(e.to_string()));
-            }
-        }
-    });
+    // Wait for startup signal
+    let api_result = timeout(Duration::from_secs(5), api_rx).await;
 
-    // Wait for both startup signals
-    let http_result = timeout(Duration::from_secs(5), http_rx).await;
-    let grpc_result = timeout(Duration::from_secs(5), grpc_rx).await;
+    assert!(api_result.is_ok(), "API startup signal should arrive");
 
-    assert!(http_result.is_ok(), "HTTP startup signal should arrive");
-    assert!(grpc_result.is_ok(), "gRPC startup signal should arrive");
-
-    let http_startup = http_result.unwrap().unwrap();
-    let grpc_startup = grpc_result.unwrap().unwrap();
+    let api_startup = api_result.unwrap().unwrap();
 
     assert!(
-        http_startup.is_ok(),
-        "HTTP startup should succeed: {http_startup:?}"
-    );
-    assert!(
-        grpc_startup.is_ok(),
-        "gRPC startup should succeed: {grpc_startup:?}"
+        api_startup.is_ok(),
+        "API startup should succeed: {api_startup:?}"
     );
 
     // Clean up
-    let _ = http_handle.await;
-    let _ = grpc_handle.await;
+    let _ = api_handle.await;
 }
 
 /// Test that startup failure aborts the entire server.
@@ -317,12 +292,12 @@ async fn test_startup_failure_aborts_server() {
     let _ = handle.await;
 }
 
-/// Test gRPC pre-binding pattern (same as server.rs implementation).
-/// Verifies that binding to an already-bound gRPC port fails immediately
+/// Test API pre-binding pattern (same as server.rs implementation).
+/// Verifies that binding to an already-bound API port fails immediately
 /// BEFORE spawning the server task.
 #[tokio::test]
-async fn test_grpc_pre_binding_detects_port_conflict() {
-    // Occupy a gRPC port
+async fn test_api_pre_binding_detects_port_conflict() {
+    // Occupy an API port
     let Some(addr) = find_available_port().await else {
         return;
     };
@@ -335,68 +310,17 @@ async fn test_grpc_pre_binding_detects_port_conflict() {
         Err(error) => panic!("expected setup bind to succeed, got: {error}"),
     };
 
-    // Simulate the server.rs gRPC startup pattern:
+    // Simulate the server.rs API startup pattern:
     // 1. Parse address
-    let grpc_addr: SocketAddr = addr.to_string().parse().unwrap();
+    let api_addr: SocketAddr = addr.to_string().parse().unwrap();
 
     // 2. Pre-bind listener (this should FAIL because port is in use)
-    let result = TcpListener::bind(grpc_addr).await;
+    let result = TcpListener::bind(api_addr).await;
 
     // The error is detected BEFORE spawning the server task
     assert!(
         result.is_err(),
-        "Pre-binding should detect gRPC port conflict before spawning task"
-    );
-
-    let error = result.unwrap_err();
-    assert!(
-        error.kind() == std::io::ErrorKind::AddrInUse,
-        "Expected AddrInUse error, got: {:?}",
-        error.kind()
-    );
-}
-
-/// Test that gRPC address parsing rejects invalid addresses.
-#[test]
-fn test_grpc_server_address_parsing_rejects_invalid() {
-    let invalid_addresses = vec!["not an address", "256.256.256.256:50051", ":invalid", ""];
-
-    for addr in invalid_addresses {
-        let result: Result<SocketAddr, _> = addr.parse();
-        assert!(
-            result.is_err(),
-            "Expected '{addr}' to fail parsing as SocketAddr"
-        );
-    }
-}
-
-/// Test that HTTP pre-binding pattern detects port conflicts (same as server.rs).
-#[tokio::test]
-async fn test_http_pre_binding_detects_port_conflict() {
-    // Occupy an HTTP port
-    let Some(addr) = find_available_port().await else {
-        return;
-    };
-    let _blocker = match TcpListener::bind(addr).await {
-        Ok(listener) => listener,
-        Err(error) if is_bind_permission_denied(&error) => {
-            skip_bind_test(&error);
-            return;
-        }
-        Err(error) => panic!("expected setup bind to succeed, got: {error}"),
-    };
-
-    // Simulate the server.rs HTTP startup pattern:
-    // 1. Parse address
-    let http_addr: SocketAddr = addr.to_string().parse().unwrap();
-
-    // 2. Pre-bind listener (this should FAIL because port is in use)
-    let result = TcpListener::bind(http_addr).await;
-
-    // The error is detected BEFORE spawning the server task
-    assert!(
-        result.is_err(),
-        "Pre-binding should detect HTTP port conflict before spawning task"
+        "Pre-binding should detect API port conflict before spawning task"
     );
 
     let error = result.unwrap_err();

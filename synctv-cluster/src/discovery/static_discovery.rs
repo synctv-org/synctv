@@ -1,6 +1,6 @@
 //! Static peer discovery for non-K8s environments
 //!
-//! Periodically health-checks a configured list of peer gRPC addresses
+//! Periodically health-checks a configured list of peer API addresses
 //! and registers alive peers into the NodeRegistry. This enables cluster
 //! formation without Kubernetes DNS or other dynamic discovery mechanisms.
 
@@ -20,11 +20,8 @@ const FAILURE_THRESHOLD: u32 = 3;
 /// Configuration for a single static peer
 #[derive(Debug, Clone)]
 pub struct StaticPeerConfig {
-    /// gRPC address (e.g., "host1:50051")
-    pub grpc_address: String,
-    /// Optional HTTP address for the peer. If not provided, it will be derived
-    /// from the gRPC address by replacing the port with `default_http_port`.
-    pub http_address: Option<String>,
+    /// Shared API address (e.g., "host1:8080")
+    pub api_address: String,
 }
 
 /// Configuration for static peer discovery
@@ -38,9 +35,8 @@ pub struct StaticDiscoveryConfig {
     pub connect_timeout: Duration,
     /// Cluster secret for authenticated probing
     pub cluster_secret: String,
-    /// Default HTTP port used to derive http_address from gRPC address when
-    /// `http_address` is not explicitly configured for a peer.
-    pub default_http_port: u16,
+    /// Default API port used to derive api_address from a host-only peer entry.
+    pub default_api_port: u16,
 }
 
 impl Default for StaticDiscoveryConfig {
@@ -50,7 +46,7 @@ impl Default for StaticDiscoveryConfig {
             probe_interval_secs: 10,
             connect_timeout: Duration::from_secs(3),
             cluster_secret: String::new(),
-            default_http_port: 8080,
+            default_api_port: 8080,
         }
     }
 }
@@ -84,22 +80,22 @@ impl StaticDiscovery {
     /// Start the background probe loop.
     ///
     /// Returns the JoinHandle for the spawned task.
-    /// Derive an HTTP address from a gRPC address by replacing the port.
-    fn derive_http_address(grpc_address: &str, default_http_port: u16) -> String {
+    /// Normalize a configured peer entry to the shared API address.
+    fn derive_api_address(peer_address: &str, default_api_port: u16) -> String {
         // Try to split host:port
-        if let Some(colon_pos) = grpc_address.rfind(':') {
-            let host = &grpc_address[..colon_pos];
-            format!("{host}:{default_http_port}")
+        if let Some(colon_pos) = peer_address.rfind(':') {
+            let host = &peer_address[..colon_pos];
+            format!("{host}:{default_api_port}")
         } else {
-            // No port in the address, just append the HTTP port
-            format!("{grpc_address}:{default_http_port}")
+            // No port in the address, just append the shared API port.
+            format!("{peer_address}:{default_api_port}")
         }
     }
 
     fn discovered_node_info(
         discovered: &ProbedNodeIdentity,
-        grpc_address: &str,
-        default_http_port: u16,
+        api_address: &str,
+        default_api_port: u16,
     ) -> Option<NodeInfo> {
         if discovered.node_id.is_empty() {
             return None;
@@ -108,8 +104,7 @@ impl StaticDiscovery {
         Some(
             NodeInfo::new(
                 discovered.node_id.clone(),
-                grpc_address.to_string(),
-                Self::derive_http_address(grpc_address, default_http_port),
+                Self::derive_api_address(api_address, default_api_port),
             )
             .with_epoch(discovered.epoch),
         )
@@ -122,7 +117,7 @@ impl StaticDiscovery {
         let cancel_token = self.cancel_token.clone();
         let node_registry = self.node_registry.clone();
         let cluster_secret = self.config.cluster_secret.clone();
-        let default_http_port = self.config.default_http_port;
+        let default_api_port = self.config.default_api_port;
 
         info!(
             peer_count = peers.len(),
@@ -155,7 +150,7 @@ impl StaticDiscovery {
                             let secret = cluster_secret.clone();
                             join_set.spawn(async move {
                                 let discovered = Self::probe_peer(
-                                    &peer.grpc_address,
+                                    &peer.api_address,
                                     timeout,
                                     &secret,
                                 ).await;
@@ -175,75 +170,72 @@ impl StaticDiscovery {
 
                             if let Some(discovered) = discovered {
                                 // Reset failure counter on success
-                                consecutive_failures.remove(&peer.grpc_address);
+                                consecutive_failures.remove(&peer.api_address);
 
-                                let mut node_info = match Self::discovered_node_info(
+                                let node_info = match Self::discovered_node_info(
                                     &discovered,
-                                    &peer.grpc_address,
-                                    default_http_port,
+                                    &peer.api_address,
+                                    default_api_port,
                                 ) {
                                     Some(info) => info,
                                     None => {
                                         warn!(
-                                            peer = %peer.grpc_address,
+                                            peer = %peer.api_address,
                                             "Static peer probe succeeded but did not provide a usable node identity"
                                         );
                                         continue;
                                     }
                                 };
 
-                                if let Some(http_address) = &peer.http_address {
-                                    node_info.http_address = http_address.clone();
-                                }
                                 let registration_epoch = node_info.epoch;
 
                                 if let Err(e) = node_registry.register_remote(node_info).await {
                                     warn!(
-                                        peer = %peer.grpc_address,
+                                        peer = %peer.api_address,
                                         error = %e,
                                         "Failed to register static peer in NodeRegistry"
                                     );
                                 } else {
-                                    peer_epochs.insert(peer.grpc_address.clone(), registration_epoch);
+                                    peer_epochs.insert(peer.api_address.clone(), registration_epoch);
                                     peer_node_ids.insert(
-                                        peer.grpc_address.clone(),
+                                        peer.api_address.clone(),
                                         discovered.node_id.clone(),
                                     );
-                                    debug!(peer = %peer.grpc_address, "Static peer registered/refreshed");
+                                    debug!(peer = %peer.api_address, "Static peer registered/refreshed");
                                 }
                             } else {
-                                let failures = consecutive_failures.entry(peer.grpc_address.clone()).or_insert(0);
+                                let failures = consecutive_failures.entry(peer.api_address.clone()).or_insert(0);
                                 *failures += 1;
 
                                 if *failures >= FAILURE_THRESHOLD {
-                                    let epoch = peer_epochs.remove(&peer.grpc_address);
+                                    let epoch = peer_epochs.remove(&peer.api_address);
                                     warn!(
-                                        peer = %peer.grpc_address,
+                                        peer = %peer.api_address,
                                         consecutive_failures = *failures,
                                         epoch = ?epoch,
                                         "Static peer unreachable for {} consecutive probes, unregistering",
                                         *failures
                                     );
-                                    let node_id = peer_node_ids.remove(&peer.grpc_address);
+                                    let node_id = peer_node_ids.remove(&peer.api_address);
                                     if let Some(node_id) = node_id {
                                         if let Err(e) = node_registry.unregister_remote(&node_id, epoch).await {
                                             warn!(
-                                                peer = %peer.grpc_address,
+                                                peer = %peer.api_address,
                                                 error = %e,
                                                 "Failed to unregister disappeared static peer"
                                             );
                                         }
                                     } else {
                                         warn!(
-                                            peer = %peer.grpc_address,
+                                            peer = %peer.api_address,
                                             "Static peer disappeared before a real node_id was known; skipping unregister"
                                         );
                                     }
                                     // Reset counter after unregistration attempt
-                                    consecutive_failures.remove(&peer.grpc_address);
+                                    consecutive_failures.remove(&peer.api_address);
                                 } else {
                                     debug!(
-                                        peer = %peer.grpc_address,
+                                        peer = %peer.api_address,
                                         consecutive_failures = *failures,
                                         "Static peer unreachable, skipping"
                                     );
@@ -277,7 +269,7 @@ mod tests {
     fn test_discovered_node_info_uses_peer_reported_node_id() {
         let discovered = ProbedNodeIdentity {
             node_id: "peer-node-1".to_string(),
-            grpc_address: "10.0.0.5:50051".to_string(),
+            api_address: "10.0.0.5:50051".to_string(),
             epoch: 7,
         };
 
@@ -285,8 +277,7 @@ mod tests {
             .expect("peer should map to discovered node info");
 
         assert_eq!(info.node_id, "peer-node-1");
-        assert_eq!(info.grpc_address, "10.0.0.5:50051");
-        assert_eq!(info.http_address, "10.0.0.5:8080");
+        assert_eq!(info.api_address, "10.0.0.5:8080");
         assert_eq!(info.epoch, 7);
     }
 }

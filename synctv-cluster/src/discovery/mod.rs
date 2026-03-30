@@ -22,7 +22,7 @@ use crate::grpc::synctv::cluster::{self, GetNodesRequest};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbedNodeIdentity {
     pub node_id: String,
-    pub grpc_address: String,
+    pub api_address: String,
     pub epoch: u64,
 }
 
@@ -107,7 +107,7 @@ fn extract_probed_node_identity(
             if node_address == normalize_cluster_node_address(probed_address)? {
                 Some(ProbedNodeIdentity {
                     node_id: node.node_id,
-                    grpc_address: node_address,
+                    api_address: node_address,
                     epoch: node.epoch,
                 })
             } else {
@@ -153,7 +153,7 @@ mod tests {
             .expect("matching peer should be extracted");
 
         assert_eq!(identity.node_id, "peer-node-1");
-        assert_eq!(identity.grpc_address, "10.0.0.5:50051");
+        assert_eq!(identity.api_address, "10.0.0.5:50051");
         assert_eq!(identity.epoch, 7);
     }
 }

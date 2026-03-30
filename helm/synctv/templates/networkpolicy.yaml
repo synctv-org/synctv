@@ -13,7 +13,7 @@ spec:
     {{- toYaml .Values.networkPolicy.policyTypes | nindent 4 }}
   {{- if has "Ingress" .Values.networkPolicy.policyTypes }}
   ingress:
-    # Allow ingress controller (HTTP API + WebSocket)
+    # Allow ingress controller (API + WebSocket)
     - from:
         - namespaceSelector:
             matchLabels:
@@ -23,15 +23,15 @@ spec:
               app.kubernetes.io/name: ingress-nginx
       ports:
         - protocol: TCP
-          port: {{ .Values.config.server.httpPort }}
-    # Allow internal cluster gRPC traffic (inter-node communication)
+          port: {{ .Values.config.server.port }}
+    # Allow internal cluster API traffic (inter-node communication)
     - from:
         - podSelector:
             matchLabels:
               {{- include "synctv.selectorLabels" . | nindent 14 }}
       ports:
         - protocol: TCP
-          port: {{ .Values.config.server.grpcPort }}
+          port: {{ .Values.config.server.port }}
     # Allow RTMP ingest (external publishers)
     - from:
         {{- if .Values.networkPolicy.rtmpSourceCIDRs }}
@@ -63,7 +63,7 @@ spec:
               name: monitoring
       ports:
         - protocol: TCP
-          port: {{ .Values.config.server.httpPort }}
+          port: {{ .Values.config.server.port }}
     {{- end }}
   {{- end }}
   {{- if has "Egress" .Values.networkPolicy.policyTypes }}
@@ -98,14 +98,14 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.config.redis.port }}
-    # Allow internal cluster traffic (inter-node gRPC)
+    # Allow internal cluster traffic (shared API port)
     - to:
         - podSelector:
             matchLabels:
               {{- include "synctv.selectorLabels" . | nindent 14 }}
       ports:
         - protocol: TCP
-          port: {{ .Values.config.server.grpcPort }}
+          port: {{ .Values.config.server.port }}
     # Allow external HTTPS (for OAuth2, media providers)
     - to:
         - namespaceSelector: {}

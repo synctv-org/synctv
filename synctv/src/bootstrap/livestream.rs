@@ -130,7 +130,7 @@ pub async fn init_livestream(
                 None
             },
             gop_cache_max_memory_mb: config.livestream.gop_cache_max_memory_mb,
-            grpc_address: config.advertise_grpc_address(),
+            grpc_address: config.advertise_api_address(),
             hls_memory_max_mb: config.livestream.hls_memory_max_mb,
             hls_shared_storage: config.livestream.hls_shared_storage,
             hls_storage_path: config.livestream.hls_storage_path.clone(),
@@ -146,7 +146,7 @@ pub async fn init_livestream(
         user_stream_tracker_for_auth,
         publisher_registry_for_auth,
         node_id.to_string(),
-        config.advertise_grpc_address(),
+        config.advertise_api_address(),
         Some(stream_lifecycle_tx),
         config.redis.key_prefix.clone(),
     )

@@ -20,10 +20,7 @@ spec:
         image: synctv:latest
         ports:
         - containerPort: 8080
-          name: http
-          protocol: TCP
-        - containerPort: 50051
-          name: grpc
+          name: api
           protocol: TCP
         - containerPort: 1935
           name: rtmp
@@ -130,11 +127,7 @@ spec:
   - port: 8080
     targetPort: 8080
     protocol: TCP
-    name: http
-  - port: 50051
-    targetPort: 50051
-    protocol: TCP
-    name: grpc
+    name: api
   - port: 1935
     targetPort: 1935
     protocol: TCP
@@ -159,10 +152,10 @@ spec:
   selector:
     app: synctv
   ports:
-  - port: 50051
-    targetPort: 50051
+  - port: 8080
+    targetPort: 8080
     protocol: TCP
-    name: grpc
+    name: api
 
 ---
 apiVersion: v1

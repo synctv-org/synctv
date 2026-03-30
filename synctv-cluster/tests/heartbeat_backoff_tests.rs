@@ -99,7 +99,7 @@ async fn test_heartbeat_reregistration_has_backoff() {
 
     // Register the node
     registry
-        .register("localhost:50051".to_string(), "localhost:8080".to_string())
+        .register("localhost:8080".to_string())
         .await
         .expect("register should succeed");
 
@@ -186,7 +186,7 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
 
     // Register the node
     registry
-        .register("localhost:50051".to_string(), "localhost:8080".to_string())
+        .register("localhost:8080".to_string())
         .await
         .expect("register should succeed");
 
@@ -270,7 +270,7 @@ async fn test_backoff_increases_exponentially() {
 
     // Register the node
     registry
-        .register("localhost:50051".to_string(), "localhost:8080".to_string())
+        .register("localhost:8080".to_string())
         .await
         .expect("register should succeed");
 
@@ -328,7 +328,7 @@ async fn test_backoff_resets_after_recovery() {
 
     // Register the node
     registry
-        .register("localhost:50051".to_string(), "localhost:8080".to_string())
+        .register("localhost:8080".to_string())
         .await
         .expect("register should succeed");
 

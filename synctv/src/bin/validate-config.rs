@@ -121,8 +121,7 @@ fn print_config_summary(config: &Config) {
     println!("Configuration Summary");
     println!("---------------------");
     println!("  Server:");
-    println!("    - gRPC: {}", config.grpc_address());
-    println!("    - HTTP: {}", config.http_address());
+    println!("    - API: {}", config.api_address());
     if config.cluster.enabled {
         println!("    - Cluster mode: enabled");
     }
@@ -196,7 +195,7 @@ mod tests {
         let result = load_config_for_validation_with_env(
             &Some("config.yaml".to_string()),
             &HashMap::from([(
-                "SYNCTV_SERVER_GRPC_PORT".to_string(),
+                "SYNCTV_SERVER_PORT".to_string(),
                 "invalid-port".to_string(),
             )]),
         );
@@ -239,7 +238,7 @@ mod tests {
             &path,
             r#"
 server:
-  grpc_port: 50051
+  port: 50051
 database:
   url: "postgresql://user:pass@localhost/db"
   max_connections: 20
@@ -255,10 +254,10 @@ jwt:
 
         let result = load_config_for_validation_with_env(
             &Some(path.display().to_string()),
-            &HashMap::from([("SYNCTV_SERVER_GRPC_PORT".to_string(), "50061".to_string())]),
+            &HashMap::from([("SYNCTV_SERVER_PORT".to_string(), "50061".to_string())]),
         )
         .expect("config with env override should load");
 
-        assert_eq!(result.server.grpc_port, 50061);
+        assert_eq!(result.server.port, 50061);
     }
 }

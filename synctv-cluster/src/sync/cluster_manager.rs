@@ -196,9 +196,8 @@ pub struct ClusterManager {
 struct HeartbeatState {
     node_registry: Option<Arc<NodeRegistry>>,
     handle: Option<tokio::task::JoinHandle<()>>,
-    /// Stored addresses for heartbeat re-registration (avoid empty-address bug)
-    grpc_address: String,
-    http_address: String,
+    /// Stored API address for heartbeat re-registration (avoid empty-address bug)
+    api_address: String,
 }
 
 async fn await_shutdown_handle(
@@ -386,8 +385,7 @@ impl ClusterManager {
             heartbeat_state: tokio::sync::Mutex::new(HeartbeatState {
                 node_registry: None,
                 handle: None,
-                grpc_address: String::new(),
-                http_address: String::new(),
+                api_address: String::new(),
             }),
             #[cfg(test)]
             heartbeat_shutdown_timeout: Duration::from_secs(10),
@@ -651,8 +649,7 @@ impl ClusterManager {
     pub async fn start_heartbeat_loop<F>(
         &self,
         node_registry: Arc<NodeRegistry>,
-        grpc_address: String,
-        http_address: String,
+        api_address: String,
         connection_count_fn: Option<F>,
     ) where
         F: Fn() -> usize + Send + Sync + 'static,
@@ -664,10 +661,9 @@ impl ClusterManager {
         let is_quarantined = self.is_quarantined.clone();
         let leader_elector = self.leader_elector.clone();
 
-        // D3 fix: Clone the stored addresses into the spawned task so they can be
-        // used for re-registration when the local cache has empty addresses.
-        let stored_grpc_address = grpc_address.clone();
-        let stored_http_address = http_address.clone();
+        // Store the API address into the spawned task so it can be used for
+        // re-registration when the local cache has been lost or corrupted.
+        let stored_api_address = api_address.clone();
 
         let registry_for_task = node_registry.clone();
         let handle = tokio::spawn(async move {
@@ -704,19 +700,18 @@ impl ClusterManager {
                                 // NodeRegistry::heartbeat() already attempted auto-registration
                                 // internally. If we still get NeedReregistration, it means the
                                 // internal retry failed.
-                                // D3 fix: Use stored addresses for explicit re-registration.
                                 warn!("Node key expired in Redis, internal auto-registration failed; \
-                                       attempting re-registration with stored addresses");
+                                       attempting re-registration with stored api_address");
                                 if let Err(e) = node_registry
-                                    .register(stored_grpc_address.clone(), stored_http_address.clone())
+                                    .register(stored_api_address.clone())
                                     .await
                                 {
                                     error!(
                                         error = %e,
-                                        "Re-registration with stored addresses also failed; will retry on next heartbeat"
+                                        "Re-registration with stored api_address also failed; will retry on next heartbeat"
                                     );
                                 } else {
-                                    info!("Re-registration with stored addresses succeeded");
+                                    info!("Re-registration with stored api_address succeeded");
                                 }
                             }
                             Ok(HeartbeatResult::EpochMismatch(remote_epoch)) => {
@@ -726,20 +721,19 @@ impl ClusterManager {
                                     remote_epoch = remote_epoch,
                                     consecutive_mismatches = mismatches,
                                     "Epoch mismatch during heartbeat, internal auto-registration failed; \
-                                     attempting re-registration with stored addresses"
+                                     attempting re-registration with stored api_address"
                                 );
 
-                                // D3 fix: Use stored addresses for explicit re-registration.
                                 if let Err(e) = node_registry
-                                    .register(stored_grpc_address.clone(), stored_http_address.clone())
+                                    .register(stored_api_address.clone())
                                     .await
                                 {
                                     error!(
                                         error = %e,
-                                        "Re-registration with stored addresses also failed after epoch mismatch"
+                                        "Re-registration with stored api_address also failed after epoch mismatch"
                                     );
                                 } else {
-                                    info!("Re-registration with stored addresses succeeded after epoch mismatch");
+                                    info!("Re-registration with stored api_address succeeded after epoch mismatch");
                                     // Reset epoch mismatch counter on successful re-registration
                                     epoch_mismatch_count.store(0, Ordering::Release);
                                     is_quarantined.store(false, Ordering::Release);
@@ -768,26 +762,22 @@ impl ClusterManager {
                                 }
                             }
                             Ok(HeartbeatResult::EmptyAddress) => {
-                                // D3 fix: Use stored addresses to recover from empty local cache.
-                                // This typically happens when the local cache was cleared or
-                                // the node was never successfully registered.
                                 warn!(
-                                    "Heartbeat: local cache has empty address(es); \
-                                     attempting re-registration with stored addresses \
-                                     (grpc={}, http={})",
-                                    stored_grpc_address, stored_http_address
+                                    "Heartbeat: local cache has empty api_address; \
+                                     attempting re-registration with stored api_address ({})",
+                                    stored_api_address
                                 );
                                 if let Err(e) = node_registry
-                                    .register(stored_grpc_address.clone(), stored_http_address.clone())
+                                    .register(stored_api_address.clone())
                                     .await
                                 {
                                     error!(
                                         error = %e,
-                                        "Re-registration with stored addresses failed; \
+                                        "Re-registration with stored api_address failed; \
                                          node remains unreachable by peers"
                                     );
                                 } else {
-                                    info!("Re-registration with stored addresses succeeded; \
+                                    info!("Re-registration with stored api_address succeeded; \
                                            node should be reachable again");
                                 }
                             }
@@ -818,12 +808,11 @@ impl ClusterManager {
             }
         });
 
-        // Store the node_registry, handle, and addresses for re-registration
+        // Store the node_registry, handle, and api_address for re-registration
         let mut state = self.heartbeat_state.lock().await;
         state.node_registry = Some(node_registry);
         state.handle = Some(handle);
-        state.grpc_address = grpc_address;
-        state.http_address = http_address;
+        state.api_address = api_address;
         info!(interval_secs = interval_secs, "Heartbeat loop started");
     }
 
@@ -1527,7 +1516,7 @@ mod tests {
         );
 
         registry
-            .register("localhost:50051".to_string(), "localhost:8080".to_string())
+            .register("localhost:8080".to_string())
             .await
             .unwrap();
         manager.test_set_heartbeat_registry(registry.clone()).await;
@@ -1546,7 +1535,7 @@ mod tests {
                     .await
                     .expect("test should allow heartbeat task to finish");
                 registry_for_task
-                    .register("localhost:50051".to_string(), "localhost:8080".to_string())
+                    .register("localhost:8080".to_string())
                     .await
                     .unwrap();
             }))

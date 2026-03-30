@@ -30,8 +30,7 @@ if [ -z "$SYNCTV_JWT_SECRET" ]; then
 fi
 
 echo "Starting synctv server..."
-echo "  HTTP: http://localhost:${SYNCTV_SERVER_HTTP_PORT:-8080}"
-echo "  gRPC: localhost:${SYNCTV_SERVER_GRPC_PORT:-50051}"
+echo "  API:  http://localhost:${SYNCTV_SERVER_PORT:-8080} (HTTP/1 REST, HTTP/2 gRPC)"
 echo "  RTMP: rtmp://localhost:${SYNCTV_LIVESTREAM_RTMP_PORT:-1935}"
 echo ""
 echo "Press Ctrl+C to stop"

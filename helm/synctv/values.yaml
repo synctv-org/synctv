@@ -98,7 +98,7 @@ podDisruptionBudget:
 startupProbe:
   httpGet:
     path: /health
-    port: http
+    port: api
   initialDelaySeconds: 5
   periodSeconds: 5
   timeoutSeconds: 3
@@ -107,7 +107,7 @@ startupProbe:
 livenessProbe:
   httpGet:
     path: /health
-    port: http
+    port: api
   initialDelaySeconds: 0
   periodSeconds: 10
   timeoutSeconds: 5
@@ -116,7 +116,7 @@ livenessProbe:
 readinessProbe:
   httpGet:
     path: /health/ready
-    port: http
+    port: api
   initialDelaySeconds: 0
   periodSeconds: 5
   timeoutSeconds: 3
@@ -172,8 +172,7 @@ config:
   ## ServerConfig
   server:
     host: "0.0.0.0"
-    httpPort: 8080
-    grpcPort: 50051
+    port: 8080
     enableReflection: false
     # trustedProxies: ["10.0.0.0/8", "172.16.0.0/12"]
     corsAllowedOrigins:
@@ -265,6 +264,13 @@ config:
     maxTotal: 10000
     idleTimeoutSeconds: 300
     maxDurationSeconds: 86400
+    wsMessageRateLimitPerSecond: 50
+
+  ## MessagingRateLimitConfig
+  messagingRateLimits:
+    chatPerSecond: 10
+    danmakuPerSecond: 3
+    windowSeconds: 1
 
   ## BootstrapConfig
   bootstrap:
@@ -372,12 +378,12 @@ securityContext:
   readOnlyRootFilesystem: true
 
 ## Metrics (Prometheus)
-## Metrics are served on the main HTTP port at /metrics.
+## Metrics are served on the main API port at /metrics.
 ## When metrics.enabled is true, Prometheus scrape annotations are added to the Service.
 ## For Prometheus Operator environments, enable serviceMonitor instead.
 metrics:
   enabled: true
-  port: "" # defaults to config.server.httpPort (8080)
+  port: "" # defaults to config.server.port (8080)
   path: "/metrics"
   serviceMonitor:
     enabled: false

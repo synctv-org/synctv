@@ -1274,8 +1274,7 @@ mod tests {
         Config {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
-                grpc_port: 50051,
-                http_port: 8080,
+                port: 8080,
                 enable_reflection: false,
                 metrics_enabled: false,
                 metrics_bearer_token: String::new(),

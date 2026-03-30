@@ -55,8 +55,7 @@ fn create_redis_circuit_breaker(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub node_id: String,
-    pub grpc_address: String,
-    pub http_address: String,
+    pub api_address: String,
     pub last_heartbeat: DateTime<Utc>,
     pub metadata: HashMap<String, String>,
     /// Fencing token (epoch) for split-brain protection
@@ -67,11 +66,10 @@ pub struct NodeInfo {
 
 impl NodeInfo {
     #[must_use]
-    pub fn new(node_id: String, grpc_address: String, http_address: String) -> Self {
+    pub fn new(node_id: String, api_address: String) -> Self {
         Self {
             node_id,
-            grpc_address,
-            http_address,
+            api_address,
             last_heartbeat: Utc::now(),
             metadata: HashMap::new(),
             epoch: 1, // Start at epoch 1
@@ -652,14 +650,14 @@ impl NodeRegistry {
     /// This prevents race conditions when multiple instances register concurrently.
     ///
     /// In local-only mode, this only updates the local cache without Redis.
-    pub async fn register(&self, grpc_address: String, http_address: String) -> Result<()> {
+    pub async fn register(&self, api_address: String) -> Result<()> {
         // In local-only mode, just update local cache
         if self.local_only {
             let local_epoch = self.current_epoch.load(Ordering::SeqCst);
             let new_epoch = local_epoch + 1;
             self.current_epoch.store(new_epoch, Ordering::SeqCst);
 
-            let mut node_info = NodeInfo::new(self.node_id.clone(), grpc_address, http_address);
+            let mut node_info = NodeInfo::new(self.node_id.clone(), api_address);
             node_info.epoch = new_epoch;
             node_info.last_heartbeat = Utc::now();
             node_info
@@ -693,7 +691,7 @@ impl NodeRegistry {
         let ttl = self.heartbeat_timeout_secs * 2;
 
         // Create node info template
-        let mut node_info = NodeInfo::new(self.node_id.clone(), grpc_address, http_address);
+        let mut node_info = NodeInfo::new(self.node_id.clone(), api_address);
         node_info
             .metadata
             .insert("local_epoch".to_string(), local_epoch.to_string());
@@ -821,35 +819,32 @@ impl NodeRegistry {
             let ttl = self.heartbeat_timeout_secs * 2;
 
             // Build updated node info from local cache
-            let (node_json, grpc_addr, http_addr) = {
+            let (node_json, api_addr) = {
                 let nodes = self.local_nodes.read().await;
                 let info_opt = nodes.get(&self.node_id).cloned();
                 drop(nodes);
 
                 let mut info = match info_opt {
-                    Some(existing) if !existing.grpc_address.is_empty() => existing,
+                    Some(existing) if !existing.api_address.is_empty() => existing,
                     _ => {
-                        // Local cache is missing or has empty addresses (should not happen
-                        // after a successful register()). Log a warning so operators know
-                        // the heartbeat is running with degraded data.
+                        // Local cache is missing or has an empty API address (should not
+                        // happen after a successful register()). Log a warning so
+                        // operators know the heartbeat is running with degraded data.
                         tracing::warn!(
                             node_id = %self.node_id,
-                            "Heartbeat: local node cache missing or has empty addresses, \
-                             auto-re-registration may use empty addresses"
+                            "Heartbeat: local node cache missing or has an empty api_address, \
+                             auto-re-registration may use an empty api_address"
                         );
-                        info_opt.unwrap_or_else(|| {
-                            NodeInfo::new(self.node_id.clone(), String::new(), String::new())
-                        })
+                        info_opt.unwrap_or_else(|| NodeInfo::new(self.node_id.clone(), String::new()))
                     }
                 };
-                let grpc = info.grpc_address.clone();
-                let http = info.http_address.clone();
+                let api_address = info.api_address.clone();
                 info.last_heartbeat = now;
                 info.epoch = current_epoch;
                 let json = serde_json::to_string(&info).map_err(|e| {
                     Error::Serialization(format!("Failed to serialize node info: {e}"))
                 })?;
-                (json, grpc, http)
+                (json, api_address)
             };
 
             // Atomic Lua script: check epoch matches before writing heartbeat
@@ -911,14 +906,13 @@ impl NodeRegistry {
             let result = op_result?;
 
             if result == -1 {
-                // Check for empty addresses before attempting re-registration
-                if grpc_addr.is_empty() || http_addr.is_empty() {
+                // Check for empty api_address before attempting re-registration
+                if api_addr.is_empty() {
                     tracing::error!(
                         node_id = %self.node_id,
-                        grpc_address = %grpc_addr,
-                        http_address = %http_addr,
-                        "Heartbeat auto-re-registration skipped: empty address(es); \
-                         node will be unreachable by peers until addresses are recovered"
+                        api_address = %api_addr,
+                        "Heartbeat auto-re-registration skipped: empty api_address; \
+                         node will be unreachable by peers until it is recovered"
                     );
                     return Ok(HeartbeatResult::EmptyAddress);
                 }
@@ -938,7 +932,7 @@ impl NodeRegistry {
                     "Heartbeat failed: key not found, auto-registering"
                 );
                 // Auto-retry: attempt re-registration once
-                if let Err(e) = self.register(grpc_addr, http_addr).await {
+                if let Err(e) = self.register(api_addr).await {
                     tracing::error!(
                         node_id = %self.node_id,
                         error = %e,
@@ -958,14 +952,13 @@ impl NodeRegistry {
             } else if result <= -1000 {
                 // Lua returns -(1000 + remote_epoch) on epoch mismatch
                 let remote_epoch = ((-result) - 1000) as u64;
-                // Check for empty addresses before attempting re-registration
-                if grpc_addr.is_empty() || http_addr.is_empty() {
+                // Check for empty api_address before attempting re-registration
+                if api_addr.is_empty() {
                     tracing::error!(
                         node_id = %self.node_id,
-                        grpc_address = %grpc_addr,
-                        http_address = %http_addr,
-                        "Heartbeat auto-re-registration skipped: empty address(es); \
-                         node will be unreachable by peers until addresses are recovered"
+                        api_address = %api_addr,
+                        "Heartbeat auto-re-registration skipped: empty api_address; \
+                         node will be unreachable by peers until it is recovered"
                     );
                     return Ok(HeartbeatResult::EmptyAddress);
                 }
@@ -987,7 +980,7 @@ impl NodeRegistry {
                     "Epoch mismatch during heartbeat, auto-registering"
                 );
                 // Auto-retry: attempt re-registration once to resolve epoch conflict
-                if let Err(e) = self.register(grpc_addr, http_addr).await {
+                if let Err(e) = self.register(api_addr).await {
                     tracing::error!(
                         node_id = %self.node_id,
                         error = %e,
@@ -1761,11 +1754,7 @@ mod tests {
 
     #[test]
     fn test_node_info_stale() {
-        let mut node = NodeInfo::new(
-            "test".to_string(),
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-        );
+        let mut node = NodeInfo::new("test".to_string(), "localhost:8080".to_string());
 
         // Fresh node should not be stale
         assert!(!node.is_stale(30));
@@ -1777,11 +1766,7 @@ mod tests {
 
     #[test]
     fn test_node_info_epoch_initialization() {
-        let node = NodeInfo::new(
-            "test".to_string(),
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-        );
+        let node = NodeInfo::new("test".to_string(), "localhost:8080".to_string());
 
         // New nodes should start with epoch 1
         assert_eq!(node.epoch, 1);
@@ -1789,12 +1774,7 @@ mod tests {
 
     #[test]
     fn test_node_info_with_epoch() {
-        let node = NodeInfo::new(
-            "test".to_string(),
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-        )
-        .with_epoch(5);
+        let node = NodeInfo::new("test".to_string(), "localhost:8080".to_string()).with_epoch(5);
 
         assert_eq!(node.epoch, 5);
     }
@@ -1825,12 +1805,8 @@ mod tests {
 
     #[test]
     fn test_node_info_fencing_token() {
-        let node = NodeInfo::new(
-            "test_node".to_string(),
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-        )
-        .with_epoch(10);
+        let node =
+            NodeInfo::new("test_node".to_string(), "localhost:8080".to_string()).with_epoch(10);
 
         let token = node.fencing_token();
         assert_eq!(token.node_id, "test_node");
@@ -1871,12 +1847,7 @@ mod tests {
 
     #[test]
     fn test_node_info_serialization_with_epoch() {
-        let node = NodeInfo::new(
-            "test".to_string(),
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-        )
-        .with_epoch(7);
+        let node = NodeInfo::new("test".to_string(), "localhost:8080".to_string()).with_epoch(7);
 
         // Serialize to JSON
         let json = serde_json::to_string(&node).unwrap();
@@ -1899,7 +1870,6 @@ mod tests {
 
         let peer = NodeInfo::new(
             "dns-peer-1".to_string(),
-            "10.0.0.2:50051".to_string(),
             "10.0.0.2:8080".to_string(),
         );
 
@@ -1907,7 +1877,7 @@ mod tests {
 
         let nodes = registry.local_nodes.read().await;
         assert!(nodes.contains_key("dns-peer-1"));
-        assert_eq!(nodes["dns-peer-1"].grpc_address, "10.0.0.2:50051");
+        assert_eq!(nodes["dns-peer-1"].api_address, "10.0.0.2:8080");
     }
 
     #[tokio::test]
@@ -1925,18 +1895,13 @@ mod tests {
             let mut nodes = registry.local_nodes.write().await;
             nodes.insert(
                 "self".to_string(),
-                NodeInfo::new(
-                    "self".to_string(),
-                    "10.0.0.1:50051".to_string(),
-                    "10.0.0.1:8080".to_string(),
-                ),
+                NodeInfo::new("self".to_string(), "10.0.0.1:8080".to_string()),
             );
         }
 
         // Try to merge a DNS peer with the same node_id ("self")
         let dns_peer = NodeInfo::new(
             "self".to_string(),
-            "10.0.0.99:50051".to_string(),
             "10.0.0.99:8080".to_string(),
         );
 
@@ -1944,7 +1909,7 @@ mod tests {
 
         // Original registration should be preserved (not overwritten)
         let nodes = registry.local_nodes.read().await;
-        assert_eq!(nodes["self"].grpc_address, "10.0.0.1:50051");
+        assert_eq!(nodes["self"].api_address, "10.0.0.1:8080");
     }
 
     #[tokio::test]
@@ -1954,14 +1919,12 @@ mod tests {
 
         let redis_nodes = vec![NodeInfo::new(
             "redis-peer-1".to_string(),
-            "10.0.0.10:50051".to_string(),
             "10.0.0.10:8080".to_string(),
         )];
 
         let mut local_nodes = HashMap::new();
         let mut dns_peer = NodeInfo::new(
             "dns-peer-1".to_string(),
-            "10.0.0.2:50051".to_string(),
             "10.0.0.2:8080".to_string(),
         );
         dns_peer
@@ -1971,11 +1934,7 @@ mod tests {
 
         local_nodes.insert(
             "other-discovery".to_string(),
-            NodeInfo::new(
-                "other-discovery".to_string(),
-                "10.0.0.3:50051".to_string(),
-                "10.0.0.3:8080".to_string(),
-            ),
+            NodeInfo::new("other-discovery".to_string(), "10.0.0.3:8080".to_string()),
         );
 
         let nodes = registry.merge_verified_discovery_nodes(redis_nodes, &local_nodes);
@@ -2005,12 +1964,10 @@ mod tests {
 
         let redis_peer = NodeInfo::new(
             "redis-peer-1".to_string(),
-            "10.0.0.10:50051".to_string(),
             "10.0.0.10:8080".to_string(),
         );
         let mut dns_peer = NodeInfo::new(
             "dns-peer-1".to_string(),
-            "10.0.0.2:50051".to_string(),
             "10.0.0.2:8080".to_string(),
         );
         dns_peer
@@ -2075,34 +2032,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_node_info_empty_address_detection() {
-        // Test that we can detect empty addresses in NodeInfo
-        let node_with_empty_grpc = NodeInfo::new(
-            "test".to_string(),
-            String::new(), // empty grpc_address
-            "localhost:8080".to_string(),
-        );
-        assert!(node_with_empty_grpc.grpc_address.is_empty());
-        assert!(!node_with_empty_grpc.http_address.is_empty());
+        let node_with_empty_api = NodeInfo::new("test".to_string(), String::new());
+        assert!(node_with_empty_api.api_address.is_empty());
 
-        let node_with_empty_http = NodeInfo::new(
-            "test".to_string(),
-            "localhost:50051".to_string(),
-            String::new(), // empty http_address
-        );
-        assert!(!node_with_empty_http.grpc_address.is_empty());
-        assert!(node_with_empty_http.http_address.is_empty());
-
-        let node_with_both_empty = NodeInfo::new("test".to_string(), String::new(), String::new());
-        assert!(node_with_both_empty.grpc_address.is_empty());
-        assert!(node_with_both_empty.http_address.is_empty());
-
-        let node_with_both_valid = NodeInfo::new(
-            "test".to_string(),
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-        );
-        assert!(!node_with_both_valid.grpc_address.is_empty());
-        assert!(!node_with_both_valid.http_address.is_empty());
+        let node_with_valid_api = NodeInfo::new("test".to_string(), "localhost:8080".to_string());
+        assert!(!node_with_valid_api.api_address.is_empty());
     }
 
     #[tokio::test]
@@ -2122,11 +2056,7 @@ mod tests {
             let mut nodes = registry.local_nodes.write().await;
             nodes.insert(
                 "test_node".to_string(),
-                NodeInfo::new(
-                    "test_node".to_string(),
-                    String::new(), // empty grpc_address
-                    String::new(), // empty http_address
-                ),
+                NodeInfo::new("test_node".to_string(), String::new()),
             );
         }
 
@@ -2134,8 +2064,7 @@ mod tests {
         {
             let nodes = registry.local_nodes.read().await;
             let info = nodes.get("test_node").unwrap();
-            assert!(info.grpc_address.is_empty());
-            assert!(info.http_address.is_empty());
+            assert!(info.api_address.is_empty());
         }
     }
 
@@ -2175,7 +2104,6 @@ mod tests {
 
         let original = NodeInfo::new(
             "peer-node".to_string(),
-            "10.0.0.1:50051".to_string(),
             "10.0.0.1:8080".to_string(),
         )
         .with_epoch(3);
@@ -2183,7 +2111,6 @@ mod tests {
 
         let newer = NodeInfo::new(
             "peer-node".to_string(),
-            "10.0.0.2:50051".to_string(),
             "10.0.0.2:8080".to_string(),
         )
         .with_epoch(9);
@@ -2204,7 +2131,7 @@ mod tests {
             .find(|node| node.node_id == "peer-node")
             .expect("newer remote registration must remain present");
         assert_eq!(persisted.epoch, 9);
-        assert_eq!(persisted.grpc_address, "10.0.0.2:50051");
+        assert_eq!(persisted.api_address, "10.0.0.2:8080");
 
         drop(redis_container);
     }

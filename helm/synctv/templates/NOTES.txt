@@ -29,19 +29,17 @@ Ingress is enabled. Access the application at:
   Watch status with:
     kubectl get svc --namespace {{ .Release.Namespace }} -w {{ include "synctv.fullname" . }}
   export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "synctv.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
-  echo "HTTP API: http://$SERVICE_IP:{{ .Values.config.server.httpPort }}"
-  echo "gRPC API: $SERVICE_IP:{{ .Values.config.server.grpcPort }}"
+  echo "API: http://$SERVICE_IP:{{ .Values.config.server.port }} (HTTP/1 REST, HTTP/2 gRPC)"
   echo "RTMP Ingest: rtmp://$SERVICE_IP:{{ .Values.config.livestream.rtmpPort }}"
 {{- else }}
   export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "synctv.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
-  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.config.server.httpPort }}:{{ .Values.config.server.httpPort }}
-  echo "HTTP API: http://127.0.0.1:{{ .Values.config.server.httpPort }}"
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.config.server.port }}:{{ .Values.config.server.port }}
+  echo "API: http://127.0.0.1:{{ .Values.config.server.port }} (HTTP/1 REST, HTTP/2 gRPC)"
 {{- end }}
 
 ## Services
 
-  - HTTP API:    port {{ .Values.config.server.httpPort }}
-  - gRPC API:    port {{ .Values.config.server.grpcPort }}
+  - API:         port {{ .Values.config.server.port }}
   - RTMP Ingest: port {{ .Values.config.livestream.rtmpPort }}
 {{- if .Values.config.webrtc.enableBuiltinStun }}
   - STUN (UDP):  port {{ .Values.config.webrtc.stunPort }}

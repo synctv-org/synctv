@@ -4,7 +4,8 @@
 //! Pattern: `{service-name}.{namespace}.svc.cluster.local`
 //!
 //! Each resolved IP corresponds to a pod backing the headless service.
-//! Combined with a known gRPC/HTTP port, this yields routable peer addresses.
+//! Combined with a known unified API port, this yields a routable peer API
+//! address for both gRPC and HTTP traffic.
 //!
 //! **Important**: DNS discovery supplements but does not replace Redis. Full cluster
 //! functionality (health monitoring, load balancing, pub/sub) still requires Redis.
@@ -27,16 +28,14 @@ use crate::error::{Error, Result};
 pub struct DnsPeer {
     /// IP address resolved from DNS
     pub ip: String,
-    /// gRPC address (ip:grpc_port)
-    pub grpc_address: String,
-    /// HTTP address (ip:http_port)
-    pub http_address: String,
+    /// Shared API address (ip:api_port)
+    pub api_address: String,
 }
 
 /// Kubernetes DNS-based discovery for cluster peers.
 ///
 /// Resolves the headless service DNS name to discover peer pod IPs,
-/// then constructs gRPC/HTTP addresses using configured ports.
+/// then constructs shared API addresses using the shared API port.
 ///
 /// **Redis is still required.** DNS discovery only handles peer IP resolution.
 /// All cluster functionality -- pub/sub event synchronization, health monitoring,
@@ -47,10 +46,8 @@ pub struct DnsPeer {
 pub struct K8sDnsDiscovery {
     /// Headless service DNS name (e.g., "synctv-headless.default.svc.cluster.local")
     dns_name: String,
-    /// gRPC port used by all peers
-    grpc_port: u16,
-    /// HTTP port used by all peers
-    http_port: u16,
+    /// Shared API port used by all peers for both gRPC and HTTP.
+    api_port: u16,
     /// This node's pod IP (to exclude self from peer list)
     self_ip: String,
     /// Cached list of discovered peers
@@ -78,8 +75,8 @@ impl K8sDnsDiscovery {
     /// resolves peer IPs; Redis is required for pub/sub, health checks, leader
     /// election, and all other cluster coordination.
     ///
-    /// Ports are read from config (grpc_port, http_port).
-    pub fn from_env(grpc_port: u16, http_port: u16) -> Result<Self> {
+    /// The shared API port is read from config (`server.port`).
+    pub fn from_env(api_port: u16) -> Result<Self> {
         let service_name = std::env::var("HEADLESS_SERVICE_NAME").map_err(|_| {
             Error::Configuration(
                 "HEADLESS_SERVICE_NAME env var is required for k8s_dns discovery mode".to_string(),
@@ -115,8 +112,7 @@ impl K8sDnsDiscovery {
 
         Ok(Self {
             dns_name,
-            grpc_port,
-            http_port,
+            api_port,
             self_ip,
             peers: Arc::new(RwLock::new(Vec::new())),
             node_registry: None,
@@ -126,11 +122,10 @@ impl K8sDnsDiscovery {
     }
 
     /// Create with explicit parameters (for testing or non-standard setups).
-    pub fn new(dns_name: String, grpc_port: u16, http_port: u16, self_ip: String) -> Self {
+    pub fn new(dns_name: String, api_port: u16, self_ip: String) -> Self {
         Self {
             dns_name,
-            grpc_port,
-            http_port,
+            api_port,
             self_ip,
             peers: Arc::new(RwLock::new(Vec::new())),
             node_registry: None,
@@ -199,7 +194,7 @@ impl K8sDnsDiscovery {
 
     /// Perform a single DNS resolution and return discovered peers.
     pub async fn resolve_once(&self) -> Result<Vec<DnsPeer>> {
-        let lookup_addr = format!("{}:{}", self.dns_name, self.grpc_port);
+        let lookup_addr = format!("{}:{}", self.dns_name, self.api_port);
 
         let addrs = tokio::net::lookup_host(&lookup_addr).await.map_err(|e| {
             Error::Configuration(format!("DNS lookup failed for '{}': {}", self.dns_name, e))
@@ -222,22 +217,15 @@ impl K8sDnsDiscovery {
             }
 
             // Wrap IPv6 addresses in brackets so they form valid socket addresses
-            let (grpc_address, http_address) = if addr.ip().is_ipv6() {
-                (
-                    format!("[{}]:{}", ip, self.grpc_port),
-                    format!("[{}]:{}", ip, self.http_port),
-                )
+            let shared_address = if addr.ip().is_ipv6() {
+                format!("[{}]:{}", ip, self.api_port)
             } else {
-                (
-                    format!("{}:{}", ip, self.grpc_port),
-                    format!("{}:{}", ip, self.http_port),
-                )
+                format!("{}:{}", ip, self.api_port)
             };
 
             peers.push(DnsPeer {
                 ip: ip.clone(),
-                grpc_address,
-                http_address,
+                api_address: shared_address,
             });
         }
 
@@ -258,7 +246,7 @@ impl K8sDnsDiscovery {
                 if let Some(ref registry) = self.node_registry {
                     let probe_results = join_all(new_peers.iter().map(|peer| async move {
                         let identity =
-                            probe_node_identity(&peer.grpc_address, 3, &self.cluster_secret).await;
+                            probe_node_identity(&peer.api_address, 3, &self.cluster_secret).await;
                         (peer, identity)
                     }))
                     .await;
@@ -266,19 +254,16 @@ impl K8sDnsDiscovery {
                     let mut verified_peers = Vec::new();
                     for (peer, identity) in probe_results {
                         if let Some(identity) = identity {
-                            let mut info = NodeInfo::new(
-                                identity.node_id,
-                                peer.grpc_address.clone(),
-                                peer.http_address.clone(),
-                            )
-                            .with_epoch(identity.epoch);
+                            let mut info =
+                                NodeInfo::new(identity.node_id, peer.api_address.clone())
+                                    .with_epoch(identity.epoch);
                             info.metadata
                                 .insert("discovery".to_string(), "k8s_dns".to_string());
                             verified_peers.push((peer.ip.clone(), info));
                         } else {
                             tracing::debug!(
                                 peer_ip = %peer.ip,
-                                grpc_address = %peer.grpc_address,
+                                api_address = %peer.api_address,
                                 "Skipping DNS peer until gRPC identity probe succeeds"
                             );
                         }
@@ -320,11 +305,7 @@ impl K8sDnsDiscovery {
         peers
             .iter()
             .map(|peer| {
-                let mut info = NodeInfo::new(
-                    peer.ip.clone(),
-                    peer.grpc_address.clone(),
-                    peer.http_address.clone(),
-                );
+                let mut info = NodeInfo::new(peer.ip.clone(), peer.api_address.clone());
                 info.metadata
                     .insert("discovery".to_string(), "k8s_dns".to_string());
                 info
@@ -391,13 +372,11 @@ mod tests {
     fn test_k8s_dns_discovery_new() {
         let disc = K8sDnsDiscovery::new(
             "synctv-headless.default.svc.cluster.local".to_string(),
-            50051,
             8080,
             "10.0.0.1".to_string(),
         );
         assert_eq!(disc.dns_name(), "synctv-headless.default.svc.cluster.local");
-        assert_eq!(disc.grpc_port, 50051);
-        assert_eq!(disc.http_port, 8080);
+        assert_eq!(disc.api_port, 8080);
         assert_eq!(disc.self_ip, "10.0.0.1");
     }
 
@@ -405,7 +384,6 @@ mod tests {
     fn test_with_cluster_secret_sets_probe_secret() {
         let disc = K8sDnsDiscovery::new(
             "synctv-headless.default.svc.cluster.local".to_string(),
-            50051,
             8080,
             "10.0.0.1".to_string(),
         )
@@ -424,7 +402,7 @@ mod tests {
         std::env::set_var("POD_NAMESPACE", "default");
         std::env::remove_var("POD_IP");
 
-        let result = K8sDnsDiscovery::from_env(50051, 8080);
+        let result = K8sDnsDiscovery::from_env(8080);
 
         match headless_prev {
             Some(value) => std::env::set_var("HEADLESS_SERVICE_NAME", value),
@@ -453,7 +431,6 @@ mod tests {
     async fn test_get_peers_empty_initially() {
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
-            50051,
             8080,
             "10.0.0.1".to_string(),
         );
@@ -465,7 +442,6 @@ mod tests {
     async fn test_get_peers_as_node_info_empty() {
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
-            50051,
             8080,
             "10.0.0.1".to_string(),
         );
@@ -477,7 +453,6 @@ mod tests {
     async fn test_get_peer_map_empty() {
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
-            50051,
             8080,
             "10.0.0.1".to_string(),
         );
@@ -489,7 +464,6 @@ mod tests {
     async fn test_refresh_loop_stops_when_parent_shutdown_token_is_cancelled() {
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
-            50051,
             8080,
             "10.0.0.1".to_string(),
         );
@@ -507,7 +481,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_loop_waits_for_first_interval_before_refreshing() {
-        let disc = K8sDnsDiscovery::new("localhost".to_string(), 50051, 8080, "10.0.0.1".to_string());
+        let disc = K8sDnsDiscovery::new("localhost".to_string(), 8080, "10.0.0.1".to_string());
         let shutdown_token = CancellationToken::new();
 
         let handle = disc.start_refresh_loop(60, shutdown_token.clone());
@@ -533,7 +507,6 @@ mod tests {
         );
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
-            50051,
             8080,
             "10.0.0.1".to_string(),
         )
@@ -541,7 +514,6 @@ mod tests {
 
         let mut node_info = NodeInfo::new(
             "peer-node-1".to_string(),
-            "10.0.0.2:50051".to_string(),
             "10.0.0.2:8080".to_string(),
         )
         .with_epoch(7);
@@ -570,7 +542,6 @@ mod tests {
         );
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
-            50051,
             8080,
             "10.0.0.1".to_string(),
         )
@@ -578,7 +549,6 @@ mod tests {
 
         let mut node_info = NodeInfo::new(
             "peer-node-1".to_string(),
-            "10.0.0.2:50051".to_string(),
             "10.0.0.2:8080".to_string(),
         );
         node_info
@@ -604,7 +574,6 @@ mod tests {
         );
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
-            50051,
             8080,
             "10.0.0.1".to_string(),
         )
@@ -612,7 +581,6 @@ mod tests {
 
         let mut dns_node = NodeInfo::new(
             "peer-node-1".to_string(),
-            "10.0.0.2:50051".to_string(),
             "10.0.0.2:8080".to_string(),
         );
         dns_node
@@ -626,7 +594,6 @@ mod tests {
             .test_insert_local(
                 NodeInfo::new(
                     "peer-node-1".to_string(),
-                    "10.0.0.2:50051".to_string(),
                     "10.0.0.2:8080".to_string(),
                 )
                 .with_epoch(9),
@@ -648,7 +615,6 @@ mod tests {
         );
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
-            50051,
             8080,
             "10.0.0.1".to_string(),
         )
@@ -656,7 +622,6 @@ mod tests {
 
         let mut original = NodeInfo::new(
             "peer-node-1".to_string(),
-            "10.0.0.2:50051".to_string(),
             "10.0.0.2:8080".to_string(),
         )
         .with_epoch(7);
@@ -669,7 +634,6 @@ mod tests {
 
         let mut restarted = NodeInfo::new(
             "peer-node-1".to_string(),
-            "10.0.0.9:50051".to_string(),
             "10.0.0.9:8080".to_string(),
         )
         .with_epoch(8);
@@ -684,8 +648,7 @@ mod tests {
             .test_get_local("peer-node-1")
             .await
             .expect("transient DNS peer should still exist");
-        assert_eq!(node.grpc_address, "10.0.0.9:50051");
-        assert_eq!(node.http_address, "10.0.0.9:8080");
+        assert_eq!(node.api_address, "10.0.0.9:8080");
         assert_eq!(node.epoch, 8);
     }
 }

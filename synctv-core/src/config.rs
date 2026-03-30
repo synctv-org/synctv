@@ -110,8 +110,7 @@ impl Default for MessagingRateLimitConfig {
 #[serde(default)]
 pub struct ServerConfig {
     pub host: String,
-    pub grpc_port: u16,
-    pub http_port: u16,
+    pub port: u16,
     pub enable_reflection: bool,
     /// Enable the `/metrics` Prometheus endpoint.
     /// Defaults to `false`. In Kubernetes, set via Helm `metrics.enabled`.
@@ -156,8 +155,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             host: "0.0.0.0".to_string(),
-            grpc_port: 50051,
-            http_port: 8080,
+            port: 8080,
             enable_reflection: true,
             metrics_enabled: false,
             trusted_proxies: Vec::new(),
@@ -749,6 +747,8 @@ impl Config {
         config_file: Option<&str>,
         get_env: &impl Fn(&str) -> Option<String>,
     ) -> Result<Self, ConfigError> {
+        Self::reject_legacy_server_port_settings(config_file, get_env)?;
+
         let mut builder = ConfigBuilder::builder();
 
         // Always seed the builder with the fully-populated default config first,
@@ -774,6 +774,44 @@ impl Config {
         config.apply_env_overrides_with(get_env)?;
 
         Ok(config)
+    }
+
+    fn reject_legacy_server_port_settings(
+        config_file: Option<&str>,
+        get_env: &impl Fn(&str) -> Option<String>,
+    ) -> Result<(), ConfigError> {
+        let mut legacy_env_vars = Vec::new();
+        for name in ["SYNCTV_SERVER_GRPC_PORT", "SYNCTV_SERVER_HTTP_PORT"] {
+            if get_env(name).is_some() {
+                legacy_env_vars.push(name);
+            }
+        }
+
+        if !legacy_env_vars.is_empty() {
+            return Err(ConfigError::Message(format!(
+                "Legacy environment variable(s) {} are no longer supported. Use SYNCTV_SERVER_PORT.",
+                legacy_env_vars.join(", ")
+            )));
+        }
+
+        if let Some(path) = config_file.filter(|path| Path::new(path).exists()) {
+            let contents = std::fs::read_to_string(path).map_err(|error| {
+                ConfigError::Message(format!("failed to read config file {path}: {error}"))
+            })?;
+            let legacy_keys = find_legacy_server_port_keys(&contents);
+            if !legacy_keys.is_empty() {
+                return Err(ConfigError::Message(format!(
+                    "Legacy config key(s) {} are no longer supported. Replace them with server.port.",
+                    legacy_keys
+                        .into_iter()
+                        .map(|key| format!("server.{key}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+
+        Ok(())
     }
 
     /// Load from environment variables only (for Docker/K8s)
@@ -819,16 +857,10 @@ impl Config {
         self.cluster.enabled
     }
 
-    /// Get gRPC address
+    /// Get unified API address
     #[must_use]
-    pub fn grpc_address(&self) -> String {
-        format!("{}:{}", self.server.host, self.server.grpc_port)
-    }
-
-    /// Get HTTP address
-    #[must_use]
-    pub fn http_address(&self) -> String {
-        format!("{}:{}", self.server.host, self.server.http_port)
+    pub fn api_address(&self) -> String {
+        format!("{}:{}", self.server.host, self.server.port)
     }
 
     /// Resolve the advertise host for cluster node registration.
@@ -864,16 +896,15 @@ impl Config {
             .unwrap_or_else(|| self.server.host.clone())
     }
 
-    /// Get the gRPC address advertised to other cluster nodes.
-    #[must_use]
-    pub fn advertise_grpc_address(&self) -> String {
-        format!("{}:{}", self.advertise_host(), self.server.grpc_port)
+    fn has_explicit_advertise_host_source(&self, get_env: &impl Fn(&str) -> Option<String>) -> bool {
+        !self.server.advertise_host.is_empty()
+            || get_env("POD_IP").is_some_and(|value| !value.is_empty())
     }
 
-    /// Get the HTTP address advertised to other cluster nodes.
+    /// Get the unified API address advertised to other cluster nodes.
     #[must_use]
-    pub fn advertise_http_address(&self) -> String {
-        format!("{}:{}", self.advertise_host(), self.server.http_port)
+    pub fn advertise_api_address(&self) -> String {
+        format!("{}:{}", self.advertise_host(), self.server.port)
     }
 
     /// Public RTMP host for publisher-facing URLs.
@@ -984,8 +1015,7 @@ impl Config {
 
         // -- Server --
         env_override_str("SYNCTV_SERVER_HOST", &mut self.server.host);
-        env_override_parse("SYNCTV_SERVER_GRPC_PORT", &mut self.server.grpc_port)?;
-        env_override_parse("SYNCTV_SERVER_HTTP_PORT", &mut self.server.http_port)?;
+        env_override_parse("SYNCTV_SERVER_PORT", &mut self.server.port)?;
         env_override_bool(
             "SYNCTV_SERVER_ENABLE_REFLECTION",
             &mut self.server.enable_reflection,
@@ -1495,8 +1525,7 @@ impl Config {
 
         // Validate port numbers are in valid range (1-65535)
         let ports_to_check: &[(&str, u16)] = &[
-            ("server.http_port", self.server.http_port),
-            ("server.grpc_port", self.server.grpc_port),
+            ("server.port", self.server.port),
             ("livestream.rtmp_port", self.livestream.rtmp_port),
         ];
         for (name, port) in ports_to_check {
@@ -1581,23 +1610,11 @@ impl Config {
             }
         }
 
-        // Validate port conflicts: RTMP != HTTP != gRPC (all three must differ)
-        if self.server.grpc_port == self.server.http_port {
+        // Validate port conflicts: RTMP must not collide with the unified API port.
+        if self.livestream.rtmp_port == self.server.port {
             errors.push(format!(
-                "server.grpc_port ({}) and server.http_port ({}) must be different",
-                self.server.grpc_port, self.server.http_port
-            ));
-        }
-        if self.livestream.rtmp_port == self.server.http_port {
-            errors.push(format!(
-                "livestream.rtmp_port ({}) and server.http_port ({}) must be different",
-                self.livestream.rtmp_port, self.server.http_port
-            ));
-        }
-        if self.livestream.rtmp_port == self.server.grpc_port {
-            errors.push(format!(
-                "livestream.rtmp_port ({}) and server.grpc_port ({}) must be different",
-                self.livestream.rtmp_port, self.server.grpc_port
+                "livestream.rtmp_port ({}) and server.port ({}) must be different",
+                self.livestream.rtmp_port, self.server.port
             ));
         }
 
@@ -2023,6 +2040,15 @@ impl Config {
             }
         }
 
+        if self.cluster.enabled && !self.has_explicit_advertise_host_source(get_env) {
+            errors.push(
+                "server.advertise_host must be set explicitly when cluster mode is enabled. \
+                 Refusing to fall back to the local hostname because other replicas may not be able to route to it. \
+                 Set SYNCTV_SERVER_ADVERTISE_HOST (or server.advertise_host), or provide POD_IP via the Kubernetes downward API."
+                    .to_string(),
+            );
+        }
+
         if self.cluster.enabled && self.advertise_host_with(get_env) == "0.0.0.0" {
             errors.push(
                 "server.advertise_host must resolve to a routable address when cluster mode is enabled. \
@@ -2088,6 +2114,54 @@ impl Config {
             Err(errors)
         }
     }
+}
+
+fn find_legacy_server_port_keys(contents: &str) -> Vec<&'static str> {
+    let mut found = Vec::new();
+    let mut in_server_block = false;
+    let mut server_indent = 0usize;
+
+    for line in contents.lines() {
+        let Some((indent, key)) = yaml_mapping_key(line) else {
+            continue;
+        };
+
+        if in_server_block && indent <= server_indent {
+            in_server_block = false;
+        }
+
+        if !in_server_block {
+            if indent == 0 && key == "server" {
+                in_server_block = true;
+                server_indent = indent;
+            }
+            continue;
+        }
+
+        if key == "grpc_port" && !found.contains(&"grpc_port") {
+            found.push("grpc_port");
+        }
+        if key == "http_port" && !found.contains(&"http_port") {
+            found.push("http_port");
+        }
+    }
+
+    found
+}
+
+fn yaml_mapping_key(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+
+    let indent = line.len() - trimmed.len();
+    let key = trimmed.split_once(':')?.0.trim();
+    if key.is_empty() {
+        return None;
+    }
+
+    Some((indent, key))
 }
 
 /// Connection limits configuration
@@ -2492,8 +2566,7 @@ mod tests {
         assert!(!config.database_url().is_empty());
         // Redis URL defaults to empty (standalone mode without Redis)
         assert!(config.redis_url().is_empty());
-        assert!(config.server.grpc_port > 0);
-        assert!(config.server.http_port > 0);
+        assert!(config.server.port > 0);
         assert!(config.webrtc.enable_builtin_stun);
         // Default is false for security - operators must explicitly enable root creation
         assert!(!config.bootstrap.create_root_user);
@@ -2554,12 +2627,11 @@ mod tests {
     }
 
     #[test]
-    fn test_grpc_address() {
+    fn test_api_address() {
         let config = Config {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
-                grpc_port: 50051,
-                http_port: 8080,
+                port: 8080,
                 enable_reflection: true,
                 metrics_enabled: false,
                 metrics_bearer_token: String::new(),
@@ -2590,8 +2662,7 @@ mod tests {
             grpc_rate_limits: GrpcRateLimitConfig::default(),
         };
 
-        assert_eq!(config.grpc_address(), "127.0.0.1:50051");
-        assert_eq!(config.http_address(), "127.0.0.1:8080");
+        assert_eq!(config.api_address(), "127.0.0.1:8080");
     }
 
     #[test]
@@ -2664,12 +2735,23 @@ mod tests {
     }
 
     #[test]
+    fn test_cluster_mode_accepts_pod_ip_as_explicit_advertise_host_source() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.server.advertise_host.clear();
+
+        config
+            .validate_with_env_map(&env_map(&[("POD_IP", "10.2.3.4")]))
+            .expect("cluster mode should accept POD_IP as the explicit advertise host source");
+    }
+
+    #[test]
     fn test_from_env_rejects_invalid_numeric_override() {
-        let error = Config::from_env_map(&env_map(&[("SYNCTV_SERVER_HTTP_PORT", "not-a-port")]))
+        let error = Config::from_env_map(&env_map(&[("SYNCTV_SERVER_PORT", "not-a-port")]))
             .expect_err("invalid numeric override must fail closed");
 
         let message = error.to_string();
-        assert!(message.contains("SYNCTV_SERVER_HTTP_PORT"));
+        assert!(message.contains("SYNCTV_SERVER_PORT"));
         assert!(message.contains("not-a-port"));
     }
 
@@ -2703,13 +2785,26 @@ mod tests {
         assert!(message.contains("p2p"));
     }
 
+    #[test]
+    fn test_from_env_rejects_legacy_server_port_env_vars() {
+        let error = Config::from_env_map(&env_map(&[
+            ("SYNCTV_SERVER_GRPC_PORT", "50051"),
+            ("SYNCTV_SERVER_HTTP_PORT", "8080"),
+        ]))
+        .expect_err("legacy split-port env vars must fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("SYNCTV_SERVER_GRPC_PORT"));
+        assert!(message.contains("SYNCTV_SERVER_HTTP_PORT"));
+        assert!(message.contains("SYNCTV_SERVER_PORT"));
+    }
+
     /// Helper to create a valid production config for validation tests
     fn valid_prod_config() -> Config {
         Config {
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
-                grpc_port: 50051,
-                http_port: 8080,
+                port: 8080,
                 metrics_enabled: false,
                 metrics_bearer_token: String::new(),
                 grpc_max_message_size_bytes: 16 * 1024 * 1024,
@@ -2857,14 +2952,12 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_port_conflict_grpc_http() {
+    fn test_validate_single_api_port_is_allowed() {
         let mut config = valid_prod_config();
-        config.server.grpc_port = 8080;
-        config.server.http_port = 8080;
-        let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("grpc_port") && e.contains("http_port")));
+        config.server.port = 8080;
+        config
+            .validate()
+            .expect("single API port should be valid");
     }
 
     #[test]
@@ -2874,27 +2967,17 @@ mod tests {
         let errors = config.validate().unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| e.contains("rtmp_port") && e.contains("http_port")));
-    }
-
-    #[test]
-    fn test_validate_port_conflict_rtmp_grpc() {
-        let mut config = valid_prod_config();
-        config.livestream.rtmp_port = 50051;
-        let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("rtmp_port") && e.contains("grpc_port")));
+            .any(|e| e.contains("rtmp_port") && e.contains("server.port")));
     }
 
     #[test]
     fn test_validate_zero_port() {
         let mut config = valid_prod_config();
-        config.server.http_port = 0;
+        config.server.port = 0;
         let errors = config.validate().unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| e.contains("http_port") && e.contains('0')));
+            .any(|e| e.contains("server.port") && e.contains('0')));
     }
 
     #[test]
@@ -2947,7 +3030,7 @@ mod tests {
             &path,
             r#"
 server:
-  grpc_port: 50051
+  port: 50051
 database:
   url: "postgresql://user:pass@localhost/db"
 jwt:
@@ -2960,7 +3043,7 @@ jwt:
             .expect("partial config should merge with defaults");
         let _ = std::fs::remove_file(&path);
 
-        assert_eq!(config.server.grpc_port, 50051);
+        assert_eq!(config.server.port, 50051);
         assert_eq!(config.jwt.secret, "12345678901234567890123456789012");
         assert_eq!(
             config.jwt.access_token_duration_hours,
@@ -2988,6 +3071,40 @@ jwt:
             error.to_string().contains("not found"),
             "missing file error should mention not found: {error}"
         );
+    }
+
+    #[test]
+    fn test_from_file_rejects_legacy_server_port_keys() {
+        let unique = format!(
+            "synctv-legacy-port-config-{}-{}.yaml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(
+            &path,
+            r#"
+server:
+  host: "0.0.0.0"
+  grpc_port: 50051
+  http_port: 8080
+jwt:
+  secret: "12345678901234567890123456789012"
+"#,
+        )
+        .expect("write config");
+
+        let error = Config::from_file(path.to_str().expect("utf-8 path"))
+            .expect_err("legacy split-port file keys must fail closed");
+        let _ = std::fs::remove_file(&path);
+
+        let message = error.to_string();
+        assert!(message.contains("server.grpc_port"));
+        assert!(message.contains("server.http_port"));
+        assert!(message.contains("server.port"));
     }
 
     #[test]
@@ -3219,6 +3336,7 @@ jwt:
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.server.cluster_secret = "shared-secret-123".to_string();
+        config.server.advertise_host = "10.0.0.12".to_string();
         config.webrtc.mode = WebRTCMode::PeerToPeer;
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
         assert!(config.validate().is_ok());
@@ -3229,6 +3347,7 @@ jwt:
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.server.cluster_secret = "shared-secret-123".to_string();
+        config.server.advertise_host = "10.0.0.12".to_string();
         config.webrtc.mode = WebRTCMode::SignalingOnly;
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
         assert!(config.validate().is_ok());
@@ -3279,6 +3398,7 @@ jwt:
     fn test_validate_cluster_enabled_with_redis_ok() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
+        config.server.advertise_host = "10.0.0.12".to_string();
         // valid_prod_config() includes redis.url, so this should pass
         // (assuming webrtc.stun_external_addr is set for cluster mode)
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
@@ -3289,6 +3409,7 @@ jwt:
     fn test_validate_cluster_enabled_allows_builtin_stun_without_explicit_external_addr() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
+        config.server.advertise_host = "10.0.0.12".to_string();
         config.webrtc.enable_builtin_stun = true;
         config.webrtc.stun_external_addr.clear();
 
@@ -3422,6 +3543,7 @@ jwt:
         // cluster.enabled=true + cluster_secret set → should pass
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
+        config.server.advertise_host = "10.0.0.12".to_string();
         assert!(
             config.validate().is_ok(),
             "Expected Ok with cluster mode + cluster_secret set"

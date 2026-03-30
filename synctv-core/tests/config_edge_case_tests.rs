@@ -179,20 +179,17 @@ fn test_redis_deployment_mode_rename_all() {
 #[test]
 fn test_config_default_has_sane_values() {
     let config = Config::default();
-    assert_eq!(config.server.grpc_port, 50051);
-    assert_eq!(config.server.http_port, 8080);
+    assert_eq!(config.server.port, 8080);
     assert_eq!(config.database.max_connections, 20);
     assert!(config.database.max_connections >= config.database.min_connections);
 }
 
 #[test]
-fn test_config_grpc_and_http_address() {
+fn test_config_api_address() {
     let mut config = Config::default();
     config.server.host = "0.0.0.0".to_string();
-    config.server.grpc_port = 50051;
-    config.server.http_port = 8080;
-    assert_eq!(config.grpc_address(), "0.0.0.0:50051");
-    assert_eq!(config.http_address(), "0.0.0.0:8080");
+    config.server.port = 8080;
+    assert_eq!(config.api_address(), "0.0.0.0:8080");
 }
 
 #[test]

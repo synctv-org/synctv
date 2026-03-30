@@ -152,9 +152,15 @@ pub(crate) fn extract_client_ip<T>(
 ) -> Option<std::net::IpAddr> {
     let remote_addr = request
         .extensions()
-        .get::<tonic::transport::server::TcpConnectInfo>()
-        .and_then(tonic::transport::server::TcpConnectInfo::remote_addr)
-        .map(|addr| addr.ip());
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip())
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<tonic::transport::server::TcpConnectInfo>()
+                .and_then(tonic::transport::server::TcpConnectInfo::remote_addr)
+                .map(|addr| addr.ip())
+        });
 
     if let Some(peer_ip) = remote_addr {
         let mut headers = axum::http::HeaderMap::new();
@@ -332,6 +338,7 @@ async fn set_registered_grpc_services_serving(
     }
 }
 
+#[cfg(test)]
 async fn set_registered_grpc_services_not_serving(
     health_reporter: &tonic_health::server::HealthReporter,
     state: GrpcHealthRegistrationState,
@@ -434,9 +441,6 @@ use crate::proto::client::{
     public_service_server::PublicServiceServer, room_service_server::RoomServiceServer,
     user_service_server::UserServiceServer,
 };
-use tokio_stream::wrappers::TcpListenerStream;
-use tonic::transport::Server;
-
 use std::sync::Arc;
 use synctv_cluster::sync::{ClusterManager, ConnectionManager, PublishRequest};
 use synctv_core::provider::{AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider};
@@ -497,8 +501,7 @@ pub struct GrpcServerConfig<'a> {
     pub grpc_listener: Option<tokio::net::TcpListener>,
 }
 
-/// Build and start the gRPC server
-pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
+pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<axum::Router> {
     let GrpcServerConfig {
         config,
         jwt_service,
@@ -531,11 +534,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         builtin_stun_url,
         turn_health_checker,
         credential_encryption,
-        // grpc_listener is reserved for future use to support pre-bound listeners
-        grpc_listener,
+        grpc_listener: _,
     } = grpc_config;
-    let addr = config.grpc_address().parse()?;
-
     validate_cluster_grpc_runtime_requirements(config, node_registry.is_some())?;
 
     // Derive HMAC signing key for proxy URLs from JWT secret
@@ -543,7 +543,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         synctv_core::service::ProxySigningKey::derive_from(config.jwt.secret.as_bytes()),
     );
 
-    tracing::info!("Starting gRPC server on {}", addr);
+    tracing::info!("Building gRPC router for {}", config.api_address());
 
     // Clone services for all uses before unwrapping
     let user_service_for_client = user_service.clone();
@@ -704,12 +704,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let grpc_unary_request_timeout = grpc_unary_request_timeout();
     let unary_timeout_layer =
         timeout_layer::GrpcRequestTimeoutLayer::new(grpc_unary_request_timeout);
-    let mut server_builder = Server::builder()
-        .layer(unary_timeout_layer)
-        .layer(distributed_rate_limit_layer)
-        .layer(blacklist_layer);
     if let Some(timeout) = grpc_request_timeout {
-        server_builder = server_builder.timeout(timeout);
         tracing::info!(
             grpc_request_timeout_secs = timeout.as_secs(),
             "gRPC request timeout configured"
@@ -762,11 +757,10 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         ),
     };
 
-    let mut router = server_builder
+    let mut routes = tonic::service::Routes::builder();
+    routes
         // AuthService (public: register, login, refresh_token)
-        .add_service(
-            AuthServiceServer::new(client_service).with_message_size_limit(max_message_size),
-        )
+        .add_service(AuthServiceServer::new(client_service).with_message_size_limit(max_message_size))
         // UserService - JWT authentication (inject UserContext)
         // Use tonic::codegen::InterceptedService::new to preserve message size limits set on the service
         .add_service(tonic::codegen::InterceptedService::new(
@@ -791,18 +785,17 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         ));
 
     if email_service_registered {
-        router = router.add_service(
-            EmailServiceServer::new(client_service_clone4)
-                .with_message_size_limit(max_message_size),
+        routes.add_service(
+            EmailServiceServer::new(client_service_clone4).with_message_size_limit(max_message_size),
         );
-    }
+        }
 
     // Register NotificationService if notification_service is configured
     if let Some(notif_svc) = notification_service {
         let notification_interceptor = auth_interceptor.clone();
         let notification_api = Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone()));
         let notif_impl = NotificationServiceImpl::new(notification_api);
-        router = router.add_service(tonic::codegen::InterceptedService::new(
+        routes.add_service(tonic::codegen::InterceptedService::new(
             NotificationServiceServer::new(notif_impl).with_message_size_limit(max_message_size),
             move |req| notification_interceptor.inject_user(req),
         ));
@@ -903,7 +896,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         );
         // No global interceptor: public endpoints are unauthenticated,
         // private endpoints call require_auth() inline.
-        router = router.add_service(
+        routes.add_service(
             OAuth2ServiceServer::new(oauth2_impl).with_message_size_limit(max_message_size),
         );
         tracing::info!("OAuth2Service gRPC registered (public + authenticated split)");
@@ -1041,21 +1034,21 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
         // Register provider services with interceptors and message size limits
         // Using InterceptedService::new() to apply message size limits before the interceptor
-        router = router.add_service(tonic::codegen::InterceptedService::new(
+        routes.add_service(tonic::codegen::InterceptedService::new(
             AlistProviderServiceServer::new(providers::alist::AlistProviderGrpcService::new(
                 app_state.clone(),
             ))
             .with_message_size_limit(max_message_size),
             move |req| provider_interceptor1.inject_user(req),
         ));
-        router = router.add_service(tonic::codegen::InterceptedService::new(
+        routes.add_service(tonic::codegen::InterceptedService::new(
             BilibiliProviderServiceServer::new(
                 providers::bilibili::BilibiliProviderGrpcService::new(app_state.clone()),
             )
             .with_message_size_limit(max_message_size),
             move |req| provider_interceptor2.inject_user(req),
         ));
-        router = router.add_service(tonic::codegen::InterceptedService::new(
+        routes.add_service(tonic::codegen::InterceptedService::new(
             EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(
                 app_state,
             ))
@@ -1082,7 +1075,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 .with_connection_manager(std::sync::Arc::new(
                     connection_manager_for_provider.clone(),
                 ));
-        router = router.add_service(synctv_cluster::grpc::ClusterServiceServer::new(
+        routes.add_service(synctv_cluster::grpc::ClusterServiceServer::new(
             cluster_server,
         ));
         tracing::info!(
@@ -1122,7 +1115,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             };
 
         let relay_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
-        router = router.add_service(tonic::codegen::InterceptedService::new(
+        routes.add_service(tonic::codegen::InterceptedService::new(
             synctv_livestream::grpc::StreamRelayServiceServer::new(relay_service)
                 .with_message_size_limit(max_message_size),
             move |req| relay_interceptor.validate(req),
@@ -1139,7 +1132,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // return the correct status rather than UNKNOWN.
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
     set_registered_grpc_services_serving(&health_reporter, grpc_health_state).await;
-    router = router.add_service(health_service);
+    routes.add_service(health_service);
     tracing::info!("gRPC health check service registered");
 
     // Register gRPC reflection service if enabled in config
@@ -1149,51 +1142,59 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             .register_encoded_file_descriptor_set(synctv_proto::PROVIDERS_FILE_DESCRIPTOR_SET)
             .build_v1()
             .map_err(|e| anyhow::anyhow!("Failed to build gRPC reflection service: {e}"))?;
-        router = router.add_service(reflection_service);
+        routes.add_service(reflection_service);
         tracing::info!("gRPC reflection service registered");
     }
 
-    // Start server with graceful shutdown support
-    // Use pre-bound listener if provided (for proper error propagation), otherwise bind internally
+    let router = routes.routes().into_axum_router().layer(
+        tower::ServiceBuilder::new()
+            .layer(blacklist_layer)
+            .layer(distributed_rate_limit_layer)
+            .layer(unary_timeout_layer),
+    );
+
+    let _ = health_reporter;
+    Ok(router)
+}
+
+/// Build and start the gRPC server
+pub async fn serve(mut grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
+    let shutdown_rx = grpc_config.shutdown_rx.clone();
+    let grpc_listener = grpc_config.grpc_listener.take();
+    let addr: std::net::SocketAddr = grpc_config.config.api_address().parse()?;
+    let router = build_axum_router(grpc_config).await?;
+
     if let Some(listener) = grpc_listener {
-        let incoming = TcpListenerStream::new(listener);
-        let shutdown_health_reporter = health_reporter.clone();
-        router
-            .serve_with_incoming_shutdown(incoming, async move {
-                if let Some(mut rx) = shutdown_rx {
-                    // Use centralized shutdown signal from the server
-                    let _ = rx.changed().await;
-                } else {
-                    // Fallback: listen for Ctrl+C
-                    tokio::signal::ctrl_c().await.ok();
-                }
-                set_registered_grpc_services_not_serving(
-                    &shutdown_health_reporter,
-                    grpc_health_state,
-                )
-                .await;
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            if let Some(mut rx) = shutdown_rx {
+                let _ = rx.changed().await;
+            } else {
+                tokio::signal::ctrl_c().await.ok();
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
     } else {
-        let shutdown_health_reporter = health_reporter.clone();
-        router
-            .serve_with_shutdown(addr, async move {
-                if let Some(mut rx) = shutdown_rx {
-                    // Use centralized shutdown signal from the server
-                    let _ = rx.changed().await;
-                } else {
-                    // Fallback: listen for Ctrl+C
-                    tokio::signal::ctrl_c().await.ok();
-                }
-                set_registered_grpc_services_not_serving(
-                    &shutdown_health_reporter,
-                    grpc_health_state,
-                )
-                .await;
-            })
+        let listener = tokio::net::TcpListener::bind(addr)
             .await
-            .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to bind API address {addr}: {e}"))?;
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            if let Some(mut rx) = shutdown_rx {
+                let _ = rx.changed().await;
+            } else {
+                tokio::signal::ctrl_c().await.ok();
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
     }
 
     Ok(())

@@ -25,8 +25,7 @@ fn make_registry(node_id: &str) -> Arc<NodeRegistry> {
 async fn test_node_info_serialization() {
     let node = NodeInfo {
         node_id: "node-123".to_string(),
-        grpc_address: "127.0.0.1:50051".to_string(),
-        http_address: "127.0.0.1:8080".to_string(),
+        api_address: "127.0.0.1:8080".to_string(),
         epoch: 0,
         last_heartbeat: chrono::Utc::now(),
         metadata: Default::default(),
@@ -36,8 +35,7 @@ async fn test_node_info_serialization() {
     let deserialized: NodeInfo = serde_json::from_str(&json).expect("Failed to deserialize");
 
     assert_eq!(node.node_id, deserialized.node_id);
-    assert_eq!(node.grpc_address, deserialized.grpc_address);
-    assert_eq!(node.http_address, deserialized.http_address);
+    assert_eq!(node.api_address, deserialized.api_address);
     assert_eq!(node.epoch, deserialized.epoch);
 }
 
@@ -45,7 +43,6 @@ async fn test_node_info_serialization() {
 async fn test_node_info_is_stale() {
     let mut node = NodeInfo::new(
         "node-1".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
 
@@ -67,7 +64,6 @@ async fn test_node_registry_register_and_get() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
@@ -76,7 +72,7 @@ async fn test_node_registry_register_and_get() {
     assert!(node.is_some());
     let node = node.unwrap();
     assert_eq!(node.node_id, "self");
-    assert_eq!(node.grpc_address, "localhost:50051");
+    assert_eq!(node.api_address, "localhost:8080");
 }
 
 #[tokio::test]
@@ -85,7 +81,6 @@ async fn test_node_registry_concurrent_registration() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
@@ -95,11 +90,7 @@ async fn test_node_registry_concurrent_registration() {
     for i in 1..10 {
         let reg = registry.clone();
         let handle = tokio::spawn(async move {
-            let node = NodeInfo::new(
-                format!("node-{i}"),
-                format!("localhost:{}", 50051 + i),
-                format!("localhost:{}", 8080 + i),
-            );
+            let node = NodeInfo::new(format!("node-{i}"), format!("localhost:{}", 8080 + i));
             reg.test_insert_local(node).await;
         });
         handles.push(handle);
@@ -117,14 +108,12 @@ async fn test_node_registry_unregister() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     let remote = NodeInfo::new(
         "remote-1".to_string(),
-        "localhost:50052".to_string(),
         "localhost:8081".to_string(),
     );
     registry.test_insert_local(remote).await;
@@ -142,7 +131,6 @@ async fn test_node_registry_get_nonexistent() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
@@ -171,7 +159,6 @@ async fn test_health_monitor_start_and_shutdown() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
@@ -204,7 +191,6 @@ async fn test_load_balancer_single_node() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
@@ -220,17 +206,12 @@ async fn test_load_balancer_round_robin_cycles() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     for i in 1..3 {
-        let node = NodeInfo::new(
-            format!("node-{i}"),
-            format!("localhost:{}", 50051 + i),
-            format!("localhost:{}", 8080 + i),
-        );
+        let node = NodeInfo::new(format!("node-{i}"), format!("localhost:{}", 8080 + i));
         registry.test_insert_local(node).await;
     }
 
@@ -264,17 +245,12 @@ async fn test_load_balancer_random_distributes() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     for i in 1..5 {
-        let node = NodeInfo::new(
-            format!("node-{i}"),
-            format!("localhost:{}", 50051 + i),
-            format!("localhost:{}", 8080 + i),
-        );
+        let node = NodeInfo::new(format!("node-{i}"), format!("localhost:{}", 8080 + i));
         registry.test_insert_local(node).await;
     }
 
@@ -297,14 +273,12 @@ async fn test_load_balancer_with_health_monitor_no_status() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     let remote = NodeInfo::new(
         "node-1".to_string(),
-        "localhost:50052".to_string(),
         "localhost:8081".to_string(),
     );
     registry.test_insert_local(remote).await;
@@ -328,17 +302,12 @@ async fn test_load_balancer_available_count() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;
 
     for i in 1..4 {
-        let node = NodeInfo::new(
-            format!("node-{i}"),
-            format!("localhost:{}", 50051 + i),
-            format!("localhost:{}", 8080 + i),
-        );
+        let node = NodeInfo::new(format!("node-{i}"), format!("localhost:{}", 8080 + i));
         registry.test_insert_local(node).await;
     }
 
@@ -352,7 +321,6 @@ async fn test_load_balancer_select_by_id() {
     registry
         .test_insert_local(NodeInfo::new(
             "self".to_string(),
-            "localhost:50051".to_string(),
             "localhost:8080".to_string(),
         ))
         .await;

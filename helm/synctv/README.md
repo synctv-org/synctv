@@ -126,7 +126,7 @@ Key sections:
 
 | Section | Description |
 |---------|-------------|
-| `config.server` | HTTP/gRPC ports, CORS, trusted proxies |
+| `config.server` | Unified API port, CORS, trusted proxies |
 | `config.database` | Host, port, name (URL composed with secrets), pool settings |
 | `config.redis` | Host, port (URL composed with secrets), pool settings |
 | `config.jwt` | Token durations (secret via env var) |
@@ -212,7 +212,7 @@ curl http://localhost:8080/metrics
               |  (3+ replicas, HPA)  |
               |                      |
               |  HTTP API:  8080     |
-              |  gRPC:      50051    |
+              |  gRPC:      8080     |
               |  RTMP:      1935     |
               |  STUN:      3478/udp |
               +----+----------+------+

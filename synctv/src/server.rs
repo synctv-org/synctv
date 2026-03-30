@@ -1,8 +1,7 @@
 //! Server lifecycle management
 //!
 //! Manages the startup and shutdown of all server components:
-//! - gRPC API server
-//! - HTTP/REST server
+//! - unified API server (REST/gRPC)
 //! - RTMP livestream server
 
 use async_trait::async_trait;
@@ -94,8 +93,7 @@ pub struct SyncTvServer {
     services: Services,
     livestream_state: Option<LivestreamState>,
     pool: PgPool,
-    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    http_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    api_handle: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -245,33 +243,23 @@ where
 }
 
 async fn shutdown_runtime_phase(
-    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    http_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    api_handle: Option<JoinHandle<anyhow::Result<()>>>,
     cleanup_handle: JoinHandle<()>,
     total_budget: Duration,
 ) {
     let deadline = tokio::time::Instant::now() + total_budget;
 
     info!(
-        "Waiting up to {}s for gRPC/HTTP servers and cleanup task to stop...",
+        "Waiting up to {}s for API server and cleanup task to stop...",
         total_budget.as_secs()
     );
 
-    if let Some(grpc_handle) = grpc_handle {
+    if let Some(api_handle) = api_handle {
         let budget = remaining_budget(deadline);
         if budget.is_zero() {
-            force_abort_runtime_server("gRPC server", grpc_handle).await;
+            force_abort_runtime_server("API server", api_handle).await;
         } else {
-            await_runtime_server_shutdown("gRPC server", grpc_handle, budget).await;
-        }
-    }
-
-    if let Some(http_handle) = http_handle {
-        let budget = remaining_budget(deadline);
-        if budget.is_zero() {
-            force_abort_runtime_server("HTTP server", http_handle).await;
-        } else {
-            await_runtime_server_shutdown("HTTP server", http_handle, budget).await;
+            await_runtime_server_shutdown("API server", api_handle, budget).await;
         }
     }
 
@@ -287,7 +275,7 @@ async fn cleanup_partial_startup(
     shutdown_tx: &watch::Sender<bool>,
     cleanup_cancel: &tokio_util::sync::CancellationToken,
     cleanup_handle: Option<JoinHandle<()>>,
-    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    api_handle: Option<JoinHandle<anyhow::Result<()>>>,
     deadline: tokio::time::Instant,
 ) {
     let _ = shutdown_tx.send(true);
@@ -302,12 +290,12 @@ async fn cleanup_partial_startup(
         .await;
     }
 
-    if let Some(handle) = grpc_handle {
+    if let Some(handle) = api_handle {
         let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
         if timeout.is_zero() {
-            force_abort_runtime_server("gRPC server", handle).await;
+            force_abort_runtime_server("API server", handle).await;
         } else {
-            await_runtime_server_shutdown("gRPC server", handle, timeout).await;
+            await_runtime_server_shutdown("API server", handle, timeout).await;
         }
     }
 }
@@ -316,7 +304,7 @@ async fn shutdown_after_startup_failure(
     shutdown_tx: &watch::Sender<bool>,
     cleanup_cancel: &tokio_util::sync::CancellationToken,
     cleanup_handle: Option<JoinHandle<()>>,
-    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    api_handle: Option<JoinHandle<anyhow::Result<()>>>,
     deadline: tokio::time::Instant,
     component_cleanup: impl std::future::Future<Output = ()> + Send,
     coordinator: ShutdownCoordinator,
@@ -325,7 +313,7 @@ async fn shutdown_after_startup_failure(
         shutdown_tx,
         cleanup_cancel,
         cleanup_handle,
-        grpc_handle,
+        api_handle,
         deadline,
     )
     .await;
@@ -341,8 +329,7 @@ async fn shutdown_after_cluster_activation_failure(
         shutdown_tx,
         cleanup_cancel,
         cleanup_handle,
-        grpc_handle,
-        http_handle,
+        api_handle,
         deadline,
         coordinator,
     } = context;
@@ -359,21 +346,12 @@ async fn shutdown_after_cluster_activation_failure(
         .await;
     }
 
-    if let Some(handle) = grpc_handle {
+    if let Some(handle) = api_handle {
         let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
         if timeout.is_zero() {
-            force_abort_runtime_server("gRPC server", handle).await;
+            force_abort_runtime_server("API server", handle).await;
         } else {
-            await_runtime_server_shutdown("gRPC server", handle, timeout).await;
-        }
-    }
-
-    if let Some(handle) = http_handle {
-        let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
-        if timeout.is_zero() {
-            force_abort_runtime_server("HTTP server", handle).await;
-        } else {
-            await_runtime_server_shutdown("HTTP server", handle, timeout).await;
+            await_runtime_server_shutdown("API server", handle, timeout).await;
         }
     }
 
@@ -385,8 +363,7 @@ struct ClusterActivationFailureShutdown {
     shutdown_tx: watch::Sender<bool>,
     cleanup_cancel: tokio_util::sync::CancellationToken,
     cleanup_handle: Option<JoinHandle<()>>,
-    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    http_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    api_handle: Option<JoinHandle<anyhow::Result<()>>>,
     deadline: tokio::time::Instant,
     coordinator: ShutdownCoordinator,
 }
@@ -485,8 +462,7 @@ impl SyncTvServer {
             services,
             livestream_state,
             pool,
-            grpc_handle: None,
-            http_handle: None,
+            api_handle: None,
         }
     }
 
@@ -533,8 +509,8 @@ impl SyncTvServer {
             .connection_manager
             .spawn_cleanup_task(Duration::from_mins(1), cleanup_cancel.clone());
 
-        // Start gRPC server
-        let grpc_handle = match self.start_grpc_server(shutdown_rx.clone()).await {
+        // Start unified API server (single listener for REST + gRPC)
+        let api_handle = match self.start_api_server(shutdown_rx.clone()).await {
             Ok(handle) => handle,
             Err(err) => {
                 let startup_cleanup_budget =
@@ -557,34 +533,7 @@ impl SyncTvServer {
                 return Err(err);
             }
         };
-        self.grpc_handle = Some(grpc_handle);
-
-        // Start HTTP server with graceful shutdown
-        let http_handle = match self.start_http_server(shutdown_rx.clone()).await {
-            Ok(handle) => handle,
-            Err(err) => {
-                let grpc_handle = self.grpc_handle.take();
-                let startup_cleanup_budget =
-                    Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
-                        .min(STARTUP_CLEANUP_TIMEOUT);
-                let startup_cleanup_deadline = tokio::time::Instant::now() + startup_cleanup_budget;
-                shutdown_after_startup_failure(
-                    &shutdown_tx,
-                    &cleanup_cancel,
-                    Some(cleanup_handle),
-                    grpc_handle,
-                    startup_cleanup_deadline,
-                    self.shutdown_startup_failure_components(startup_cleanup_deadline),
-                    coordinator,
-                )
-                .await;
-                info!("Closing database connection pool after startup failure...");
-                self.pool.close().await;
-                info!("Database pool closed after startup failure");
-                return Err(err);
-            }
-        };
-        self.http_handle = Some(http_handle);
+        self.api_handle = Some(api_handle);
 
         if let Some(cluster_activation) = &self.services.cluster_activation {
             if let Err(err) = crate::bootstrap::cluster::activate_cluster_node(
@@ -596,8 +545,7 @@ impl SyncTvServer {
             )
             .await
             {
-                let grpc_handle = self.grpc_handle.take();
-                let http_handle = self.http_handle.take();
+                let api_handle = self.api_handle.take();
                 let startup_cleanup_budget =
                     Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
                         .min(STARTUP_CLEANUP_TIMEOUT);
@@ -608,8 +556,7 @@ impl SyncTvServer {
                         shutdown_tx: shutdown_tx.clone(),
                         cleanup_cancel: cleanup_cancel.clone(),
                         cleanup_handle: Some(cleanup_handle),
-                        grpc_handle,
-                        http_handle,
+                        api_handle,
                         deadline: startup_cleanup_deadline,
                         coordinator,
                     },
@@ -643,51 +590,29 @@ impl SyncTvServer {
         info!("All servers started successfully");
 
         // Wait for either a server to stop or a shutdown signal
-        let mut grpc_handle = Some(
-            self.grpc_handle
+        let mut api_handle = Some(
+            self.api_handle
                 .take()
-                .ok_or_else(|| anyhow::anyhow!("gRPC server handle missing after startup"))?,
-        );
-        let mut http_handle = Some(
-            self.http_handle
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("HTTP server handle missing after startup"))?,
+                .ok_or_else(|| anyhow::anyhow!("API server handle missing after startup"))?,
         );
 
-        let (unexpected_exit, grpc_handle, http_handle) = tokio::select! {
+        let (unexpected_exit, api_handle) = tokio::select! {
             result = async {
-                grpc_handle
+                api_handle
                     .as_mut()
-                    .expect("gRPC server handle should be present before select")
+                    .expect("API server handle should be present before select")
                     .await
             } => {
-                let _ = grpc_handle.take();
-                (
-                Some(map_runtime_server_exit("gRPC server", result)),
-                None,
-                http_handle.take(),
-            )
-            },
-            result = async {
-                http_handle
-                    .as_mut()
-                    .expect("HTTP server handle should be present before select")
-                    .await
-            } => {
-                let _ = http_handle.take();
-                (
-                Some(map_runtime_server_exit("HTTP server", result)),
-                grpc_handle.take(),
-                None,
-            )
+                let _ = api_handle.take();
+                (Some(map_runtime_server_exit("API server", result)), None)
             },
             () = &mut shutdown_signal => {
                 info!("External shutdown signal received, starting graceful shutdown...");
-                (None, grpc_handle.take(), http_handle.take())
+                (None, api_handle.take())
             }
         };
 
-        // Signal gRPC/HTTP servers to shut down
+        // Signal API server to shut down
         let _ = shutdown_tx.send(true);
         cleanup_cancel.cancel();
 
@@ -699,14 +624,14 @@ impl SyncTvServer {
         let total_drain_budget =
             Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
 
-        // Phase 1: Wait for gRPC and HTTP servers to finish (use 60% of budget).
+        // Phase 1: Wait for unified API server to finish (use 60% of budget).
         let http_drain_budget = total_drain_budget * 60 / 100;
         info!(
-            "Waiting up to {}s for gRPC and HTTP servers to shut down...",
+            "Waiting up to {}s for API server to shut down...",
             http_drain_budget.as_secs()
         );
-        shutdown_runtime_phase(grpc_handle, http_handle, cleanup_handle, http_drain_budget).await;
-        info!("gRPC and HTTP servers shut down");
+        shutdown_runtime_phase(api_handle, cleanup_handle, http_drain_budget).await;
+        info!("API server shut down");
 
         // Phase 2: Drain active connections BEFORE shutting down the cluster manager.
         // Events generated during drain (UserLeft, etc.) need the pub/sub
@@ -851,75 +776,12 @@ impl SyncTvServer {
         self.shutdown_components(remaining_budget(deadline)).await;
     }
 
-    /// Start gRPC server
-    async fn start_grpc_server(
+    /// Start unified REST + gRPC API server with graceful shutdown support
+    async fn start_api_server(
         &self,
         shutdown_rx: watch::Receiver<bool>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-        let config = self.config.clone();
-        let cluster_manager = self.services.cluster_manager.clone();
-
-        // Pre-bind gRPC listener to catch port-in-use errors before spawning the task
-        let grpc_address = config.grpc_address();
-        let grpc_addr: std::net::SocketAddr = grpc_address
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid gRPC address '{grpc_address}': {e}"))?;
-        let grpc_listener = tokio::net::TcpListener::bind(grpc_addr)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind gRPC address {grpc_addr}: {e}"))?;
-        info!("gRPC server listening on {}", grpc_addr);
-
-        let services = self.services.clone();
-        let handle = tokio::spawn(async move {
-            let grpc_config = synctv_api::grpc::GrpcServerConfig {
-                config: &config,
-                jwt_service: services.jwt_service,
-                user_service: services.user_service,
-                user_cache: services.user_cache,
-                room_service: services.room_service,
-                cluster_manager,
-                redis_publish_tx: services.redis_publish_tx,
-                rate_limiter: services.rate_limiter,
-                rate_limit_config: services.rate_limit_config,
-                content_filter: services.content_filter,
-                connection_manager: services.connection_manager,
-                providers_manager: Some(services.providers_manager),
-                provider_instance_manager: services.provider_instance_manager,
-                user_provider_credential_repository: services.user_provider_credential_repository,
-                settings_service: services.settings_service,
-                settings_registry: Some(services.settings_registry),
-                email_service: services.email_service,
-                email_token_service: services.email_token_service,
-                live_streaming_infrastructure: services.live_streaming_infrastructure,
-                publish_key_service: Some(services.publish_key_service),
-                notification_service: services.notification_service,
-                chat_service: Some(services.chat_service),
-                oauth2_service: services.oauth2_service,
-                audit_service: services.audit_service,
-                node_registry: services.node_registry,
-                redis_client: services.redis_client.clone(),
-                redis_conn: services.redis_conn.clone(),
-                shutdown_rx: Some(shutdown_rx),
-                builtin_stun_url: services.stun_server.as_ref().map(|s| {
-                    let addr = s.external_addr();
-                    format!("stun:{}:{}", addr.ip(), addr.port())
-                }),
-                turn_health_checker: services.turn_health_checker.clone(),
-                credential_encryption: services.credential_encryption.clone(),
-                grpc_listener: Some(grpc_listener),
-            };
-            synctv_api::grpc::serve(grpc_config).await
-        });
-
-        Ok(handle)
-    }
-
-    /// Start HTTP server with graceful shutdown support
-    async fn start_http_server(
-        &self,
-        shutdown_rx: watch::Receiver<bool>,
-    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-        let http_address = self.config.http_address();
+        let api_address = self.config.api_address();
         let user_service = self.services.user_service.clone();
         let room_service = self.services.room_service.clone();
         let provider_instance_manager = self.services.provider_instance_manager.clone();
@@ -994,16 +856,58 @@ impl SyncTvServer {
                 providers_manager: Some(self.services.providers_manager.clone()),
             },
         )?;
-        // Parse and bind HTTP address before spawning the task to propagate errors properly
-        let http_addr: std::net::SocketAddr = http_address
+        let grpc_router = synctv_api::grpc::build_axum_router(synctv_api::grpc::GrpcServerConfig {
+            config: &self.config,
+            jwt_service: self.services.jwt_service.clone(),
+            user_service: self.services.user_service.clone(),
+            user_cache: self.services.user_cache.clone(),
+            room_service: self.services.room_service.clone(),
+            cluster_manager: self.services.cluster_manager.clone(),
+            redis_publish_tx: self.services.redis_publish_tx.clone(),
+            rate_limiter: self.services.rate_limiter.clone(),
+            rate_limit_config: self.services.rate_limit_config.clone(),
+            content_filter: self.services.content_filter.clone(),
+            connection_manager: self.services.connection_manager.clone(),
+            providers_manager: Some(self.services.providers_manager.clone()),
+            provider_instance_manager: self.services.provider_instance_manager.clone(),
+            user_provider_credential_repository: self
+                .services
+                .user_provider_credential_repository
+                .clone(),
+            settings_service: self.services.settings_service.clone(),
+            settings_registry: Some(self.services.settings_registry.clone()),
+            email_service: self.services.email_service.clone(),
+            email_token_service: self.services.email_token_service.clone(),
+            live_streaming_infrastructure: self.services.live_streaming_infrastructure.clone(),
+            publish_key_service: Some(self.services.publish_key_service.clone()),
+            notification_service: self.services.notification_service.clone(),
+            chat_service: Some(self.services.chat_service.clone()),
+            oauth2_service: self.services.oauth2_service.clone(),
+            audit_service: self.services.audit_service.clone(),
+            node_registry: self.services.node_registry.clone(),
+            redis_client: self.services.redis_client.clone(),
+            redis_conn: self.services.redis_conn.clone(),
+            shutdown_rx: Some(shutdown_rx.clone()),
+            builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
+                let addr = s.external_addr();
+                format!("stun:{}:{}", addr.ip(), addr.port())
+            }),
+            turn_health_checker: self.services.turn_health_checker.clone(),
+            credential_encryption: self.services.credential_encryption.clone(),
+            grpc_listener: None,
+        })
+        .await?;
+
+        // Parse and bind unified API address before spawning the task to propagate errors properly
+        let http_addr: std::net::SocketAddr = api_address
             .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid HTTP address '{http_address}': {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Invalid API address '{api_address}': {e}"))?;
 
         let listener = tokio::net::TcpListener::bind(http_addr)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to bind HTTP address {http_addr}: {e}"))?;
 
-        info!("HTTP server listening on {}", http_addr);
+        info!("API server listening on {}", http_addr);
 
         let handle = tokio::spawn(async move {
             let mut rx = shutdown_rx;
@@ -1015,7 +919,9 @@ impl SyncTvServer {
 
             let server = axum::serve(
                 listener,
-                http_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                http_router
+                    .merge(grpc_router)
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
             .with_graceful_shutdown(graceful);
 
@@ -1030,9 +936,9 @@ impl SyncTvServer {
                         server_result
                     }
                     lifecycle_result = &mut lifecycle_handle => {
-                        lifecycle_cancel.cancel();
-                        return map_background_task_exit(
-                            "HTTP proxy cache lifecycle",
+                            lifecycle_cancel.cancel();
+                            return map_background_task_exit(
+                            "API proxy cache lifecycle",
                             lifecycle_result,
                         );
                     }
@@ -1043,9 +949,9 @@ impl SyncTvServer {
                 server.await
             };
 
-            server_result.map_err(|e| anyhow::anyhow!("HTTP server error: {e}"))?;
+            server_result.map_err(|e| anyhow::anyhow!("API server error: {e}"))?;
 
-            info!("HTTP server shut down gracefully");
+            info!("API server shut down gracefully");
             Ok(())
         });
 
@@ -1493,19 +1399,10 @@ mod tests {
             }
         }
 
-        let grpc_dropped = Arc::new(AtomicBool::new(false));
-        let grpc_dropped_clone = Arc::clone(&grpc_dropped);
-        let grpc_handle = tokio::spawn(async move {
-            let _guard = DropFlag(grpc_dropped_clone);
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
-        });
-
-        let http_dropped = Arc::new(AtomicBool::new(false));
-        let http_dropped_clone = Arc::clone(&http_dropped);
-        let http_handle = tokio::spawn(async move {
-            let _guard = DropFlag(http_dropped_clone);
+        let api_dropped = Arc::new(AtomicBool::new(false));
+        let api_dropped_clone = Arc::clone(&api_dropped);
+        let api_handle = tokio::spawn(async move {
+            let _guard = DropFlag(api_dropped_clone);
             std::future::pending::<()>().await;
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())
@@ -1516,21 +1413,11 @@ mod tests {
             let _ = cleanup_rx.await;
         });
 
-        shutdown_runtime_phase(
-            Some(grpc_handle),
-            Some(http_handle),
-            cleanup_handle,
-            Duration::from_millis(60),
-        )
-        .await;
+        shutdown_runtime_phase(Some(api_handle), cleanup_handle, Duration::from_millis(60)).await;
 
         assert!(
-            grpc_dropped.load(Ordering::SeqCst),
-            "gRPC task should be aborted within the phase budget"
-        );
-        assert!(
-            http_dropped.load(Ordering::SeqCst),
-            "HTTP task should be aborted within the phase budget"
+            api_dropped.load(Ordering::SeqCst),
+            "API task should be aborted within the phase budget"
         );
         assert!(
             cleanup_tx.send(()).is_err(),

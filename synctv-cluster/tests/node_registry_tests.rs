@@ -48,7 +48,6 @@ fn test_fencing_token_same_node_higher_epoch_is_newer() {
 fn test_node_info_fencing_token_values() {
     let node = NodeInfo::new(
         "my-node".to_string(),
-        "10.0.0.1:50051".to_string(),
         "10.0.0.1:8080".to_string(),
     )
     .with_epoch(42);
@@ -66,7 +65,6 @@ fn test_node_info_fencing_token_values() {
 fn test_node_info_default_epoch() {
     let node = NodeInfo::new(
         "n1".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
     assert_eq!(node.epoch, 1, "New NodeInfo should have epoch 1");
@@ -92,7 +90,6 @@ fn test_fencing_token_serde_roundtrip() {
 fn test_node_info_is_stale() {
     let mut node = NodeInfo::new(
         "n1".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
     // Fresh node should not be stale

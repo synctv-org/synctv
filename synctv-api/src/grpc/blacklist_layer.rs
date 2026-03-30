@@ -23,8 +23,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use axum::http;
-use tonic::body::Body as TonicBody;
+use axum::{body::Body as AxumBody, http};
 use tower::{Layer, Service};
 
 use super::interceptors::SecurityCheckPassed;
@@ -125,9 +124,9 @@ fn security_pipeline_error_status(err: &CoreError) -> tonic::Status {
     }
 }
 
-impl<S> Service<http::Request<TonicBody>> for BlacklistCheckService<S>
+impl<S> Service<http::Request<AxumBody>> for BlacklistCheckService<S>
 where
-    S: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>>
+    S: Service<http::Request<AxumBody>, Response = http::Response<AxumBody>>
         + Clone
         + Send
         + 'static,
@@ -142,7 +141,7 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, mut req: http::Request<TonicBody>) -> Self::Future {
+    fn call(&mut self, mut req: http::Request<AxumBody>) -> Self::Future {
         // Clone the inner service for use in the async block (tower best practice:
         // swap the ready clone out so `self` retains a fresh clone for next poll_ready).
         let mut inner = self.inner.clone();
@@ -162,8 +161,9 @@ where
                     tracing::warn!(
                         "gRPC request rejected: malformed bearer authorization metadata"
                     );
-                    let response =
-                        tonic::Status::unauthenticated("Invalid authorization header").into_http();
+                    let response = tonic::Status::unauthenticated("Invalid authorization header")
+                        .into_http::<tonic::body::Body>()
+                        .map(AxumBody::new);
                     return Ok(response);
                 }
                 BearerTokenState::Present(token) => {
@@ -175,9 +175,9 @@ where
                         Ok(claims) => claims,
                         Err(e) => {
                             tracing::warn!("gRPC request rejected: JWT validation failed: {e}");
-                            let response =
-                                tonic::Status::unauthenticated("Invalid or expired token")
-                                    .into_http();
+                            let response = tonic::Status::unauthenticated("Invalid or expired token")
+                                .into_http::<tonic::body::Body>()
+                                .map(AxumBody::new);
                             return Ok(response);
                         }
                     };
@@ -188,7 +188,9 @@ where
                             Ok(authenticated_token) => authenticated_token,
                             Err(e) => {
                                 tracing::warn!("gRPC request rejected by security pipeline: {e}");
-                                let response = security_pipeline_error_status(&e).into_http();
+                                let response = security_pipeline_error_status(&e)
+                                    .into_http::<tonic::body::Body>()
+                                    .map(AxumBody::new);
                                 return Ok(response);
                             }
                         };

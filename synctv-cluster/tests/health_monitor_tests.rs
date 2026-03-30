@@ -22,7 +22,6 @@ async fn test_process_heartbeats_marks_stale_unhealthy() {
     // Create a stale node (heartbeat 60 seconds ago) directly
     let mut stale_node = NodeInfo::new(
         "stale-node".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
     stale_node.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(60);
@@ -49,7 +48,6 @@ async fn test_process_heartbeats_marks_stale_unhealthy() {
 async fn test_process_heartbeats_marks_fresh_healthy() {
     let fresh_node = NodeInfo::new(
         "fresh-node".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
 
@@ -74,7 +72,6 @@ async fn test_process_heartbeats_marks_fresh_healthy() {
 async fn test_process_heartbeats_does_not_override_existing() {
     let fresh_node = NodeInfo::new(
         "probed-node".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
 
@@ -139,7 +136,6 @@ fn test_backoff_multiplier_capped() {
 async fn test_process_heartbeats_prunes_removed_nodes() {
     let fresh_node = NodeInfo::new(
         "alive-node".to_string(),
-        "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
 

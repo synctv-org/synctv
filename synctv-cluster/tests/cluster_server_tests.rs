@@ -22,7 +22,7 @@ use synctv_cluster::grpc::synctv::cluster::{
 fn make_server() -> ClusterServer {
     let registry = Arc::new(
         NodeRegistry::new(
-            redis::Client::open("redis://localhost:6379").unwrap(),
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
             "test-node".to_string(),
             30,
             "cl5test:",
@@ -321,7 +321,7 @@ async fn test_get_user_online_status_with_connection_manager() {
 
     let registry = Arc::new(
         NodeRegistry::new(
-            redis::Client::open("redis://localhost:6379").unwrap(),
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
             "test-node".to_string(),
             30,
             "cl5cm:",

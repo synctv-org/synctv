@@ -4,10 +4,9 @@ use std::sync::LazyLock;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use axum::http;
+use axum::{body::Body as AxumBody, http};
 use prost::Message;
 use prost_types::FileDescriptorSet;
-use tonic::body::Body as TonicBody;
 use tower::{Layer, Service};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -92,7 +91,7 @@ fn append_streaming_paths_from_set(paths: &mut GrpcPathSet, descriptor_set: &Fil
     }
 }
 
-fn timeout_response(path: &str, timeout: Duration) -> http::Response<TonicBody> {
+fn timeout_response(path: &str, timeout: Duration) -> http::Response<AxumBody> {
     tracing::warn!(
         path,
         timeout_ms = timeout.as_millis(),
@@ -102,12 +101,13 @@ fn timeout_response(path: &str, timeout: Duration) -> http::Response<TonicBody> 
         "Request exceeded server timeout of {}s",
         timeout.as_secs()
     ))
-    .into_http()
+    .into_http::<tonic::body::Body>()
+    .map(AxumBody::new)
 }
 
-impl<S> Service<http::Request<TonicBody>> for GrpcRequestTimeoutService<S>
+impl<S> Service<http::Request<AxumBody>> for GrpcRequestTimeoutService<S>
 where
-    S: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>>
+    S: Service<http::Request<AxumBody>, Response = http::Response<AxumBody>>
         + Clone
         + Send
         + 'static,
@@ -122,7 +122,7 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: http::Request<TonicBody>) -> Self::Future {
+    fn call(&mut self, req: http::Request<AxumBody>) -> Self::Future {
         let path = req.uri().path().to_string();
         if is_streaming_grpc_path(&path) {
             let mut inner = self.inner.clone();
@@ -146,6 +146,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{append_streaming_paths_from_set, is_streaming_grpc_path, GrpcRequestTimeoutLayer};
+    use axum::body::Body as AxumBody;
     use axum::http;
     use prost_types::{
         FileDescriptorProto, FileDescriptorSet, MethodDescriptorProto, ServiceDescriptorProto,
@@ -156,10 +157,10 @@ mod tests {
     use std::time::Duration;
     use tower::{service_fn, Layer, Service, ServiceExt};
 
-    fn request(path: &str) -> http::Request<tonic::body::Body> {
+    fn request(path: &str) -> http::Request<AxumBody> {
         http::Request::builder()
             .uri(path)
-            .body(tonic::body::Body::empty())
+            .body(AxumBody::empty())
             .expect("request should build")
     }
 
@@ -212,12 +213,12 @@ mod tests {
     async fn test_grpc_request_timeout_layer_maps_unary_timeout_to_deadline_exceeded() {
         let layer = GrpcRequestTimeoutLayer::new(Duration::from_millis(50));
         let mut svc = layer.layer(service_fn(
-            |_req: http::Request<tonic::body::Body>| async move {
+            |_req: http::Request<AxumBody>| async move {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 Ok::<_, Infallible>(
                     http::Response::builder()
                         .status(http::StatusCode::OK)
-                        .body(tonic::body::Body::empty())
+                        .body(AxumBody::empty())
                         .expect("response should build"),
                 )
             },
@@ -245,11 +246,11 @@ mod tests {
         let called = Arc::new(AtomicBool::new(false));
         let called_clone = Arc::clone(&called);
         let layer = GrpcRequestTimeoutLayer::new(Duration::from_millis(20));
-        let mut svc = layer.layer(service_fn(move |_req: http::Request<tonic::body::Body>| {
+        let mut svc = layer.layer(service_fn(move |_req: http::Request<AxumBody>| {
             let called_clone = Arc::clone(&called_clone);
             async move {
                 called_clone.store(true, Ordering::SeqCst);
-                futures::future::pending::<Result<http::Response<tonic::body::Body>, Infallible>>()
+                futures::future::pending::<Result<http::Response<AxumBody>, Infallible>>()
                     .await
             }
         }));

@@ -109,17 +109,17 @@ async fn test_node_discovery_three_nodes() {
 
     // Register all three nodes
     registry_a
-        .register("node_a:50051".to_string(), "node_a:8080".to_string())
+        .register("node_a:8080".to_string())
         .await
         .expect("Failed to register node A");
 
     registry_b
-        .register("node_b:50051".to_string(), "node_b:8080".to_string())
+        .register("node_b:8080".to_string())
         .await
         .expect("Failed to register node B");
 
     registry_c
-        .register("node_c:50051".to_string(), "node_c:8080".to_string())
+        .register("node_c:8080".to_string())
         .await
         .expect("Failed to register node C");
 
@@ -155,8 +155,7 @@ async fn test_node_discovery_three_nodes() {
         .expect("Node B not found");
 
     assert_eq!(node_b_info.node_id, "node_b");
-    assert_eq!(node_b_info.grpc_address, "node_b:50051");
-    assert_eq!(node_b_info.http_address, "node_b:8080");
+    assert_eq!(node_b_info.api_address, "node_b:8080");
     assert!(node_b_info.epoch >= 1, "Epoch should be at least 1");
 
     // Heartbeat should work
@@ -219,7 +218,7 @@ async fn test_node_epoch_fencing() {
 
     // First registration
     registry
-        .register("host:50051".to_string(), "host:8080".to_string())
+        .register("host:8080".to_string())
         .await
         .expect("First register failed");
 
@@ -228,7 +227,7 @@ async fn test_node_epoch_fencing() {
 
     // Re-registration should increment epoch
     registry
-        .register("host:50051".to_string(), "host:8080".to_string())
+        .register("host:8080".to_string())
         .await
         .expect("Second register failed");
 

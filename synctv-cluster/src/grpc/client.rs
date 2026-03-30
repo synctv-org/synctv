@@ -260,7 +260,7 @@ impl ClusterClient {
 
         // Opportunistically prune circuit breakers for nodes no longer in the registry
         let active_addresses: HashSet<String> =
-            nodes.iter().map(|n| n.grpc_address.clone()).collect();
+            nodes.iter().map(|n| n.api_address.clone()).collect();
         self.circuit_breakers.retain_only(&active_addresses).await;
 
         // Filter out self
@@ -286,10 +286,10 @@ impl ClusterClient {
             for node in &remote_nodes {
                 if self
                     .circuit_breakers
-                    .is_endpoint_open_known(&node.grpc_address)
+                    .is_endpoint_open_known(&node.api_address)
                     .await
                 {
-                    known_open_addresses.insert(node.grpc_address.clone());
+                    known_open_addresses.insert(node.api_address.clone());
                 }
             }
             let (queryable, skipped) =
@@ -316,7 +316,7 @@ impl ClusterClient {
         let mut futs: FuturesUnordered<_> = query_nodes
             .iter()
             .map(|node| {
-                let address = node.grpc_address.clone();
+                let address = node.api_address.clone();
                 let node_id = node.node_id.clone();
                 let fut = query_fn(node_id.clone(), address.clone());
                 async move { (node_id, address, fut.await) }
@@ -333,14 +333,14 @@ impl ClusterClient {
                     node.node_id.clone(),
                     format!(
                         "skipped in degraded mode: circuit breaker open for {}",
-                        node.grpc_address
+                        node.api_address
                     ),
                 )
             })
             .collect();
         let mut pending_nodes: HashMap<String, String> = query_nodes
             .iter()
-            .map(|node| (node.node_id.clone(), node.grpc_address.clone()))
+            .map(|node| (node.node_id.clone(), node.api_address.clone()))
             .collect();
 
         let deadline = tokio::time::Instant::now() + FAN_OUT_AGGREGATE_TIMEOUT;
@@ -575,7 +575,7 @@ fn partition_degraded_query_nodes(
     let mut skipped_nodes = Vec::new();
 
     for node in remote_nodes {
-        if known_open_addresses.contains(&node.grpc_address) {
+        if known_open_addresses.contains(&node.api_address) {
             skipped_nodes.push(node.clone());
         } else {
             queryable.push(node.clone());
@@ -739,18 +739,13 @@ mod tests {
     #[test]
     fn test_partition_degraded_query_nodes_keeps_unknown_endpoints_queryable() {
         let remote_nodes = vec![
-            crate::discovery::NodeInfo::new(
-                "node-open".to_string(),
-                "10.0.0.1:50051".to_string(),
-                "10.0.0.1:8080".to_string(),
-            ),
+            crate::discovery::NodeInfo::new("node-open".to_string(), "10.0.0.1:8080".to_string()),
             crate::discovery::NodeInfo::new(
                 "node-unknown".to_string(),
-                "10.0.0.2:50051".to_string(),
                 "10.0.0.2:8080".to_string(),
             ),
         ];
-        let known_open_addresses = HashSet::from(["10.0.0.1:50051".to_string()]);
+        let known_open_addresses = HashSet::from(["10.0.0.1:8080".to_string()]);
 
         let (queryable, skipped) =
             partition_degraded_query_nodes(&remote_nodes, &known_open_addresses);
@@ -769,7 +764,7 @@ mod tests {
             nodes_failed: 1,
             failures: vec![(
                 "node-open".to_string(),
-                "skipped in degraded mode: circuit breaker open for 10.0.0.1:50051".to_string(),
+                "skipped in degraded mode: circuit breaker open for 10.0.0.1:8080".to_string(),
             )],
         };
 
@@ -844,7 +839,6 @@ mod tests {
                 "self_node".to_string(),
                 crate::discovery::NodeInfo::new(
                     "self_node".to_string(),
-                    "localhost:50051".to_string(),
                     "localhost:8080".to_string(),
                 ),
             );

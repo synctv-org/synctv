@@ -22,7 +22,7 @@ use super::range::{
     aligned_range_for_slice, compute_needed_slices, parse_content_range, parse_range_header,
 };
 use super::status::CacheStatus;
-use super::store::SliceCache;
+use super::store::{FullBodyWrite, SliceCache};
 
 // ------------------------------------------------------------------
 // HEAD helper
@@ -407,15 +407,15 @@ pub(super) async fn full_body_cache_path(
                 _ => cache.config().segment_ttl,
             };
             cache
-                .put_full_body(
+                .put_full_body(FullBodyWrite {
                     url,
                     provider_headers,
-                    data.clone(),
+                    data: data.clone(),
                     etag,
                     last_modified,
-                    content_type.as_deref(),
+                    content_type: content_type.as_deref(),
                     ttl,
-                )
+                })
                 .await;
 
             let mut builder = Response::builder()
@@ -487,15 +487,15 @@ async fn revalidate_stale_full_body_entry(
                 _ => cache.config().segment_ttl,
             };
             cache
-                .put_full_body(
+                .put_full_body(FullBodyWrite {
                     url,
                     provider_headers,
                     data,
                     etag,
                     last_modified,
-                    content_type.as_deref(),
+                    content_type: content_type.as_deref(),
                     ttl,
-                )
+                })
                 .await;
         }
         return Ok(());
@@ -549,15 +549,15 @@ async fn refresh_full_body_cache_entry(
     };
 
     cache
-        .put_full_body(
+        .put_full_body(FullBodyWrite {
             url,
             provider_headers,
-            Bytes::from(buf),
-            etag.as_deref(),
-            last_modified.as_deref(),
-            content_type.as_deref(),
+            data: Bytes::from(buf),
+            etag: etag.as_deref(),
+            last_modified: last_modified.as_deref(),
+            content_type: content_type.as_deref(),
             ttl,
-        )
+        })
         .await;
 
     Ok(())
@@ -679,15 +679,15 @@ async fn handle_full_body_response(
     };
 
     cache
-        .put_full_body(
+        .put_full_body(FullBodyWrite {
             url,
             provider_headers,
-            body_bytes.clone(),
-            etag.as_deref(),
-            last_modified.as_deref(),
-            content_type.as_deref(),
+            data: body_bytes.clone(),
+            etag: etag.as_deref(),
+            last_modified: last_modified.as_deref(),
+            content_type: content_type.as_deref(),
             ttl,
-        )
+        })
         .await;
 
     let mut builder = Response::builder()

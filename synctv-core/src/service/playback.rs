@@ -20,6 +20,10 @@ use crate::{
 };
 use rand::prelude::IteratorRandom;
 use rand::RngExt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 
 /// Result of a broadcast operation from `ClusterManager::broadcast`.
 ///
@@ -161,6 +165,23 @@ pub trait PlaybackBroadcaster: Send + Sync {
 /// Playback management service
 ///
 /// Responsible for playback state coordination and optimistic locking.
+#[derive(Debug)]
+struct PlaybackInvalidationRuntime {
+    started: AtomicBool,
+    cancel: tokio::sync::Mutex<CancellationToken>,
+    listener_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+}
+
+impl PlaybackInvalidationRuntime {
+    fn new() -> Self {
+        Self {
+            started: AtomicBool::new(false),
+            cancel: tokio::sync::Mutex::new(CancellationToken::new()),
+            listener_handle: tokio::sync::Mutex::new(None),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PlaybackService {
     playback_repo: RoomPlaybackStateRepository,
@@ -174,11 +195,14 @@ pub struct PlaybackService {
     cluster_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaybackBroadcaster>>>>,
     /// L1 in-memory cache for playback state, keyed by `room_id`
     playback_cache: Arc<moka::future::Cache<String, RoomPlaybackState>>,
-    /// Optional L2 cache (Redis) for cross-replica consistency
-    /// When set, L1 misses check L2 before falling back to DB
-    l2_cache: Option<PlaybackStateCache>,
+    /// Optional L2 cache (Redis) for cross-replica consistency.
+    /// Held behind interior mutability so listeners started before L2 wiring
+    /// still observe the final cache configuration.
+    l2_cache: Arc<parking_lot::RwLock<Option<PlaybackStateCache>>>,
     /// Optional cache invalidation service for cross-replica cache sync
     invalidation_service: Option<Arc<CacheInvalidationService>>,
+    /// Shared lifecycle state for the background invalidation listener.
+    invalidation_runtime: Arc<PlaybackInvalidationRuntime>,
     /// `SingleFlight` to prevent thundering herd on cache miss.
     /// Uses `String` key (`room_id`) and `String` error (since `Error` is not `Clone`).
     single_flight: SingleFlight<String, RoomPlaybackState, String>,
@@ -195,6 +219,8 @@ impl PlaybackService {
     pub const DEFAULT_CACHE_SIZE: u64 = 5_000;
     /// Default playback state cache TTL in seconds (short — playback changes frequently)
     pub const DEFAULT_CACHE_TTL_SECS: u64 = 5;
+    /// Maximum time to wait for the invalidation listener to stop.
+    const INVALIDATION_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Create a new playback service
     #[must_use]
@@ -216,8 +242,9 @@ impl PlaybackService {
                     .time_to_live(Duration::from_secs(Self::DEFAULT_CACHE_TTL_SECS))
                     .build(),
             ),
-            l2_cache: None,
+            l2_cache: Arc::new(parking_lot::RwLock::new(None)),
             invalidation_service: None,
+            invalidation_runtime: Arc::new(PlaybackInvalidationRuntime::new()),
             single_flight: SingleFlight::new(),
         }
     }
@@ -239,165 +266,244 @@ impl PlaybackService {
     /// message, this node's local L1 cache entry for that room is evicted so the
     /// next read fetches fresh data from the DB.
     ///
-    /// If `cancel` is provided, the listener shuts down gracefully when the token
-    /// is cancelled, allowing clean shutdown of the background task.
-    pub fn set_invalidation_service(
-        &mut self,
-        service: Arc<CacheInvalidationService>,
-        cancel: Option<tokio_util::sync::CancellationToken>,
-    ) {
+    /// For backward compatibility, wiring the service auto-starts the listener
+    /// when a Tokio runtime is available. Call [`start`](Self::start) explicitly
+    /// during app bootstrap to surface startup errors and after
+    /// [`shutdown`](Self::shutdown) to restart the listener.
+    pub fn set_invalidation_service(&mut self, service: Arc<CacheInvalidationService>) {
+        self.invalidation_service = Some(service);
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let service = self.clone();
+            crate::spawn::spawn_monitored("playback_invalidation_autostart", async move {
+                if let Err(error) = service.start().await {
+                    tracing::warn!(
+                        error = %error,
+                        "Failed to auto-start playback invalidation listener after wiring invalidation service"
+                    );
+                }
+            });
+        }
+    }
+
+    pub fn has_invalidation_service(&self) -> bool {
+        self.invalidation_service.is_some()
+    }
+
+    fn playback_l2_cache(&self) -> Option<PlaybackStateCache> {
+        self.l2_cache.read().clone()
+    }
+
+    #[cfg(test)]
+    fn invalidation_task_started(&self) -> bool {
+        self.invalidation_runtime.started.load(Ordering::Acquire)
+    }
+
+    pub async fn start(&self) -> Result<()> {
+        let Some(invalidation_service) = self.invalidation_service.clone() else {
+            return Ok(());
+        };
+
+        if self
+            .invalidation_runtime
+            .started
+            .swap(true, Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+
+        if tokio::runtime::Handle::try_current().is_err() {
+            self.invalidation_runtime
+                .started
+                .store(false, Ordering::Release);
+            return Err(Error::Internal(
+                "PlaybackService::start requires a Tokio runtime".to_string(),
+            ));
+        }
+
         let cache = self.playback_cache.clone();
-        let l2_cache = self.l2_cache.clone();
-        let mut receiver = service.subscribe();
+        let l2_cache = Arc::clone(&self.l2_cache);
+        let mut receiver = invalidation_service.subscribe();
+        let listener_cancel = self.invalidation_runtime.cancel.lock().await.child_token();
 
-        crate::spawn::spawn_monitored("playback_invalidation_listener", async move {
-            // Rate-limit lag-triggered flushes (consistent with CacheManager)
-            const LAG_FLUSH_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-            let mut last_lag_flush = std::time::Instant::now()
-                .checked_sub(LAG_FLUSH_MIN_INTERVAL)
-                .unwrap_or_else(std::time::Instant::now);
+        let listener_handle =
+            crate::spawn::spawn_monitored("playback_invalidation_listener", async move {
+                // Rate-limit lag-triggered flushes (consistent with CacheManager)
+                const LAG_FLUSH_MIN_INTERVAL: std::time::Duration =
+                    std::time::Duration::from_secs(5);
+                let mut last_lag_flush = std::time::Instant::now()
+                    .checked_sub(LAG_FLUSH_MIN_INTERVAL)
+                    .unwrap_or_else(std::time::Instant::now);
 
-            loop {
-                let recv_result = if let Some(ref token) = cancel {
+                loop {
                     tokio::select! {
-                        r = receiver.recv() => r,
-                        () = token.cancelled() => {
+                        () = listener_cancel.cancelled() => {
                             tracing::debug!(
                                 "Playback cache invalidation listener cancelled, stopping"
                             );
                             break;
                         }
-                    }
-                } else {
-                    receiver.recv().await
-                };
-                match recv_result {
-                    Ok(msg) => match msg {
-                        InvalidationMessage::PlaybackStateUpdate { room_id, state } => {
-                            // Write the updated state directly into the L1 cache,
-                            // avoiding the stale-read window between invalidation
-                            // and the next DB fetch.
-                            //
-                            // CAS (Compare-And-Set) semantics: Only update if the incoming
-                            // state has a higher version than the current cached state.
-                            // This prevents out-of-order or delayed messages from
-                            // overwriting newer state.
-                            let new_version = state.version;
-                            let new_state = state;
-                            cache
-                                .entry(room_id.clone())
-                                .and_upsert_with(|maybe_entry| {
-                                    let result = if let Some(entry) = maybe_entry {
-                                        let current = entry.into_value();
-                                        let current_version = current.version;
-                                        if new_version > current_version {
-                                            // New state is newer, update the cache
-                                            tracing::debug!(
-                                                room_id = %room_id,
-                                                new_version,
-                                                current_version,
-                                                "Playback state cache updated (cross-replica, version upgrade)"
-                                            );
-                                            new_state.clone()
-                                        } else {
-                                            // Current cached state is same or newer, keep it
-                                            tracing::debug!(
-                                                room_id = %room_id,
-                                                new_version,
-                                                current_version,
-                                                "Playback state cache not updated (cross-replica, stale or duplicate version)"
-                                            );
-                                            current
+                        recv_result = receiver.recv() => {
+                            match recv_result {
+                                Ok(msg) => match msg {
+                                    InvalidationMessage::PlaybackStateUpdate { room_id, state } => {
+                                        let new_version = state.version;
+                                        let new_state = state;
+                                        cache
+                                            .entry(room_id.clone())
+                                            .and_upsert_with(|maybe_entry| {
+                                                let result = if let Some(entry) = maybe_entry {
+                                                    let current = entry.into_value();
+                                                    let current_version = current.version;
+                                                    if new_version > current_version {
+                                                        tracing::debug!(
+                                                            room_id = %room_id,
+                                                            new_version,
+                                                            current_version,
+                                                            "Playback state cache updated (cross-replica, version upgrade)"
+                                                        );
+                                                        new_state.clone()
+                                                    } else {
+                                                        tracing::debug!(
+                                                            room_id = %room_id,
+                                                            new_version,
+                                                            current_version,
+                                                            "Playback state cache not updated (cross-replica, stale or duplicate version)"
+                                                        );
+                                                        current
+                                                    }
+                                                } else {
+                                                    tracing::debug!(
+                                                        room_id = %room_id,
+                                                        new_version,
+                                                        "Playback state cache inserted (cross-replica, no prior entry)"
+                                                    );
+                                                    new_state.clone()
+                                                };
+                                                std::future::ready(result)
+                                            })
+                                            .await;
+                                    }
+                                    InvalidationMessage::PlaybackState { room_id } => {
+                                        cache.invalidate(&room_id).await;
+                                        let l2_cache = { l2_cache.read().clone() };
+                                        if let Some(l2_cache) = l2_cache {
+                                            let room_id = RoomId::from_string(room_id.clone());
+                                            if let Err(e) = l2_cache.invalidate(&room_id).await {
+                                                tracing::warn!(
+                                                    room_id = %room_id.as_str(),
+                                                    error = %e,
+                                                    "Failed to invalidate playback state from L2 cache"
+                                                );
+                                            }
                                         }
-                                    } else {
-                                        // No cached entry, insert the new state
                                         tracing::debug!(
                                             room_id = %room_id,
-                                            new_version,
-                                            "Playback state cache inserted (cross-replica, no prior entry)"
+                                            "Playback state cache invalidated (cross-replica)"
                                         );
-                                        new_state.clone()
-                                    };
-                                    std::future::ready(result)
-                                })
-                                .await;
-                        }
-                        InvalidationMessage::PlaybackState { room_id } => {
-                            cache.invalidate(&room_id).await;
-                            if let Some(ref l2_cache) = l2_cache {
-                                let room_id = RoomId::from_string(room_id.clone());
-                                if let Err(e) = l2_cache.invalidate(&room_id).await {
-                                    tracing::warn!(
-                                        room_id = %room_id.as_str(),
-                                        error = %e,
-                                        "Failed to invalidate playback state from L2 cache"
+                                    }
+                                    InvalidationMessage::Room { room_id } => {
+                                        cache.invalidate(&room_id).await;
+                                        let l2_cache = { l2_cache.read().clone() };
+                                        if let Some(l2_cache) = l2_cache {
+                                            let room_id = RoomId::from_string(room_id.clone());
+                                            if let Err(e) = l2_cache.invalidate(&room_id).await {
+                                                tracing::warn!(
+                                                    room_id = %room_id.as_str(),
+                                                    error = %e,
+                                                    "Failed to invalidate room-scoped playback state from L2 cache"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    InvalidationMessage::All => {
+                                        cache.invalidate_all();
+                                        let l2_cache = { l2_cache.read().clone() };
+                                        if let Some(l2_cache) = l2_cache {
+                                            l2_cache.clear().await;
+                                        }
+                                        tracing::debug!("All playback state cache invalidated (cross-replica)");
+                                    }
+                                    _ => {}
+                                },
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    tracing::debug!(
+                                        "Playback cache invalidation channel closed, stopping listener"
                                     );
+                                    break;
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    let now = std::time::Instant::now();
+                                    let elapsed = now.duration_since(last_lag_flush);
+                                    if elapsed >= LAG_FLUSH_MIN_INTERVAL {
+                                        tracing::warn!(
+                                            lagged_messages = n,
+                                            "Playback cache invalidation listener lagged, flushing all entries (rate-limited)"
+                                        );
+                                        cache.invalidate_all();
+                                        let l2_cache = { l2_cache.read().clone() };
+                                        if let Some(l2_cache) = l2_cache {
+                                            l2_cache.clear().await;
+                                        }
+                                        crate::metrics::cache::CACHE_LAG_FLUSH_TOTAL
+                                            .with_label_values(&["playback"])
+                                            .inc();
+                                        last_lag_flush = now;
+                                    } else {
+                                        tracing::warn!(
+                                            lagged_messages = n,
+                                            "Playback cache invalidation listener lagged, skipping flush (rate-limited)"
+                                        );
+                                    }
                                 }
                             }
-                            tracing::debug!(
-                                room_id = %room_id,
-                                "Playback state cache invalidated (cross-replica)"
-                            );
-                        }
-                        InvalidationMessage::Room { room_id } => {
-                            // Room-scoped invalidation also clears playback cache
-                            cache.invalidate(&room_id).await;
-                            if let Some(ref l2_cache) = l2_cache {
-                                let room_id = RoomId::from_string(room_id.clone());
-                                if let Err(e) = l2_cache.invalidate(&room_id).await {
-                                    tracing::warn!(
-                                        room_id = %room_id.as_str(),
-                                        error = %e,
-                                        "Failed to invalidate room-scoped playback state from L2 cache"
-                                    );
-                                }
-                            }
-                        }
-                        InvalidationMessage::All => {
-                            cache.invalidate_all();
-                            if let Some(ref l2_cache) = l2_cache {
-                                l2_cache.clear().await;
-                            }
-                            tracing::debug!("All playback state cache invalidated (cross-replica)");
-                        }
-                        _ => {
-                            // Other message types not relevant to playback cache
-                        }
-                    },
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        tracing::debug!(
-                            "Playback cache invalidation channel closed, stopping listener"
-                        );
-                        break;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        let now = std::time::Instant::now();
-                        let elapsed = now.duration_since(last_lag_flush);
-                        if elapsed >= LAG_FLUSH_MIN_INTERVAL {
-                            tracing::warn!(
-                                lagged_messages = n,
-                                "Playback cache invalidation listener lagged, flushing all entries (rate-limited)"
-                            );
-                            cache.invalidate_all();
-                            if let Some(ref l2_cache) = l2_cache {
-                                l2_cache.clear().await;
-                            }
-                            crate::metrics::cache::CACHE_LAG_FLUSH_TOTAL
-                                .with_label_values(&["playback"])
-                                .inc();
-                            last_lag_flush = now;
-                        } else {
-                            tracing::warn!(
-                                lagged_messages = n,
-                                "Playback cache invalidation listener lagged, skipping flush (rate-limited)"
-                            );
                         }
                     }
                 }
-            }
-        });
+            });
 
-        self.invalidation_service = Some(service);
+        *self.invalidation_runtime.listener_handle.lock().await = Some(listener_handle);
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) {
+        let cancel = {
+            let mut runtime_cancel = self.invalidation_runtime.cancel.lock().await;
+            std::mem::replace(&mut *runtime_cancel, CancellationToken::new())
+        };
+        cancel.cancel();
+
+        let listener_handle = self
+            .invalidation_runtime
+            .listener_handle
+            .lock()
+            .await
+            .take();
+        if let Some(handle) = listener_handle {
+            Self::await_invalidation_task_shutdown("playback invalidation listener", handle).await;
+        }
+
+        self.invalidation_runtime
+            .started
+            .store(false, Ordering::Release);
+    }
+
+    async fn await_invalidation_task_shutdown(name: &'static str, mut handle: JoinHandle<()>) {
+        match tokio::time::timeout(Self::INVALIDATION_TASK_SHUTDOWN_TIMEOUT, &mut handle).await {
+            Ok(Ok(())) => info!("{name} stopped"),
+            Ok(Err(error)) => warn!(%error, "{name} panicked during shutdown"),
+            Err(_) => {
+                warn!(
+                    timeout_secs = Self::INVALIDATION_TASK_SHUTDOWN_TIMEOUT.as_secs(),
+                    "{name} did not stop before timeout; aborting task"
+                );
+                handle.abort();
+                match handle.await {
+                    Ok(()) => info!("{name} aborted cleanly"),
+                    Err(error) if error.is_cancelled() => info!("{name} aborted"),
+                    Err(error) => warn!(%error, "{name} failed after abort"),
+                }
+            }
+        }
     }
 
     /// Set the L2 cache (Redis) for cross-replica consistency.
@@ -405,12 +511,12 @@ impl PlaybackService {
     /// When configured, L1 cache misses will check L2 before falling back to DB.
     /// This provides a fallback when PubSub invalidation messages are lost.
     pub fn set_l2_cache(&mut self, cache: PlaybackStateCache) {
-        self.l2_cache = Some(cache);
+        *self.l2_cache.write() = Some(cache);
     }
 
     #[cfg(test)]
-    pub(crate) const fn has_l2_cache(&self) -> bool {
-        self.l2_cache.is_some()
+    pub(crate) fn has_l2_cache(&self) -> bool {
+        self.l2_cache.read().is_some()
     }
 
     /// Broadcast a playback state change to local clients and cluster replicas.
@@ -523,7 +629,7 @@ impl PlaybackService {
         }
 
         // L2 cache check (if configured)
-        if let Some(ref l2_cache) = self.l2_cache {
+        if let Some(l2_cache) = self.playback_l2_cache() {
             if let Some(state) = l2_cache.get(room_id).await? {
                 // L2 hit - populate L1 and return
                 self.playback_cache
@@ -545,7 +651,7 @@ impl PlaybackService {
         // Only one task loads from DB for a given room_id; others wait for the result.
         let repo = self.playback_repo.clone();
         let cache = self.playback_cache.clone();
-        let l2_cache = self.l2_cache.clone();
+        let l2_cache = self.playback_l2_cache();
         let room_id_clone = room_id.clone();
 
         let state = self
@@ -613,7 +719,7 @@ impl PlaybackService {
         self.playback_cache.invalidate(&cache_key).await;
 
         // Invalidate L2 cache (if configured)
-        if let Some(ref l2_cache) = self.l2_cache {
+        if let Some(l2_cache) = self.playback_l2_cache() {
             if let Err(e) = l2_cache.invalidate(room_id).await {
                 tracing::warn!(
                     error = %e,
@@ -1102,7 +1208,8 @@ impl PlaybackService {
                     // Update L2 cache with the new state (if configured).
                     // Uses set_if_newer to prevent stale data from overwriting fresh data.
                     // This provides a fallback when PubSub messages are lost.
-                    if let Some(ref l2_cache) = self.l2_cache {
+                    let l2_cache = self.playback_l2_cache();
+                    if let Some(l2_cache) = l2_cache {
                         if let Err(e) = l2_cache.set_if_newer(&room_id, updated_state.clone()).await
                         {
                             tracing::warn!(
@@ -1345,6 +1452,105 @@ impl PlaybackService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::{CacheInvalidationService, CacheL2Backend};
+    use crate::models::RoomId;
+    use crate::repository::{
+        MediaRepository, PlaylistRepository, ProviderInstanceRepository, RoomPlaybackStateRepository,
+        RoomRepository,
+    };
+    use crate::service::permission::PermissionService;
+    use crate::service::{MediaService, ProvidersManager, RemoteProviderManager};
+    use async_trait::async_trait;
+    use sqlx::PgPool;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    #[derive(Default)]
+    struct CountingL2Backend {
+        delete_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl CacheL2Backend for CountingL2Backend {
+        async fn get(&self, _key: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+
+        async fn set(&self, _key: &str, _json: &str, _ttl_secs: u64) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete(&self, _key: &str) -> Result<()> {
+            self.delete_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            Ok(())
+        }
+
+        async fn delete_with_retry(
+            &self,
+            _key: &str,
+            _max_retries: u32,
+            _cache_type: &str,
+        ) -> Result<()> {
+            self.delete_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            Ok(())
+        }
+
+        async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
+            Ok(vec![None; keys.len()])
+        }
+
+        async fn set_if_newer(
+            &self,
+            _key: &str,
+            _json: &str,
+            _ttl_secs: u64,
+            _new_ts_iso: &str,
+        ) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn delete_by_prefix(&self, _prefix: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn is_active(&self) -> bool {
+            true
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "counting"
+        }
+    }
+
+    fn make_playback_service_for_lifecycle_tests() -> (PlaybackService, Arc<CacheInvalidationService>) {
+        let pool = PgPool::connect_lazy("postgres://localhost/test")
+            .expect("lazy postgres pool for unit tests should build");
+        let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let permission_service = PermissionService::without_cache(member_repo, room_repo, None);
+        let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
+        let provider_instance_manager =
+            Arc::new(RemoteProviderManager::new_with_invalidation(provider_repo, None));
+        let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+        let media_service = MediaService::new(
+            MediaRepository::new(pool.clone()),
+            PlaylistRepository::new(pool.clone()),
+            permission_service.clone(),
+            providers_manager,
+        );
+        let playback_service = PlaybackService::new(
+            RoomPlaybackStateRepository::new(pool.clone()),
+            permission_service,
+            media_service,
+            MediaRepository::new(pool),
+        );
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            None,
+            "node-test".to_string(),
+            "synctv:test:cache:invalidate".to_string(),
+        ));
+        (playback_service, invalidation_service)
+    }
 
     #[test]
     fn test_speed_validation_bounds() {
@@ -1400,6 +1606,197 @@ mod tests {
         // MAX_RETRIES = 3 to match optimistic_retry::DEFAULT_MAX_RETRIES
         assert_eq!(PlaybackService::MAX_RETRIES, 3);
         assert_eq!(PlaybackService::BACKOFF_BASE_MS, 5);
+    }
+
+    #[tokio::test]
+    async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop() {
+        let (mut playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+        let room_id = RoomId::from_string("room-playback-stop".to_string());
+        let cache_key = room_id.as_str().to_string();
+
+        playback_service.set_invalidation_service(invalidation_service.clone());
+        playback_service
+            .start()
+            .await
+            .expect("playback invalidation listener should start");
+
+        assert!(
+            playback_service.invalidation_task_started(),
+            "start() must mark playback invalidation runtime as running"
+        );
+
+        playback_service.shutdown().await;
+
+        let updated_state = RoomPlaybackState {
+            room_id: room_id.clone(),
+            playing_media_id: None,
+            playing_playlist_id: None,
+            relative_path: String::new(),
+            current_time: 42.0,
+            speed: 1.0,
+            is_playing: true,
+            updated_at: chrono::Utc::now(),
+            version: 7,
+        };
+
+        invalidation_service
+            .broadcast_all(InvalidationMessage::PlaybackStateUpdate {
+                room_id: cache_key.clone(),
+                state: updated_state,
+            })
+            .await
+            .expect("local invalidation broadcast should succeed");
+        tokio::task::yield_now().await;
+
+        assert!(
+            playback_service.playback_cache.get(&cache_key).await.is_none(),
+            "playback invalidation listener must stop processing local broadcasts once shutdown starts"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() {
+        let (mut playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+        let room_id = RoomId::from_string("room-playback-restart".to_string());
+        let cache_key = room_id.as_str().to_string();
+
+        playback_service.set_invalidation_service(invalidation_service.clone());
+        playback_service
+            .start()
+            .await
+            .expect("initial playback invalidation start should succeed");
+        playback_service.shutdown().await;
+
+        let updated_state = RoomPlaybackState {
+            room_id: room_id.clone(),
+            playing_media_id: None,
+            playing_playlist_id: None,
+            relative_path: String::new(),
+            current_time: 64.0,
+            speed: 1.0,
+            is_playing: true,
+            updated_at: chrono::Utc::now(),
+            version: 9,
+        };
+
+        playback_service
+            .start()
+            .await
+            .expect("restart after playback invalidation shutdown should succeed");
+
+        invalidation_service
+            .broadcast_all(InvalidationMessage::PlaybackStateUpdate {
+                room_id: cache_key.clone(),
+                state: updated_state,
+            })
+            .await
+            .expect("local invalidation broadcast should succeed after restart");
+        tokio::task::yield_now().await;
+
+        let cached = playback_service
+            .playback_cache
+            .get(&cache_key)
+            .await
+            .expect("restarted listener should populate cache from invalidation broadcast");
+        assert_eq!(cached.version, 9);
+
+        playback_service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_set_invalidation_service_auto_starts_listener_for_existing_callers() {
+        let (mut playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+        let room_id = RoomId::from_string("room-playback-autostart".to_string());
+        let cache_key = room_id.as_str().to_string();
+
+        playback_service.set_invalidation_service(invalidation_service.clone());
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !playback_service.invalidation_task_started() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("setter should auto-start playback invalidation listener when a runtime exists");
+
+        let updated_state = RoomPlaybackState {
+            room_id: room_id.clone(),
+            playing_media_id: None,
+            playing_playlist_id: None,
+            relative_path: String::new(),
+            current_time: 88.0,
+            speed: 1.0,
+            is_playing: true,
+            updated_at: chrono::Utc::now(),
+            version: 11,
+        };
+
+        invalidation_service
+            .broadcast_all(InvalidationMessage::PlaybackStateUpdate {
+                room_id: cache_key.clone(),
+                state: updated_state.clone(),
+            })
+            .await
+            .expect("local invalidation broadcast should succeed");
+
+        let cached = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(cached) = playback_service.playback_cache.get(&cache_key).await {
+                    break cached;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("auto-started playback invalidation listener should process broadcasts");
+
+        assert_eq!(cached.version, updated_state.version);
+
+        playback_service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_auto_started_invalidation_listener_uses_l2_cache_wired_after_start() {
+        let (mut playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+        let backend = Arc::new(CountingL2Backend::default());
+        let l2_cache = PlaybackStateCache::new(
+            backend.clone(),
+            16,
+            5,
+            60,
+            "synctv:test:playback:".to_string(),
+        )
+        .expect("test playback L2 cache should build");
+        let room_id = RoomId::from_string("room-playback-late-l2".to_string());
+
+        playback_service.set_invalidation_service(invalidation_service.clone());
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !playback_service.invalidation_task_started() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("setter should auto-start playback invalidation listener when a runtime exists");
+
+        playback_service.set_l2_cache(l2_cache);
+
+        invalidation_service
+            .broadcast_all(InvalidationMessage::PlaybackState {
+                room_id: room_id.as_str().to_string(),
+            })
+            .await
+            .expect("playback invalidation should broadcast locally");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while backend.delete_calls.load(AtomicOrdering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("listener should invalidate L2 even when L2 is wired after auto-start");
+
+        playback_service.shutdown().await;
     }
 
     /// Tests for optimistic lock retry mechanism
@@ -1977,36 +2374,24 @@ mod tests {
             }
         }
 
-        /// Test: MAX_RETRIES value is appropriate for production use
-        #[test]
-        fn test_max_retries_is_reasonable() {
-            // MAX_RETRIES = 3 is chosen to balance:
-            // - High enough to handle normal contention
-            // - Low enough to avoid excessive latency
-            assert!(
-                PlaybackService::MAX_RETRIES >= 2,
-                "MAX_RETRIES should be at least 2 for contention handling"
-            );
-            assert!(
-                PlaybackService::MAX_RETRIES <= 5,
-                "MAX_RETRIES should be at most 5 to avoid excessive latency"
-            );
-        }
+        const _: () = assert!(
+            PlaybackService::MAX_RETRIES >= 2,
+            "MAX_RETRIES should be at least 2 for contention handling"
+        );
 
-        /// Test: BACKOFF_BASE_MS value is appropriate for production use
-        #[test]
-        fn test_backoff_base_is_reasonable() {
-            // BACKOFF_BASE_MS = 5ms is chosen to:
-            // - Be longer than typical DB round-trip
-            // - Be short enough to not noticeably affect latency
-            assert!(
-                PlaybackService::BACKOFF_BASE_MS >= 1,
-                "BACKOFF_BASE_MS should be at least 1ms"
-            );
-            assert!(
-                PlaybackService::BACKOFF_BASE_MS <= 50,
-                "BACKOFF_BASE_MS should be at most 50ms"
-            );
-        }
+        const _: () = assert!(
+            PlaybackService::MAX_RETRIES <= 5,
+            "MAX_RETRIES should be at most 5 to avoid excessive latency"
+        );
+
+        const _: () = assert!(
+            PlaybackService::BACKOFF_BASE_MS >= 1,
+            "BACKOFF_BASE_MS should be at least 1ms"
+        );
+
+        const _: () = assert!(
+            PlaybackService::BACKOFF_BASE_MS <= 50,
+            "BACKOFF_BASE_MS should be at most 50ms"
+        );
     }
 }

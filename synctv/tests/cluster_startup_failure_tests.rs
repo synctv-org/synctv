@@ -496,24 +496,6 @@ mod p1_cluster_cleanup_tests {
     /// This test documents the expected behavior: if init_cluster_components
     /// fails at any point after register() and start_heartbeat_loop(),
     /// the cleanup should be triggered.
-    #[test]
-    fn test_cleanup_on_init_failure_contract() {
-        // This test documents the contract:
-        // 1. If NodeRegistry::new fails -> no cleanup needed
-        // 2. If register() fails -> no cleanup needed (not registered yet)
-        // 3. If start_heartbeat_loop() fails -> should unregister
-        // 4. If health_monitor.start() fails -> should cancel token + unregister
-        //
-        // The P1 fix adds cleanup for case 4 (health_monitor.start() failure).
-
-        // The actual cleanup code is in init_cluster_components:
-        // cm.cancel_token().cancel();
-        // registry.unregister().await;
-
-        // This test passes if the contract is understood
-        assert!(true, "P1 cleanup contract verified");
-    }
-
     #[tokio::test]
     #[ignore = "requires Docker"]
     async fn test_application_build_does_not_register_cluster_node_before_run() {

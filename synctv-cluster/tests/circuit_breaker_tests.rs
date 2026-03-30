@@ -137,7 +137,6 @@ async fn test_healthy_endpoints_filters_open() {
             .iter()
             .zip(&breakers)
             .filter(|(_, cb)| cb.is_call_permitted())
-            .map(|(ep, _)| *ep)
             .count(),
         3,
         "All endpoints should be healthy initially"

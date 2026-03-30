@@ -341,6 +341,297 @@ impl LiveStreamingInfrastructure {
     }
 }
 
+/// FLV streaming API
+///
+/// Provides methods for creating FLV streaming sessions
+pub struct FlvStreamingApi;
+
+impl FlvStreamingApi {
+    /// Create a new FLV streaming session
+    ///
+    /// Returns a channel receiver that streams FLV data.
+    /// The caller is responsible for converting this to an HTTP response.
+    ///
+    /// # Arguments
+    /// * `infrastructure` - Live streaming infrastructure
+    /// * `room_id` - Room identifier
+    /// * `media_id` - Media/stream identifier
+    ///
+    /// # Returns
+    /// A bounded channel receiver that yields FLV data chunks
+    async fn create_session(
+        infrastructure: &LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+    ) -> Result<mpsc::Receiver<Result<Bytes, std::io::Error>>> {
+        // Ensure publisher exists
+        infrastructure
+            .has_publisher(room_id, media_id)
+            .await?
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("No publisher for {room_id}/{media_id}"))?;
+
+        // Create bounded channel for FLV data (backpressure for slow clients)
+        let (tx, rx) = mpsc::channel(synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY);
+
+        // Create FLV session using canonical (room_id, media_id) StreamIdentifier
+        let mut flv_session = HttpFlvSession::new(
+            room_id.to_string(),
+            media_id.to_string(),
+            infrastructure.stream_hub_event_sender.clone(),
+            tx,
+        );
+
+        // Spawn FLV session task
+        tokio::spawn(async move {
+            if let Err(e) = flv_session.run().await {
+                error!("FLV session error: {}", e);
+            }
+        });
+
+        Ok(rx)
+    }
+
+    /// Create FLV streaming session with lazy-load pull
+    ///
+    /// This ensures a pull stream is created if one doesn't exist.
+    /// Supports both cross-node gRPC relay and external source pulling.
+    ///
+    /// Returns `(receiver, guard)`. The caller **must** hold the
+    /// [`StreamSubscriberGuard`] for the lifetime of the FLV streaming task
+    /// so the subscriber count is decremented when the viewer disconnects.
+    ///
+    /// # Arguments
+    /// * `external_source_url` - If provided and no Redis publisher exists, starts an
+    ///   external pull from this URL (RTMP or HTTP-FLV).
+    pub async fn create_session_with_pull(
+        infrastructure: &LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+        external_source_url: Option<&str>,
+    ) -> Result<(
+        mpsc::Receiver<Result<Bytes, std::io::Error>>,
+        StreamSubscriberGuard,
+    )> {
+        // Ensure pull stream exists (gRPC relay or external)
+        let guard = infrastructure
+            .ensure_pull_stream(room_id, media_id, external_source_url)
+            .await?;
+
+        // Create FLV session (subscribes to local StreamHub)
+        let rx = Self::create_session(infrastructure, room_id, media_id).await?;
+        Ok((rx, guard))
+    }
+}
+
+/// HLS streaming API
+///
+/// Provides methods for HLS playlist generation and segment serving.
+/// In cluster mode, automatically proxies requests to the publisher node
+/// if the publisher is on a different node.
+pub struct HlsStreamingApi;
+
+impl HlsStreamingApi {
+    /// Generate HLS M3U8 playlist for a stream.
+    ///
+    /// In cluster mode:
+    /// - If publisher is local: generates from local HLS stream registry
+    /// - If publisher is remote: proxies to publisher node via gRPC
+    ///
+    /// Returns `Ok(Some(playlist))` when a stream is found, `Ok(None)` when
+    /// the stream is not yet available (caller should return HTTP 404 or retry),
+    /// and `Err` on infrastructure failures.
+    ///
+    /// HLS requests do NOT trigger gRPC RTMP pull streams. Only FLV needs that.
+    pub async fn generate_playlist<F>(
+        infrastructure: &LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+        url_generator: F,
+    ) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> String,
+    {
+        // Get publisher info to determine if local or remote
+        let publisher_info = infrastructure
+            .registry
+            .get_publisher(room_id, media_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
+
+        let publisher_info = match publisher_info {
+            Some(info) => info,
+            None => {
+                return Ok(None);
+            }
+        };
+
+        // Check if publisher is local
+        let is_local = !infrastructure.local_node_id.is_empty()
+            && publisher_info.node_id == infrastructure.local_node_id;
+
+        if is_local {
+            // Local publisher: read from local HLS stream registry
+            Self::generate_playlist_local(infrastructure, room_id, media_id, url_generator)
+        } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
+            // Validate gRPC address before attempting remote proxy
+            let grpc_addr = publisher_info
+                .validate_grpc_address()
+                .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
+
+            // Remote publisher: proxy via gRPC
+            // We need a segment_url_base for the remote node to generate URLs.
+            // The remote node will use this base to construct segment URLs in the M3U8.
+            // We generate a representative URL to extract the base pattern.
+            let sample_url = url_generator("__PLACEHOLDER__");
+            let segment_url_base = sample_url
+                .rsplit_once("__PLACEHOLDER__")
+                .map(|(base, _)| base.to_string())
+                .unwrap_or_default();
+
+            let playlist = hls_proxy
+                .get_playlist(
+                    grpc_addr,
+                    room_id,
+                    media_id,
+                    &segment_url_base,
+                    publisher_info.epoch,
+                )
+                .await?;
+
+            Ok(playlist)
+        } else {
+            // No proxy configured, try local anyway (single-node mode)
+            Self::generate_playlist_local(infrastructure, room_id, media_id, url_generator)
+        }
+    }
+
+    /// Generate playlist from local HLS stream registry.
+    ///
+    /// Returns `Ok(None)` if the stream is not yet in the HLS registry
+    /// (publisher exists but no segments have been generated yet).
+    fn generate_playlist_local<F>(
+        infrastructure: &LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+        url_generator: F,
+    ) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> String,
+    {
+        if let Some(hls_registry) = &infrastructure.hls_stream_registry {
+            // Registry key format: "room_id/media_id" (matches remuxer's app_name/stream_name)
+            let stream_key = format!("{room_id}/{media_id}");
+
+            match hls_registry.get(&stream_key) {
+                Some(stream_state) => {
+                    let state = stream_state.read();
+                    // Use caller-provided URL generator for maximum flexibility
+                    Ok(Some(state.generate_m3u8(url_generator)))
+                }
+                None => {
+                    // Stream not in registry yet — signal caller to return 404
+                    Ok(None)
+                }
+            }
+        } else {
+            // No HLS registry configured — signal caller to return 404
+            Ok(None)
+        }
+    }
+
+    /// Generate HLS M3U8 playlist with simple base URL (convenience method).
+    ///
+    /// Returns `Ok(None)` when the stream does not exist (HTTP handler should return 404).
+    pub async fn generate_playlist_simple(
+        infrastructure: &LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+        segment_url_base: &str,
+    ) -> Result<Option<String>> {
+        Self::generate_playlist(infrastructure, room_id, media_id, |ts_name| {
+            format!("{segment_url_base}{ts_name}.ts")
+        })
+        .await
+    }
+
+    /// Get HLS segment data.
+    ///
+    /// In cluster mode:
+    /// - If publisher is local: reads from local `SegmentManager`
+    /// - If publisher is remote: proxies to publisher node via gRPC (with local cache)
+    ///
+    /// HLS segment requests do NOT trigger gRPC RTMP pull streams.
+    pub async fn get_segment(
+        infrastructure: &LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+        segment_name: &str,
+    ) -> Result<Bytes> {
+        // Get publisher info to determine if local or remote
+        let publisher_info = infrastructure
+            .registry
+            .get_publisher(room_id, media_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
+
+        let publisher_info = match publisher_info {
+            Some(info) => info,
+            None => {
+                return Err(anyhow::anyhow!("No publisher for {room_id}/{media_id}"));
+            }
+        };
+
+        // Check if publisher is local
+        let is_local = !infrastructure.local_node_id.is_empty()
+            && publisher_info.node_id == infrastructure.local_node_id;
+
+        if is_local {
+            // Local publisher: read from local storage
+            Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
+        } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
+            // Validate gRPC address before attempting remote proxy
+            let grpc_addr = publisher_info.validate_grpc_address().map_err(|e| {
+                anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}")
+            })?;
+
+            // Remote publisher: proxy via gRPC (with local cache)
+            let segment = hls_proxy
+                .get_segment(
+                    grpc_addr,
+                    room_id,
+                    media_id,
+                    segment_name,
+                    publisher_info.epoch,
+                )
+                .await?;
+
+            segment.ok_or_else(|| anyhow::anyhow!("Segment not found on publisher node"))
+        } else {
+            // No proxy configured, try local anyway (single-node mode)
+            Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
+        }
+    }
+
+    /// Get segment from local storage.
+    async fn get_segment_local(
+        infrastructure: &LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+        segment_name: &str,
+    ) -> Result<Bytes> {
+        if let Some(segment_manager) = &infrastructure.segment_manager {
+            segment_manager
+                .storage()
+                .read(room_id, media_id, segment_name)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to read segment: {e}"))
+        } else {
+            Err(anyhow::anyhow!("Segment manager not configured"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,7 +696,6 @@ mod tests {
     async fn test_ensure_pull_stream_validates_epoch_for_local_publisher() {
         use std::collections::HashMap;
 
-        // Test that local publisher goes through epoch validation
         let registry = Arc::new(MockStreamRegistry::with_publishers(HashMap::from([(
             ("room1".to_string(), "media1".to_string()),
             PublisherInfo {
@@ -441,7 +731,6 @@ mod tests {
         )
         .with_local_node_id("node-local".to_string());
 
-        // Local publisher with valid epoch should succeed
         let result = infrastructure.ensure_pull_stream("room1", "media1", None).await;
         assert!(
             result.is_ok(),
@@ -823,296 +1112,5 @@ mod tests {
                 .is_some(),
             "publishers in other rooms must remain registered"
         );
-    }
-}
-
-/// FLV streaming API
-///
-/// Provides methods for creating FLV streaming sessions
-pub struct FlvStreamingApi;
-
-impl FlvStreamingApi {
-    /// Create a new FLV streaming session
-    ///
-    /// Returns a channel receiver that streams FLV data.
-    /// The caller is responsible for converting this to an HTTP response.
-    ///
-    /// # Arguments
-    /// * `infrastructure` - Live streaming infrastructure
-    /// * `room_id` - Room identifier
-    /// * `media_id` - Media/stream identifier
-    ///
-    /// # Returns
-    /// A bounded channel receiver that yields FLV data chunks
-    async fn create_session(
-        infrastructure: &LiveStreamingInfrastructure,
-        room_id: &str,
-        media_id: &str,
-    ) -> Result<mpsc::Receiver<Result<Bytes, std::io::Error>>> {
-        // Ensure publisher exists
-        infrastructure
-            .has_publisher(room_id, media_id)
-            .await?
-            .then_some(())
-            .ok_or_else(|| anyhow::anyhow!("No publisher for {room_id}/{media_id}"))?;
-
-        // Create bounded channel for FLV data (backpressure for slow clients)
-        let (tx, rx) = mpsc::channel(synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY);
-
-        // Create FLV session using canonical (room_id, media_id) StreamIdentifier
-        let mut flv_session = HttpFlvSession::new(
-            room_id.to_string(),
-            media_id.to_string(),
-            infrastructure.stream_hub_event_sender.clone(),
-            tx,
-        );
-
-        // Spawn FLV session task
-        tokio::spawn(async move {
-            if let Err(e) = flv_session.run().await {
-                error!("FLV session error: {}", e);
-            }
-        });
-
-        Ok(rx)
-    }
-
-    /// Create FLV streaming session with lazy-load pull
-    ///
-    /// This ensures a pull stream is created if one doesn't exist.
-    /// Supports both cross-node gRPC relay and external source pulling.
-    ///
-    /// Returns `(receiver, guard)`. The caller **must** hold the
-    /// [`StreamSubscriberGuard`] for the lifetime of the FLV streaming task
-    /// so the subscriber count is decremented when the viewer disconnects.
-    ///
-    /// # Arguments
-    /// * `external_source_url` - If provided and no Redis publisher exists, starts an
-    ///   external pull from this URL (RTMP or HTTP-FLV).
-    pub async fn create_session_with_pull(
-        infrastructure: &LiveStreamingInfrastructure,
-        room_id: &str,
-        media_id: &str,
-        external_source_url: Option<&str>,
-    ) -> Result<(
-        mpsc::Receiver<Result<Bytes, std::io::Error>>,
-        StreamSubscriberGuard,
-    )> {
-        // Ensure pull stream exists (gRPC relay or external)
-        let guard = infrastructure
-            .ensure_pull_stream(room_id, media_id, external_source_url)
-            .await?;
-
-        // Create FLV session (subscribes to local StreamHub)
-        let rx = Self::create_session(infrastructure, room_id, media_id).await?;
-        Ok((rx, guard))
-    }
-}
-
-/// HLS streaming API
-///
-/// Provides methods for HLS playlist generation and segment serving.
-/// In cluster mode, automatically proxies requests to the publisher node
-/// if the publisher is on a different node.
-pub struct HlsStreamingApi;
-
-impl HlsStreamingApi {
-    /// Generate HLS M3U8 playlist for a stream.
-    ///
-    /// In cluster mode:
-    /// - If publisher is local: generates from local HLS stream registry
-    /// - If publisher is remote: proxies to publisher node via gRPC
-    ///
-    /// Returns `Ok(Some(playlist))` when a stream is found, `Ok(None)` when
-    /// the stream is not yet available (caller should return HTTP 404 or retry),
-    /// and `Err` on infrastructure failures.
-    ///
-    /// HLS requests do NOT trigger gRPC RTMP pull streams. Only FLV needs that.
-    pub async fn generate_playlist<F>(
-        infrastructure: &LiveStreamingInfrastructure,
-        room_id: &str,
-        media_id: &str,
-        url_generator: F,
-    ) -> Result<Option<String>>
-    where
-        F: Fn(&str) -> String,
-    {
-        // Get publisher info to determine if local or remote
-        let publisher_info = infrastructure
-            .registry
-            .get_publisher(room_id, media_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
-
-        let publisher_info = match publisher_info {
-            Some(info) => info,
-            None => {
-                return Ok(None);
-            }
-        };
-
-        // Check if publisher is local
-        let is_local = !infrastructure.local_node_id.is_empty()
-            && publisher_info.node_id == infrastructure.local_node_id;
-
-        if is_local {
-            // Local publisher: read from local HLS stream registry
-            Self::generate_playlist_local(infrastructure, room_id, media_id, url_generator)
-        } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            // Validate gRPC address before attempting remote proxy
-            let grpc_addr = publisher_info
-                .validate_grpc_address()
-                .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
-
-            // Remote publisher: proxy via gRPC
-            // We need a segment_url_base for the remote node to generate URLs.
-            // The remote node will use this base to construct segment URLs in the M3U8.
-            // We generate a representative URL to extract the base pattern.
-            let sample_url = url_generator("__PLACEHOLDER__");
-            let segment_url_base = sample_url
-                .rsplit_once("__PLACEHOLDER__")
-                .map(|(base, _)| base.to_string())
-                .unwrap_or_default();
-
-            let playlist = hls_proxy
-                .get_playlist(
-                    grpc_addr,
-                    room_id,
-                    media_id,
-                    &segment_url_base,
-                    publisher_info.epoch,
-                )
-                .await?;
-
-            Ok(playlist)
-        } else {
-            // No proxy configured, try local anyway (single-node mode)
-            Self::generate_playlist_local(infrastructure, room_id, media_id, url_generator)
-        }
-    }
-
-    /// Generate playlist from local HLS stream registry.
-    ///
-    /// Returns `Ok(None)` if the stream is not yet in the HLS registry
-    /// (publisher exists but no segments have been generated yet).
-    fn generate_playlist_local<F>(
-        infrastructure: &LiveStreamingInfrastructure,
-        room_id: &str,
-        media_id: &str,
-        url_generator: F,
-    ) -> Result<Option<String>>
-    where
-        F: Fn(&str) -> String,
-    {
-        if let Some(hls_registry) = &infrastructure.hls_stream_registry {
-            // Registry key format: "room_id/media_id" (matches remuxer's app_name/stream_name)
-            let stream_key = format!("{room_id}/{media_id}");
-
-            match hls_registry.get(&stream_key) {
-                Some(stream_state) => {
-                    let state = stream_state.read();
-                    // Use caller-provided URL generator for maximum flexibility
-                    Ok(Some(state.generate_m3u8(url_generator)))
-                }
-                None => {
-                    // Stream not in registry yet — signal caller to return 404
-                    Ok(None)
-                }
-            }
-        } else {
-            // No HLS registry configured — signal caller to return 404
-            Ok(None)
-        }
-    }
-
-    /// Generate HLS M3U8 playlist with simple base URL (convenience method).
-    ///
-    /// Returns `Ok(None)` when the stream does not exist (HTTP handler should return 404).
-    pub async fn generate_playlist_simple(
-        infrastructure: &LiveStreamingInfrastructure,
-        room_id: &str,
-        media_id: &str,
-        segment_url_base: &str,
-    ) -> Result<Option<String>> {
-        Self::generate_playlist(infrastructure, room_id, media_id, |ts_name| {
-            format!("{segment_url_base}{ts_name}.ts")
-        })
-        .await
-    }
-
-    /// Get HLS segment data.
-    ///
-    /// In cluster mode:
-    /// - If publisher is local: reads from local `SegmentManager`
-    /// - If publisher is remote: proxies to publisher node via gRPC (with local cache)
-    ///
-    /// HLS segment requests do NOT trigger gRPC RTMP pull streams.
-    pub async fn get_segment(
-        infrastructure: &LiveStreamingInfrastructure,
-        room_id: &str,
-        media_id: &str,
-        segment_name: &str,
-    ) -> Result<Bytes> {
-        // Get publisher info to determine if local or remote
-        let publisher_info = infrastructure
-            .registry
-            .get_publisher(room_id, media_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
-
-        let publisher_info = match publisher_info {
-            Some(info) => info,
-            None => {
-                return Err(anyhow::anyhow!("No publisher for {room_id}/{media_id}"));
-            }
-        };
-
-        // Check if publisher is local
-        let is_local = !infrastructure.local_node_id.is_empty()
-            && publisher_info.node_id == infrastructure.local_node_id;
-
-        if is_local {
-            // Local publisher: read from local storage
-            Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
-        } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            // Validate gRPC address before attempting remote proxy
-            let grpc_addr = publisher_info.validate_grpc_address().map_err(|e| {
-                anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}")
-            })?;
-
-            // Remote publisher: proxy via gRPC (with local cache)
-            let segment = hls_proxy
-                .get_segment(
-                    grpc_addr,
-                    room_id,
-                    media_id,
-                    segment_name,
-                    publisher_info.epoch,
-                )
-                .await?;
-
-            segment.ok_or_else(|| anyhow::anyhow!("Segment not found on publisher node"))
-        } else {
-            // No proxy configured, try local anyway (single-node mode)
-            Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
-        }
-    }
-
-    /// Get segment from local storage.
-    async fn get_segment_local(
-        infrastructure: &LiveStreamingInfrastructure,
-        room_id: &str,
-        media_id: &str,
-        segment_name: &str,
-    ) -> Result<Bytes> {
-        if let Some(segment_manager) = &infrastructure.segment_manager {
-            segment_manager
-                .storage()
-                .read(room_id, media_id, segment_name)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to read segment: {e}"))
-        } else {
-            Err(anyhow::anyhow!("Segment manager not configured"))
-        }
     }
 }

@@ -121,29 +121,23 @@ fn test_consecutive_losses_resets_on_leadership_gain() {
 // Test 7: Document limitation and monitoring recommendation
 // ============================================================================
 
-/// This test documents the limitation of local time usage and the
-/// recommended monitoring approach.
-///
-/// # Limitation
-///
-/// The grace period uses local `tokio::time::Instant` which is monotonic
-/// but represents the node's local time. If the node's clock is significantly
-/// skewed, the grace period duration in wall-clock time may differ from
-/// other nodes' perspectives.
-///
-/// # Impact
-///
-/// - Minimal: The grace period is an optimization, not a correctness guarantee
-/// - tokio::time::Instant is monotonic, so at least it's consistent within a node
-/// - Split-brain is prevented by K8s resourceVersion, not grace period
-///
-/// # Monitoring
-///
-/// Monitor the `synctv_cluster_leader_election_consecutive_failures` metric.
-/// Rising values may indicate:
-/// - Network issues between pods and K8s API server
-/// - RBAC permission problems
-/// - K8s API server overload
+// This test block documents the limitation of local time usage and the
+// recommended monitoring approach.
+//
+// Limitation:
+// The grace period uses local `tokio::time::Instant` which is monotonic
+// but represents the node's local time. If the node's clock is significantly
+// skewed, the grace period duration in wall-clock time may differ from
+// other nodes' perspectives.
+//
+// Impact:
+// - Minimal: The grace period is an optimization, not a correctness guarantee.
+// - `tokio::time::Instant` is monotonic, so at least it's consistent within a node.
+// - Split-brain is prevented by K8s resourceVersion, not grace period.
+//
+// Monitoring:
+// Monitor the `synctv_cluster_leader_election_consecutive_failures` metric.
+// Rising values may indicate network issues, RBAC problems, or K8s API overload.
 // ============================================================================
 // Test 8: Verify checked_sub for Instant arithmetic
 // ============================================================================

@@ -180,51 +180,40 @@ mod migration_key_tests {
 // ============================================================================
 
 mod migration_constants_tests {
+    const MIGRATION_LOCK_TTL: u64 = 300; // 5 minutes
+    const MIGRATION_POLL_INTERVAL_SECS: u64 = 2;
+    const MIGRATION_MAX_WAIT_SECS: u64 = 300; // 5 minutes
+
+    const _: () = assert!(MIGRATION_LOCK_TTL >= 60, "TTL should be at least 1 minute");
+    const _: () = assert!(MIGRATION_LOCK_TTL <= 3600, "TTL should be at most 1 hour");
+    const _: () = assert!(
+        MIGRATION_POLL_INTERVAL_SECS >= 1,
+        "Poll interval should be at least 1 second"
+    );
+    const _: () = assert!(
+        MIGRATION_POLL_INTERVAL_SECS <= 10,
+        "Poll interval should be at most 10 seconds"
+    );
+    const _: () = assert!(
+        MIGRATION_MAX_WAIT_SECS >= 60,
+        "Max wait should be at least 1 minute"
+    );
+    const _: () = assert!(
+        MIGRATION_MAX_WAIT_SECS <= 600,
+        "Max wait should be at most 10 minutes"
+    );
+
     /// Test that migration lock TTL is reasonable
     #[test]
-    fn test_migration_lock_ttl_reasonable() {
-        const MIGRATION_LOCK_TTL: u64 = 300; // 5 minutes
-
-        // TTL should be long enough for migrations to complete
-        assert!(MIGRATION_LOCK_TTL >= 60, "TTL should be at least 1 minute");
-
-        // But not too long to cause issues
-        assert!(MIGRATION_LOCK_TTL <= 3600, "TTL should be at most 1 hour");
-    }
+    fn test_migration_lock_ttl_reasonable() {}
 
     /// Test that migration poll interval is reasonable
     #[test]
-    fn test_migration_poll_interval_reasonable() {
-        const MIGRATION_POLL_INTERVAL_SECS: u64 = 2;
-
-        // Poll interval should not be too aggressive
-        assert!(
-            MIGRATION_POLL_INTERVAL_SECS >= 1,
-            "Poll interval should be at least 1 second"
-        );
-
-        // But not too slow
-        assert!(
-            MIGRATION_POLL_INTERVAL_SECS <= 10,
-            "Poll interval should be at most 10 seconds"
-        );
-    }
+    fn test_migration_poll_interval_reasonable() {}
 
     /// Test that max wait time is reasonable
     #[test]
-    fn test_migration_max_wait_reasonable() {
-        const MIGRATION_MAX_WAIT_SECS: u64 = 300; // 5 minutes
-
-        // Max wait should be reasonable for production deployments
-        assert!(
-            MIGRATION_MAX_WAIT_SECS >= 60,
-            "Max wait should be at least 1 minute"
-        );
-        assert!(
-            MIGRATION_MAX_WAIT_SECS <= 600,
-            "Max wait should be at most 10 minutes"
-        );
-    }
+    fn test_migration_max_wait_reasonable() {}
 
     /// Test PostgreSQL advisory lock key consistency
     #[test]

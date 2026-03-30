@@ -858,7 +858,7 @@ async fn commit_prevalidated_ticket(
         .consume_prevalidated(&ticket_commit.ticket, room_id, &ticket_commit.pending)
         .await
         .map(|_| ())
-        .map_err(AppError::from)
+        .map_err(map_websocket_ticket_validation_error)
 }
 
 async fn commit_websocket_upgrade(
@@ -1970,7 +1970,7 @@ mod tests {
         let error = commit_websocket_upgrade(&state, prepared)
             .await
             .expect_err("commit should fail when another handshake already claimed the ticket");
-        assert_eq!(error.status, StatusCode::FORBIDDEN);
+        assert_eq!(error.status, StatusCode::UNAUTHORIZED);
 
         state
             .connection_manager

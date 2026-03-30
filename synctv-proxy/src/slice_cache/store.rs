@@ -32,6 +32,16 @@ const LOCK_CLEANUP_INTERVAL: u64 = 64;
 /// Per-key Mutex to prevent thundering herd on the same slice.
 type SliceLock = Arc<Mutex<()>>;
 
+pub(super) struct FullBodyWrite<'a> {
+    pub(super) url: &'a str,
+    pub(super) provider_headers: &'a HashMap<String, String>,
+    pub(super) data: Bytes,
+    pub(super) etag: Option<&'a str>,
+    pub(super) last_modified: Option<&'a str>,
+    pub(super) content_type: Option<&'a str>,
+    pub(super) ttl: Duration,
+}
+
 /// A slice cache backed by a [`CacheBackend`] (memory or file).
 ///
 /// Each cached entry is a [`StoredEntry`] containing the `Bytes` data plus
@@ -938,16 +948,16 @@ impl SliceCache {
     }
 
     /// Insert a full-body entry into cache.
-    pub(super) async fn put_full_body(
-        &self,
-        url: &str,
-        provider_headers: &HashMap<String, String>,
-        data: Bytes,
-        etag: Option<&str>,
-        last_modified: Option<&str>,
-        content_type: Option<&str>,
-        ttl: Duration,
-    ) {
+    pub(super) async fn put_full_body(&self, write: FullBodyWrite<'_>) {
+        let FullBodyWrite {
+            url,
+            provider_headers,
+            data,
+            etag,
+            last_modified,
+            content_type,
+            ttl,
+        } = write;
         let key = Self::full_body_key(url, provider_headers);
         let entry = StoredEntry::new(data, ttl);
         // Best-effort insert; log the error if it occurs.

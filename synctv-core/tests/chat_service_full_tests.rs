@@ -95,7 +95,6 @@ fn make_chat_service_with_config(
         notification_service,
         None,
         None,
-        None,
     );
 
     let service = ChatService::new(
@@ -318,7 +317,6 @@ async fn test_send_message_rate_limit_triggers() {
         room_settings_repo,
         None,
         notification_service,
-        None,
         None,
         None,
     );
@@ -673,7 +671,6 @@ fn make_chat_service_with_broadcaster(
         Arc::new(notification_service.clone()),
         None,
         None,
-        None,
     );
 
     let mut chat_service = ChatService::new(
@@ -739,7 +736,6 @@ async fn test_send_message_broadcasts_to_room_members() {
         room_settings_repo,
         None,
         Arc::new(notification_service.clone()),
-        None,
         None,
         None,
     );

@@ -71,6 +71,11 @@ impl ChatService {
         self.notification_service = Some(service);
     }
 
+    #[must_use]
+    pub const fn room_settings_service(&self) -> &RoomSettingsService {
+        &self.room_settings_service
+    }
+
     /// Send a chat message
     ///
     /// # Arguments

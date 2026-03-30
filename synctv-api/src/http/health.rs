@@ -132,8 +132,9 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
 
     // Check Redis connectivity
     let redis_status = match check_redis_health(&state).await {
-        Ok(()) => "healthy".to_string(),
-        Err(e) => {
+        RedisHealthStatus::Healthy => "healthy".to_string(),
+        RedisHealthStatus::NotConfigured => "not configured".to_string(),
+        RedisHealthStatus::Unhealthy(e) => {
             error_messages.push(format!("Redis: {e}"));
             is_healthy = false;
             warn!("Redis health check failed: {}", e);
@@ -288,22 +289,26 @@ fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
 ///
 /// Redis readiness reflects the health of the configured Redis connection.
 ///
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RedisHealthStatus {
+    Healthy,
+    NotConfigured,
+    Unhealthy(String),
+}
+
 /// Whether Redis must exist is a configuration-layer invariant enforced during
 /// startup validation. At runtime, a missing Redis handle is treated as
 /// "not configured" rather than re-enforcing cluster configuration rules.
-async fn check_redis_health(state: &AppState) -> Result<(), String> {
-    // Resolve a fresh ConnectionManager clone from the shared RwLock.
-    // Returns None when Redis is not configured.
+async fn check_redis_health(state: &AppState) -> RedisHealthStatus {
     let redis_conn = state.resolve_redis_conn().await;
-
     check_redis_health_from_conn(redis_conn).await
 }
 
 async fn check_redis_health_from_conn(
     redis_conn: Option<redis::aio::ConnectionManager>,
-) -> Result<(), String> {
+) -> RedisHealthStatus {
     let Some(mut conn) = redis_conn else {
-        return Ok(());
+        return RedisHealthStatus::NotConfigured;
     };
 
     // Send a direct PING to verify the raw connection is responsive.
@@ -313,17 +318,17 @@ async fn check_redis_health_from_conn(
     )
     .await
     {
-        Ok(Ok(_)) => Ok(()),
+        Ok(Ok(_)) => RedisHealthStatus::Healthy,
         Ok(Err(e)) => {
             warn!("Redis health check failed: {}", e);
-            Err(format!("Redis ping failed: {e}"))
+            RedisHealthStatus::Unhealthy(format!("Redis ping failed: {e}"))
         }
         Err(_) => {
             warn!(
                 "Redis health check timed out after {}s",
                 HEALTH_CHECK_TIMEOUT.as_secs()
             );
-            Err(format!(
+            RedisHealthStatus::Unhealthy(format!(
                 "Redis health check timed out after {}s",
                 HEALTH_CHECK_TIMEOUT.as_secs()
             ))
@@ -838,9 +843,25 @@ mod tests {
     #[tokio::test]
     async fn test_check_redis_health_accepts_missing_redis_connection() {
         let result = check_redis_health_from_conn(None).await;
-        assert!(
-            result.is_ok(),
-            "missing redis should be treated as not configured"
+        assert_eq!(
+            result,
+            RedisHealthStatus::NotConfigured,
+            "missing redis should be reported as not configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_redis_health_status_reports_not_configured_without_connection() {
+        let state = test_app_state();
+        let response = readiness_check(State(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
+        let details = health.details.expect("readiness should include details");
+        assert_eq!(
+            details.redis, "not configured",
+            "single-node readiness must distinguish missing Redis from a healthy configured Redis"
         );
     }
 

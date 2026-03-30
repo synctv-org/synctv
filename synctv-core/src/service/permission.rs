@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 
 use crate::{
     cache::{CacheInvalidationService, InvalidationMessage},
@@ -25,7 +26,7 @@ use crate::{
 #[derive(Debug)]
 struct PermissionInvalidationRuntime {
     started: AtomicBool,
-    cancel: CancellationToken,
+    cancel: tokio::sync::Mutex<CancellationToken>,
     listener_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     recovery_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -34,7 +35,7 @@ impl PermissionInvalidationRuntime {
     fn new() -> Self {
         Self {
             started: AtomicBool::new(false),
-            cancel: CancellationToken::new(),
+            cancel: tokio::sync::Mutex::new(CancellationToken::new()),
             listener_handle: tokio::sync::Mutex::new(None),
             recovery_handle: tokio::sync::Mutex::new(None),
         }
@@ -81,6 +82,8 @@ impl PermissionService {
     pub const DEFAULT_CACHE_SIZE: u64 = 10_000;
     /// Default permission cache TTL in seconds (5 minutes)
     pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
+    /// Maximum time to wait for an invalidation background task to stop.
+    const INVALIDATION_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Minimum interval between `invalidate_all()` calls (seconds)
     const FLUSH_RATE_LIMIT_SECS: u64 = 10;
@@ -255,7 +258,7 @@ impl PermissionService {
         let cache_degraded = self.cache_degraded.clone();
         let last_flush_time = self.last_flush_time.clone();
         let degradation_started = self.degradation_started.clone();
-        let listener_cancel = self.invalidation_runtime.cancel.child_token();
+        let listener_cancel = self.invalidation_runtime.cancel.lock().await.child_token();
 
         let listener_handle = crate::spawn::spawn_monitored(
             "permission_invalidation_listener",
@@ -356,7 +359,7 @@ impl PermissionService {
         let degraded_cache_for_recovery = self.degraded_cache.clone();
         let cache_degraded_for_recovery = self.cache_degraded.clone();
         let degradation_started_for_recovery = self.degradation_started.clone();
-        let recovery_cancel = self.invalidation_runtime.cancel.child_token();
+        let recovery_cancel = self.invalidation_runtime.cancel.lock().await.child_token();
         let recovery_handle = crate::spawn::spawn_monitored(
             "permission_cache_recovery",
             async move {
@@ -408,7 +411,11 @@ impl PermissionService {
     }
 
     pub async fn shutdown(&self) {
-        self.invalidation_runtime.cancel.cancel();
+        let cancel = {
+            let mut runtime_cancel = self.invalidation_runtime.cancel.lock().await;
+            std::mem::replace(&mut *runtime_cancel, CancellationToken::new())
+        };
+        cancel.cancel();
 
         let listener_handle = self
             .invalidation_runtime
@@ -417,7 +424,8 @@ impl PermissionService {
             .await
             .take();
         if let Some(handle) = listener_handle {
-            let _ = handle.await;
+            Self::await_invalidation_task_shutdown("permission invalidation listener", handle)
+                .await;
         }
 
         let recovery_handle = self
@@ -427,11 +435,30 @@ impl PermissionService {
             .await
             .take();
         if let Some(handle) = recovery_handle {
-            let _ = handle.await;
+            Self::await_invalidation_task_shutdown("permission cache recovery", handle).await;
         }
         self.invalidation_runtime
             .started
             .store(false, Ordering::Release);
+    }
+
+    async fn await_invalidation_task_shutdown(name: &'static str, mut handle: JoinHandle<()>) {
+        match tokio::time::timeout(Self::INVALIDATION_TASK_SHUTDOWN_TIMEOUT, &mut handle).await {
+            Ok(Ok(())) => info!("{name} stopped"),
+            Ok(Err(error)) => warn!(%error, "{name} panicked during shutdown"),
+            Err(_) => {
+                warn!(
+                    timeout_secs = Self::INVALIDATION_TASK_SHUTDOWN_TIMEOUT.as_secs(),
+                    "{name} did not stop before timeout; aborting task"
+                );
+                handle.abort();
+                match handle.await {
+                    Ok(()) => info!("{name} aborted cleanly"),
+                    Err(error) if error.is_cancelled() => info!("{name} aborted"),
+                    Err(error) => warn!(%error, "{name} failed after abort"),
+                }
+            }
+        }
     }
 
     /// Set the room settings repository
@@ -1778,6 +1805,77 @@ mod tests {
         assert!(
             service.degradation_started.lock().is_none(),
             "recovery on a real invalidation message must clear degradation start time"
+        );
+
+        service.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_shutdown_aborts_stuck_invalidation_tasks() {
+        let service = make_service_async();
+        service
+            .invalidation_runtime
+            .started
+            .store(true, Ordering::Release);
+
+        *service.invalidation_runtime.listener_handle.lock().await = Some(tokio::spawn(async {
+            std::future::pending::<()>().await;
+        }));
+
+        let shutdown = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service.shutdown().await;
+            }
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(PermissionService::INVALIDATION_TASK_SHUTDOWN_TIMEOUT).await;
+        tokio::task::yield_now().await;
+
+        shutdown
+            .await
+            .expect("shutdown task should finish after aborting the stuck listener");
+
+        assert!(
+            !service.invalidation_runtime.started.load(Ordering::Acquire),
+            "shutdown must reset runtime state even when it had to abort a task"
+        );
+        assert!(
+            service
+                .invalidation_runtime
+                .listener_handle
+                .lock()
+                .await
+                .is_none(),
+            "shutdown must drain the stuck listener handle after aborting it"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_can_restart_after_shutdown() {
+        let (service, invalidation_service) = make_service_with_invalidation_no_rt();
+
+        service.start().await.expect("initial start should succeed");
+        service.shutdown().await;
+
+        service.cache_degraded.store(true, Ordering::Release);
+        *service.degradation_started.lock() = Some(Instant::now());
+
+        service
+            .start()
+            .await
+            .expect("restart after shutdown should succeed");
+
+        invalidation_service
+            .broadcast_all(InvalidationMessage::All)
+            .await
+            .expect("local invalidation broadcast should succeed after restart");
+        tokio::task::yield_now().await;
+
+        assert!(
+            !service.cache_degraded.load(Ordering::Acquire),
+            "restart must install fresh listener tasks that can recover degraded mode"
         );
 
         service.shutdown().await;

@@ -966,15 +966,10 @@ fn test_members_to_proto_pattern_preserves_custom_permissions() {
 
 // === P2#23: Playlist total size limit tests ===
 
-#[test]
-fn test_max_playlist_size_greater_than_batch_limit() {
-    // MAX_PLAYLIST_SIZE must be greater than per-batch limit (100)
-    // otherwise batch operations would always fail when playlist is near capacity
-    assert!(
-        super::ClientApiImpl::MAX_PLAYLIST_SIZE > 100,
-        "MAX_PLAYLIST_SIZE must exceed single batch limit"
-    );
-}
+const _: () = assert!(
+    super::ClientApiImpl::MAX_PLAYLIST_SIZE > 100,
+    "MAX_PLAYLIST_SIZE must exceed single batch limit"
+);
 
 // === E1: publish_room_cache_invalidation helper tests ===
 

@@ -242,7 +242,8 @@ mod tests {
 
     #[test]
     fn test_error_display() {
-        let err = validate_path_for_traversal("../etc").unwrap_err();
+        let err = validate_path_for_traversal("../etc")
+            .expect_err("parent-directory traversal must be rejected");
         assert!(err.to_string().contains("path traversal rejected"));
     }
 }

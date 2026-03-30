@@ -528,14 +528,13 @@ impl ClientApiImpl {
             "failed to fan out permission changes to cluster replicas",
         )
         .await
-        .map_err(|error| {
+        .inspect_err(|error| {
             tracing::warn!(
                 room_id = %room_id.as_str(),
                 target_user_id = %target_user_id.as_str(),
                 error = %error.message(),
                 "Permission change fanout failed"
             );
-            error
         })
     }
 }

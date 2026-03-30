@@ -2644,6 +2644,26 @@ mod tests {
     }
 
     #[test]
+    fn test_cluster_mode_requires_explicit_routable_advertise_host_source() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.server.advertise_host.clear();
+
+        let errors = config
+            .validate_with_env_map(&HashMap::new())
+            .expect_err("cluster mode must not fall back to implicit hostname advertise address");
+
+        assert!(
+            errors.iter().any(|e| {
+                e.contains("server.advertise_host")
+                    && e.contains("SYNCTV_SERVER_ADVERTISE_HOST")
+                    && e.contains("POD_IP")
+            }),
+            "unexpected errors: {errors:?}"
+        );
+    }
+
+    #[test]
     fn test_from_env_rejects_invalid_numeric_override() {
         let error = Config::from_env_map(&env_map(&[("SYNCTV_SERVER_HTTP_PORT", "not-a-port")]))
             .expect_err("invalid numeric override must fail closed");

@@ -44,7 +44,6 @@ impl ProdPasswordHasher {
     /// Create a new production hasher.
     ///
     /// Parameters: m_cost=65536 (64 MB), t_cost=3, p_cost=4.
-    #[must_use]
     pub fn new() -> Result<Self> {
         let params = ParamsBuilder::new()
             .m_cost(65536)
@@ -120,6 +119,12 @@ impl TestPasswordHasher {
             .build()
             .expect("test Argon2 params should build");
         Self { params }
+    }
+}
+
+impl Default for TestPasswordHasher {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -161,7 +161,7 @@ enum TargetedDelivery {
     Closed(ConnectionId),
     Retry {
         sender: MessageSender,
-        event: ClusterEvent,
+        event: Box<ClusterEvent>,
         room_id: RoomId,
         connection_id: ConnectionId,
     },
@@ -990,7 +990,7 @@ impl RoomMessageHub {
                             if reliable_target_delivery {
                                 TargetedDelivery::Retry {
                                     sender: subscriber.sender.clone(),
-                                    event,
+                                    event: Box::new(event),
                                     room_id: room_id.clone(),
                                     connection_id: subscriber.connection_id.clone(),
                                 }
@@ -1030,7 +1030,7 @@ impl RoomMessageHub {
                 room_id,
                 connection_id,
             } => {
-                match deliver_reliable_event(sender, event, room_id, connection_id.clone()).await {
+                match deliver_reliable_event(sender, *event, room_id, connection_id.clone()).await {
                     ReliableDeliveryOutcome::Delivered => 1,
                     ReliableDeliveryOutcome::Closed | ReliableDeliveryOutcome::TimedOut => {
                         self.unsubscribe(connection_id.as_str());

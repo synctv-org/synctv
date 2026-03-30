@@ -472,7 +472,7 @@ impl AlistInterface for GrpcAlistClient {
                     GRPC_REQUEST_TIMEOUT.as_secs(),
                 ))
             })?
-            .map_err(|e| AlistError::from(map_grpc_status("login", e)))?;
+            .map_err(|e| map_grpc_status("login", e))?;
         Ok(response.into_inner().token)
     }
 }

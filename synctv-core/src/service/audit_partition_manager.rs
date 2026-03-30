@@ -477,13 +477,10 @@ pub async fn ensure_audit_partitions_on_startup(pool: &PgPool) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_startup_initialization_mode_excludes_retention_cleanup_by_default() {
-        assert!(
-            !STARTUP_RUNS_RETENTION_CLEANUP,
-            "per-replica startup initialization must avoid retention cleanup DDL"
-        );
-    }
+    const _: () = assert!(
+        !STARTUP_RUNS_RETENTION_CLEANUP,
+        "per-replica startup initialization must avoid retention cleanup DDL"
+    );
 
     #[tokio::test(start_paused = true)]
     async fn test_wait_for_initial_leader_completes_before_full_check_interval() {

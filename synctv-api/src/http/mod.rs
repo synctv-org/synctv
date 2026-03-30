@@ -173,19 +173,21 @@ impl AppState {
 }
 
 /// Create the HTTP router from configuration struct
-pub fn create_router_from_config(config: RouterConfig) -> axum::Router {
-    let (router, _) = create_router_with_state_from_config(config);
-    router
+pub fn create_router_from_config(config: RouterConfig) -> anyhow::Result<axum::Router> {
+    let (router, _) = create_router_with_state_from_config(config)?;
+    Ok(router)
 }
 
 /// Create the HTTP router and the shared application state from configuration.
-pub fn create_router_with_state_from_config(config: RouterConfig) -> (axum::Router, AppState) {
+pub fn create_router_with_state_from_config(
+    config: RouterConfig,
+) -> anyhow::Result<(axum::Router, AppState)> {
     let state = build_app_state(config);
     let (timeout_router, no_timeout_router, upgrade_router) = register_all_routes(state.clone());
-    (
-        apply_global_layers(timeout_router, no_timeout_router, upgrade_router, &state),
+    Ok((
+        apply_global_layers(timeout_router, no_timeout_router, upgrade_router, &state)?,
         state,
-    )
+    ))
 }
 
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
@@ -818,7 +820,7 @@ fn register_provider_streaming_routes(state: &AppState) -> Router<AppState> {
 }
 
 /// Build CORS layer based on configuration.
-fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
+fn build_cors_layer(config: &synctv_core::Config) -> anyhow::Result<CorsLayer> {
     if config.server.cors_allowed_origins.is_empty() {
         tracing::warn!(
             "CORS policy: DENY ALL cross-origin requests (no origins configured). \
@@ -826,20 +828,20 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
              To fix, set server.cors_allowed_origins to your frontend URL(s): \
              SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='[\"https://app.example.com\"]'"
         );
-        CorsLayer::new()
+        Ok(CorsLayer::new())
     } else {
         let origins: Vec<HeaderValue> = config
             .server
             .cors_allowed_origins
             .iter()
             .map(|origin| parse_configured_cors_origin(origin))
-            .collect();
+            .collect::<anyhow::Result<Vec<_>>>()?;
         tracing::info!(
             origins = ?origins,
             "CORS: Configured with {} allowed origin(s)",
             origins.len()
         );
-        CorsLayer::new()
+        Ok(CorsLayer::new()
             .allow_origin(origins)
             .allow_methods([
                 Method::GET,
@@ -858,16 +860,16 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
                 axum::http::header::ORIGIN,
                 axum::http::header::ACCESS_CONTROL_REQUEST_METHOD,
                 axum::http::header::ACCESS_CONTROL_REQUEST_HEADERS,
-            ])
+            ]))
     }
 }
 
-fn parse_configured_cors_origin(origin: &str) -> HeaderValue {
+fn parse_configured_cors_origin(origin: &str) -> anyhow::Result<HeaderValue> {
     synctv_core::config::validate_cors_origin(origin)
-        .unwrap_or_else(|error| panic!("invalid CORS origin configured: {error}"));
+        .map_err(|error| anyhow::anyhow!("invalid CORS origin configured: {error}"))?;
 
     HeaderValue::from_str(origin)
-        .unwrap_or_else(|_| panic!("invalid CORS origin configured: `{origin}`"))
+        .map_err(|_| anyhow::anyhow!("invalid CORS origin configured: `{origin}`"))
 }
 
 /// Apply global middleware layers (CORS, body limit, timeout, security headers, HSTS,
@@ -937,7 +939,7 @@ fn apply_global_layers(
     no_timeout_router: Router<AppState>,
     upgrade_router: Router<AppState>,
     state: &AppState,
-) -> axum::Router {
+) -> anyhow::Result<axum::Router> {
     apply_global_layers_with_timeout(
         timeout_router,
         no_timeout_router,
@@ -953,8 +955,8 @@ fn apply_global_layers_with_timeout(
     upgrade_router: Router<AppState>,
     state: &AppState,
     request_timeout: std::time::Duration,
-) -> axum::Router {
-    let cors = build_cors_layer(&state.config);
+) -> anyhow::Result<axum::Router> {
+    let cors = build_cors_layer(&state.config)?;
     let trusted_proxies = state.config.server.trusted_proxies.clone();
     let hsts_value = middleware::hsts_header(63_072_000, true, false);
     let timeout_router = apply_shared_http_layers(
@@ -984,14 +986,14 @@ fn apply_global_layers_with_timeout(
     let upgrade_router =
         apply_shared_http_layers(upgrade_router, cors, trusted_proxies, hsts_value);
 
-    timeout_router
+    Ok(timeout_router
         .merge(no_timeout_router)
         .merge(upgrade_router)
         .layer(axum_middleware::from_fn(
             crate::observability::metrics_middleware::metrics_layer,
         ))
         .layer(TraceLayer::new_for_http())
-        .with_state(state.clone())
+        .with_state(state.clone()))
 }
 
 #[cfg(test)]
@@ -1069,9 +1071,11 @@ mod tests {
         )
         .expect("jwt");
         let (audit_service, _audit_handle) = AuditService::new(pool.clone());
-        let mut config = synctv_core::Config::default();
-        config.http_rate_limits = http_rate_limits;
-        config.grpc_rate_limits = grpc_rate_limits;
+        let config = synctv_core::Config {
+            http_rate_limits,
+            grpc_rate_limits,
+            ..synctv_core::Config::default()
+        };
         let router_config = RouterConfig {
             config: Arc::new(config),
             user_cache: Arc::new(
@@ -1087,7 +1091,7 @@ mod tests {
             user_service,
             room_service,
             content_filter: ContentFilter::new(),
-            provider_instance_manager: provider_instance_manager,
+            provider_instance_manager,
             user_provider_credential_repository: Arc::new(
                 synctv_core::repository::UserProviderCredentialRepository::new(pool),
             ),
@@ -1096,7 +1100,7 @@ mod tests {
             connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
                 synctv_cluster::sync::ConnectionLimits::default(),
             )),
-            jwt_service: jwt_service,
+            jwt_service,
             redis_publish_tx: None,
             oauth2_service: None,
             settings_service: None,
@@ -1138,7 +1142,6 @@ mod tests {
             synctv_core::repository::RoomSettingsRepository::new(pool.clone()),
             None,
             Arc::new(synctv_core::service::NotificationService::default()),
-            None,
             None,
             None,
         );
@@ -1579,7 +1582,8 @@ mod tests {
             Router::new(),
             &state,
             Duration::from_millis(10),
-        );
+        )
+        .expect("valid test router should build");
 
         let timeout_response = app
             .clone()
@@ -1662,7 +1666,8 @@ mod tests {
             Router::new(),
             &state,
             Duration::from_millis(10),
-        );
+        )
+        .expect("valid test router should build");
 
         let metadata_response = app
             .clone()
@@ -1746,7 +1751,7 @@ mod tests {
 
         let app = Router::new()
             .route("/test", get(|| async { "ok" }))
-            .layer(build_cors_layer(&config));
+            .layer(build_cors_layer(&config).expect("valid CORS config should build"));
 
         let response = app
             .oneshot(
@@ -1778,7 +1783,7 @@ mod tests {
             "not a valid origin".to_string(),
         ];
 
-        let result = std::panic::catch_unwind(|| build_cors_layer(&config));
+        let result = build_cors_layer(&config);
 
         assert!(
             result.is_err(),
@@ -1791,7 +1796,7 @@ mod tests {
         let mut config = synctv_core::Config::default();
         config.server.cors_allowed_origins = vec!["https://example.com/app".to_string()];
 
-        let result = std::panic::catch_unwind(|| build_cors_layer(&config));
+        let result = build_cors_layer(&config);
 
         assert!(
             result.is_err(),
@@ -1824,7 +1829,8 @@ mod tests {
             Router::new(),
             &state,
             Duration::from_millis(10),
-        );
+        )
+        .expect("valid test router should build");
 
         let response = app
             .clone()

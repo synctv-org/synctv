@@ -192,7 +192,6 @@ async fn build_providers_manager(
 ///
 /// When `redis_handles` is `None` (standalone mode without Redis), all services
 /// use in-memory fallbacks.
-
 pub async fn init_services(
     pool: PgPool,
     config: &Config,
@@ -432,21 +431,21 @@ pub async fn init_services(
 
     // Initialize RoomService after ProvidersManager so media/playback paths use
     // the same provider graph and HTTP client configuration as bootstrap.
-    let mut room_service = build_room_service(
-        pool.clone(),
-        user_service.clone(),
-        providers_manager.clone(),
-        cache_invalidation.clone(),
-        brute_force.clone(),
-        redis_handles.as_ref(),
+    let mut room_service = build_room_service(RoomServiceBuildArgs {
+        pool: pool.clone(),
+        user_service: user_service.clone(),
+        providers_manager: providers_manager.clone(),
+        cache_invalidation: cache_invalidation.clone(),
+        brute_force: brute_force.clone(),
+        redis_handles: redis_handles.as_ref(),
         cluster_mode,
-        matches!(
+        is_sentinel: matches!(
             config.redis.deployment_mode,
             crate::config::RedisDeploymentMode::Sentinel
         ),
-        &config.redis.key_prefix,
-        config.cache.l2_ttl_seconds,
-    );
+        redis_key_prefix: &config.redis.key_prefix,
+        cache_l2_ttl_seconds: config.cache.l2_ttl_seconds,
+    });
     if let Some(ref encryption) = credential_encryption_for_services {
         room_service.set_media_credential_encryption(encryption.clone());
     }
@@ -577,7 +576,6 @@ pub async fn init_services(
         room_notification_service,
         None,
         None,
-        None,
     );
     let permission_service_for_chat = room_service.permission_service().clone();
     let chat_service = ChatService::new(
@@ -697,6 +695,7 @@ async fn init_oauth2_service(
     let oauth2_service = Arc::new(oauth2_service);
 
     // 3. Initialize each provider instance using factory pattern
+    let mut registered_provider_count = 0usize;
     for instance_name in provider_instances {
         // Get the full config for this instance
         let full_config = providers_value.get(&instance_name).ok_or_else(|| {
@@ -743,15 +742,26 @@ async fn init_oauth2_service(
                 oauth2_service
                     .register_provider(instance_name.clone(), provider_enum, provider)
                     .await;
+                registered_provider_count += 1;
                 info!(
                     "Registered OAuth2 provider: {} (type: {})",
                     instance_name, provider_type
                 );
             }
             Err(e) => {
-                warn!("Failed to create OAuth2 provider {}: {}", instance_name, e);
+                return Err(anyhow::anyhow!(
+                    "Failed to create OAuth2 provider '{}': {}",
+                    instance_name,
+                    e
+                ));
             }
         }
+    }
+
+    if registered_provider_count == 0 {
+        return Err(anyhow::anyhow!(
+            "OAuth2 is configured but no providers were registered successfully"
+        ));
     }
 
     // OAuth2 state cleanup is handled automatically:
@@ -793,18 +803,32 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
     .map_err(|e| anyhow::anyhow!("Failed to initialize JWT service: {e}"))
 }
 
-fn build_room_service(
+struct RoomServiceBuildArgs<'a> {
     pool: PgPool,
     user_service: UserService,
     providers_manager: Arc<ProvidersManager>,
     cache_invalidation: Arc<CacheInvalidationService>,
     brute_force: crate::service::auth::BruteForceProtection,
-    redis_handles: Option<&RedisHandles>,
+    redis_handles: Option<&'a RedisHandles>,
     cluster_mode: bool,
     is_sentinel: bool,
-    redis_key_prefix: &str,
+    redis_key_prefix: &'a str,
     cache_l2_ttl_seconds: u64,
-) -> RoomService {
+}
+
+fn build_room_service(args: RoomServiceBuildArgs<'_>) -> RoomService {
+    let RoomServiceBuildArgs {
+        pool,
+        user_service,
+        providers_manager,
+        cache_invalidation,
+        brute_force,
+        redis_handles,
+        cluster_mode,
+        is_sentinel,
+        redis_key_prefix,
+        cache_l2_ttl_seconds,
+    } = args;
     let permission_service = PermissionService::with_invalidation(
         RoomMemberRepository::new(pool.clone()),
         RoomRepository::new(pool.clone()),
@@ -1106,18 +1130,20 @@ mod tests {
             "test:cache:stream".to_string(),
         ));
 
-        let room_service = build_room_service(
-            pool.clone(),
+        let room_service = build_room_service(RoomServiceBuildArgs {
+            pool: pool.clone(),
             user_service,
-            test_providers_manager(&pool),
+            providers_manager: test_providers_manager(&pool),
             cache_invalidation,
-            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
-            None,
-            false,
-            false,
-            "test:",
-            Config::default().cache.l2_ttl_seconds,
-        );
+            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+                "test:room".to_string(),
+            ),
+            redis_handles: None,
+            cluster_mode: false,
+            is_sentinel: false,
+            redis_key_prefix: "test:",
+            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+        });
 
         assert!(room_service.has_brute_force_service());
         assert!(!room_service.has_distributed_lock());
@@ -1133,18 +1159,7 @@ mod tests {
 
     #[test]
     fn test_build_room_service_signature_supports_redis_lock_wiring() {
-        let _: fn(
-            PgPool,
-            UserService,
-            Arc<ProvidersManager>,
-            Arc<CacheInvalidationService>,
-            crate::service::auth::BruteForceProtection,
-            Option<&RedisHandles>,
-            bool,
-            bool,
-            &str,
-            u64,
-        ) -> RoomService = build_room_service;
+        let _: fn(RoomServiceBuildArgs<'_>) -> RoomService = build_room_service;
     }
 
     #[tokio::test]
@@ -1188,18 +1203,20 @@ mod tests {
             "test:cache:stream".to_string(),
         ));
 
-        let standalone_room_service = build_room_service(
-            pool.clone(),
-            user_service.clone(),
-            test_providers_manager(&pool),
-            cache_invalidation.clone(),
-            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
-            Some(&redis_handles),
-            false,
-            false,
-            "test:",
-            Config::default().cache.l2_ttl_seconds,
-        );
+        let standalone_room_service = build_room_service(RoomServiceBuildArgs {
+            pool: pool.clone(),
+            user_service: user_service.clone(),
+            providers_manager: test_providers_manager(&pool),
+            cache_invalidation: cache_invalidation.clone(),
+            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+                "test:room".to_string(),
+            ),
+            redis_handles: Some(&redis_handles),
+            cluster_mode: false,
+            is_sentinel: false,
+            redis_key_prefix: "test:",
+            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+        });
         assert!(
             !standalone_room_service.has_distributed_lock(),
             "standalone mode should not enable distributed lock just because Redis is configured"
@@ -1209,18 +1226,20 @@ mod tests {
             "room service should wire playback L2 cache whenever Redis is configured"
         );
 
-        let cluster_room_service = build_room_service(
-            pool.clone(),
+        let cluster_room_service = build_room_service(RoomServiceBuildArgs {
+            pool: pool.clone(),
             user_service,
-            test_providers_manager(&pool),
+            providers_manager: test_providers_manager(&pool),
             cache_invalidation,
-            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
-            Some(&redis_handles),
-            true,
-            false,
-            "test:",
-            Config::default().cache.l2_ttl_seconds,
-        );
+            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+                "test:room".to_string(),
+            ),
+            redis_handles: Some(&redis_handles),
+            cluster_mode: true,
+            is_sentinel: false,
+            redis_key_prefix: "test:",
+            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+        });
         assert!(
             cluster_room_service.has_distributed_lock(),
             "cluster mode should enable distributed lock when Redis is configured"
@@ -1267,18 +1286,20 @@ mod tests {
             "node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
-        let mut room_service = build_room_service(
-            pool.clone(),
-            user_service.clone(),
-            test_providers_manager(&pool),
+        let mut room_service = build_room_service(RoomServiceBuildArgs {
+            pool: pool.clone(),
+            user_service: user_service.clone(),
+            providers_manager: test_providers_manager(&pool),
             cache_invalidation,
-            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
-            None,
-            false,
-            false,
-            "test:",
-            Config::default().cache.l2_ttl_seconds,
-        );
+            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+                "test:room".to_string(),
+            ),
+            redis_handles: None,
+            cluster_mode: false,
+            is_sentinel: false,
+            redis_key_prefix: "test:",
+            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+        });
         let settings_service = Arc::new(SettingsService::new(
             SettingsRepository::new(pool),
             PgPool::connect_lazy("postgresql://test").expect("lazy pool should build"),
@@ -1323,18 +1344,20 @@ mod tests {
         ));
         let providers_manager = test_providers_manager(&pool);
 
-        let room_service = build_room_service(
+        let room_service = build_room_service(RoomServiceBuildArgs {
             pool,
             user_service,
-            Arc::clone(&providers_manager),
+            providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
-            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
-            None,
-            false,
-            false,
-            "test:",
-            Config::default().cache.l2_ttl_seconds,
-        );
+            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+                "test:room".to_string(),
+            ),
+            redis_handles: None,
+            cluster_mode: false,
+            is_sentinel: false,
+            redis_key_prefix: "test:",
+            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+        });
 
         assert!(
             Arc::ptr_eq(room_service.media_service().providers_manager(), &providers_manager),
@@ -1373,18 +1396,20 @@ mod tests {
             "test:cache:stream".to_string(),
         ));
         let providers_manager = test_providers_manager(&pool);
-        let mut room_service = build_room_service(
+        let mut room_service = build_room_service(RoomServiceBuildArgs {
             pool,
             user_service,
-            Arc::clone(&providers_manager),
+            providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
-            crate::service::auth::BruteForceProtection::in_memory("test:room".to_string()),
-            None,
-            false,
-            false,
-            "test:",
-            Config::default().cache.l2_ttl_seconds,
-        );
+            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+                "test:room".to_string(),
+            ),
+            redis_handles: None,
+            cluster_mode: false,
+            is_sentinel: false,
+            redis_key_prefix: "test:",
+            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+        });
 
         let encryption = crate::service::CredentialEncryption::new(&[7u8; 32])
             .expect("credential encryption should construct");
@@ -1498,6 +1523,30 @@ mod tests {
         init_oauth2_service(pool, &config, None, false)
             .await
             .expect("explicit frontend/client redirect_url should be accepted");
+    }
+
+    #[tokio::test]
+    async fn test_init_oauth2_service_fails_when_configured_provider_cannot_be_created() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let mut config = Config::default();
+        config.oauth2.providers = serde_json::json!({
+            "github": {
+                "type": "github",
+                "client_id": "test-client-id",
+                "redirect_url": "synctv://oauth2/callback"
+            }
+        });
+
+        let error = init_oauth2_service(pool, &config, None, false)
+            .await
+            .expect_err("invalid configured provider must fail startup instead of being skipped");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to create OAuth2 provider"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

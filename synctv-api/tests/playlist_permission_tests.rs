@@ -16,14 +16,10 @@ use synctv_core::models::permission::PermissionBits;
 // Permission Bits Tests
 // ============================================================================
 
-#[test]
-fn test_reorder_playlist_permission_exists() {
-    // Verify REORDER_PLAYLIST permission bit is defined
-    assert!(
-        PermissionBits::REORDER_PLAYLIST > 0,
-        "REORDER_PLAYLIST permission must have a non-zero value"
-    );
-}
+const _: () = assert!(
+    PermissionBits::REORDER_PLAYLIST > 0,
+    "REORDER_PLAYLIST permission must have a non-zero value"
+);
 
 #[test]
 fn test_reorder_playlist_is_distinct_from_other_permissions() {
@@ -128,13 +124,10 @@ fn test_permission_check_with_added_permission() {
 // View Playlist Permission Tests (for read operations)
 // ============================================================================
 
-#[test]
-fn test_view_playlist_permission_exists() {
-    assert!(
-        PermissionBits::VIEW_PLAYLIST > 0,
-        "VIEW_PLAYLIST permission must have a non-zero value"
-    );
-}
+const _: () = assert!(
+    PermissionBits::VIEW_PLAYLIST > 0,
+    "VIEW_PLAYLIST permission must have a non-zero value"
+);
 
 #[test]
 fn test_all_roles_have_view_playlist_permission() {

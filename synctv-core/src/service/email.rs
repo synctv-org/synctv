@@ -960,12 +960,11 @@ mod tests {
         let service = EmailService::new(Some(fake_config)).expect("transport should build");
 
         let result = service.send_verification_code("test@example.com").await;
-        match result {
-            Ok(code) => assert!(
+        if let Ok(code) = result {
+            assert!(
                 code.is_empty(),
                 "Production mode must NOT return the verification code, got: {code}"
-            ),
-            Err(_) => {} // SMTP connection failure is fine as long as no code leaks
+            );
         }
     }
 
@@ -986,12 +985,11 @@ mod tests {
         // on success it would return empty string (verified by code inspection).
         let result = service.send_verification_code("test@example.com").await;
         // Either error (SMTP fails) or empty string (email sent) -- never the raw code
-        match result {
-            Ok(code) => assert!(
+        if let Ok(code) = result {
+            assert!(
                 code.is_empty(),
                 "Production mode must NOT return the verification code, got: {code}"
-            ),
-            Err(_) => {} // SMTP failure is expected with fake config, code is not leaked
+            );
         }
     }
 

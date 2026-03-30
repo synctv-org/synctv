@@ -302,6 +302,11 @@ fn docker_rm_force_with_program(program: &str, container_ref: &str) -> Result<()
     Err(format_command_failure(program, &args, &output))
 }
 
+fn startup_error_is_retriable(err: &str) -> bool {
+    let err = err.to_ascii_lowercase();
+    err.contains("marked for removal") || err.contains("no such container")
+}
+
 fn format_command_failure(program: &str, args: &[&str], output: &std::process::Output) -> String {
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -467,31 +472,48 @@ async fn resolve_host_port(
     internal_port: u16,
     db_name: &str,
 ) -> (String, u16) {
-    let host = container
-        .get_host()
-        .await
-        .expect("Failed to get Postgres host")
-        .to_string();
-    let ports = container
-        .ports()
-        .await
-        .expect("Failed to inspect Postgres port mappings");
-    let endpoints = candidate_endpoints_for_host(
-        &host,
-        ports.map_to_host_port_ipv4(internal_port),
-        ports.map_to_host_port_ipv6(internal_port),
-    );
-
-    assert!(
-        !endpoints.is_empty(),
-        "Failed to resolve Postgres endpoint for host {host}"
-    );
-
     let deadline = std::time::Instant::now() + docker_startup_timeout();
     let mut retries = 0u32;
-    let mut last_error = None;
+    let mut last_error: Option<String> = None;
 
     while std::time::Instant::now() < deadline {
+        let host = match container.get_host().await {
+            Ok(host) => host.to_string(),
+            Err(err) => {
+                last_error = Some(format!("failed to get Postgres host: {err}"));
+                retries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                continue;
+            }
+        };
+
+        let ports = match container.ports().await {
+            Ok(ports) => ports,
+            Err(err) => {
+                last_error = Some(format!("failed to inspect Postgres port mappings: {err}"));
+                retries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                continue;
+            }
+        };
+
+        let endpoints = candidate_endpoints_for_host(
+            &host,
+            ports.map_to_host_port_ipv4(internal_port),
+            ports.map_to_host_port_ipv6(internal_port),
+        );
+
+        if endpoints.is_empty() {
+            last_error = Some(format!(
+                "failed to resolve Postgres endpoint for host {host}: ipv4={:?}, ipv6={:?}",
+                ports.map_to_host_port_ipv4(internal_port),
+                ports.map_to_host_port_ipv6(internal_port)
+            ));
+            retries += 1;
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            continue;
+        }
+
         for (candidate_host, candidate_port) in &endpoints {
             let connect_options = PgConnectOptions::new()
                 .host(candidate_host)
@@ -510,7 +532,7 @@ async fn resolve_host_port(
                     drop(conn);
                     return (candidate_host.clone(), *candidate_port);
                 }
-                Err(err) => last_error = Some(err),
+                Err(err) => last_error = Some(err.to_string()),
             }
         }
 
@@ -521,9 +543,8 @@ async fn resolve_host_port(
     panic!(
         "PostgreSQL not ready within {:?} after {retries} retries across endpoints {:?}: {}",
         docker_startup_timeout(),
-        endpoints,
+        "dynamic",
         last_error
-            .map(|err| err.to_string())
             .unwrap_or_else(|| "connection attempts did not yield an error".to_string())
     );
 }
@@ -745,13 +766,36 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
     .expect("postgres startup lock task should not panic");
 
     let container_name = shared_container_name();
-    let postgres = tokio::time::timeout(
-        docker_startup_timeout(),
-        named_postgres_request(ADMIN_DATABASE, &container_name).start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Postgres container");
+    let start_deadline = std::time::Instant::now() + docker_startup_timeout();
+    let postgres = loop {
+        match tokio::time::timeout(
+            docker_startup_timeout(),
+            named_postgres_request(ADMIN_DATABASE, &container_name).start(),
+        )
+        .await
+        {
+            Ok(Ok(container)) => break container,
+            Ok(Err(err)) => {
+                let err_string = err.to_string();
+                if startup_error_is_retriable(&err_string)
+                    && std::time::Instant::now() < start_deadline
+                {
+                    eprintln!(
+                        "warning: transient Postgres container startup error for {container_name}, retrying: {err_string}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+                panic!("Failed to start Postgres container: {err}");
+            }
+            Err(_) => {
+                panic!(
+                    "Docker container startup timed out after {:?} (is Docker running?)",
+                    docker_startup_timeout()
+                );
+            }
+        }
+    };
 
     let (host, port) = resolve_host_port(&postgres, 5432, ADMIN_DATABASE).await;
     let admin_connect_options = PgConnectOptions::new()
@@ -1071,6 +1115,21 @@ mod tests {
             err.contains("failed to spawn `synctv-command-that-should-not-exist`"),
             "error should include the missing program: {err}"
         );
+    }
+
+    #[test]
+    fn startup_error_is_retriable_for_known_container_lifecycle_races() {
+        assert!(startup_error_is_retriable("No such container: abc123"));
+        assert!(startup_error_is_retriable(
+            "DockerResponseServerError { status_code: 404, message: \"No such container\" }"
+        ));
+        assert!(startup_error_is_retriable("container is marked for removal"));
+        assert!(startup_error_is_retriable(
+            "DockerResponseServerError { status_code: 409, message: \"container is marked for removal\" }"
+        ));
+        assert!(!startup_error_is_retriable("404 gateway from registry mirror"));
+        assert!(!startup_error_is_retriable("409 conflict during start"));
+        assert!(!startup_error_is_retriable("authentication failed"));
     }
 
     #[test]

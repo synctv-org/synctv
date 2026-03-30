@@ -417,6 +417,44 @@ impl ShutdownHook for PermissionServiceShutdownHook {
     }
 }
 
+/// Stops the playback cache invalidation listener task.
+pub struct PlaybackServiceShutdownHook {
+    pub service: synctv_core::service::PlaybackService,
+}
+
+impl ShutdownHook for PlaybackServiceShutdownHook {
+    fn name(&self) -> &'static str {
+        "playback_service"
+    }
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            self.service.shutdown().await;
+        })
+    }
+}
+
+/// Stops the room settings cache invalidation listener task used by ChatService.
+pub struct RoomSettingsServiceShutdownHook {
+    pub service: synctv_core::service::RoomSettingsService,
+}
+
+impl ShutdownHook for RoomSettingsServiceShutdownHook {
+    fn name(&self) -> &'static str {
+        "room_settings_service"
+    }
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            self.service.shutdown().await;
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -224,8 +224,7 @@ impl RoomService {
     /// Wire the cache invalidation service into the inner playback service
     /// so it can broadcast invalidation messages to other replicas on updates.
     pub fn set_playback_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
-        self.playback_service
-            .set_invalidation_service(service, None);
+        self.playback_service.set_invalidation_service(service);
     }
 
     /// Wire the playback L2 cache into the inner playback service.

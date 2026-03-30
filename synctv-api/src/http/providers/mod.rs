@@ -506,6 +506,7 @@ mod tests {
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: None,
         })
+        .expect("provider test router should build")
         .1
     }
 
@@ -624,6 +625,7 @@ mod tests {
                 heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
                 providers_manager: None,
             })
+            .expect("provider test router should build")
             .1;
 
         let registry = ProxyProviderRegistry::new();

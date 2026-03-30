@@ -835,7 +835,7 @@ impl K8sLeaderElector {
             let elapsed = lost_at.elapsed();
 
             if elapsed < grace_period {
-                Some(grace_period.checked_sub(elapsed).unwrap())
+                Some(grace_period.saturating_sub(elapsed))
             } else {
                 None
             }

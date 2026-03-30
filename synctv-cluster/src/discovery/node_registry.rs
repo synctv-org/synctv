@@ -246,10 +246,10 @@ impl NodeRegistry {
         nodes
             .into_iter()
             .filter(|node| {
-                !node
+                node
                     .metadata
                     .get("discovery")
-                    .is_some_and(|value| value == "k8s_dns")
+                    .is_none_or(|value| value != "k8s_dns")
             })
             .collect()
     }

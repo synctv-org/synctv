@@ -498,7 +498,11 @@ mod tests {
         // Use a global IP range (Cloudflare's 104.16.0.0/12) to test custom deny rules.
         // Non-global ranges like 203.0.113.0/24 are already blocked by default.
         let guard = SsrfGuard::builder()
-            .extra_denied_ip_range("104.16.0.0/12".parse().unwrap())
+            .extra_denied_ip_range(
+                "104.16.0.0/12"
+                    .parse()
+                    .expect("test CIDR must parse successfully"),
+            )
             .build();
         // Custom denied range is blocked
         assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(104, 16, 0, 1))));

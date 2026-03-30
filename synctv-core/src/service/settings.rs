@@ -1054,8 +1054,7 @@ mod tests {
                 .is_some_and(|v| *v == "true");
             let must_no_need_pwd = batch_map
                 .get("room.room_must_no_need_pwd")
-                .is_some_and(|v| *v == "true")
-                || false; // Would read from DB as false
+                .is_some_and(|v| *v == "true"); // Would read from DB as false
 
             let is_valid = !(must_need_pwd && must_no_need_pwd);
             assert!(
@@ -1073,27 +1072,6 @@ mod tests {
             assert!(
                 expected_msg.contains("cannot both be true"),
                 "Error message should explain the mutual exclusion"
-            );
-        }
-
-        /// Test: Cross-validation should happen within transaction
-        /// (this is a documentation test - actual DB test requires integration test)
-        #[test]
-        fn test_cross_validation_uses_transaction_for_consistency() {
-            // The update_batch method uses:
-            // 1. BEGIN TRANSACTION
-            // 2. SELECT ... FOR UPDATE (to lock rows)
-            // 3. Cross-validate using fresh DB reads for missing settings
-            // 4. UPDATE all settings
-            // 5. COMMIT
-
-            // This prevents race conditions where two replicas could
-            // simultaneously set contradictory values based on stale cache reads.
-            // The FOR UPDATE lock ensures only one replica can modify at a time.
-
-            assert!(
-                true,
-                "Cross-validation uses database transaction with row locking"
             );
         }
 

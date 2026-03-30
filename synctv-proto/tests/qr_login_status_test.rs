@@ -28,16 +28,25 @@ fn test_qr_login_status_values() {
 fn test_qr_login_status_from_i32() {
     // Prost uses try_from for i32 -> enum conversion
     assert_eq!(
-        QrLoginStatus::try_from(0).unwrap(),
+        QrLoginStatus::try_from(0).expect("0 must map to Unspecified"),
         QrLoginStatus::Unspecified
     );
-    assert_eq!(QrLoginStatus::try_from(1).unwrap(), QrLoginStatus::Expired);
     assert_eq!(
-        QrLoginStatus::try_from(2).unwrap(),
+        QrLoginStatus::try_from(1).expect("1 must map to Expired"),
+        QrLoginStatus::Expired
+    );
+    assert_eq!(
+        QrLoginStatus::try_from(2).expect("2 must map to NotScanned"),
         QrLoginStatus::NotScanned
     );
-    assert_eq!(QrLoginStatus::try_from(3).unwrap(), QrLoginStatus::Scanned);
-    assert_eq!(QrLoginStatus::try_from(4).unwrap(), QrLoginStatus::Success);
+    assert_eq!(
+        QrLoginStatus::try_from(3).expect("3 must map to Scanned"),
+        QrLoginStatus::Scanned
+    );
+    assert_eq!(
+        QrLoginStatus::try_from(4).expect("4 must map to Success"),
+        QrLoginStatus::Success
+    );
 
     // Unknown values should return error (prost strict mode)
     assert!(QrLoginStatus::try_from(5).is_err());

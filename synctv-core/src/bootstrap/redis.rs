@@ -372,13 +372,13 @@ async fn init_sentinel(
             "Sentinel master health check started (interval: 5s, failover threshold: 3 failures)"
         );
 
-        return Ok(RedisInit {
+        Ok(RedisInit {
             handles: Some(RedisHandles {
                 client,
                 conn: shared_conn,
             }),
             sentinel_health_check_task: Some(health_check_task),
-        });
+        })
     }
 }
 

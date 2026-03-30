@@ -397,6 +397,15 @@ impl RemoteProviderManager {
             crate::Error::InvalidInput(format!("SSRF validation: invalid URL: {e}"))
         })?;
 
+        match url.scheme() {
+            "grpc" | "http" | "https" => {}
+            scheme => {
+                return Err(crate::Error::InvalidInput(format!(
+                    "Remote provider endpoint scheme '{scheme}' is not supported; use grpc:// or http:// for plaintext gRPC, or https:// for TLS"
+                )))
+            }
+        }
+
         let host = url.host_str().ok_or_else(|| {
             crate::Error::InvalidInput("SSRF validation: missing host".to_string())
         })?;
@@ -434,6 +443,41 @@ impl RemoteProviderManager {
         Ok(())
     }
 
+    fn normalized_transport_endpoint(config: &ProviderInstance) -> crate::Result<String> {
+        let url = url::Url::parse(&config.endpoint).map_err(|e| {
+            crate::Error::InvalidInput(format!("Remote provider endpoint is invalid: {e}"))
+        })?;
+
+        let normalized_scheme = match url.scheme() {
+            "grpc" | "http" => "http",
+            "https" => "https",
+            scheme => {
+                return Err(crate::Error::InvalidInput(format!(
+                    "Remote provider endpoint scheme '{scheme}' is not supported; use grpc:// or http:// for plaintext gRPC, or https:// for TLS"
+                )))
+            }
+        };
+
+        let host = url.host_str().ok_or_else(|| {
+            crate::Error::InvalidInput("Remote provider endpoint is missing host".to_string())
+        })?;
+        let mut normalized = format!("{normalized_scheme}://{host}");
+        if let Some(port) = url.port() {
+            normalized.push(':');
+            normalized.push_str(&port.to_string());
+        }
+        let path = url.path();
+        if !path.is_empty() && path != "/" {
+            normalized.push_str(path);
+        }
+        if let Some(query) = url.query() {
+            normalized.push('?');
+            normalized.push_str(query);
+        }
+
+        Ok(normalized)
+    }
+
     /// Validate endpoint and timeout without creating or connecting a channel.
     fn validate_config(
         config: &ProviderInstance,
@@ -442,6 +486,39 @@ impl RemoteProviderManager {
         config.parse_timeout().map_err(crate::Error::Internal)?;
         if Self::requires_remote_connection(config) {
             Self::validate_endpoint_ssrf(&config.endpoint)?;
+            let endpoint = url::Url::parse(&config.endpoint).map_err(|e| {
+                crate::Error::InvalidInput(format!("Remote provider endpoint is invalid: {e}"))
+            })?;
+
+            match (endpoint.scheme(), config.tls) {
+                ("https", false) => {
+                    return Err(crate::Error::InvalidInput(format!(
+                        "Remote provider endpoint '{}' requires tls=true to match its https:// scheme",
+                        config.endpoint
+                    )));
+                }
+                ("http" | "grpc", true) => {
+                    return Err(crate::Error::InvalidInput(format!(
+                        "Remote provider endpoint '{}' requires tls=false to match its {}:// scheme",
+                        config.endpoint,
+                        endpoint.scheme()
+                    )));
+                }
+                _ => {}
+            }
+
+            if config.insecure_tls && !config.tls {
+                return Err(crate::Error::InvalidInput(
+                    "insecure_tls=true requires tls=true for remote provider instances"
+                        .to_string(),
+                ));
+            }
+
+            if config.custom_ca.is_some() && !config.tls {
+                return Err(crate::Error::InvalidInput(
+                    "custom_ca requires tls=true for remote provider instances".to_string(),
+                ));
+            }
             match mode {
                 RemoteConfigValidationMode::RequireAuthSecret => {
                     validate_auth_secret(Some(Self::required_auth_secret(config)?))
@@ -622,17 +699,16 @@ impl RemoteProviderManager {
             });
 
             let mut resolved = tokio::net::lookup_host((host, port)).await?;
-            let address = resolved.find_map(|addr| {
-                if guard.is_ip_blocked(&addr.ip()) {
+            let address = resolved.find(|addr| {
+                let blocked = guard.is_ip_blocked(&addr.ip());
+                if blocked {
                     tracing::warn!(
                         host,
                         ip = %addr.ip(),
                         "Blocked remote provider connection due to SSRF policy during DNS resolution"
                     );
-                    None
-                } else {
-                    Some(addr)
                 }
+                !blocked
             });
 
             let address = address.ok_or_else(|| {
@@ -664,7 +740,8 @@ impl RemoteProviderManager {
         let timeout = config.parse_timeout().map_err(crate::Error::Internal)?;
 
         // Create endpoint
-        let mut endpoint = Endpoint::from_shared(config.endpoint.clone())
+        let transport_endpoint = Self::normalized_transport_endpoint(config)?;
+        let mut endpoint = Endpoint::from_shared(transport_endpoint)
             .map_err(|e| crate::Error::Internal(format!("Invalid endpoint: {e}")))?
             .timeout(timeout)
             .tcp_keepalive(Some(Duration::from_secs(30)))
@@ -1320,7 +1397,26 @@ impl RemoteProviderManager {
 mod tests {
     use super::*;
     use crate::cache::CacheInvalidationService;
+    use crate::models::ProviderInstance;
     use crate::repository::ProviderInstanceRepository;
+    use chrono::Utc;
+
+    fn remote_instance(endpoint: &str) -> ProviderInstance {
+        ProviderInstance {
+            name: "remote".to_string(),
+            endpoint: endpoint.to_string(),
+            comment: None,
+            jwt_secret: Some("remote-provider-test-secret".to_string()),
+            custom_ca: None,
+            timeout: "5s".to_string(),
+            tls: false,
+            insecure_tls: false,
+            providers: vec!["alist".to_string()],
+            enabled: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn start_invalidation_listener_does_not_wait_for_fake_readiness() {
@@ -1347,5 +1443,100 @@ mod tests {
         );
 
         manager.shutdown().await;
+    }
+
+    #[test]
+    fn validate_config_accepts_legacy_grpc_endpoint_scheme() {
+        let config = remote_instance("grpc://provider.example.com:50051");
+
+        RemoteProviderManager::validate_config(
+            &config,
+            RemoteConfigValidationMode::RequireAuthSecret,
+        )
+        .expect("legacy grpc:// endpoint should remain valid");
+    }
+
+    #[test]
+    fn validate_config_accepts_tls_enabled_legacy_grpc_endpoint_scheme() {
+        let mut config = remote_instance("grpc://provider.example.com:50051");
+        config.tls = true;
+
+        RemoteProviderManager::validate_config(
+            &config,
+            RemoteConfigValidationMode::RequireAuthSecret,
+        )
+        .expect("grpc:// endpoint with tls=true should remain valid");
+    }
+
+    #[test]
+    fn validate_config_rejects_https_endpoint_without_tls() {
+        let config = remote_instance("https://provider.example.com:50051");
+
+        let err = RemoteProviderManager::validate_config(
+            &config,
+            RemoteConfigValidationMode::RequireAuthSecret,
+        )
+        .expect_err("https endpoints must require tls=true");
+
+        assert!(
+            err.to_string().contains("tls=true"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_http_endpoint_with_tls_enabled() {
+        let mut config = remote_instance("http://provider.example.com:50051");
+        config.tls = true;
+
+        let err = RemoteProviderManager::validate_config(
+            &config,
+            RemoteConfigValidationMode::RequireAuthSecret,
+        )
+        .expect_err("plaintext http endpoints must require tls=false");
+
+        assert!(
+            err.to_string().contains("tls=false"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_custom_ca_without_tls() {
+        let mut config = remote_instance("http://provider.example.com:50051");
+        config.custom_ca = Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----".to_string());
+
+        let err = RemoteProviderManager::validate_config(
+            &config,
+            RemoteConfigValidationMode::RequireAuthSecret,
+        )
+        .expect_err("custom CA must not be accepted for plaintext endpoints");
+
+        assert!(
+            err.to_string().contains("custom_ca requires tls=true"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_config_accepts_https_endpoint_with_tls() {
+        let mut config = remote_instance("https://provider.example.com:50051");
+        config.tls = true;
+
+        RemoteProviderManager::validate_config(
+            &config,
+            RemoteConfigValidationMode::RequireAuthSecret,
+        )
+        .expect("https endpoint with tls=true should pass validation");
+    }
+
+    #[test]
+    fn normalized_transport_endpoint_maps_grpc_to_http() {
+        let config = remote_instance("grpc://provider.example.com:50051");
+
+        let normalized = RemoteProviderManager::normalized_transport_endpoint(&config)
+            .expect("grpc:// endpoint should normalize to a tonic transport URL");
+
+        assert_eq!(normalized, "http://provider.example.com:50051");
     }
 }

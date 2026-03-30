@@ -3566,9 +3566,7 @@ mod tests {
         PermissionService, RateLimitConfig, RateLimiter, RoomService, RoomSettingsService,
         UserService,
     };
-    use synctv_core_testing::{
-        start_dedicated_redis_url_with_label, start_redis_url_with_label, RedisContainer,
-    };
+    use synctv_core_testing::{start_dedicated_redis_url_with_label, RedisContainer};
 
     fn room_id() -> RoomId {
         RoomId("room_test".to_string())
@@ -3846,7 +3844,6 @@ mod tests {
             room_settings_repo,
             None,
             Arc::new(NotificationService::default()),
-            None,
             None,
             None,
         );

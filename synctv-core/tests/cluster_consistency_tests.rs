@@ -408,7 +408,11 @@ async fn test_playback_state_cross_replica_sync() {
         ),
         synctv_core::repository::MediaRepository::new(pool.clone()),
     );
-    playback_service_a.set_invalidation_service(cache_invalidation_1.clone(), None);
+    playback_service_a.set_invalidation_service(cache_invalidation_1.clone());
+    playback_service_a
+        .start()
+        .await
+        .expect("playback invalidation listener A should start");
 
     let mut playback_service_b = PlaybackService::new(
         playback_repo.clone(),
@@ -430,7 +434,11 @@ async fn test_playback_state_cross_replica_sync() {
         ),
         synctv_core::repository::MediaRepository::new(pool.clone()),
     );
-    playback_service_b.set_invalidation_service(cache_invalidation_2.clone(), None);
+    playback_service_b.set_invalidation_service(cache_invalidation_2.clone());
+    playback_service_b
+        .start()
+        .await
+        .expect("playback invalidation listener B should start");
 
     // Node A: Initialize playback state
     let initial_state = playback_repo

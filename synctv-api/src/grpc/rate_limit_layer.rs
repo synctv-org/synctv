@@ -275,9 +275,11 @@ fn notification_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
 /// - Authenticated account-management methods: Write tier
 fn oauth2_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
-        Some("GetAuthorizationUrl" | "ListAvailableProviders") => GrpcRateLimitTier::Read,
+        Some("GetAuthorizationUrl" | "ListAvailableProviders" | "GetLinkedProviders") => {
+            GrpcRateLimitTier::Read
+        }
         Some("ExchangeAuthorizationCode") => GrpcRateLimitTier::Auth,
-        Some("GetAuthorizationUrlForBind" | "UnlinkProvider" | "GetLinkedProviders") => {
+        Some("GetAuthorizationUrlForBind" | "UnlinkProvider") => {
             GrpcRateLimitTier::Write
         }
         _ => GrpcRateLimitTier::Auth,
@@ -770,7 +772,7 @@ mod tests {
         );
         assert_eq!(
             tier_from_path("/synctv.client.OAuth2Service/GetLinkedProviders"),
-            Some(GrpcRateLimitTier::Write)
+            Some(GrpcRateLimitTier::Read)
         );
     }
 

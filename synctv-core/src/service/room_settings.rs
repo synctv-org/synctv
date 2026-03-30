@@ -23,6 +23,10 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 
 use crate::{
     cache::{CacheInvalidationService, InvalidationMessage, SingleFlight},
@@ -33,10 +37,28 @@ use crate::{
 };
 
 /// Room settings service with caching
+#[derive(Debug)]
+struct RoomSettingsInvalidationRuntime {
+    started: AtomicBool,
+    cancel: tokio::sync::Mutex<CancellationToken>,
+    listener_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+}
+
+impl RoomSettingsInvalidationRuntime {
+    fn new() -> Self {
+        Self {
+            started: AtomicBool::new(false),
+            cancel: tokio::sync::Mutex::new(CancellationToken::new()),
+            listener_handle: tokio::sync::Mutex::new(None),
+        }
+    }
+}
+
 pub struct RoomSettingsService {
     repo: RoomSettingsRepository,
     cache: Arc<moka::future::Cache<RoomId, RoomSettings>>,
     invalidation_service: Option<Arc<CacheInvalidationService>>,
+    invalidation_runtime: Arc<RoomSettingsInvalidationRuntime>,
     notification_service: Arc<NotificationService>,
     /// `SingleFlight` to prevent thundering herd on cache miss.
     /// Uses `String` key (`room_id`) and `String` error (since `Error` is not `Clone`).
@@ -57,6 +79,7 @@ impl Clone for RoomSettingsService {
             repo: self.repo.clone(),
             cache: self.cache.clone(),
             invalidation_service: self.invalidation_service.clone(),
+            invalidation_runtime: self.invalidation_runtime.clone(),
             notification_service: self.notification_service.clone(),
             single_flight: self.single_flight.clone(), // Arc-backed, shares state
         }
@@ -70,6 +93,8 @@ impl RoomSettingsService {
     const MAX_RETRIES: u32 = 3;
     /// Base backoff in milliseconds (exponential: 5ms, 10ms, 20ms)
     const BACKOFF_BASE_MS: u64 = 5;
+    /// Maximum time to wait for the invalidation listener to stop.
+    const INVALIDATION_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Create a new room settings service
     ///
@@ -83,7 +108,6 @@ impl RoomSettingsService {
         notification_service: Arc<NotificationService>,
         cache_ttl_secs: Option<u64>,
         cache_max_capacity: Option<u64>,
-        cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Self {
         let ttl = cache_ttl_secs.unwrap_or(Self::CACHE_TTL_SECS);
         let capacity = cache_max_capacity.unwrap_or(Self::CACHE_MAX_CAPACITY);
@@ -94,21 +118,53 @@ impl RoomSettingsService {
                 .build(),
         );
 
-        let service = Self {
+        Self {
             repo,
             cache,
             invalidation_service,
+            invalidation_runtime: Arc::new(RoomSettingsInvalidationRuntime::new()),
             notification_service,
             single_flight: SingleFlight::new(),
+        }
+    }
+
+    pub fn has_invalidation_service(&self) -> bool {
+        self.invalidation_service.is_some()
+    }
+
+    #[cfg(test)]
+    fn invalidation_task_started(&self) -> bool {
+        self.invalidation_runtime.started.load(Ordering::Acquire)
+    }
+
+    pub async fn start(&self) -> Result<()> {
+        let Some(inv_service) = self.invalidation_service.clone() else {
+            return Ok(());
         };
 
-        // Start invalidation listener if CacheInvalidationService is available
-        if let Some(ref inv_service) = service.invalidation_service {
-            let cache_clone = service.cache.clone();
-            let mut receiver = inv_service.subscribe();
-            let cancel = cancel.unwrap_or_default();
+        if self
+            .invalidation_runtime
+            .started
+            .swap(true, Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+
+        if tokio::runtime::Handle::try_current().is_err() {
+            self.invalidation_runtime
+                .started
+                .store(false, Ordering::Release);
+            return Err(Error::Internal(
+                "RoomSettingsService::start requires a Tokio runtime".to_string(),
+            ));
+        }
+
+        let cache_clone = self.cache.clone();
+        let mut receiver = inv_service.subscribe();
+        let cancel = self.invalidation_runtime.cancel.lock().await.child_token();
+
+        let listener_handle =
             crate::spawn::spawn_monitored("room_settings_invalidation_listener", async move {
-                // Rate-limit lag-triggered flushes (consistent with CacheManager)
                 const LAG_FLUSH_MIN_INTERVAL: std::time::Duration =
                     std::time::Duration::from_secs(5);
                 let mut last_lag_flush = std::time::Instant::now()
@@ -135,9 +191,7 @@ impl RoomSettingsService {
                                     cache_clone.invalidate_all();
                                     tracing::debug!("All room settings cache cleared (cross-replica)");
                                 }
-                                Ok(_) => {
-                                    // Other invalidation types are handled elsewhere
-                                }
+                                Ok(_) => {}
                                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                                     tracing::debug!("Room settings invalidation channel closed");
                                     break;
@@ -167,9 +221,51 @@ impl RoomSettingsService {
                     }
                 }
             });
+
+        *self.invalidation_runtime.listener_handle.lock().await = Some(listener_handle);
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) {
+        let cancel = {
+            let mut runtime_cancel = self.invalidation_runtime.cancel.lock().await;
+            std::mem::replace(&mut *runtime_cancel, CancellationToken::new())
+        };
+        cancel.cancel();
+
+        let listener_handle = self
+            .invalidation_runtime
+            .listener_handle
+            .lock()
+            .await
+            .take();
+        if let Some(handle) = listener_handle {
+            Self::await_invalidation_task_shutdown("room settings invalidation listener", handle)
+                .await;
         }
 
-        service
+        self.invalidation_runtime
+            .started
+            .store(false, Ordering::Release);
+    }
+
+    async fn await_invalidation_task_shutdown(name: &'static str, mut handle: JoinHandle<()>) {
+        match tokio::time::timeout(Self::INVALIDATION_TASK_SHUTDOWN_TIMEOUT, &mut handle).await {
+            Ok(Ok(())) => info!("{name} stopped"),
+            Ok(Err(error)) => warn!(%error, "{name} panicked during shutdown"),
+            Err(_) => {
+                warn!(
+                    timeout_secs = Self::INVALIDATION_TASK_SHUTDOWN_TIMEOUT.as_secs(),
+                    "{name} did not stop before timeout; aborting task"
+                );
+                handle.abort();
+                match handle.await {
+                    Ok(()) => info!("{name} aborted cleanly"),
+                    Err(error) if error.is_cancelled() => info!("{name} aborted"),
+                    Err(error) => warn!(%error, "{name} failed after abort"),
+                }
+            }
+        }
     }
 
     /// Get room settings with caching
@@ -431,6 +527,29 @@ pub struct CacheStats {
 mod tests {
     use super::*;
     use crate::cache::CacheInvalidationService;
+    use crate::repository::RoomSettingsRepository;
+    use crate::service::notification::NotificationService;
+    use sqlx::PgPool;
+
+    fn make_room_settings_service_for_lifecycle_tests(
+    ) -> (RoomSettingsService, Arc<CacheInvalidationService>, RoomId) {
+        let pool = PgPool::connect_lazy("postgres://localhost/test")
+            .expect("lazy postgres pool for unit tests should build");
+        let room_id = RoomId::from_string("room-settings-stop".to_string());
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "synctv:test:room-settings".to_string(),
+        ));
+        let service = RoomSettingsService::new(
+            RoomSettingsRepository::new(pool),
+            Some(invalidation_service.clone()),
+            Arc::new(NotificationService::default()),
+            None,
+            None,
+        );
+        (service, invalidation_service, room_id)
+    }
 
     #[tokio::test]
     async fn test_invalidation_via_streams() {
@@ -497,5 +616,75 @@ mod tests {
     async fn test_cache_invalidation() {
         // Placeholder: integration test for RoomSettingsService cache invalidation
         // would require a full TestInfra with PostgreSQL
+    }
+
+    #[tokio::test]
+    async fn test_invalidation_listener_stops_after_shutdown() {
+        let (service, invalidation_service, room_id) = make_room_settings_service_for_lifecycle_tests();
+
+        service
+            .start()
+            .await
+            .expect("room settings invalidation listener should start");
+        assert!(
+            service.invalidation_task_started(),
+            "start() must mark room settings invalidation runtime as running"
+        );
+
+        service
+            .cache
+            .insert(room_id.clone(), RoomSettings::default())
+            .await;
+
+        service.shutdown().await;
+
+        invalidation_service
+            .broadcast_all(InvalidationMessage::RoomSettings {
+                room_id: room_id.as_str().to_string(),
+            })
+            .await
+            .expect("local invalidation broadcast should succeed");
+        tokio::task::yield_now().await;
+
+        assert!(
+            service.cache.get(&room_id).await.is_some(),
+            "room settings listener should have stopped once invalidation service shutdown begins"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_can_restart_room_settings_invalidation_listener_after_shutdown() {
+        let (service, invalidation_service, room_id) = make_room_settings_service_for_lifecycle_tests();
+
+        service
+            .start()
+            .await
+            .expect("initial room settings invalidation start should succeed");
+        service.shutdown().await;
+
+        service
+            .cache
+            .insert(room_id.clone(), RoomSettings::default())
+            .await;
+
+        service
+            .start()
+            .await
+            .expect("restart after room settings invalidation shutdown should succeed");
+
+        invalidation_service
+            .broadcast_all(InvalidationMessage::RoomSettings {
+                room_id: room_id.as_str().to_string(),
+            })
+            .await
+            .expect("local invalidation broadcast should succeed after restart");
+        tokio::task::yield_now().await;
+
+        assert!(
+            service.cache.get(&room_id).await.is_none(),
+            "restarted room settings listener should invalidate cache entries again"
+        );
+
+        service.shutdown().await;
     }
 }

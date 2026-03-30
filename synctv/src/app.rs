@@ -33,8 +33,9 @@ use crate::cluster_bridge::{ClusterMemberEventBroadcaster, ClusterPlaybackBroadc
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
     AuditFlushHook, CacheInvalidationStopHook, ClusterManagerShutdownHook,
-    HealthMonitorShutdownHook, PermissionServiceShutdownHook, ProviderInvalidationHook,
-    SettingsListenHook, ShutdownCoordinator,
+    HealthMonitorShutdownHook, PermissionServiceShutdownHook, PlaybackServiceShutdownHook,
+    ProviderInvalidationHook, RoomSettingsServiceShutdownHook, SettingsListenHook,
+    ShutdownCoordinator,
 };
 
 /// Infrastructure: Redis (optional), Database, `NodeID`.
@@ -621,6 +622,44 @@ impl Application {
             });
         }
 
+        if synctv_services
+            .room_service
+            .playback_service()
+            .has_invalidation_service()
+        {
+            synctv_services
+                .room_service
+                .playback_service()
+                .start()
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to start PlaybackService invalidation runtime: {e}")
+                })?;
+            shutdown.register_hook(PlaybackServiceShutdownHook {
+                service: synctv_services.room_service.playback_service().clone(),
+            });
+        }
+
+        if synctv_services
+            .chat_service
+            .room_settings_service()
+            .has_invalidation_service()
+        {
+            synctv_services
+                .chat_service
+                .room_settings_service()
+                .start()
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to start RoomSettingsService invalidation runtime: {e}"
+                    )
+                })?;
+            shutdown.register_hook(RoomSettingsServiceShutdownHook {
+                service: synctv_services.chat_service.room_settings_service().clone(),
+            });
+        }
+
         // Track settings cancellation token and listen task in shutdown coordinator
         shutdown.track_token("settings", synctv_services.settings_cancel.clone());
         shutdown.register_hook(AuditFlushHook {
@@ -1019,16 +1058,13 @@ impl Application {
             cluster_activation: node_registry
                 .clone()
                 .zip(health_monitor.clone())
-                .map(|(node_registry, health_monitor)| {
-                    Some(ClusterActivation {
-                        config: infra.config.clone(),
-                        cluster_manager: cluster_manager.clone(),
-                        connection_manager: connection_manager.clone(),
-                        node_registry,
-                        health_monitor,
-                    })
-                })
-                .flatten(),
+                .map(|(node_registry, health_monitor)| ClusterActivation {
+                    config: infra.config.clone(),
+                    cluster_manager: cluster_manager.clone(),
+                    connection_manager: connection_manager.clone(),
+                    node_registry,
+                    health_monitor,
+                }),
         })
     }
 
@@ -1403,14 +1439,6 @@ mod tests {
         assert!(
             should_run_startup_partition_initialization(&config),
             "cluster mode must also initialize required partitions before serving traffic"
-        );
-    }
-
-    #[test]
-    fn test_startup_partition_initialization_stays_readiness_only() {
-        assert!(
-            true,
-            "cold-start partition initialization should stay limited to readiness work; leader-gated maintenance owns heavy retention cleanup"
         );
     }
 

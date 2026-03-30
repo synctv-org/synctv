@@ -14,13 +14,12 @@ use std::time::Duration;
 use synctv_livestream::relay::registry_trait::PublisherRefreshOutcome;
 use tokio::sync::mpsc;
 
-/// Mock StreamRegistryTrait that counts stop_all calls via a shared counter.
-/// We can't directly observe stop_all() calls, but we can observe the effect:
-/// when stop_all() is called, it removes streams from the pool.
-///
-/// This test uses a different approach: we create a mock StreamPool directly,
-/// add streams to it, then verify that drop clears the pool.
-
+// Mock StreamRegistryTrait that counts stop_all calls via a shared counter.
+// We can't directly observe stop_all() calls, but we can observe the effect:
+// when stop_all() is called, it removes streams from the pool.
+//
+// This test uses a different approach: we create a mock StreamPool directly,
+// add streams to it, then verify that drop clears the pool.
 struct MockStreamRegistry;
 
 #[async_trait::async_trait]

@@ -760,7 +760,6 @@ mod websocket_e2e {
             notification_service,
             None,
             None,
-            None,
         );
         Arc::new(synctv_core::service::ChatService::new(
             chat_repo,
@@ -3942,7 +3941,6 @@ mod websocket_connection_limit_timing {
             room_settings_repo,
             None,
             notification_service,
-            None,
             None,
             None,
         );

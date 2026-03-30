@@ -97,22 +97,21 @@ async fn test_fail_closed_denies_requests_without_redis() {
 // Test 3: Verify which endpoints should use which mode
 // ============================================================================
 
-/// Documents which endpoints should use fail-open vs fail-closed mode.
-///
-/// # Fail-Open (check_rate_limit)
-///
-/// - Chat messages (can tolerate higher rate during outage)
-/// - Danmaku (same as chat)
-/// - Media playback operations (user experience over strict limits)
-/// - General API endpoints (availability preferred)
-///
-/// # Fail-Closed (check_rate_limit_distributed)
-///
-/// - Authentication endpoints (login, token refresh)
-/// - Password checking (room passwords, user passwords)
-/// - Email verification (prevents abuse)
-/// - Admin operations (strict audit requirements)
-/// - Any operation where exceeding global limits is unacceptable
+// Documents which endpoints should use fail-open vs fail-closed mode.
+//
+// Fail-open (`check_rate_limit`):
+// - Chat messages
+// - Danmaku
+// - Media playback operations
+// - General API endpoints
+//
+// Fail-closed (`check_rate_limit_distributed`):
+// - Authentication endpoints
+// - Password checking
+// - Email verification
+// - Admin operations
+// - Any operation where exceeding global limits is unacceptable
+
 // ============================================================================
 // Test 4: Verify behavior with simulated Redis failure
 // ============================================================================
@@ -158,27 +157,17 @@ async fn test_health_check_detects_redis_unavailable() {
 // Test 5: Verify multi-replica behavior implications (documentation)
 // ============================================================================
 
-/// Documents the multi-replica implications of fail-open behavior.
-///
-/// # Scenario: 3 replicas with 10 req/sec limit each
-///
-/// With Redis healthy:
-/// - Global limit: 10 req/sec (shared counter)
-/// - Total capacity: 10 req/sec
-///
-/// With Redis unavailable (fail-open):
-/// - Per-replica limit: 10 req/sec
-/// - Effective total: 30 req/sec (3 * 10)
-///
-/// # Mitigation Strategies
-///
-/// 1. **Use fail-closed for critical endpoints**: Ensures strict limits
-/// 2. **Reduce limits proportionally**: Set `limit = desired_limit / replica_count`
-/// 3. **Redis HA**: Use Redis Sentinel or Cluster
-/// 4. **Monitor fallback metric**: Alert when `rate_limit_redis_fallbacks_total` increases
-// ============================================================================
-// Test 6: Configuration options for fail mode (future enhancement)
-// ============================================================================
+// Documents the multi-replica implications of fail-open behavior.
+//
+// Scenario: 3 replicas with 10 req/sec limit each.
+// With Redis healthy, global limit stays 10 req/sec.
+// With Redis unavailable, effective limit becomes 30 req/sec.
+//
+// Mitigations:
+// 1. Use fail-closed for critical endpoints.
+// 2. Reduce limits proportionally.
+// 3. Use Redis HA.
+// 4. Monitor `rate_limit_redis_fallbacks_total`.
 
 // ============================================================================
 // Test 7: Verify the fallback does not leak Redis errors to callers
@@ -351,8 +340,16 @@ fn test_security_considerations_documentation() {
     // User experience endpoints that CAN use fail-open:
     let ux_critical = ["chat", "danmaku", "playback", "playlist"];
 
-    assert!(!security_critical.is_empty());
-    assert!(!ux_critical.is_empty());
+    assert!(security_critical.contains(&"login"));
+    assert!(security_critical.contains(&"room_password_check"));
+    assert!(ux_critical.contains(&"chat"));
+    assert!(ux_critical.contains(&"playback"));
+    assert!(
+        security_critical
+            .iter()
+            .all(|endpoint| !ux_critical.contains(endpoint)),
+        "security-critical and UX-oriented endpoints must remain disjoint"
+    );
 }
 
 // ============================================================================

@@ -335,14 +335,18 @@ async fn shutdown_after_startup_failure(
 
 async fn shutdown_after_cluster_activation_failure(
     server: &mut SyncTvServer,
-    shutdown_tx: &watch::Sender<bool>,
-    cleanup_cancel: &tokio_util::sync::CancellationToken,
-    cleanup_handle: Option<JoinHandle<()>>,
-    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    http_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    deadline: tokio::time::Instant,
-    coordinator: ShutdownCoordinator,
+    context: ClusterActivationFailureShutdown,
 ) {
+    let ClusterActivationFailureShutdown {
+        shutdown_tx,
+        cleanup_cancel,
+        cleanup_handle,
+        grpc_handle,
+        http_handle,
+        deadline,
+        coordinator,
+    } = context;
+
     let _ = shutdown_tx.send(true);
     cleanup_cancel.cancel();
 
@@ -375,6 +379,16 @@ async fn shutdown_after_cluster_activation_failure(
 
     server.shutdown_startup_failure_components(deadline).await;
     coordinator.shutdown_with_deadline(deadline).await;
+}
+
+struct ClusterActivationFailureShutdown {
+    shutdown_tx: watch::Sender<bool>,
+    cleanup_cancel: tokio_util::sync::CancellationToken,
+    cleanup_handle: Option<JoinHandle<()>>,
+    grpc_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    http_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    deadline: tokio::time::Instant,
+    coordinator: ShutdownCoordinator,
 }
 
 async fn spawn_admin_event_listener(
@@ -590,13 +604,15 @@ impl SyncTvServer {
                 let startup_cleanup_deadline = tokio::time::Instant::now() + startup_cleanup_budget;
                 shutdown_after_cluster_activation_failure(
                     &mut self,
-                    &shutdown_tx,
-                    &cleanup_cancel,
-                    Some(cleanup_handle),
-                    grpc_handle,
-                    http_handle,
-                    startup_cleanup_deadline,
-                    coordinator,
+                    ClusterActivationFailureShutdown {
+                        shutdown_tx: shutdown_tx.clone(),
+                        cleanup_cancel: cleanup_cancel.clone(),
+                        cleanup_handle: Some(cleanup_handle),
+                        grpc_handle,
+                        http_handle,
+                        deadline: startup_cleanup_deadline,
+                        coordinator,
+                    },
                 )
                 .await;
                 info!("Closing database connection pool after startup failure...");
@@ -977,7 +993,7 @@ impl SyncTvServer {
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
                 providers_manager: Some(self.services.providers_manager.clone()),
             },
-        );
+        )?;
         // Parse and bind HTTP address before spawning the task to propagate errors properly
         let http_addr: std::net::SocketAddr = http_address
             .parse()
@@ -1175,7 +1191,9 @@ mod tests {
     #[tokio::test]
     async fn test_bind_to_already_bound_port_fails() {
         // Bind to a port first
-        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let addr: std::net::SocketAddr = "127.0.0.1:0"
+            .parse()
+            .expect("test socket address literal must parse");
         let listener1 = match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => listener,
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -1186,7 +1204,9 @@ mod tests {
             }
             Err(error) => panic!("expected initial bind to succeed, got: {error}"),
         };
-        let bound_addr = listener1.local_addr().unwrap();
+        let bound_addr = listener1
+            .local_addr()
+            .expect("bound TCP listener must expose its local address");
 
         // Attempting to bind to the same address should fail
         let result = tokio::net::TcpListener::bind(bound_addr).await;
@@ -1203,7 +1223,9 @@ mod tests {
     #[tokio::test]
     async fn test_bind_to_available_port_succeeds() {
         // Binding to port 0 lets the OS assign an available port
-        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let addr: std::net::SocketAddr = "127.0.0.1:0"
+            .parse()
+            .expect("test socket address literal must parse");
         match tokio::net::TcpListener::bind(addr).await {
             Ok(_listener) => {}
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {

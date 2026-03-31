@@ -6,7 +6,6 @@ pub mod auth;
 pub mod email_verification;
 pub mod error;
 pub mod health;
-pub mod media;
 pub mod middleware;
 pub mod notifications;
 pub mod oauth2;
@@ -438,10 +437,6 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
             post(room::push_media_batch),
         )
         .route(
-            "/api/rooms/{room_id}/media/batch",
-            axum::routing::delete(room::delete_media_batch),
-        )
-        .route(
             "/api/rooms/{room_id}/media/reorder",
             post(room::reorder_media_batch),
         )
@@ -535,6 +530,10 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
             axum::routing::delete(room::delete_playlist),
         )
         .route(
+            "/api/rooms/{room_id}/entries",
+            axum::routing::delete(room::delete_entries),
+        )
+        .route(
             "/api/rooms/{room_id}/settings/reset",
             post(room::reset_room_settings),
         );
@@ -598,7 +597,7 @@ fn register_read_routes(state: &AppState) -> Router<AppState> {
         )
         .route(
             "/api/rooms/{room_id}/playlists/{playlist_id}/items",
-            get(media::list_playlist_items),
+            get(room::list_playlist_items),
         )
         .route("/api/rooms/{room_id}/media", get(room::list_media))
         .route(

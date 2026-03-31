@@ -88,13 +88,26 @@ fn make_settings_with_mode(mode: PlayMode) -> RoomSettings {
     }
 }
 
-/// Helper: get the root playlist for a room
-async fn get_root_playlist(pool: &PgPool, room_id: &RoomId) -> Playlist {
-    sqlx::query_as::<_, Playlist>("SELECT * FROM playlists WHERE room_id = $1 LIMIT 1")
-        .bind(room_id.as_str())
-        .fetch_one(pool)
+/// Helper: create a top-level playlist for a room.
+async fn create_top_level_playlist(pool: &PgPool, room_id: &RoomId) -> Playlist {
+    let playlist = Playlist {
+        id: PlaylistId::new(),
+        room_id: room_id.clone(),
+        creator_id: None,
+        name: "Top Level".to_string(),
+        parent_id: None,
+        position: 0,
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    synctv_core::repository::PlaylistRepository::new(pool.clone())
+        .create(&playlist)
         .await
-        .expect("Root playlist should exist")
+        .expect("Top-level playlist should be created")
 }
 
 /// Helper: insert a media item into the playlist at a given position
@@ -107,7 +120,7 @@ async fn insert_media(
 ) -> Media {
     let media = Media {
         id: MediaId::new(),
-        playlist_id: playlist_id.clone(),
+        playlist_id: Some(playlist_id.clone()),
         room_id: room_id.clone(),
         creator_id: None,
         name: name.to_string(),
@@ -124,6 +137,27 @@ async fn insert_media(
         .create(&media)
         .await
         .expect("Failed to create media")
+}
+
+async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position: i32) -> Media {
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: None,
+        room_id: room_id.clone(),
+        creator_id: None,
+        name: name.to_string(),
+        position,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", name)}),
+        provider_instance_name: None,
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    MediaRepository::new(pool.clone())
+        .create(&media)
+        .await
+        .expect("Failed to create root media")
 }
 
 // ========== Sequential Mode Tests ==========
@@ -150,7 +184,7 @@ async fn test_sequential_advance_to_next() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "video1", 0).await;
     let media2 = insert_media(&pool, &playlist.id, &room.id, "video2", 1).await;
 
@@ -192,7 +226,7 @@ async fn test_sequential_end_of_playlist_returns_none() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "last_video", 0).await;
 
     let playback = room_service.playback_service();
@@ -226,7 +260,7 @@ async fn test_sequential_deleted_current_falls_back_to_first() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "video_a", 0).await;
     let _media2 = insert_media(&pool, &playlist.id, &room.id, "video_b", 1).await;
 
@@ -280,7 +314,7 @@ async fn test_repeat_one_replays_current() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "repeat_me", 0).await;
     let _media2 = insert_media(&pool, &playlist.id, &room.id, "other", 1).await;
 
@@ -328,7 +362,7 @@ async fn test_repeat_one_deleted_current_falls_back_to_first() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "deleted_rep", 0).await;
     let media2 = insert_media(&pool, &playlist.id, &room.id, "fallback", 1).await;
 
@@ -382,7 +416,7 @@ async fn test_repeat_all_wraps_around_at_end() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "first", 0).await;
     let _media2 = insert_media(&pool, &playlist.id, &room.id, "second", 1).await;
     let media3 = insert_media(&pool, &playlist.id, &room.id, "third", 2).await;
@@ -428,7 +462,7 @@ async fn test_repeat_all_middle_advances_to_next() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "vid_a", 0).await;
     let media2 = insert_media(&pool, &playlist.id, &room.id, "vid_b", 1).await;
     let _media3 = insert_media(&pool, &playlist.id, &room.id, "vid_c", 2).await;
@@ -475,7 +509,7 @@ async fn test_shuffle_with_single_item_keeps_current_media() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "single", 0).await;
 
     let playback = room_service.playback_service();
@@ -518,7 +552,7 @@ async fn test_shuffle_with_multiple_items_excludes_current_media() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "multi1", 0).await;
     let media2 = insert_media(&pool, &playlist.id, &room.id, "multi2", 1).await;
 
@@ -561,7 +595,7 @@ async fn test_auto_play_disabled_returns_none() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "vid", 0).await;
     insert_media(&pool, &playlist.id, &room.id, "vid2", 1).await;
 
@@ -641,9 +675,41 @@ async fn test_no_current_media_plays_first() {
         .await
         .unwrap();
 
-    let playlist = get_root_playlist(&pool, &room.id).await;
-    let media1 = insert_media(&pool, &playlist.id, &room.id, "first_vid", 0).await;
-    insert_media(&pool, &playlist.id, &room.id, "second_vid", 1).await;
+    let media_repo = MediaRepository::new(pool.clone());
+    let media1 = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: None,
+            room_id: room.id.clone(),
+            creator_id: None,
+            name: "first_vid".to_string(),
+            position: 0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({"url": "https://example.com/first_vid.mp4"}),
+            provider_instance_name: None,
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+    media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: None,
+            room_id: room.id.clone(),
+            creator_id: None,
+            name: "second_vid".to_string(),
+            position: 1,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({"url": "https://example.com/second_vid.mp4"}),
+            provider_instance_name: None,
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
 
     // Don't switch to any media -- playing_media_id is None
     let playback = room_service.playback_service();
@@ -660,4 +726,56 @@ async fn test_no_current_media_plays_first() {
         Some(media1.id),
         "Should start with first item"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_no_current_media_ignores_other_rooms_root_media() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("nocur_root_scope_owner"))
+        .await
+        .unwrap();
+    let (room_a, _) = room_service
+        .create_room(
+            "No Current Root A".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let (room_b, _) = room_service
+        .create_room(
+            "No Current Root B".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let room_a_media = insert_root_media(&pool, &room_a.id, "room_a_first", 1).await;
+    insert_root_media(&pool, &room_b.id, "room_b_first", 0).await;
+
+    let playback = room_service.playback_service();
+    let settings = make_settings_with_mode(PlayMode::Sequential);
+    let result = playback.play_next(&room_a.id, &settings).await.unwrap();
+
+    assert!(
+        result.is_some(),
+        "play_next should still find room-local root media"
+    );
+    let state = result.unwrap();
+    assert_eq!(
+        state.playing_media_id,
+        Some(room_a_media.id),
+        "root playback must not advance into another room's media"
+    );
+    assert_eq!(state.playing_playlist_id, None);
 }

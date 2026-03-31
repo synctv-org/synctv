@@ -76,7 +76,7 @@ fn test_notification_is_not_error() {
     }
 }
 
-/// Test backward compatibility - error messages still work
+/// Error messages should continue round-tripping through the proto codec.
 #[test]
 fn test_error_messages_still_work() {
     let error = ServerMessage {

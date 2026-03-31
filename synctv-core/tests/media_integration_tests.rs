@@ -81,7 +81,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
             id: PlaylistId::new(),
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
-            name: String::new(),
+            name: "Top Level".to_string(),
             parent_id: None,
             position: 0,
             source_provider: None,
@@ -106,7 +106,24 @@ async fn setup_test_context(suffix: &str) -> TestContext {
 fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: i32) -> Media {
     Media {
         id: MediaId::new(),
-        playlist_id: playlist_id.clone(),
+        playlist_id: Some(playlist_id.clone()),
+        room_id: room_id.clone(),
+        creator_id: None,
+        name: name.to_string(),
+        position,
+        source_provider: "direct_url".to_string(),
+        source_config: json!({"url": "https://example.com/video.mp4"}),
+        provider_instance_name: None,
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    }
+}
+
+fn make_room_root_media(room_id: &RoomId, name: &str, position: i32) -> Media {
+    Media {
+        id: MediaId::new(),
+        playlist_id: None,
         room_id: room_id.clone(),
         creator_id: None,
         name: name.to_string(),
@@ -132,7 +149,7 @@ async fn test_create_media_basic() {
     assert_eq!(created.name, "test_video.mp4");
     assert_eq!(created.position, 0);
     assert_eq!(created.source_provider, "direct_url");
-    assert_eq!(created.playlist_id, ctx.root_playlist.id);
+    assert_eq!(created.playlist_id, Some(ctx.root_playlist.id));
     assert_eq!(created.room_id, ctx.room.id);
 }
 
@@ -189,7 +206,7 @@ async fn test_media_delete() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_unique_media_name_constraint() {
+async fn test_duplicate_media_names_are_allowed_in_same_playlist() {
     let ctx = setup_test_context("5").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
@@ -203,13 +220,10 @@ async fn test_unique_media_name_constraint() {
         .await
         .unwrap();
 
-    // Try to create another media with the same name in the same playlist
+    // Create another media with the same display name in the same playlist
     let duplicate = make_media(&ctx.root_playlist.id, &ctx.room.id, "same_name.mp4", 1);
-    let result = media_repo.create(&duplicate).await;
-    assert!(
-        result.is_err(),
-        "Duplicate media name in same playlist should fail"
-    );
+    let created = media_repo.create(&duplicate).await.unwrap();
+    assert_eq!(created.name, "same_name.mp4");
 }
 
 #[tokio::test]
@@ -265,6 +279,61 @@ async fn test_media_get_by_playlist() {
     assert_eq!(items[0].name, "a.mp4");
     assert_eq!(items[1].name, "b.mp4");
     assert_eq!(items[2].name, "c.mp4");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_media_can_exist_at_room_root_without_playlist() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("media_root_owner")).await.unwrap();
+    let room = room_repo
+        .create(&{
+            let now = Utc::now();
+            Room {
+                id: RoomId::new(),
+                name: "Media Root Room".to_string(),
+                description: String::new(),
+                created_by: owner.id.clone(),
+                status: RoomStatus::Active,
+                is_banned: false,
+                created_at: now,
+                updated_at: now,
+                deleted_at: None,
+                version: 0,
+                last_activity_at: now,
+            }
+        })
+        .await
+        .unwrap();
+
+    let media_id = MediaId::new();
+    sqlx::query(
+        "INSERT INTO media (
+            id, playlist_id, room_id, creator_id, name, position,
+            source_provider, source_config, provider_instance_name, added_at, updated_at, version
+        ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, NULL, NOW(), NOW(), 0)",
+    )
+    .bind(media_id.as_str())
+    .bind(room.id.as_str())
+    .bind(owner.id.as_str())
+    .bind("root-media.mp4")
+    .bind(0)
+    .bind("direct_url")
+    .bind(json!({"url": "https://example.com/root.mp4"}))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let fetched = media_repo.get_by_id(&media_id).await.unwrap().unwrap();
+    assert!(fetched.playlist_id.is_none());
+
+    let items = media_repo.get_room_root(&room.id).await.unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, media_id);
 }
 
 #[tokio::test]
@@ -424,7 +493,7 @@ async fn test_get_next_position_with_tx_empty_playlist_returns_zero() {
 
     let mut tx = ctx.pool.begin().await.unwrap();
     let next_pos = media_repo
-        .get_next_position_with_tx(&ctx.root_playlist.id, &mut tx)
+        .get_next_position_with_tx(&ctx.room.id, Some(&ctx.root_playlist.id), &mut tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -456,7 +525,7 @@ async fn test_get_next_position_with_tx_existing_items() {
 
     let mut tx = ctx.pool.begin().await.unwrap();
     let next_pos = media_repo
-        .get_next_position_with_tx(&ctx.root_playlist.id, &mut tx)
+        .get_next_position_with_tx(&ctx.room.id, Some(&ctx.root_playlist.id), &mut tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -768,10 +837,7 @@ async fn test_delete_by_playlist_removes_all() {
         3
     );
 
-    let deleted = media_repo
-        .delete_by_playlist(&ctx.root_playlist.id)
-        .await
-        .unwrap();
+    let deleted = media_repo.delete_playlist(&ctx.root_playlist.id).await.unwrap();
     assert_eq!(deleted, 3);
 
     assert_eq!(
@@ -781,6 +847,61 @@ async fn test_delete_by_playlist_removes_all() {
             .unwrap(),
         0
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_room_root_only_removes_target_room_media() {
+    let ctx = setup_test_context("del_root").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+    let user_repo = UserRepository::new(ctx.pool.clone());
+    let room_repo = RoomRepository::new(ctx.pool.clone());
+
+    let other_owner = user_repo
+        .create(&make_user("media_owner_del_root_other"))
+        .await
+        .unwrap();
+    let other_room = room_repo
+        .create(&{
+            let now = Utc::now();
+            Room {
+                id: RoomId::new(),
+                name: "Other root media room".to_string(),
+                description: String::new(),
+                created_by: other_owner.id.clone(),
+                status: RoomStatus::Active,
+                is_banned: false,
+                created_at: now,
+                updated_at: now,
+                deleted_at: None,
+                version: 0,
+                last_activity_at: now,
+            }
+        })
+        .await
+        .unwrap();
+
+    media_repo
+        .create(&make_room_root_media(&ctx.room.id, "room-a-root-1.mp4", 0))
+        .await
+        .unwrap();
+    media_repo
+        .create(&make_room_root_media(&ctx.room.id, "room-a-root-2.mp4", 1))
+        .await
+        .unwrap();
+    media_repo
+        .create(&make_room_root_media(&other_room.id, "room-b-root-1.mp4", 0))
+        .await
+        .unwrap();
+
+    assert_eq!(media_repo.count_room_root(&ctx.room.id).await.unwrap(), 2);
+    assert_eq!(media_repo.count_room_root(&other_room.id).await.unwrap(), 1);
+
+    let deleted = media_repo.delete_room_root(&ctx.room.id).await.unwrap();
+    assert_eq!(deleted, 2);
+
+    assert_eq!(media_repo.count_room_root(&ctx.room.id).await.unwrap(), 0);
+    assert_eq!(media_repo.count_room_root(&other_room.id).await.unwrap(), 1);
 }
 
 // ============================================================================
@@ -823,14 +944,14 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
             let mut tx = pool.begin().await.expect("Failed to begin transaction");
 
             let position = media_repo
-                .get_next_position_with_tx(&playlist_id, &mut tx)
+                .get_next_position_with_tx(&room_id, Some(&playlist_id), &mut tx)
                 .await
                 .expect("Failed to get next position");
 
             // Create media with the computed position
             let media = Media {
                 id: MediaId::new(),
-                playlist_id: playlist_id.clone(),
+                playlist_id: Some(playlist_id.clone()),
                 room_id: room_id.clone(),
                 creator_id: None,
                 name: format!("concurrent_{i}.mp4"),
@@ -933,13 +1054,13 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
             let mut tx = pool.begin().await.expect("Failed to begin transaction");
 
             let position = media_repo
-                .get_next_position_with_tx(&playlist_id, &mut tx)
+                .get_next_position_with_tx(&room_id, Some(&playlist_id), &mut tx)
                 .await
                 .expect("Failed to get next position");
 
             let media = Media {
                 id: MediaId::new(),
-                playlist_id: playlist_id.clone(),
+                playlist_id: Some(playlist_id.clone()),
                 room_id: room_id.clone(),
                 creator_id: None,
                 name: format!("new_{i}.mp4"),
@@ -991,4 +1112,98 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
             "New position {pos} should be >= 5 and < 10"
         );
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_media_rejects_cross_room_playlist_reference() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("cross_room_media_owner"))
+        .await
+        .unwrap();
+
+    let room_a = room_repo
+        .create(&{
+            let now = Utc::now();
+            Room {
+                id: RoomId::new(),
+                name: "Cross Room Media A".to_string(),
+                description: String::new(),
+                created_by: owner.id.clone(),
+                status: RoomStatus::Active,
+                is_banned: false,
+                created_at: now,
+                updated_at: now,
+                deleted_at: None,
+                version: 0,
+                last_activity_at: now,
+            }
+        })
+        .await
+        .unwrap();
+    let room_b = room_repo
+        .create(&{
+            let now = Utc::now();
+            Room {
+                id: RoomId::new(),
+                name: "Cross Room Media B".to_string(),
+                description: String::new(),
+                created_by: owner.id.clone(),
+                status: RoomStatus::Active,
+                is_banned: false,
+                created_at: now,
+                updated_at: now,
+                deleted_at: None,
+                version: 0,
+                last_activity_at: now,
+            }
+        })
+        .await
+        .unwrap();
+
+    let playlist_b = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room_b.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "Room B Playlist".to_string(),
+            parent_id: None,
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let result = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(playlist_b.id.clone()),
+            room_id: room_a.id.clone(),
+            creator_id: None,
+            name: "cross-room.mp4".to_string(),
+            position: 0,
+            source_provider: "direct_url".to_string(),
+            source_config: json!({"url": "https://example.com/cross-room.mp4"}),
+            provider_instance_name: None,
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await;
+
+    assert!(
+        result.is_err(),
+        "media must not be insertable when playlist_id belongs to a different room"
+    );
 }

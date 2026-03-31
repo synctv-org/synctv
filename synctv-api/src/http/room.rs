@@ -15,8 +15,8 @@ use super::{middleware::AuthUser, AppResult, AppState};
 use crate::proto::client::{
     AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, CheckRoomPasswordRequest,
     CheckRoomPasswordResponse, CheckRoomResponse, ClearPlaylistResponse, CreatePlaylistRequest,
-    CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse, DeleteMediaBatchRequest,
-    DeleteMediaBatchResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistRequest,
+    CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse, DeleteEntriesRequest,
+    DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistRequest,
     DeletePlaylistResponse, DeleteRoomResponse, EditMediaRequest, EditMediaResponse,
     GetChatHistoryResponse, GetHotRoomsResponse, GetPlaybackRequest, GetPlaybackResponse,
     GetRoomMembersResponse, GetRoomResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomResponse,
@@ -61,8 +61,7 @@ pub struct StopPlaybackBody {}
 
 #[derive(serde::Deserialize)]
 pub struct AddMediaBody {
-    #[serde(default)]
-    playlist_id: String,
+    playlist_id: Option<String>,
     #[serde(default)]
     provider: String,
     #[serde(default)]
@@ -74,9 +73,24 @@ pub struct AddMediaBody {
 }
 
 #[derive(serde::Deserialize)]
-pub struct DeleteMediaBatchBody {
+pub struct DeleteEntriesBody {
+    #[serde(default)]
+    playlist_ids: Vec<String>,
     #[serde(default)]
     media_ids: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ListMediaQuery {
+    pub page: Option<i32>,
+    pub page_size: Option<i32>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ListPlaylistItemsQuery {
+    pub relative_path: Option<String>,
+    pub page: Option<i32>,
+    pub page_size: Option<i32>,
 }
 
 #[derive(serde::Deserialize)]
@@ -284,23 +298,24 @@ pub async fn delete_media(
     Ok(Json(response))
 }
 
-/// Bulk delete media from playlist
-#[tracing::instrument(name = "http_delete_media_batch", skip(state, body), fields(user_id = %auth.user_id, room_id = %room_id))]
-pub async fn delete_media_batch(
+/// Delete a mixed set of playlist and media entries.
+#[tracing::instrument(name = "http_delete_entries", skip(state, body), fields(user_id = %auth.user_id, room_id = %room_id))]
+pub async fn delete_entries(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(body): Json<DeleteMediaBatchBody>,
-) -> AppResult<Json<DeleteMediaBatchResponse>> {
-    let req = DeleteMediaBatchRequest {
+    Json(body): Json<DeleteEntriesBody>,
+) -> AppResult<Json<DeleteEntriesResponse>> {
+    let req = DeleteEntriesRequest {
+        playlist_ids: body.playlist_ids,
         media_ids: body.media_ids,
     };
     let response = state
         .client_api
-        .delete_media_batch(&auth.user_id.to_string(), &room_id, req)
+        .delete_entries(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(|e| {
-            tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to delete media batch");
+            tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to delete entries");
             super::error::map_api_error(e)
         })?;
 
@@ -335,12 +350,11 @@ pub async fn list_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Query(params): Query<super::media::ListPlaylistQuery>,
+    Query(params): Query<ListMediaQuery>,
 ) -> AppResult<Json<ListPlaylistResponse>> {
     let page_size = super::validation::validate_page_size(params.page_size);
 
     let req = crate::proto::client::ListPlaylistRequest {
-        playlist_id: String::new(), // Not used by list_media (uses room's root playlist)
         page: params.page.unwrap_or(0).max(0), // 0-based page for this endpoint
         page_size,
     };
@@ -348,6 +362,32 @@ pub async fn list_media(
     let response = state
         .client_api
         .list_media(&auth.user_id.to_string(), &room_id, req)
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+/// List items for a playlist path.
+pub async fn list_playlist_items(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((room_id, playlist_id)): Path<(String, String)>,
+    Query(params): Query<ListPlaylistItemsQuery>,
+) -> AppResult<Json<crate::proto::client::ListPlaylistItemsResponse>> {
+    let page_size = super::validation::validate_page_size(params.page_size);
+    let page = super::validation::validate_page(params.page);
+
+    let req = crate::proto::client::ListPlaylistItemsRequest {
+        playlist_id,
+        relative_path: params.relative_path.unwrap_or_default(),
+        page,
+        page_size,
+    };
+
+    let response = state
+        .client_api
+        .list_playlist_items(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(super::error::map_api_error)?;
 

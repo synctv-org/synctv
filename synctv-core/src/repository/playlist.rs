@@ -41,22 +41,100 @@ impl PlaylistRepository {
         }
     }
 
-    /// Get root playlist for a room
-    pub async fn get_root_playlist(&self, room_id: &RoomId) -> Result<Playlist> {
-        let row = sqlx::query(
+    /// Get playlists by IDs using a provided executor (for transaction support)
+    pub async fn get_by_ids_with_executor<'e, E>(
+        &self,
+        playlist_ids: &[PlaylistId],
+        executor: E,
+    ) -> Result<Vec<Playlist>>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        if playlist_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let id_strs: Vec<&str> = playlist_ids.iter().map(PlaylistId::as_str).collect();
+        let rows = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
                    source_provider, source_config, provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
-            WHERE room_id = $1 AND parent_id IS NULL AND name = ''
+            WHERE id = ANY($1)
+            ",
+        )
+        .bind(&id_strs)
+        .fetch_all(executor)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Ok(Playlist::from_row(&row)?))
+            .collect()
+    }
+
+    /// Get top-level playlists in a room.
+    pub async fn get_top_level(&self, room_id: &RoomId) -> Result<Vec<Playlist>> {
+        let rows = sqlx::query(
+            r"
+            SELECT id, room_id, creator_id, name, parent_id, position,
+                   source_provider, source_config, provider_instance_name,
+                   created_at, updated_at, version
+            FROM playlists
+            WHERE room_id = $1 AND parent_id IS NULL
+            ORDER BY position ASC
+            ",
+        )
+        .bind(room_id.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Ok(Playlist::from_row(&row)?))
+            .collect()
+    }
+
+    /// Count top-level playlists in a room.
+    pub async fn count_top_level(&self, room_id: &RoomId) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            r"
+            SELECT COUNT(*) FROM playlists WHERE room_id = $1 AND parent_id IS NULL
             ",
         )
         .bind(room_id.as_str())
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(Playlist::from_row(&row)?)
+        Ok(count)
+    }
+
+    /// Get paginated top-level playlists in a room.
+    pub async fn get_top_level_paginated(
+        &self,
+        room_id: &RoomId,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Playlist>> {
+        let rows = sqlx::query(
+            r"
+            SELECT id, room_id, creator_id, name, parent_id, position,
+                   source_provider, source_config, provider_instance_name,
+                   created_at, updated_at, version
+            FROM playlists
+            WHERE room_id = $1 AND parent_id IS NULL
+            ORDER BY position ASC
+            LIMIT $2 OFFSET $3
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Ok(Playlist::from_row(&row)?))
+            .collect()
     }
 
     /// Get children playlists of a parent
@@ -551,6 +629,28 @@ impl PlaylistRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Delete playlists by IDs using a provided executor (for transaction support)
+    pub async fn delete_batch_with_executor<'e, E>(
+        &self,
+        playlist_ids: &[PlaylistId],
+        executor: E,
+    ) -> Result<usize>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        if playlist_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let id_strs: Vec<&str> = playlist_ids.iter().map(PlaylistId::as_str).collect();
+        let result = sqlx::query("DELETE FROM playlists WHERE id = ANY($1)")
+            .bind(&id_strs)
+            .execute(executor)
+            .await?;
+
+        Ok(result.rows_affected() as usize)
+    }
+
     /// Convert database row to Playlist
     /// Get playlist path from a given node to root using a recursive CTE (single query)
     pub async fn get_path(&self, playlist_id: &PlaylistId) -> Result<Vec<Playlist>> {
@@ -757,11 +857,14 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        // Create root playlist
-        let playlist = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        // Create top-level playlist
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Top Level")
+            .build();
         let created = playlist_repo.create(&playlist).await.unwrap();
 
-        assert!(created.is_root());
+        assert!(created.is_top_level());
         assert_eq!(created.position, 0);
 
         // Get by ID
@@ -769,13 +872,13 @@ mod tests {
         assert!(fetched.is_some());
         let fetched = fetched.unwrap();
         assert_eq!(fetched.id, created.id);
-        assert!(fetched.is_root());
+        assert!(fetched.is_top_level());
     }
 
-    /// Integration test: Get root playlist for a room
+    /// Integration test: Get top-level playlists for a room
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_get_root_playlist() {
+    async fn test_get_top_level_playlists() {
         use crate::repository::room::RoomRepository;
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
@@ -786,24 +889,26 @@ mod tests {
         let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
-            .with_username("root_playlist_owner")
+            .with_username("top_level_playlist_owner")
             .build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
-            .with_name("Root Playlist Room")
+            .with_name("Top Level Playlist Room")
             .with_owner(owner.id.clone())
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        // Create root playlist
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
-        let created = playlist_repo.create(&root).await.unwrap();
+        let top_level = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Top Level")
+            .build();
+        let created = playlist_repo.create(&top_level).await.unwrap();
 
-        // Get root playlist
-        let fetched = playlist_repo.get_root_playlist(&room.id).await.unwrap();
-        assert_eq!(fetched.id, created.id);
-        assert!(fetched.is_root());
+        let fetched = playlist_repo.get_top_level(&room.id).await.unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].id, created.id);
+        assert!(fetched[0].is_top_level());
     }
 
     /// Integration test: Get playlists by room
@@ -830,7 +935,7 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        // Create root playlist
+        // Create top-level playlist
         let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
@@ -852,7 +957,7 @@ mod tests {
         assert_eq!(playlists.len(), 3);
 
         // Verify root comes first (NULLS FIRST in ORDER BY)
-        assert!(playlists[0].is_root());
+        assert!(playlists[0].is_top_level());
         assert_eq!(playlists[0].id, created_root.id);
 
         // Children should be sorted by position
@@ -1415,7 +1520,7 @@ mod tests {
 
         assert_eq!(path.len(), 3);
         // Should be ordered from root to leaf
-        assert!(path[0].is_root());
+        assert!(path[0].is_top_level());
         assert_eq!(path[1].id, created_child.id);
         assert_eq!(path[2].id, created_grandchild.id);
     }

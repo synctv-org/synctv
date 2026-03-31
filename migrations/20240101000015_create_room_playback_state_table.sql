@@ -1,14 +1,22 @@
 -- Create room_playback_state table
 CREATE TABLE IF NOT EXISTS room_playback_state (
     room_id CHAR(12) PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
-    playing_media_id CHAR(12) NULL REFERENCES media(id) ON DELETE SET NULL,
-    playing_playlist_id CHAR(12) NULL REFERENCES playlists(id) ON DELETE SET NULL,
+    playing_media_id CHAR(12) NULL,
+    playing_playlist_id CHAR(12) NULL,
     relative_path TEXT NOT NULL DEFAULT '',
     "current_time" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     speed DOUBLE PRECISION NOT NULL DEFAULT 1.0,
     is_playing BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    version BIGINT NOT NULL DEFAULT 0
+    version BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT playback_media_same_room_fk
+        FOREIGN KEY (playing_media_id, room_id)
+        REFERENCES media(id, room_id)
+        ON DELETE SET NULL (playing_media_id),
+    CONSTRAINT playback_playlist_same_room_fk
+        FOREIGN KEY (playing_playlist_id, room_id)
+        REFERENCES playlists(id, room_id)
+        ON DELETE SET NULL (playing_playlist_id)
 );
 
 -- Create indexes

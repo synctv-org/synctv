@@ -256,7 +256,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
-        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+        let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
             room.id.clone(),
             "Playback Playlist",
@@ -265,7 +265,7 @@ mod tests {
 
         // Create media for playback reference (required by FK constraint)
         let media = Media::from_provider(
-            playlist.id.clone(),
+            Some(playlist.id.clone()),
             room.id.clone(),
             Some(owner.id.clone()),
             "Test Video".to_string(),

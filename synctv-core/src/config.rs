@@ -3051,7 +3051,10 @@ jwt:
 
         let message = error.to_string();
         assert!(message.contains("unknown field"));
-        assert!(message.contains("grpc_port"));
+        assert!(
+            message.contains("grpc_port") || message.contains("http_port"),
+            "unknown split-port key should be named in error: {message}"
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS playlists (
     room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
     creator_id CHAR(12) REFERENCES users(id) ON DELETE SET NULL,
 
-    -- Directory name (root directory is empty string)
+    -- Playlist display name
     name VARCHAR(255) NOT NULL DEFAULT '',
 
     -- Tree structure (file system style)
@@ -32,26 +32,12 @@ CREATE TABLE IF NOT EXISTS playlists (
 
     -- Constraints
     CONSTRAINT valid_parent CHECK (parent_id IS NULL OR parent_id != id),
-    -- NOTE: No UNIQUE(room_id, parent_id, name) constraint here because PostgreSQL
-    -- treats NULLs as distinct in UNIQUE constraints, so it cannot enforce uniqueness
-    -- when parent_id IS NULL. Instead, uniqueness is handled by two partial indexes:
-    --   idx_playlists_unique_root_name  (WHERE parent_id IS NULL)
-    --   unique_playlist_name on the table itself only covers non-NULL parent_id rows
-    -- See the partial indexes below for the actual enforcement.
-    CONSTRAINT valid_name CHECK (
-        (parent_id IS NULL AND name = '')
-        OR
-        (parent_id IS NOT NULL AND (
-            length(trim(name)) > 0
-            AND length(name) <= 255
-            AND name NOT LIKE '%/%'
-        ))
-    ),
     CONSTRAINT valid_dynamic_folder CHECK (
         (source_provider IS NOT NULL AND source_config IS NOT NULL)
         OR
         (source_provider IS NULL AND source_config IS NULL)
     ),
+    CONSTRAINT unique_playlist_id_room UNIQUE (id, room_id),
     CONSTRAINT unique_playlist_position UNIQUE (room_id, parent_id, position)
 );
 
@@ -63,24 +49,10 @@ CREATE INDEX idx_playlists_creator ON playlists(creator_id);
 CREATE INDEX idx_playlists_source_provider ON playlists(source_provider) WHERE source_provider IS NOT NULL;
 CREATE INDEX idx_playlists_created_at ON playlists(created_at DESC);
 
--- Partial unique index for non-root playlists (parent_id IS NOT NULL).
--- Ensures no duplicate names within the same parent directory.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique_child_name
-    ON playlists(room_id, parent_id, name)
-    WHERE parent_id IS NOT NULL;
-
--- Partial unique index for root playlists (parent_id IS NULL).
--- PostgreSQL treats NULLs as distinct in UNIQUE constraints, so a table-level
--- UNIQUE(room_id, parent_id, name) cannot prevent duplicate root names.
--- This partial index ensures at most one root playlist per room with a given name.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique_root_name
-    ON playlists(room_id, name)
-    WHERE parent_id IS NULL;
-
 -- Same NULL handling for position uniqueness: the UNIQUE constraint
 -- unique_playlist_position on (room_id, parent_id, position) does not
 -- prevent duplicates when parent_id IS NULL. This partial index ensures
--- unique positions among root-level playlists in a room.
+-- unique positions among top-level playlists in a room.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique_root_position
     ON playlists(room_id, position)
     WHERE parent_id IS NULL;
@@ -91,14 +63,13 @@ CREATE TRIGGER update_playlists_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
-COMMENT ON TABLE playlists IS 'Playlist directory table (supporting static folders and dynamic folders). Root playlist (empty name, NULL parent_id) is created in Rust when room is created.';
-COMMENT ON COLUMN playlists.name IS 'Directory name (root directory is empty string)';
-COMMENT ON COLUMN playlists.parent_id IS 'Parent directory ID, NULL means root directory';
+COMMENT ON TABLE playlists IS 'Playlist table supporting top-level and nested static or dynamic folders.';
+COMMENT ON COLUMN playlists.name IS 'Playlist display name. It is not a routing key or unique path segment.';
+COMMENT ON COLUMN playlists.parent_id IS 'Parent playlist ID. NULL means this playlist is directly under the room root.';
 COMMENT ON COLUMN playlists.position IS 'Sort position in parent directory';
 COMMENT ON COLUMN playlists.source_provider IS 'Media provider type name (NULL=static folder, non-NULL=dynamic folder, e.g., "alist", "emby")';
 COMMENT ON COLUMN playlists.source_config IS 'Media provider configuration (required for dynamic folders)';
 COMMENT ON COLUMN playlists.provider_instance_name IS 'Recommended media provider backend instance name (optional)';
-COMMENT ON CONSTRAINT valid_name ON playlists IS 'Name validation: root directory must be empty string, non-root cannot be empty/spaces, forbids / character';
 COMMENT ON CONSTRAINT valid_dynamic_folder ON playlists IS 'Dynamic folder constraint: source_provider/source_config must either both exist or both be NULL';
 COMMENT ON COLUMN playlists.version IS 'Optimistic locking version, incremented on each update';
 
@@ -190,7 +161,7 @@ RETURNS TRIGGER AS $$
 DECLARE
     parent_room_id CHAR(12);
 BEGIN
-    -- If parent_id is NULL (root playlist), no validation needed
+    -- If parent_id is NULL (top-level playlist), no validation needed
     IF NEW.parent_id IS NULL THEN
         RETURN NEW;
     END IF;

@@ -1570,10 +1570,9 @@ mod tests {
         );
     }
 
-    /// Test that LivestreamServer starts without a pre-bound listener (backwards compatibility).
+    /// Test that LivestreamServer can bind its own listener when one is not pre-supplied.
     ///
-    /// This verifies that the existing behavior (binding internally) still works
-    /// when no pre-bound listener is provided.
+    /// This verifies the supported construction path where the server owns listener binding.
     #[tokio::test]
     async fn test_livestream_server_without_prebound_listener() {
         let registry = Arc::new(MockStreamRegistry::new());

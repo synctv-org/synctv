@@ -39,6 +39,15 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::AddMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
+        let playlist_id = if let Some(playlist_id) = req.playlist_id.as_ref() {
+            crate::http::validation::validate_id(playlist_id, "playlist_id")
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
+            Some(synctv_core::models::PlaylistId::from_string(
+                playlist_id.clone(),
+            ))
+        } else {
+            None
+        };
 
         let provider = if req.provider.is_empty() {
             ProviderType::DirectUrl
@@ -71,18 +80,19 @@ impl ClientApiImpl {
         };
 
         // Check total playlist size limit before adding
-        let root_playlist = self
-            .room_service
-            .playlist_service()
-            .get_root_playlist(&rid)
-            .await
-            .map_err(ApiError::from)?;
-        let existing_count = self
-            .room_service
-            .media_service()
-            .count_playlist_media(&root_playlist.id)
-            .await
-            .map_err(ApiError::from)? as usize;
+        let existing_count = if let Some(ref playlist_id) = playlist_id {
+            self.room_service
+                .media_service()
+                .count_playlist_media(playlist_id)
+                .await
+                .map_err(ApiError::from)? as usize
+        } else {
+            self.room_service
+                .media_service()
+                .count_room_root_media(&rid)
+                .await
+                .map_err(ApiError::from)? as usize
+        };
         if existing_count >= Self::MAX_PLAYLIST_SIZE {
             return Err(ApiError::InvalidInput(format!(
                 "Playlist has reached maximum size of {} items",
@@ -106,12 +116,16 @@ impl ClientApiImpl {
 
         let media = self
             .room_service
+            .media_service()
             .add_media(
                 rid.clone(),
                 uid.clone(),
-                provider_instance_name,
-                source_config,
-                title,
+                synctv_core::service::media::AddMediaRequest {
+                    playlist_id,
+                    name: title,
+                    provider_instance_name,
+                    source_config,
+                },
             )
             .await
             .map_err(ApiError::from)?;
@@ -152,20 +166,77 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::DeleteMediaRequest,
     ) -> Result<crate::proto::client::DeleteMediaResponse, ApiError> {
-        crate::http::validation::validate_id(&req.media_id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
+        self.delete_entries(
+            user_id,
+            room_id,
+            crate::proto::client::DeleteEntriesRequest {
+                playlist_ids: Vec::new(),
+                media_ids: vec![req.media_id],
+            },
+        )
+        .await?;
+
+        Ok(crate::proto::client::DeleteMediaResponse { success: true })
+    }
+
+    /// Delete a mixed set of playlist and media entries.
+    pub async fn delete_entries(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        req: crate::proto::client::DeleteEntriesRequest,
+    ) -> Result<crate::proto::client::DeleteEntriesResponse, ApiError> {
+        let total_targets = req.playlist_ids.len() + req.media_ids.len();
+        if total_targets == 0 {
+            return Err(ApiError::InvalidInput(
+                "delete request cannot be empty".to_string(),
+            ));
+        }
+        if total_targets > 100 {
+            return Err(ApiError::InvalidInput(
+                "Too many items (max 100 per delete request)".to_string(),
+            ));
+        }
+
+        for playlist_id in &req.playlist_ids {
+            crate::http::validation::validate_id(playlist_id, "playlist_id")
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
+        }
+        for media_id in &req.media_ids {
+            crate::http::validation::validate_id(media_id, "media_id")
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
+        }
 
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let media_id_str = req.media_id.clone();
-        let mid = synctv_core::models::MediaId::from_string(req.media_id);
+        let playlist_ids = req
+            .playlist_ids
+            .iter()
+            .cloned()
+            .map(synctv_core::models::PlaylistId::from_string)
+            .collect();
+        let media_id_strings = req.media_ids.clone();
+        let media_ids = req
+            .media_ids
+            .iter()
+            .cloned()
+            .map(synctv_core::models::MediaId::from_string)
+            .collect();
+        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
-        self.room_service
-            .remove_media(rid.clone(), uid.clone(), mid)
+        let result = self
+            .room_service
+            .delete_entries(
+                rid.clone(),
+                uid.clone(),
+                synctv_core::service::room::DeleteEntriesRequest {
+                    playlist_ids,
+                    media_ids,
+                },
+            )
             .await
             .map_err(ApiError::from)?;
 
-        // Broadcast MediaRemoved cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self
                 .user_service
@@ -173,30 +244,38 @@ impl ClientApiImpl {
                 .await
                 .map(|u| u.username)
                 .unwrap_or_default();
-            let _ = crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: rid,
-                        user_id: uid,
-                        username,
-                        media_id: synctv_core::models::MediaId::from_string(media_id_str.clone()),
-                        timestamp: chrono::Utc::now(),
+
+            for media_id in &media_id_strings {
+                let _ = crate::impls::try_publish_cluster_event(
+                    tx,
+                    synctv_cluster::sync::PublishRequest {
+                        event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
+                            event_id: nanoid::nanoid!(16),
+                            room_id: rid.clone(),
+                            user_id: uid.clone(),
+                            username: username.clone(),
+                            media_id: synctv_core::models::MediaId::from_string(media_id.clone()),
+                            timestamp: chrono::Utc::now(),
+                        },
                     },
-                },
-            )
-            .await;
+                )
+                .await;
+            }
         }
 
-        // Note: playback cache invalidation is handled by TTL-based expiry
-        // in the provider's internal ProviderStore. No explicit invalidation needed.
+        if let Some(cache_invalidation) = cache_invalidation {
+            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+        }
 
-        // Kick active stream for deleted media (local + cluster-wide)
-        self.kick_stream_cluster(room_id, &media_id_str, "media_deleted")
-            .await;
+        for media_id in &media_id_strings {
+            self.kick_stream_cluster(room_id, media_id, "media_deleted")
+                .await;
+        }
 
-        Ok(crate::proto::client::DeleteMediaResponse { success: true })
+        Ok(crate::proto::client::DeleteEntriesResponse {
+            deleted_playlists: result.deleted_playlists as i32,
+            deleted_media: result.deleted_media as i32,
+        })
     }
 
     /// Edit media metadata
@@ -263,7 +342,7 @@ impl ClientApiImpl {
         })
     }
 
-    /// Clear all media from room's root playlist
+    /// Clear all media directly under the room root
     pub async fn clear_playlist(
         &self,
         user_id: &str,
@@ -271,6 +350,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::ClearPlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
+        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         // Check permission
         self.room_service
@@ -282,14 +362,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Fetch all media before deletion for cache invalidation
-        let media_items = self
-            .room_service
-            .get_playlist(&rid)
-            .await
-            .unwrap_or_default();
-
-        let deleted_count = self
+        let result = self
             .room_service
             .clear_playlist(rid.clone(), uid.clone())
             .await
@@ -297,7 +370,7 @@ impl ClientApiImpl {
 
         // Broadcast a single MediaRemovedBatch event instead of N individual events.
         // This reduces Redis pub/sub traffic from O(n) to O(1) messages.
-        if !media_items.is_empty() {
+        if !result.deleted_media_ids.is_empty() {
             if let Some(ref tx) = self.redis_publish_tx {
                 let username = self
                     .user_service
@@ -305,8 +378,6 @@ impl ClientApiImpl {
                     .await
                     .map(|u| u.username)
                     .unwrap_or_default();
-                let media_ids: Vec<synctv_core::models::MediaId> =
-                    media_items.iter().map(|m| m.id.clone()).collect();
                 let _ = crate::impls::try_publish_cluster_event(
                     tx,
                     synctv_cluster::sync::PublishRequest {
@@ -315,7 +386,7 @@ impl ClientApiImpl {
                             room_id: rid.clone(),
                             user_id: uid.clone(),
                             username,
-                            media_ids,
+                            media_ids: result.deleted_media_ids.clone(),
                             timestamp: chrono::Utc::now(),
                         },
                     },
@@ -324,12 +395,13 @@ impl ClientApiImpl {
             }
         }
 
-        // Note: playback cache invalidation is handled by TTL-based expiry
-        // in the provider's internal ProviderStore. No explicit invalidation needed.
+        if let Some(cache_invalidation) = cache_invalidation {
+            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+        }
 
         Ok(crate::proto::client::ClearPlaylistResponse {
             success: true,
-            deleted_count: deleted_count as i32,
+            deleted_count: result.deleted_count as i32,
         })
     }
 
@@ -359,35 +431,22 @@ impl ClientApiImpl {
 
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-
-        // Check total playlist size limit to prevent unbounded growth
-        let root_playlist = self
-            .room_service
-            .playlist_service()
-            .get_root_playlist(&rid)
-            .await
-            .map_err(ApiError::from)?;
-        let existing_count = self
-            .room_service
-            .media_service()
-            .count_playlist_media(&root_playlist.id)
-            .await
-            .map_err(ApiError::from)? as usize;
-        let new_total = existing_count + req.items.len();
-        if new_total > Self::MAX_PLAYLIST_SIZE {
-            return Err(ApiError::InvalidInput(format!(
-                "Playlist would exceed maximum size of {} items \
-                 (current: {}, adding: {})",
-                Self::MAX_PLAYLIST_SIZE,
-                existing_count,
-                req.items.len()
-            )));
-        }
+        let mut playlist_targets = std::collections::HashSet::new();
 
         // Build batch items for the atomic service call
-        let mut items: Vec<(String, serde_json::Value, String)> =
+        let mut items: Vec<synctv_core::service::media::AddMediaRequest> =
             Vec::with_capacity(req.items.len());
         for item in &req.items {
+            let playlist_id = if let Some(playlist_id) = item.playlist_id.as_ref() {
+                crate::http::validation::validate_id(playlist_id, "playlist_id")
+                    .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
+                Some(synctv_core::models::PlaylistId::from_string(
+                    playlist_id.clone(),
+                ))
+            } else {
+                None
+            };
+            playlist_targets.insert(item.playlist_id.clone());
             let source_config: serde_json::Value = if item.source_config.is_empty() {
                 serde_json::json!({})
             } else {
@@ -407,13 +466,59 @@ impl ClientApiImpl {
                 crate::http::validation::validate_media_title(&item.title)
                     .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
             };
-            // Use provider_instance_name from the request item
-            items.push((item.provider_instance_name.clone(), source_config, title));
+            items.push(synctv_core::service::media::AddMediaRequest {
+                playlist_id,
+                name: title,
+                provider_instance_name: item.provider_instance_name.clone(),
+                source_config,
+            });
+        }
+
+        if playlist_targets.len() != 1 {
+            return Err(ApiError::InvalidInput(
+                "Batch add must target exactly one location".to_string(),
+            ));
+        }
+
+        let playlist_id = playlist_targets
+            .into_iter()
+            .next()
+            .ok_or_else(|| ApiError::InvalidInput("Batch add must target one location".to_string()))?
+            .map(synctv_core::models::PlaylistId::from_string);
+        let existing_count = if let Some(ref playlist_id) = playlist_id {
+            self.room_service
+                .media_service()
+                .count_playlist_media(playlist_id)
+                .await
+                .map_err(ApiError::from)? as usize
+        } else {
+            self.room_service
+                .media_service()
+                .count_room_root_media(&rid)
+                .await
+                .map_err(ApiError::from)? as usize
+        };
+        let new_total = existing_count + items.len();
+        if new_total > Self::MAX_PLAYLIST_SIZE {
+            let target = if playlist_id.is_some() {
+                "playlist"
+            } else {
+                "room root"
+            };
+            return Err(ApiError::InvalidInput(format!(
+                "{} would exceed maximum size of {} items \
+                 (current: {}, adding: {})",
+                target,
+                Self::MAX_PLAYLIST_SIZE,
+                existing_count,
+                items.len()
+            )));
         }
 
         let media_list = self
             .room_service
-            .add_media_batch(rid.clone(), uid.clone(), items)
+            .media_service()
+            .add_media_batch(rid.clone(), uid.clone(), playlist_id, items)
             .await
             .map_err(ApiError::from)?;
 
@@ -452,88 +557,6 @@ impl ClientApiImpl {
             .collect();
 
         Ok(crate::proto::client::AddMediaBatchResponse { results })
-    }
-
-    /// Bulk delete multiple media items
-    pub async fn delete_media_batch(
-        &self,
-        user_id: &str,
-        room_id: &str,
-        req: crate::proto::client::DeleteMediaBatchRequest,
-    ) -> Result<crate::proto::client::DeleteMediaBatchResponse, ApiError> {
-        if req.media_ids.is_empty() {
-            return Err(ApiError::InvalidInput(
-                "media_ids array cannot be empty".to_string(),
-            ));
-        }
-        if req.media_ids.len() > 100 {
-            return Err(ApiError::InvalidInput(
-                "Too many items (max 100 per batch)".to_string(),
-            ));
-        }
-
-        for media_id in &req.media_ids {
-            crate::http::validation::validate_id(media_id, "media_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
-        }
-
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
-        let media_id_strings: Vec<String> = req.media_ids.clone();
-        let mids: Vec<synctv_core::models::MediaId> = req
-            .media_ids
-            .into_iter()
-            .map(synctv_core::models::MediaId::from_string)
-            .collect();
-
-        let deleted_count = self
-            .room_service
-            .media_service()
-            .remove_media_batch(rid.clone(), uid.clone(), mids)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Broadcast single MediaRemovedBatch event instead of N individual events
-        // This reduces Redis pub/sub traffic from O(n) to O(1) messages
-        if let Some(ref tx) = self.redis_publish_tx {
-            let username = self
-                .user_service
-                .get_user(&uid)
-                .await
-                .map(|u| u.username)
-                .unwrap_or_default();
-            let media_ids: Vec<synctv_core::models::MediaId> = media_id_strings
-                .iter()
-                .map(|id| synctv_core::models::MediaId::from_string(id.clone()))
-                .collect();
-            let _ = crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::MediaRemovedBatch {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: rid.clone(),
-                        user_id: uid.clone(),
-                        username,
-                        media_ids,
-                        timestamp: chrono::Utc::now(),
-                    },
-                },
-            )
-            .await;
-        }
-
-        // Note: playback cache invalidation is handled by TTL-based expiry
-        // in the provider's internal ProviderStore. No explicit invalidation needed.
-
-        // Kick active streams for deleted media (local + cluster-wide)
-        for media_id in &media_id_strings {
-            self.kick_stream_cluster(room_id, media_id, "media_deleted")
-                .await;
-        }
-
-        Ok(crate::proto::client::DeleteMediaBatchResponse {
-            deleted_count: deleted_count as i32,
-        })
     }
 
     /// Bulk reorder multiple media items
@@ -623,47 +646,25 @@ impl ClientApiImpl {
         let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
         let (media_list, total_count) = self
             .room_service
-            .get_playlist_paginated(&rid, pagination)
+            .get_room_root_media_paginated(&rid, pagination)
             .await
             .map_err(ApiError::from)?;
 
         let media: Vec<_> = media_list.into_iter().map(|m| media_to_proto(&m)).collect();
         let total = total_count as i32;
 
-        let playlist = match self
-            .room_service
-            .playlist_service()
-            .get_root_playlist(&rid)
-            .await
-        {
-            Ok(pl) => Some(crate::proto::client::Playlist {
-                id: pl.id.as_str().to_string(),
-                room_id: pl.room_id.as_str().to_string(),
-                name: pl.name.clone(),
-                parent_id: pl
-                    .parent_id
-                    .as_ref()
-                    .map_or(String::new(), |p| p.as_str().to_string()),
-                position: pl.position,
-                is_folder: true,
-                is_dynamic: pl.is_dynamic(),
-                item_count: total,
-                created_at: pl.created_at.timestamp(),
-                updated_at: pl.updated_at.timestamp(),
-            }),
-            Err(_) => Some(crate::proto::client::Playlist {
-                id: String::new(),
-                room_id: rid.as_str().to_string(),
-                name: String::new(),
-                parent_id: String::new(),
-                position: 0,
-                is_folder: true,
-                is_dynamic: false,
-                item_count: total,
-                created_at: 0,
-                updated_at: 0,
-            }),
-        };
+        let playlist = Some(crate::proto::client::Playlist {
+            id: String::new(),
+            room_id: rid.as_str().to_string(),
+            name: String::new(),
+            parent_id: String::new(),
+            position: 0,
+            is_folder: true,
+            is_dynamic: false,
+            item_count: total,
+            created_at: 0,
+            updated_at: 0,
+        });
 
         Ok(crate::proto::client::ListPlaylistResponse {
             playlist,

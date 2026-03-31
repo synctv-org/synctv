@@ -67,12 +67,13 @@
 use chrono::{DateTime, Duration, Utc};
 use rand::RngExt;
 use sqlx::PgPool;
+use std::collections::HashSet;
 use std::net::IpAddr;
 
 use crate::{
     cache::CacheInvalidationService,
     models::{
-        ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits, Playlist,
+        ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits,
         PlaylistId, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole,
         RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
     },
@@ -111,6 +112,7 @@ pub struct RoomService {
     room_repo: RoomRepository,
     room_settings_repo: RoomSettingsRepository,
     member_repo: RoomMemberRepository,
+    media_repo: MediaRepository,
     playlist_repo: PlaylistRepository,
     playback_repo: RoomPlaybackStateRepository,
     chat_repo: ChatRepository,
@@ -143,6 +145,26 @@ pub struct RoomService {
     /// Password hasher (Argon2id). Defaults to production params;
     /// inject `TestPasswordHasher` in integration tests for speed.
     password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DeleteEntriesRequest {
+    pub playlist_ids: Vec<PlaylistId>,
+    pub media_ids: Vec<MediaId>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeleteEntriesResult {
+    pub deleted_playlists: usize,
+    pub deleted_media: usize,
+    pub deleted_media_ids: Vec<MediaId>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClearPlaylistResult {
+    pub deleted_count: i64,
+    pub deleted_media_ids: Vec<MediaId>,
+    pub playback_state: Option<RoomPlaybackState>,
 }
 
 impl std::fmt::Debug for RoomService {
@@ -307,7 +329,6 @@ impl RoomService {
             playback_repo.clone(),
             permission_service.clone(),
             media_service.clone(),
-            media_repo,
         );
         playback_service.set_notification_service(notification_service.clone());
 
@@ -317,6 +338,7 @@ impl RoomService {
             room_repo,
             room_settings_repo,
             member_repo,
+            media_repo: media_repo.clone(),
             playlist_repo,
             playback_repo,
             chat_repo,
@@ -615,26 +637,7 @@ impl RoomService {
         );
         let created_member = self.member_repo.add_with_executor(&member, &mut tx).await?;
 
-        // 5. Create root playlist
-        let root_playlist = Playlist {
-            id: PlaylistId::new(),
-            room_id: created_room.id.clone(),
-            creator_id: Some(created_by.clone()),
-            name: String::new(),
-            parent_id: None,
-            position: 0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 0,
-        };
-        self.playlist_repo
-            .create_with_executor(&root_playlist, &mut *tx)
-            .await?;
-
-        // 6. Initialize playback state
+        // 5. Initialize playback state
         self.playback_repo
             .create_or_get_with_executor(&created_room.id, &mut tx)
             .await?;
@@ -2107,72 +2110,7 @@ impl RoomService {
 
     // ========== Media Operations (delegated) ==========
 
-    /// Add media to playlist (convenience method)
-    ///
-    /// This is a convenience method that:
-    /// 1. Gets the root playlist for the room
-    /// 2. Calls `MediaService::add_media` with the provided `source_config`
-    ///
-    /// Note: Clients should typically call the parse endpoint first to get
-    /// `source_config`, then call this method with `provider_instance_name`.
-    ///
-    /// Uses provider registry pattern - no enum switching in service layer.
-    pub async fn add_media(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        provider_instance_name: String,
-        source_config: serde_json::Value,
-        title: String,
-    ) -> Result<Media> {
-        use crate::service::media::AddMediaRequest;
-
-        // Get room's root playlist
-        let root_playlist = self.playlist_service.get_root_playlist(&room_id).await?;
-
-        // Create request with provider_instance_name
-        let request = AddMediaRequest {
-            playlist_id: root_playlist.id.clone(),
-            name: title,
-            provider_instance_name,
-            source_config,
-        };
-
-        self.media_service
-            .add_media(room_id, user_id, request)
-            .await
-    }
-
-    /// Add multiple media items atomically (all-or-nothing via transaction)
-    pub async fn add_media_batch(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        items: Vec<(String, serde_json::Value, String)>, // (provider_instance_name, source_config, title)
-    ) -> Result<Vec<Media>> {
-        use crate::service::media::AddMediaRequest;
-
-        // Get room's root playlist
-        let root_playlist = self.playlist_service.get_root_playlist(&room_id).await?;
-
-        let requests: Vec<AddMediaRequest> = items
-            .into_iter()
-            .map(
-                |(provider_instance_name, source_config, title)| AddMediaRequest {
-                    playlist_id: root_playlist.id.clone(),
-                    name: title,
-                    provider_instance_name,
-                    source_config,
-                },
-            )
-            .collect();
-
-        self.media_service
-            .add_media_batch(room_id, user_id, root_playlist.id, requests)
-            .await
-    }
-
-    /// Remove media from playlist
+    /// Remove a media entry from the room in one transactional operation.
     ///
     /// Uses a transaction to atomically:
     /// 1. Verify the user has permission (TOCTOU prevention - permission check is within transaction)
@@ -2196,129 +2134,245 @@ impl RoomService {
         user_id: UserId,
         media_id: MediaId,
     ) -> Result<()> {
-        // Start transaction first for atomic permission check and delete
+        self.delete_entries(
+            room_id,
+            user_id,
+            DeleteEntriesRequest {
+                playlist_ids: Vec::new(),
+                media_ids: vec![media_id],
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Delete a mixed set of playlists and media in one transaction.
+    pub async fn delete_entries(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: DeleteEntriesRequest,
+    ) -> Result<DeleteEntriesResult> {
+        const MAX_DELETE_TARGETS: usize = 100;
+
+        let playlist_ids = dedup_ids(request.playlist_ids);
+        let media_ids = dedup_ids(request.media_ids);
+        let total_targets = playlist_ids.len() + media_ids.len();
+
+        if total_targets == 0 {
+            return Ok(DeleteEntriesResult::default());
+        }
+
+        if total_targets > MAX_DELETE_TARGETS {
+            return Err(Error::InvalidInput(format!(
+                "Delete batch size exceeds maximum of {MAX_DELETE_TARGETS}"
+            )));
+        }
+
         let mut tx = self.pool.begin().await?;
 
-        // Step 1: Fetch media within transaction to verify it exists and get creator_id
-        let media_row: Option<(String, Option<String>, String)> =
-            sqlx::query_as("SELECT id, creator_id, room_id FROM media WHERE id = $1")
-                .bind(media_id.as_str())
-                .fetch_optional(&mut *tx)
-                .await?;
-
-        let (fetched_media_id, media_creator_id, media_room_id) =
-            media_row.ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-
-        if media_room_id != room_id.as_str() {
-            return Err(Error::Authorization(
-                "Media does not belong to this room".to_string(),
+        let playlists = self
+            .playlist_repo
+            .get_by_ids_with_executor(&playlist_ids, &mut *tx)
+            .await?;
+        if playlists.len() != playlist_ids.len() {
+            return Err(Error::NotFound(
+                "One or more playlists not found".to_string(),
             ));
         }
 
-        // Step 2: Check permission within transaction (TOCTOU fix)
-        // We perform a raw SQL query to calculate effective permissions atomically
-        let is_owner = media_creator_id.as_deref() == Some(user_id.as_str());
+        for playlist in &playlists {
+            if playlist.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Playlist does not belong to this room".to_string(),
+                ));
+            }
+        }
 
-        let has_permission: Option<bool> = sqlx::query_scalar(
-            "SELECT EXISTS (
-                SELECT 1
-                FROM room_members rm
-                LEFT JOIN room_settings rs
-                  ON rs.room_id = rm.room_id
-                 AND rs.key = '_settings'
-                WHERE rm.room_id = $1
-                  AND rm.user_id = $2
-                  AND rm.left_at IS NULL
-                  AND (
-                      -- Creator has all permissions
-                      rm.role = 1
-                      OR (
-                          -- Calculate effective permissions:
-                          -- (role_default | added) & ~removed
-                          CASE rm.role
-                              WHEN 2 THEN
-                                  ((COALESCE((rs.value::jsonb ->> 'admin_added_permissions')::bigint, 0::bigint) | rm.admin_added_permissions) &
-                                   ~COALESCE((rs.value::jsonb ->> 'admin_removed_permissions')::bigint, 0::bigint) & ~rm.admin_removed_permissions) & $3 > 0
-                              WHEN 3 THEN
-                                  ((COALESCE((rs.value::jsonb ->> 'member_added_permissions')::bigint, 0::bigint) | rm.added_permissions) &
-                                   ~COALESCE((rs.value::jsonb ->> 'member_removed_permissions')::bigint, 0::bigint) & ~rm.removed_permissions) & $3 > 0
-                              WHEN 4 THEN
-                                  ((COALESCE((rs.value::jsonb ->> 'guest_added_permissions')::bigint, 0::bigint) | rm.added_permissions) &
-                                   ~COALESCE((rs.value::jsonb ->> 'guest_removed_permissions')::bigint, 0::bigint) & ~rm.removed_permissions) & $3 > 0
-                              ELSE FALSE
-                          END
-                      )
-                  )
-            )"
-        )
-        .bind(room_id.as_str())
-        .bind(user_id.as_str())
-        .bind(if is_owner {
-            PermissionBits::DELETE_MOVIE_SELF
-        } else {
-            PermissionBits::DELETE_MOVIE_ANY
-        } as i64)
-        .fetch_optional(&mut *tx)
-        .await?
-        .flatten();
+        if !playlist_ids.is_empty() {
+            if !has_room_permission_in_tx(
+                &mut tx,
+                &room_id,
+                &user_id,
+                PermissionBits::REORDER_PLAYLIST,
+            )
+            .await?
+            {
+                return Err(Error::Authorization(
+                    "Permission denied".to_string(),
+                ));
+            }
+        }
 
-        if !has_permission.unwrap_or(false) {
+        let media_items = self
+            .media_repo
+            .get_by_ids_with_executor(&media_ids, &mut *tx)
+            .await?;
+        if media_items.len() != media_ids.len() {
+            return Err(Error::NotFound("One or more media items not found".to_string()));
+        }
+
+        let mut has_owned_media = false;
+        let mut has_foreign_media = false;
+        for media in &media_items {
+            if media.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
+            }
+            if media.creator_id.as_ref() == Some(&user_id) {
+                has_owned_media = true;
+            } else {
+                has_foreign_media = true;
+            }
+        }
+
+        if has_owned_media
+            && !has_room_permission_in_tx(
+                &mut tx,
+                &room_id,
+                &user_id,
+                PermissionBits::DELETE_MOVIE_SELF,
+            )
+            .await?
+        {
+            return Err(Error::Authorization("Permission denied".to_string()));
+        }
+        if has_foreign_media
+            && !has_room_permission_in_tx(
+                &mut tx,
+                &room_id,
+                &user_id,
+                PermissionBits::DELETE_MOVIE_ANY,
+            )
+            .await?
+        {
             return Err(Error::Authorization("Permission denied".to_string()));
         }
 
-        // Step 3: Lock the playback state row to prevent concurrent playback switches
-        let playing_media_id: Option<String> = sqlx::query_scalar(
-            "SELECT playing_media_id FROM room_playback_state
+        let deleted_media_ids =
+            collect_deleted_media_ids_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids).await?;
+
+        let playback_row = sqlx::query(
+            "SELECT playing_media_id, playing_playlist_id
+             FROM room_playback_state
              WHERE room_id = $1
              FOR UPDATE",
         )
         .bind(room_id.as_str())
         .fetch_optional(&mut *tx)
-        .await?
-        .flatten();
+        .await?;
 
-        if playing_media_id.as_deref() == Some(fetched_media_id.as_str()) {
-            return Err(Error::InvalidInput(
-                "Cannot remove media that is currently playing".to_string(),
-            ));
+        if let Some(row) = playback_row {
+            use sqlx::Row;
+
+            let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
+            let playing_playlist_id: Option<String> = row.try_get("playing_playlist_id")?;
+
+            if let Some(ref playing_media_id) = playing_media_id {
+                if deleted_media_ids
+                    .iter()
+                    .any(|id| id.as_str() == playing_media_id)
+                {
+                    return Err(Error::InvalidInput(
+                        "Cannot delete entries that include the currently playing media"
+                            .to_string(),
+                    ));
+                }
+            }
+
+            if let Some(ref playing_playlist_id) = playing_playlist_id {
+                let targeted_playlist_ids: Vec<&str> =
+                    playlist_ids.iter().map(PlaylistId::as_str).collect();
+                if !targeted_playlist_ids.is_empty() {
+                    let deletes_playing_playlist: bool = sqlx::query_scalar(
+                        "WITH RECURSIVE target_playlists AS (
+                            SELECT id
+                            FROM playlists
+                            WHERE id = ANY($1)
+                            UNION ALL
+                            SELECT p.id
+                            FROM playlists p
+                            JOIN target_playlists tp ON p.parent_id = tp.id
+                        )
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM target_playlists
+                            WHERE id = $2
+                        )",
+                    )
+                    .bind(&targeted_playlist_ids)
+                    .bind(playing_playlist_id.as_str())
+                    .fetch_one(&mut *tx)
+                    .await?;
+
+                    if deletes_playing_playlist {
+                        return Err(Error::InvalidInput(
+                            "Cannot delete entries that include the currently playing media"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
         }
 
-        // Step 4: Delete the media within the transaction
-        sqlx::query("DELETE FROM media WHERE id = $1")
-            .bind(fetched_media_id.as_str())
-            .execute(&mut *tx)
-            .await?;
+        if !media_ids.is_empty() {
+            self.media_repo
+                .delete_batch_with_executor(&media_ids, &mut *tx)
+                .await?;
+        }
+        if !playlist_ids.is_empty() {
+            self.playlist_repo
+                .delete_batch_with_executor(&playlist_ids, &mut *tx)
+                .await?;
+        }
 
         tx.commit().await?;
 
+        if !deleted_media_ids.is_empty() {
+            for media_id in &deleted_media_ids {
+                if let Err(error) = self
+                    .notification_service
+                    .notify_media_removed(&room_id, media_id.as_str())
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id.as_str(),
+                        media_id = %media_id.as_str(),
+                        "Failed to broadcast media removed event"
+                    );
+                }
+            }
+        }
+
         tracing::info!(
             room_id = %room_id.as_str(),
-            media_id = %fetched_media_id.as_str(),
             user_id = %user_id.as_str(),
-            "Media removed from playlist"
+            deleted_playlists = playlist_ids.len(),
+            deleted_media = deleted_media_ids.len(),
+            "Entries deleted"
         );
 
-        Ok(())
+        Ok(DeleteEntriesResult {
+            deleted_playlists: playlist_ids.len(),
+            deleted_media: deleted_media_ids.len(),
+            deleted_media_ids,
+        })
     }
 
-    /// Get playlist (all media in room's root playlist)
-    pub async fn get_playlist(&self, room_id: &RoomId) -> Result<Vec<Media>> {
-        let root_playlist = self.playlist_service.get_root_playlist(room_id).await?;
-        self.media_service
-            .get_playlist_media(&root_playlist.id)
-            .await
+    /// Get media directly under the room root.
+    pub async fn get_room_root_media(&self, room_id: &RoomId) -> Result<Vec<Media>> {
+        self.media_service.get_room_root_media(room_id).await
     }
 
-    /// Get playlist paginated
-    pub async fn get_playlist_paginated(
+    /// Get room-root media paginated.
+    pub async fn get_room_root_media_paginated(
         &self,
         room_id: &RoomId,
         pagination: PageParams,
     ) -> Result<(Vec<Media>, i64)> {
-        let root_playlist = self.playlist_service.get_root_playlist(room_id).await?;
-        self.media_service
-            .get_playlist_media_paginated(&root_playlist.id, pagination)
-            .await
+        self.media_service.get_room_root_media_paginated(room_id, pagination).await
     }
 
     /// Get current playing media for a room
@@ -2350,7 +2404,7 @@ impl RoomService {
             .await
     }
 
-    /// Clear all media from room's root playlist
+    /// Clear all media directly under the room root.
     ///
     /// Permission check is handled by the API layer (`CLEAR_PLAYLIST`).
     /// This method no longer performs its own permission check to avoid
@@ -2360,12 +2414,28 @@ impl RoomService {
     /// the playback state is reset to stopped within the same transaction
     /// before clearing, giving a clean state. The FK has ON DELETE SET NULL
     /// so it's safe, but explicitly resetting avoids orphaned playback state.
-    pub async fn clear_playlist(&self, room_id: RoomId, _user_id: UserId) -> Result<i64> {
-        let root_playlist = self.playlist_service.get_root_playlist(&room_id).await?;
-
+    pub async fn clear_playlist(
+        &self,
+        room_id: RoomId,
+        _user_id: UserId,
+    ) -> Result<ClearPlaylistResult> {
         // Atomic reset-and-clear within a transaction to prevent TOCTOU race
         // where another user starts playing media between the check and the clear.
         let mut tx = self.pool.begin().await?;
+
+        let deleted_media_ids: Vec<MediaId> = sqlx::query_scalar(
+            "SELECT id
+             FROM media
+             WHERE room_id = $1
+               AND playlist_id IS NULL
+             ORDER BY position ASC",
+        )
+        .bind(room_id.as_str())
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(MediaId::from_string)
+        .collect();
 
         // Lock the playback state row to prevent concurrent playback switches
         let row = sqlx::query(
@@ -2377,17 +2447,24 @@ impl RoomService {
         .fetch_optional(&mut *tx)
         .await?;
 
-        // If the currently playing media is in this playlist, reset playback state
+        // If the currently playing media is at the room root, reset playback state
+        let mut playback_reset = false;
         if let Some(row) = row {
             use sqlx::Row;
             let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
             if let Some(ref mid) = playing_media_id {
-                // Check if the playing media belongs to this playlist
+                // Check if the playing media belongs to the room root.
                 let in_playlist: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM media WHERE id = $1 AND playlist_id = $2)",
+                    "SELECT EXISTS(
+                        SELECT 1
+                        FROM media
+                        WHERE id = $1
+                          AND room_id = $2
+                          AND playlist_id IS NULL
+                    )",
                 )
                 .bind(mid.as_str())
-                .bind(root_playlist.id.as_str())
+                .bind(room_id.as_str())
                 .fetch_one(&mut *tx)
                 .await?;
 
@@ -2396,27 +2473,84 @@ impl RoomService {
                     sqlx::query(
                         "UPDATE room_playback_state
                          SET playing_media_id = NULL, playing_playlist_id = NULL,
-                             current_time = 0, is_playing = false,
+                             \"current_time\" = 0, is_playing = false,
                              version = version + 1, updated_at = NOW()
                          WHERE room_id = $1",
                     )
                     .bind(room_id.as_str())
                     .execute(&mut *tx)
                     .await?;
+                    playback_reset = true;
                 }
             }
         }
 
-        // Delete all media in playlist within the transaction
-        let result = sqlx::query("DELETE FROM media WHERE playlist_id = $1")
-            .bind(root_playlist.id.as_str())
+        // Delete all media at the room root within the transaction
+        let result = sqlx::query("DELETE FROM media WHERE room_id = $1 AND playlist_id IS NULL")
+            .bind(room_id.as_str())
             .execute(&mut *tx)
             .await?;
 
         let count = result.rows_affected() as i64;
         tx.commit().await?;
 
-        Ok(count)
+        for media_id in &deleted_media_ids {
+            if let Err(error) = self
+                .notification_service
+                .notify_media_removed(&room_id, media_id.as_str())
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id.as_str(),
+                    media_id = %media_id.as_str(),
+                    "Failed to broadcast media removed event after clear_playlist"
+                );
+            }
+        }
+
+        let playback_state = if playback_reset {
+            self.playback_service.invalidate_playback_cache(&room_id).await;
+
+            match self.playback_service.get_state(&room_id).await {
+                Ok(state) => {
+                    if let Err(error) = self
+                        .notification_service
+                        .notify_playback_state_changed(
+                            &room_id,
+                            state.is_playing,
+                            state.current_time,
+                            state.speed,
+                            state.playing_media_id.as_ref().map(|id| id.as_str().to_string()),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %error,
+                            room_id = %room_id.as_str(),
+                            "Failed to broadcast playback reset after clear_playlist"
+                        );
+                    }
+                    Some(state)
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id.as_str(),
+                        "Failed to reload playback state after clear_playlist reset"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(ClearPlaylistResult {
+            deleted_count: count,
+            deleted_media_ids,
+            playback_state,
+        })
     }
 
     /// Set current playing media for a room
@@ -3215,6 +3349,119 @@ impl RoomService {
 
         Ok(results)
     }
+}
+
+fn dedup_ids<T>(ids: Vec<T>) -> Vec<T>
+where
+    T: Eq + std::hash::Hash + Clone,
+{
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::with_capacity(ids.len());
+    for id in ids {
+        if seen.insert(id.clone()) {
+            deduped.push(id);
+        }
+    }
+    deduped
+}
+
+async fn has_room_permission_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    user_id: &UserId,
+    permission: u64,
+) -> Result<bool> {
+    let required_permission = permission as i64;
+    let admin_default = PermissionBits::DEFAULT_ADMIN as i64;
+    let member_default = PermissionBits::DEFAULT_MEMBER as i64;
+    let guest_default = PermissionBits::DEFAULT_GUEST as i64;
+    let has_permission: Option<bool> = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1
+            FROM room_members rm
+            LEFT JOIN room_settings rs
+              ON rs.room_id = rm.room_id
+             AND rs.key = '_settings'
+            WHERE rm.room_id = $1
+              AND rm.user_id = $2
+              AND rm.left_at IS NULL
+              AND (
+                  rm.role = 1
+                  OR (
+                      CASE rm.role
+                          WHEN 2 THEN
+                              (((($4 | COALESCE((rs.value::jsonb ->> 'admin_added_permissions')::bigint, 0::bigint) | rm.admin_added_permissions) &
+                               ~COALESCE((rs.value::jsonb ->> 'admin_removed_permissions')::bigint, 0::bigint) & ~rm.admin_removed_permissions) & $3) = $3)
+                          WHEN 3 THEN
+                              (((($5 | (COALESCE((rs.value::jsonb ->> 'member_added_permissions')::bigint, 0::bigint) & $4) | rm.added_permissions) &
+                               ~COALESCE((rs.value::jsonb ->> 'member_removed_permissions')::bigint, 0::bigint) & ~rm.removed_permissions) & $3) = $3)
+                          WHEN 4 THEN
+                              (((($6 | (COALESCE((rs.value::jsonb ->> 'guest_added_permissions')::bigint, 0::bigint) & $5) | rm.added_permissions) &
+                               ~COALESCE((rs.value::jsonb ->> 'guest_removed_permissions')::bigint, 0::bigint) & ~rm.removed_permissions) & $3) = $3)
+                          ELSE FALSE
+                      END
+                  )
+              )
+        )",
+    )
+    .bind(room_id.as_str())
+    .bind(user_id.as_str())
+    .bind(required_permission)
+    .bind(admin_default)
+    .bind(member_default)
+    .bind(guest_default)
+    .fetch_optional(&mut **tx)
+    .await?
+    .flatten();
+
+    Ok(has_permission.unwrap_or(false))
+}
+
+async fn collect_deleted_media_ids_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    playlist_ids: &[PlaylistId],
+    explicit_media_ids: &[MediaId],
+) -> Result<Vec<MediaId>> {
+    if playlist_ids.is_empty() && explicit_media_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let playlist_id_strs: Vec<&str> = playlist_ids.iter().map(PlaylistId::as_str).collect();
+    let explicit_media_id_strs: Vec<&str> = explicit_media_ids.iter().map(MediaId::as_str).collect();
+
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "WITH RECURSIVE target_playlists AS (
+            SELECT id
+            FROM playlists
+            WHERE id = ANY($1)
+            UNION ALL
+            SELECT p.id
+            FROM playlists p
+            JOIN target_playlists tp ON p.parent_id = tp.id
+        )
+        SELECT DISTINCT m.id
+        FROM media m
+        WHERE m.room_id = $2
+          AND (
+              m.id = ANY($3)
+              OR m.playlist_id IN (SELECT id FROM target_playlists)
+          )
+        ORDER BY m.id",
+    )
+    .bind(&playlist_id_strs)
+    .bind(room_id.as_str())
+    .bind(&explicit_media_id_strs)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let media_id: String = row.try_get("id")?;
+            Ok(MediaId::from_string(media_id))
+        })
+        .collect()
 }
 
 #[cfg(test)]

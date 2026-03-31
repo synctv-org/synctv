@@ -270,7 +270,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
     };
     member_repo.add(&rm).await.unwrap();
 
-    // Create a root playlist for the room
+    // Create a top-level playlist for the room
     let root_playlist = Playlist {
         id: PlaylistId::new(),
         room_id: room.id.clone(),

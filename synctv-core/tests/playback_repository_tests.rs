@@ -6,9 +6,13 @@
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
+use synctv_core::models::{Media, MediaId, Playlist, PlaylistId};
 use synctv_core::{
     models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
-    repository::{RoomPlaybackStateRepository, RoomRepository, UserRepository},
+    repository::{
+        MediaRepository, PlaylistRepository, RoomPlaybackStateRepository, RoomRepository,
+        UserRepository,
+    },
     Error,
 };
 use synctv_core_testing::create_test_pool;
@@ -179,4 +183,149 @@ async fn test_update_concurrent_tasks_one_gets_conflict() {
         .or_else(|| r2.as_ref().err())
         .expect("One should be Err");
     assert!(matches!(err, Error::OptimisticLockConflict));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_playback_state_rejects_cross_room_media_and_playlist_references() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_pb_cross_room"))
+        .await
+        .unwrap();
+    let room_a = room_repo
+        .create(&make_room("Room PB Cross A", &owner.id))
+        .await
+        .unwrap();
+    let room_b = room_repo
+        .create(&make_room("Room PB Cross B", &owner.id))
+        .await
+        .unwrap();
+
+    let playlist_b = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room_b.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "Room B Playlist".to_string(),
+            parent_id: None,
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let media_b = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(playlist_b.id.clone()),
+            room_id: room_b.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "Room B Media".to_string(),
+            position: 0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({"url": "https://example.com/room-b.mp4"}),
+            provider_instance_name: None,
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let mut state = playback_repo.create_or_get(&room_a.id).await.unwrap();
+    state.playing_media_id = Some(media_b.id.clone());
+    state.playing_playlist_id = Some(playlist_b.id.clone());
+
+    let result = playback_repo.update(&state).await;
+    assert!(
+        result.is_err(),
+        "room playback state must not reference media or playlists from another room"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_deleting_playing_media_clears_reference_without_nulling_room_scope() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_pb_delete_media_fk"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room PB Delete Media FK", &owner.id))
+        .await
+        .unwrap();
+
+    let playlist = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "Room Delete Media Playlist".to_string(),
+            parent_id: None,
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(playlist.id.clone()),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "Room Delete Media".to_string(),
+            position: 0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({"url": "https://example.com/delete-media.mp4"}),
+            provider_instance_name: None,
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
+    state.playing_media_id = Some(media.id.clone());
+    state.playing_playlist_id = Some(playlist.id.clone());
+    let _updated = playback_repo.update(&state).await.unwrap();
+
+    media_repo.delete(&media.id).await.unwrap();
+
+    let state_after_delete = playback_repo.get(&room.id).await.unwrap().unwrap();
+    assert_eq!(state_after_delete.room_id, room.id);
+    assert!(
+        state_after_delete.playing_media_id.is_none(),
+        "deleting current media must clear the playback media reference"
+    );
+    assert_eq!(
+        state_after_delete.playing_playlist_id,
+        Some(playlist.id),
+        "deleting media must not clear the room-scoped playlist reference"
+    );
 }

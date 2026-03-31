@@ -77,6 +77,7 @@ service RoomService {
     // Media Management (room-scoped operations)
     rpc AddMedia(AddMediaRequest) returns (AddMediaResponse);
     rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
+    rpc DeleteEntries(DeleteEntriesRequest) returns (DeleteEntriesResponse);
     rpc EditMedia(EditMediaRequest) returns (EditMediaResponse);
     rpc ListPlaylist(ListPlaylistRequest) returns (ListPlaylistResponse);
     rpc ListPlaylistItems(ListPlaylistItemsRequest) returns (ListPlaylistItemsResponse); // List dynamic playlist items
@@ -85,7 +86,6 @@ service RoomService {
 
     // Batch Operations (room-scoped)
     rpc AddMediaBatch(AddMediaBatchRequest) returns (AddMediaBatchResponse);
-    rpc DeleteMediaBatch(DeleteMediaBatchRequest) returns (DeleteMediaBatchResponse);
     rpc ReorderMediaBatch(ReorderMediaBatchRequest) returns (ReorderMediaBatchResponse);
 
     // Playback Control (room-scoped operations)
@@ -479,7 +479,7 @@ message StopPlaybackResponse {
 // Note: room_id extracted from x-room-id metadata
 
 message AddMediaRequest {
-    string playlist_id = 1; // Target playlist ID. Validation: required, max 64 chars
+    optional string playlist_id = 1; // Target playlist ID. Omit for room-root media
     string provider = 2; // Optional, provider type name (e.g., "bilibili", "alist")
     string provider_instance_name = 3; // Optional, specific provider instance (e.g., "bilibili_main")
     bytes source_config = 4; // JSON source config (e.g., {"url": "...", "path": "..."})
@@ -498,10 +498,19 @@ message DeleteMediaResponse {
     bool success = 1;
 }
 
+message DeleteEntriesRequest {
+    repeated string playlist_ids = 1;
+    repeated string media_ids = 2;
+}
+
+message DeleteEntriesResponse {
+    int32 deleted_playlists = 1;
+    int32 deleted_media = 2;
+}
+
 message ListPlaylistRequest {
-    string playlist_id = 1; // Playlist ID to get. Validation: required, max 64 chars
-    int32 page = 2; // Page number (default 1). Validation: >= 1
-    int32 page_size = 3; // Items per page (default 50). Validation: max 100
+    int32 page = 1; // Page number (default 1). Validation: >= 1
+    int32 page_size = 2; // Items per page (default 50). Validation: max 100
 }
 
 message ListPlaylistResponse {
@@ -562,9 +571,7 @@ message EditMediaResponse {
 }
 
 // Clear Playlist
-message ClearPlaylistRequest {
-    string playlist_id = 1; // Playlist to clear (room_id from context)
-}
+message ClearPlaylistRequest {}
 message ClearPlaylistResponse {
     bool success = 1;
     int32 deleted_count = 2;
@@ -576,13 +583,6 @@ message AddMediaBatchRequest {
 }
 message AddMediaBatchResponse {
     repeated AddMediaResponse results = 1;
-}
-
-message DeleteMediaBatchRequest {
-    repeated string media_ids = 1;
-}
-message DeleteMediaBatchResponse {
-    int32 deleted_count = 1;
 }
 
 message MediaReorderUpdate {

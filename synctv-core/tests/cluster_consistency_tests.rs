@@ -401,7 +401,6 @@ async fn test_playback_state_cross_replica_sync() {
                 )),
             ))),
         ),
-        synctv_core::repository::MediaRepository::new(pool.clone()),
     );
     playback_service_a.set_invalidation_service(cache_invalidation_1.clone());
     playback_service_a
@@ -422,7 +421,6 @@ async fn test_playback_state_cross_replica_sync() {
                 )),
             ))),
         ),
-        synctv_core::repository::MediaRepository::new(pool.clone()),
     );
     playback_service_b.set_invalidation_service(cache_invalidation_2.clone());
     playback_service_b

@@ -1185,10 +1185,10 @@ async fn scenario_tls_configuration_secure() {
 async fn scenario_tls_configuration_insecure() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1225,10 +1225,10 @@ async fn scenario_tls_configuration_insecure() {
 async fn scenario_fallback_to_local_provider() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1262,10 +1262,10 @@ async fn scenario_fallback_to_local_provider() {
 async fn scenario_fallback_when_instance_name_none() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1286,10 +1286,10 @@ async fn scenario_fallback_when_instance_name_none() {
 async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1312,10 +1312,10 @@ async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
 async fn scenario_resolve_client_required_surfaces_existing_remote_instance_config_errors() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1348,10 +1348,10 @@ async fn scenario_resolve_client_required_surfaces_existing_remote_instance_conf
 async fn scenario_resolve_client_required_preserves_retryable_repository_failures() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1378,10 +1378,10 @@ async fn scenario_resolve_client_required_preserves_retryable_repository_failure
 async fn scenario_fallback_when_channel_creation_fails() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1451,10 +1451,10 @@ async fn scenario_enable_disable_instance() {
 async fn scenario_enable_with_invalid_endpoint_preserves_disabled_state() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1489,10 +1489,10 @@ async fn scenario_enable_with_invalid_endpoint_preserves_disabled_state() {
 async fn scenario_enable_remote_instance_requires_jwt_secret() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1646,10 +1646,10 @@ async fn scenario_add_duplicate_instance_fails() {
 async fn scenario_add_disabled_instance_is_not_retrievable_via_get() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1797,10 +1797,10 @@ async fn scenario_concurrent_duplicate_add_returns_one_success_and_one_already_e
 async fn scenario_update_nonexistent_instance_fails() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1859,10 +1859,10 @@ async fn scenario_update_invalid_remote_instance_without_jwt_secret_fails() {
 async fn scenario_update_local_only_instance_to_remote_requires_jwt_secret() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1900,10 +1900,10 @@ async fn scenario_update_local_only_instance_to_remote_requires_jwt_secret() {
 async fn scenario_update_existing_remote_instance_requires_jwt_secret() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1949,10 +1949,10 @@ async fn scenario_update_existing_remote_instance_requires_jwt_secret() {
 async fn scenario_update_local_only_instance_to_remote_rejects_invalid_jwt_secret() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2001,10 +2001,10 @@ async fn scenario_update_local_only_instance_to_remote_rejects_invalid_jwt_secre
 async fn scenario_delete_nonexistent_instance_fails() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2214,10 +2214,10 @@ async fn scenario_init_rejects_invalid_secret_and_aborts_prewarming() {
 async fn scenario_ssrf_validation_blocks_internal_ips() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2250,10 +2250,10 @@ async fn scenario_ssrf_validation_blocks_internal_ips() {
 async fn scenario_ssrf_validation_allows_public_endpoints() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2561,10 +2561,10 @@ async fn scenario_provider_instance_supports_provider() {
 async fn scenario_add_remote_instance_requires_jwt_secret() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2589,10 +2589,10 @@ async fn scenario_add_remote_instance_requires_jwt_secret() {
 async fn scenario_add_remote_instance_rejects_invalid_jwt_secret_even_when_disabled() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2627,10 +2627,10 @@ async fn scenario_add_remote_instance_rejects_invalid_jwt_secret_even_when_disab
 async fn scenario_add_local_only_instance_allows_empty_jwt_secret() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2673,10 +2673,10 @@ async fn scenario_add_local_only_instance_allows_empty_jwt_secret() {
 async fn scenario_add_unreachable_remote_instance_fails_connectivity_validation() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2754,10 +2754,10 @@ async fn scenario_add_reachable_remote_instance_succeeds_with_connectivity_valid
 async fn scenario_enable_unreachable_remote_instance_preserves_disabled_state() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2793,10 +2793,10 @@ async fn scenario_enable_unreachable_remote_instance_preserves_disabled_state() 
 async fn scenario_reconnect_unreachable_remote_instance_fails_connectivity_validation() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let redis_conn = Some(Arc::new(RwLock::new(
+    let _redis_conn = Some(Arc::new(RwLock::new(
         infra.redis_connection_manager().await,
     )));
-    let redis_client = Some(infra.redis_client.clone());
+    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));

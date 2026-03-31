@@ -448,7 +448,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_config_without_timeout() {
-        // Test that provider can be created without timeout config (backward compatible)
+        // Provider creation should use defaults when timeout config is omitted.
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));

@@ -4,7 +4,7 @@
 
 use chrono::Utc;
 use synctv_core::{
-    models::{Media, MediaId, Playlist},
+    models::{Media, MediaId},
     repository::{MediaRepository, UserRepository},
 };
 use synctv_core_testing::create_test_pool;
@@ -72,16 +72,9 @@ async fn test_position_reset_on_media_switch() {
         .await
         .unwrap();
 
-    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
-        .bind(room.id.as_str())
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-    let root_playlist = &playlists[0];
-
     let media = Media {
         id: MediaId::new(),
-        playlist_id: root_playlist.id.clone(),
+        playlist_id: None,
         room_id: room.id.clone(),
         creator_id: Some(owner.id.clone()),
         name: "Test Video".to_string(),

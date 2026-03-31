@@ -267,7 +267,7 @@ fn test_playlist_model() {
         updated_at: chrono::Utc::now(),
         version: 0,
     };
-    assert!(root.is_root());
+    assert!(root.is_top_level());
     assert!(!root.is_dynamic());
     assert!(root.is_static());
 
@@ -285,7 +285,7 @@ fn test_playlist_model() {
         updated_at: chrono::Utc::now(),
         version: 0,
     };
-    assert!(!folder.is_root());
+    assert!(!folder.is_top_level());
     assert!(!folder.is_dynamic());
     assert!(folder.is_static());
 
@@ -303,7 +303,7 @@ fn test_playlist_model() {
         updated_at: chrono::Utc::now(),
         version: 0,
     };
-    assert!(!dynamic.is_root());
+    assert!(!dynamic.is_top_level());
     assert!(dynamic.is_dynamic());
     assert!(!dynamic.is_static());
 }
@@ -554,7 +554,7 @@ async fn test_e2e_playlist_hierarchy() {
         version: 0,
     };
 
-    assert!(root.is_root());
+    assert!(root.is_top_level());
     assert!(!root.is_dynamic());
     assert!(root.is_static());
 
@@ -573,7 +573,7 @@ async fn test_e2e_playlist_hierarchy() {
         version: 0,
     };
 
-    assert!(!static_folder.is_root());
+    assert!(!static_folder.is_top_level());
     assert!(!static_folder.is_dynamic());
     assert!(static_folder.is_static());
     assert_eq!(static_folder.parent_id.unwrap(), root.id);
@@ -596,7 +596,7 @@ async fn test_e2e_playlist_hierarchy() {
         version: 0,
     };
 
-    assert!(!dynamic_folder.is_root());
+    assert!(!dynamic_folder.is_top_level());
     assert!(dynamic_folder.is_dynamic());
     assert!(!dynamic_folder.is_static());
     assert_eq!(dynamic_folder.parent_id.unwrap(), root.id);

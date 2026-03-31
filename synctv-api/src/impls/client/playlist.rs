@@ -134,28 +134,16 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::DeletePlaylistResponse, ApiError> {
         crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
-
-        // Check membership and playlist management permission
-        self.room_service
-            .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
-            .await
-            .map_err(Self::map_room_access_error)?;
-
-        let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id);
-        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
-
-        self.room_service
-            .playlist_service()
-            .delete_playlist(rid.clone(), uid, playlist_id)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Invalidate room cache on other replicas for playlist deletion
-        if let Some(cache_invalidation) = cache_invalidation {
-            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
-        }
+        let _ = self
+            .delete_entries(
+                user_id,
+                room_id,
+                crate::proto::client::DeleteEntriesRequest {
+                    playlist_ids: vec![req.playlist_id],
+                    media_ids: Vec::new(),
+                },
+            )
+            .await?;
 
         Ok(crate::proto::client::DeletePlaylistResponse { success: true })
     }
@@ -246,17 +234,17 @@ impl ClientApiImpl {
         let offset = i64::from(page - 1) * i64::from(page_size);
 
         let (playlists, total) = if req.parent_id.is_empty() {
-            // Get all playlists in room with pagination
+            // Get top-level playlists in room with pagination
             let total = self
                 .room_service
                 .playlist_service()
-                .count_room_playlists(&rid)
+                .count_top_level_playlists(&rid)
                 .await
                 .map_err(ApiError::from)? as i32;
             let playlists = self
                 .room_service
                 .playlist_service()
-                .get_room_playlists_paginated(&rid, i64::from(page_size), offset)
+                .get_top_level_playlists_paginated(&rid, i64::from(page_size), offset)
                 .await
                 .map_err(ApiError::from)?;
             (playlists, total)

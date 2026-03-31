@@ -92,7 +92,7 @@ fn test_add_media_permission_denied() {
     //
     // This test verifies the AddMediaRequest can be constructed properly.
     let request = AddMediaRequest {
-        playlist_id: PlaylistId::new(),
+        playlist_id: Some(PlaylistId::new()),
         name: "Test Video".to_string(),
         provider_instance_name: "bilibili_main".to_string(),
         source_config: serde_json::json!({"bvid": "BV1234567890"}),
@@ -153,7 +153,7 @@ fn test_remove_batch_mixed_permissions() {
 #[test]
 fn test_add_media_request_with_null_source_config() {
     let request = AddMediaRequest {
-        playlist_id: PlaylistId::new(),
+        playlist_id: Some(PlaylistId::new()),
         name: "Null Config".to_string(),
         provider_instance_name: "test".to_string(),
         source_config: serde_json::Value::Null,

@@ -107,7 +107,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
 fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: i32) -> Media {
     Media {
         id: MediaId::new(),
-        playlist_id: playlist_id.clone(),
+        playlist_id: Some(playlist_id.clone()),
         room_id: room_id.clone(),
         creator_id: None,
         name: name.to_string(),

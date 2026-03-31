@@ -1657,7 +1657,7 @@ mod add_media_batch_provider_instance {
     #[test]
     fn test_add_media_request_has_provider_instance_name() {
         let req = AddMediaRequest {
-            playlist_id: "playlist1".to_string(),
+            playlist_id: Some("playlist1".to_string()),
             provider: "bilibili".to_string(),
             provider_instance_name: "bilibili_main".to_string(),
             source_config: br#"{"url":"https://example.com"}"#.to_vec(),
@@ -1670,7 +1670,7 @@ mod add_media_batch_provider_instance {
     #[test]
     fn test_add_media_request_empty_provider_instance_name() {
         let req = AddMediaRequest {
-            playlist_id: "playlist1".to_string(),
+            playlist_id: Some("playlist1".to_string()),
             provider: "direct_url".to_string(),
             provider_instance_name: String::new(),
             source_config: br#"{"url":"https://example.com"}"#.to_vec(),
@@ -1690,7 +1690,7 @@ mod add_media_batch_provider_instance {
 
         for (input, expected) in cases {
             let req = AddMediaRequest {
-                playlist_id: "playlist1".to_string(),
+                playlist_id: Some("playlist1".to_string()),
                 provider: "test".to_string(),
                 provider_instance_name: input.to_string(),
                 source_config: vec![],

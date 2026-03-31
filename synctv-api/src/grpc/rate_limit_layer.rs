@@ -244,7 +244,7 @@ fn user_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
 fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
         Some(
-            "AddMedia" | "DeleteMedia" | "AddMediaBatch" | "DeleteMediaBatch" | "CreatePlaylist"
+            "AddMedia" | "DeleteMedia" | "DeleteEntries" | "AddMediaBatch" | "CreatePlaylist"
             | "UpdatePlaylist" | "DeletePlaylist" | "ReorderMediaBatch" | "StartPlayback"
             | "StopPlayback" | "UpdatePlayback" | "MoveMedia" | "SwapMedia" | "EditMedia"
             | "ClearPlaylist" | "CreatePublishKey",
@@ -611,7 +611,7 @@ mod tests {
             Some(GrpcRateLimitTier::Media)
         );
         assert_eq!(
-            tier_from_path("/synctv.client.RoomService/DeleteMediaBatch"),
+            tier_from_path("/synctv.client.RoomService/DeleteEntries"),
             Some(GrpcRateLimitTier::Media)
         );
         assert_eq!(

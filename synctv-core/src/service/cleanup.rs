@@ -711,7 +711,7 @@ mod tests {
         assert!(service.settings_registry.is_some());
     }
 
-    /// Test that service can be created without settings registry (backward compatibility).
+    /// Service construction should work without an optional settings registry.
     #[tokio::test]
     async fn test_cleanup_service_without_registry() {
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();

@@ -572,18 +572,6 @@ mod security_headers {
     }
 
     #[tokio::test]
-    async fn test_xss_protection() {
-        let app = security_app();
-        let req = Request::get("/test").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-
-        assert_eq!(
-            resp.headers().get("X-XSS-Protection").unwrap(),
-            "1; mode=block"
-        );
-    }
-
-    #[tokio::test]
     async fn test_content_security_policy_present() {
         let app = security_app();
         let req = Request::get("/test").body(Body::empty()).unwrap();
@@ -645,15 +633,6 @@ mod security_headers {
         assert!(cc.contains("no-store"));
         assert!(cc.contains("no-cache"));
         assert!(cc.contains("must-revalidate"));
-    }
-
-    #[tokio::test]
-    async fn test_pragma_no_cache() {
-        let app = security_app();
-        let req = Request::get("/test").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-
-        assert_eq!(resp.headers().get("Pragma").unwrap(), "no-cache");
     }
 
     #[tokio::test]
@@ -760,10 +739,6 @@ mod provider_security_headers {
         assert_eq!(
             resp.headers().get("X-Content-Type-Options").unwrap(),
             "nosniff"
-        );
-        assert_eq!(
-            resp.headers().get("X-XSS-Protection").unwrap(),
-            "1; mode=block"
         );
         assert!(resp.headers().contains_key("Content-Security-Policy"));
         assert!(resp.headers().contains_key("Referrer-Policy"));

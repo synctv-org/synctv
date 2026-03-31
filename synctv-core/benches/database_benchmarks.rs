@@ -257,7 +257,7 @@ fn bench_list_media_with_data(c: &mut Criterion) {
         for i in 0..media_count {
             let media = Media {
                 id: MediaId::new(),
-                playlist_id: playlist.id.clone(),
+                playlist_id: Some(playlist.id.clone()),
                 room_id: room.id.clone(),
                 creator_id: None,
                 name: format!("media_{media_count}_{i}"),

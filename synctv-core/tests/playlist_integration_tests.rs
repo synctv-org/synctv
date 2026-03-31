@@ -73,7 +73,7 @@ fn make_playlist(
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_root_playlist() {
+async fn test_create_top_level_playlist() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -85,14 +85,16 @@ async fn test_create_root_playlist() {
         .await
         .unwrap();
 
-    // Create root playlist (empty name, no parent)
-    let root = make_playlist(&room.id, "", None, 0);
-    let created = playlist_repo.create(&root).await.unwrap();
+    let top_level = make_playlist(&room.id, "Top Level Display Name", None, 0);
+    let created = playlist_repo.create(&top_level).await.unwrap();
+    let fetched = playlist_repo.get_top_level(&room.id).await.unwrap();
 
     assert!(created.parent_id.is_none());
-    assert_eq!(created.name, "");
+    assert_eq!(created.name, "Top Level Display Name");
     assert_eq!(created.room_id, room.id);
-    assert!(created.is_root());
+    assert!(created.is_top_level());
+    assert_eq!(fetched.len(), 1);
+    assert_eq!(fetched[0].id, created.id);
 }
 
 #[tokio::test]
@@ -111,7 +113,7 @@ async fn test_create_nested_playlists() {
 
     // Create root
     let root = playlist_repo
-        .create(&make_playlist(&room.id, "", None, 0))
+        .create(&make_playlist(&room.id, "Root", None, 0))
         .await
         .unwrap();
 
@@ -153,7 +155,7 @@ async fn test_position_sorting() {
         .unwrap();
 
     let root = playlist_repo
-        .create(&make_playlist(&room.id, "", None, 0))
+        .create(&make_playlist(&room.id, "Root", None, 0))
         .await
         .unwrap();
 
@@ -194,7 +196,7 @@ async fn test_position_uniqueness_constraint() {
         .unwrap();
 
     let root = playlist_repo
-        .create(&make_playlist(&room.id, "", None, 0))
+        .create(&make_playlist(&room.id, "Root", None, 0))
         .await
         .unwrap();
     playlist_repo
@@ -226,7 +228,7 @@ async fn test_cycle_prevention_trigger() {
         .unwrap();
 
     let root = playlist_repo
-        .create(&make_playlist(&room.id, "", None, 0))
+        .create(&make_playlist(&room.id, "Root", None, 0))
         .await
         .unwrap();
     let child = playlist_repo
@@ -475,7 +477,7 @@ fn test_advisory_lock_key_no_collision_between_different_parents() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_unique_name_constraint() {
+async fn test_duplicate_names_are_allowed_within_same_parent() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -488,7 +490,7 @@ async fn test_unique_name_constraint() {
         .unwrap();
 
     let root = playlist_repo
-        .create(&make_playlist(&room.id, "", None, 0))
+        .create(&make_playlist(&room.id, "Root", None, 0))
         .await
         .unwrap();
     playlist_repo
@@ -496,10 +498,11 @@ async fn test_unique_name_constraint() {
         .await
         .unwrap();
 
-    // Try to create another child with the same name under the same parent
+    // Create another child with the same display name under the same parent
     let duplicate = make_playlist(&room.id, "SameName", Some(&root.id), 1);
-    let result = playlist_repo.create(&duplicate).await;
-    assert!(result.is_err(), "Duplicate name in same parent should fail");
+    let created = playlist_repo.create(&duplicate).await.unwrap();
+    assert_eq!(created.name, "SameName");
+    assert_ne!(created.id, root.id);
 }
 
 // ========== Task #17: Cross-room parent_id validation ==========
@@ -533,15 +536,15 @@ async fn test_cross_room_parent_id_rejected() {
         .await
         .unwrap();
 
-    // Create root playlist in Room A
+    // Create top-level playlist in Room A
     let root_a = playlist_repo
-        .create(&make_playlist(&room_a.id, "", None, 0))
+        .create(&make_playlist(&room_a.id, "Room A Top", None, 0))
         .await
         .unwrap();
 
-    // Create root playlist in Room B
+    // Create top-level playlist in Room B
     let _root_b = playlist_repo
-        .create(&make_playlist(&room_b.id, "", None, 0))
+        .create(&make_playlist(&room_b.id, "Room B Top", None, 0))
         .await
         .unwrap();
 
@@ -634,14 +637,14 @@ async fn test_count_by_room() {
         .await
         .unwrap();
 
-    // Initially only root playlist
+    // Initially only one top-level playlist
     let root = playlist_repo
         .create(&make_playlist(&room.id, "", None, 0))
         .await
         .unwrap();
 
     let count = playlist_repo.count_by_room(&room.id).await.unwrap();
-    assert_eq!(count, 1, "Should have 1 playlist (root)");
+    assert_eq!(count, 1, "Should have 1 playlist");
 
     // Add more playlists
     for i in 0..10 {

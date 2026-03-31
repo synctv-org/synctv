@@ -12,7 +12,7 @@ use crate::{
         MediaId, PermissionBits, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings,
         UserId,
     },
-    repository::{MediaRepository, RoomPlaybackStateRepository},
+    repository::RoomPlaybackStateRepository,
     service::{
         media::MediaService, notification::NotificationService, permission::PermissionService,
     },
@@ -171,7 +171,6 @@ pub struct PlaybackService {
     playback_repo: RoomPlaybackStateRepository,
     permission_service: PermissionService,
     media_service: MediaService,
-    media_repo: MediaRepository,
     /// Optional notification service for broadcasting to local WebSocket clients
     notification_service: Option<NotificationService>,
     /// Optional cluster broadcaster for cross-replica sync (interior mutability
@@ -212,13 +211,11 @@ impl PlaybackService {
         playback_repo: RoomPlaybackStateRepository,
         permission_service: PermissionService,
         media_service: MediaService,
-        media_repo: MediaRepository,
     ) -> Self {
         Self {
             playback_repo,
             permission_service,
             media_service,
-            media_repo,
             notification_service: None,
             cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
             playback_cache: Arc::new(
@@ -858,10 +855,12 @@ impl PlaybackService {
             ));
         }
 
+        let effective_playlist_id = playlist_id.or_else(|| media.playlist_id.clone());
+
         let state = self
             .update_state(room_id.clone(), |state| {
                 state.playing_media_id = Some(media_id.clone());
-                state.playing_playlist_id = playlist_id.clone();
+                state.playing_playlist_id = effective_playlist_id.clone();
                 state.relative_path = media_path.clone();
                 state.current_time = 0.0;
                 state.is_playing = true;
@@ -909,7 +908,7 @@ impl PlaybackService {
             let playlist = if let Some(ref playlist_id) = state.playing_playlist_id {
                 self.media_service.get_playlist_media(playlist_id).await?
             } else {
-                self.media_repo.get_playlist(room_id).await?
+                self.media_service.get_room_root_media(room_id).await?
             };
 
             if playlist.is_empty() {
@@ -1029,7 +1028,7 @@ impl PlaybackService {
             // Apply update to the fetched state and try to save with optimistic locking
             let mut updated_state = state;
             updated_state.playing_media_id = Some(next.id.clone());
-            updated_state.playing_playlist_id = Some(next.playlist_id.clone());
+            updated_state.playing_playlist_id = next.playlist_id.clone();
             // For dynamic playlists (Alist/Emby), the provider-relative path is
             // stored in source_config["path"], which differs from the display name.
             // Fall back to the name for direct/static media that have no path field.
@@ -1514,7 +1513,6 @@ mod tests {
             RoomPlaybackStateRepository::new(pool.clone()),
             permission_service,
             media_service,
-            MediaRepository::new(pool),
         );
         let invalidation_service = Arc::new(CacheInvalidationService::new(
             None,

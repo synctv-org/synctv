@@ -21,7 +21,7 @@ use crate::proto::client::{
     ClearPlaylistResponse, ClientMessage, ConfirmEmailRequest, ConfirmEmailResponse,
     ConfirmPasswordResetRequest, ConfirmPasswordResetResponse, CreatePlaylistRequest,
     CreatePlaylistResponse, CreatePublishKeyRequest, CreatePublishKeyResponse, CreateRoomRequest,
-    CreateRoomResponse, DeleteMediaBatchRequest, DeleteMediaBatchResponse, DeleteMediaRequest,
+    CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest,
     DeleteMediaResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
     DeleteRoomResponse, EditMediaRequest, EditMediaResponse, GetChatHistoryRequest,
     GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
@@ -887,6 +887,21 @@ impl RoomService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
+    async fn delete_entries(
+        &self,
+        request: Request<DeleteEntriesRequest>,
+    ) -> Result<Response<DeleteEntriesResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let room_id = self.get_room_id(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .delete_entries(user_id.as_str(), room_id.as_str(), req)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn edit_media(
         &self,
         request: Request<EditMediaRequest>,
@@ -971,21 +986,6 @@ impl RoomService for ClientServiceImpl {
         let response = self
             .client_api
             .add_media_batch(user_id.as_str(), room_id.as_str(), req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn delete_media_batch(
-        &self,
-        request: Request<DeleteMediaBatchRequest>,
-    ) -> Result<Response<DeleteMediaBatchResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let req = request.into_inner();
-        let response = self
-            .client_api
-            .delete_media_batch(user_id.as_str(), room_id.as_str(), req)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))

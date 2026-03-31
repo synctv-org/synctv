@@ -284,32 +284,26 @@ pub struct PlaylistFixture {
 }
 
 impl PlaylistFixture {
-    /// Create a root playlist fixture (empty name, no parent)
-    ///
-    /// Per the database constraint, root playlists must have an empty name.
-    /// Use `new_child()` to create a playlist with a non-empty name.
+    /// Create a top-level playlist fixture.
     #[must_use]
     pub fn new() -> Self {
         Self {
             id: PlaylistId::new(),
             room_id: random_room_id(),
             creator_id: None,
-            name: String::new(), // Root playlists must have empty name per constraint
+            name: String::new(),
             parent_id: None,
             position: -1, // Use auto-position (negative triggers MAX+1 logic in create)
         }
     }
 
-    /// Create a child playlist fixture with a non-empty name and parent
-    ///
-    /// Per the database constraint, non-root playlists must have a non-empty name
-    /// without '/' characters, and must have a `parent_id`.
+    /// Create a child playlist fixture with a parent.
     pub fn new_child(parent_id: PlaylistId) -> Self {
         Self {
             id: PlaylistId::new(),
             room_id: random_room_id(),
             creator_id: None,
-            name: format!("playlist_{}", nanoid::nanoid!(8)), // Unique non-empty name
+            name: format!("playlist_{}", nanoid::nanoid!(8)),
             parent_id: Some(parent_id),
             position: -1, // Use auto-position (negative triggers MAX+1 logic in create)
         }
@@ -333,11 +327,7 @@ impl PlaylistFixture {
         self
     }
 
-    /// Set the playlist name
-    ///
-    /// WARNING: If you set a non-empty name, you MUST also set a `parent_id`
-    /// using `with_parent()`, otherwise the playlist will violate the database
-    /// constraint. Root playlists must have empty names.
+    /// Set the playlist display name.
     #[must_use]
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.to_string();
@@ -384,33 +374,26 @@ impl Default for PlaylistFixture {
 
 /// Helper to create a valid playlist hierarchy for media tests.
 ///
-/// Creates a root playlist (empty name, no parent) and a child playlist
-/// with the given name. Returns the child playlist for use in tests.
-///
-/// This is needed because the database constraint requires:
-/// - Root playlists (`parent_id` IS NULL) must have empty names
-/// - Child playlists (`parent_id` IS NOT NULL) must have non-empty names
+/// Creates a top-level playlist and a child playlist with the given name.
 ///
 /// # Example
 /// ```ignore
-/// let (root, child) = create_media_playlist_hierarchy(&playlist_repo, room.id.clone(), "Videos").await;
+/// let (top_level, child) = create_top_level_playlist_hierarchy(&playlist_repo, room.id.clone(), "Videos").await;
 /// // Use child playlist for media items
 /// let media = Media::new(child.id.clone(), ...);
 /// ```
-pub async fn create_media_playlist_hierarchy(
+pub async fn create_top_level_playlist_hierarchy(
     playlist_repo: &crate::repository::playlist::PlaylistRepository,
     room_id: RoomId,
     child_name: &str,
 ) -> (crate::models::Playlist, crate::models::Playlist) {
-    // Create root playlist (must have empty name per constraint)
-    let root = PlaylistFixture::new().with_room_id(room_id.clone()).build();
-    let root = playlist_repo
-        .create(&root)
+    let top_level = PlaylistFixture::new().with_room_id(room_id.clone()).build();
+    let top_level = playlist_repo
+        .create(&top_level)
         .await
-        .expect("Failed to create root playlist");
+        .expect("Failed to create top-level playlist");
 
-    // Create child playlist with the desired name (must have parent per constraint)
-    let child = PlaylistFixture::new_child(root.id.clone())
+    let child = PlaylistFixture::new_child(top_level.id.clone())
         .with_room_id(room_id)
         .with_name(child_name)
         .build();
@@ -419,7 +402,7 @@ pub async fn create_media_playlist_hierarchy(
         .await
         .expect("Failed to create child playlist");
 
-    (root, child)
+    (top_level, child)
 }
 
 /// Async test wrapper with timeout

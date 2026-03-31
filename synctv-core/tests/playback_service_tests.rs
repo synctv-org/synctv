@@ -75,6 +75,28 @@ fn make_user(username: &str) -> User {
     }
 }
 
+async fn create_top_level_playlist(pool: &PgPool, room_id: &synctv_core::models::RoomId) -> Playlist {
+    let playlist = Playlist {
+        id: synctv_core::models::PlaylistId::new(),
+        room_id: room_id.clone(),
+        creator_id: None,
+        name: "Top Level".to_string(),
+        parent_id: None,
+        position: 0,
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+
+    synctv_core::repository::PlaylistRepository::new(pool.clone())
+        .create(&playlist)
+        .await
+        .expect("Top-level playlist should be created")
+}
+
 // ========== Seek Validation Tests ==========
 
 #[tokio::test]
@@ -225,18 +247,12 @@ async fn test_switch_media_resets_position() {
         .await
         .unwrap();
 
-    // Get the root playlist that was created with the room
-    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
-        .bind(room.id.as_str())
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-    let root_playlist = &playlists[0];
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
 
     // Add a media item
     let media = Media {
         id: MediaId::new(),
-        playlist_id: root_playlist.id.clone(),
+        playlist_id: Some(playlist.id.clone()),
         room_id: room.id.clone(),
         creator_id: Some(owner.id.clone()),
         name: "Test Video".to_string(),
@@ -454,20 +470,14 @@ async fn test_play_next_concurrent_playlist_modification() {
         .await
         .unwrap();
 
-    // Get the root playlist
-    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
-        .bind(room.id.as_str())
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-    let root_playlist = &playlists[0];
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
 
     // Add 5 media items
     let mut media_ids = Vec::new();
     for i in 0..5 {
         let media = Media {
             id: MediaId::new(),
-            playlist_id: root_playlist.id.clone(),
+            playlist_id: Some(playlist.id.clone()),
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
             name: format!("Video {i}"),
@@ -543,20 +553,14 @@ async fn test_play_next_at_end_of_playlist() {
         .await
         .unwrap();
 
-    // Get the root playlist
-    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
-        .bind(room.id.as_str())
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-    let root_playlist = &playlists[0];
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
 
     // Add 3 media items
     let mut media_ids = Vec::new();
     for i in 0..3 {
         let media = Media {
             id: MediaId::new(),
-            playlist_id: root_playlist.id.clone(),
+            playlist_id: Some(playlist.id.clone()),
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
             name: format!("End Video {i}"),
@@ -627,20 +631,14 @@ async fn test_play_next_with_loop_enabled() {
         .await
         .unwrap();
 
-    // Get the root playlist
-    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
-        .bind(room.id.as_str())
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-    let root_playlist = &playlists[0];
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
 
     // Add 3 media items
     let mut media_ids = Vec::new();
     for i in 0..3 {
         let media = Media {
             id: MediaId::new(),
-            playlist_id: root_playlist.id.clone(),
+            playlist_id: Some(playlist.id.clone()),
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
             name: format!("Loop Video {i}"),
@@ -840,18 +838,12 @@ async fn test_state_consistency_after_mixed_operations() {
         .await
         .unwrap();
 
-    // Get the root playlist
-    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
-        .bind(room.id.as_str())
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-    let root_playlist = &playlists[0];
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
 
     // Add media
     let media = Media {
         id: MediaId::new(),
-        playlist_id: root_playlist.id.clone(),
+        playlist_id: Some(playlist.id.clone()),
         room_id: room.id.clone(),
         creator_id: Some(owner.id.clone()),
         name: "Mixed Test Video".to_string(),

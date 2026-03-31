@@ -107,16 +107,9 @@ impl PlaylistService {
         user_id: UserId,
         request: CreatePlaylistRequest,
     ) -> Result<Playlist> {
-        // Validate name
-        let name = request.name.trim();
-        if name.is_empty() {
+        if request.name.chars().count() > 255 {
             return Err(Error::InvalidInput(
-                "Playlist name cannot be empty".to_string(),
-            ));
-        }
-        if name.chars().count() > 200 {
-            return Err(Error::InvalidInput(
-                "Playlist name cannot exceed 200 characters".to_string(),
+                "Playlist name cannot exceed 255 characters".to_string(),
             ));
         }
 
@@ -165,7 +158,7 @@ impl PlaylistService {
             id: crate::models::PlaylistId::new(),
             room_id: room_id.clone(),
             creator_id: Some(user_id.clone()),
-            name: name.to_string(),
+            name: request.name,
             parent_id: request.parent_id,
             position,
             source_provider: request.source_provider,
@@ -199,9 +192,26 @@ impl PlaylistService {
         self.playlist_repo.get_by_id(playlist_id).await
     }
 
-    /// Get root playlist for a room
-    pub async fn get_root_playlist(&self, room_id: &RoomId) -> Result<Playlist> {
-        self.playlist_repo.get_root_playlist(room_id).await
+    /// Get top-level playlists in a room.
+    pub async fn get_top_level_playlists(&self, room_id: &RoomId) -> Result<Vec<Playlist>> {
+        self.playlist_repo.get_top_level(room_id).await
+    }
+
+    /// Count top-level playlists in a room.
+    pub async fn count_top_level_playlists(&self, room_id: &RoomId) -> Result<i64> {
+        self.playlist_repo.count_top_level(room_id).await
+    }
+
+    /// Get paginated top-level playlists in a room.
+    pub async fn get_top_level_playlists_paginated(
+        &self,
+        room_id: &RoomId,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Playlist>> {
+        self.playlist_repo
+            .get_top_level_paginated(room_id, limit, offset)
+            .await
     }
 
     /// Get children playlists
@@ -290,18 +300,12 @@ impl PlaylistService {
 
             // Update fields
             if let Some(ref name) = request.name {
-                let name = name.trim().to_string();
-                if name.is_empty() {
+                if name.chars().count() > 255 {
                     return Err(Error::InvalidInput(
-                        "Playlist name cannot be empty".to_string(),
+                        "Playlist name cannot exceed 255 characters".to_string(),
                     ));
                 }
-                if name.chars().count() > 200 {
-                    return Err(Error::InvalidInput(
-                        "Playlist name cannot exceed 200 characters".to_string(),
-                    ));
-                }
-                playlist.name = name;
+                playlist.name = name.clone();
             }
             if let Some(position) = request.position {
                 playlist.position = position;
@@ -378,13 +382,6 @@ impl PlaylistService {
         if playlist.room_id != room_id {
             return Err(Error::Authorization(
                 "Playlist does not belong to this room".to_string(),
-            ));
-        }
-
-        // Cannot delete root playlist
-        if playlist.is_root() {
-            return Err(Error::InvalidInput(
-                "Cannot delete root playlist".to_string(),
             ));
         }
 
@@ -544,7 +541,7 @@ mod tests {
     // ========== Playlist Model Tests ==========
 
     #[test]
-    fn test_playlist_is_root() {
+    fn test_playlist_is_top_level() {
         let playlist = Playlist {
             id: PlaylistId::new(),
             room_id: RoomId::new(),
@@ -560,7 +557,7 @@ mod tests {
             version: 0,
         };
 
-        assert!(playlist.is_root());
+        assert!(playlist.is_top_level());
         assert!(playlist.is_static());
         assert!(!playlist.is_dynamic());
     }
@@ -572,7 +569,7 @@ mod tests {
             room_id: RoomId::new(),
             creator_id: Some(UserId::new()),
             name: "Not Root".to_string(),
-            parent_id: None,
+            parent_id: Some(PlaylistId::new()),
             position: 0,
             source_provider: None,
             source_config: None,
@@ -582,7 +579,7 @@ mod tests {
             version: 0,
         };
 
-        assert!(!playlist.is_root());
+        assert!(!playlist.is_top_level());
     }
 
     #[test]
@@ -602,7 +599,7 @@ mod tests {
             version: 0,
         };
 
-        assert!(!playlist.is_root());
+        assert!(!playlist.is_top_level());
     }
 
     #[test]
@@ -612,7 +609,7 @@ mod tests {
             room_id: RoomId::new(),
             creator_id: Some(UserId::new()),
             name: "Alist Folder".to_string(),
-            parent_id: None,
+            parent_id: Some(PlaylistId::new()),
             position: 0,
             source_provider: Some("alist".to_string()),
             source_config: Some(serde_json::json!({"path": "/movies"})),
@@ -624,7 +621,7 @@ mod tests {
 
         assert!(playlist.is_dynamic());
         assert!(!playlist.is_static());
-        assert!(!playlist.is_root());
+        assert!(!playlist.is_top_level());
     }
 
     #[test]
@@ -634,7 +631,7 @@ mod tests {
             room_id: RoomId::new(),
             creator_id: Some(UserId::new()),
             name: "Static Folder".to_string(),
-            parent_id: None,
+            parent_id: Some(PlaylistId::new()),
             position: 0,
             source_provider: None,
             source_config: None,

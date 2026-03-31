@@ -55,7 +55,7 @@ impl std::fmt::Display for ProviderType {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Media {
     pub id: MediaId,
-    pub playlist_id: PlaylistId,
+    pub playlist_id: Option<PlaylistId>,
     pub room_id: RoomId,
     pub creator_id: Option<UserId>,
     pub name: String,
@@ -79,7 +79,7 @@ pub struct Media {
 /// Parameters for creating media from a provider
 #[derive(Debug, Clone)]
 pub struct FromProviderParams {
-    pub playlist_id: PlaylistId,
+    pub playlist_id: Option<PlaylistId>,
     pub room_id: RoomId,
     pub creator_id: Option<UserId>,
     pub name: String,
@@ -107,7 +107,7 @@ impl Media {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn from_provider(
-        playlist_id: PlaylistId,
+        playlist_id: Option<PlaylistId>,
         room_id: RoomId,
         creator_id: Option<UserId>,
         name: String,
@@ -157,7 +157,7 @@ impl Media {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn from_direct_multimode(
-        playlist_id: PlaylistId,
+        playlist_id: Option<PlaylistId>,
         room_id: RoomId,
         creator_id: Option<UserId>,
         name: String,
@@ -194,7 +194,7 @@ impl Media {
     /// Create a direct URL media with single playback info (convenience method)
     #[must_use]
     pub fn from_direct_single_mode(
-        playlist_id: PlaylistId,
+        playlist_id: Option<PlaylistId>,
         room_id: RoomId,
         creator_id: Option<UserId>,
         name: String,
@@ -234,8 +234,9 @@ pub struct PlaybackResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<MediaId>,
 
-    /// Playlist ID
-    pub playlist_id: PlaylistId,
+    /// Playlist ID. `None` means the media lives directly under the room root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Option<PlaylistId>,
 
     /// Room ID
     pub room_id: RoomId,
@@ -419,7 +420,7 @@ impl PlaybackResult {
     /// Create a new builder
     #[must_use]
     pub fn builder(
-        playlist_id: PlaylistId,
+        playlist_id: Option<PlaylistId>,
         room_id: RoomId,
         name: String,
         position: i32,
@@ -453,7 +454,7 @@ impl PlaybackResult {
 /// Builder for `PlaybackResult`
 pub struct PlaybackResultBuilder {
     id: Option<MediaId>,
-    playlist_id: PlaylistId,
+    playlist_id: Option<PlaylistId>,
     room_id: RoomId,
     name: String,
     position: i32,
@@ -678,7 +679,7 @@ mod tests {
 
         for _ in 0..20 {
             let result = PlaybackResult::builder(
-                playlist_id.clone(),
+                Some(playlist_id.clone()),
                 room_id.clone(),
                 "test".to_string(),
                 0,
@@ -710,7 +711,7 @@ mod tests {
         let playlist_id = PlaylistId::from_string("pl1".to_string());
         let room_id = RoomId::from_string("r1".to_string());
 
-        let result = PlaybackResult::builder(playlist_id, room_id, "test".to_string(), 0)
+        let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0)
             .add_mode(
                 "direct".to_string(),
                 PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),
@@ -731,7 +732,8 @@ mod tests {
         let playlist_id = PlaylistId::from_string("pl1".to_string());
         let room_id = RoomId::from_string("r1".to_string());
 
-        let result = PlaybackResult::builder(playlist_id, room_id, "test".to_string(), 0).build();
+        let result =
+            PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0).build();
         assert!(result.is_none());
     }
 
@@ -740,7 +742,7 @@ mod tests {
         let playlist_id = PlaylistId::from_string("pl1".to_string());
         let room_id = RoomId::from_string("r1".to_string());
 
-        let result = PlaybackResult::builder(playlist_id, room_id, "test".to_string(), 0)
+        let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0)
             .add_mode(
                 "direct".to_string(),
                 PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),

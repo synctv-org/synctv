@@ -590,7 +590,7 @@ fn make_test_media() -> synctv_core::models::Media {
     let now = chrono::Utc::now();
     synctv_core::models::Media {
         id: MediaId::from_string("media1".to_string()),
-        playlist_id: PlaylistId::from_string("pl1".to_string()),
+        playlist_id: Some(PlaylistId::from_string("pl1".to_string())),
         room_id: RoomId::from_string("room1".to_string()),
         creator_id: Some(UserId::from_string("user1".to_string())),
         name: "Test Video".to_string(),

@@ -684,6 +684,7 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
 
     room_service.set_playback_l2_cache(l2_cache.clone());
     room_service.set_playback_cache_invalidation(subscriber.clone());
+    room_service.playback_service().start().await.unwrap();
 
     let owner = user_repo
         .create(&make_user("invalidate_l2_owner"))

@@ -33,7 +33,7 @@ const MAX_BATCH_SIZE: usize = 100;
 /// provider instance to use (e.g., "`bilibili_main`", "`alist_company`").
 #[derive(Debug, Clone)]
 pub struct AddMediaRequest {
-    pub playlist_id: PlaylistId,
+    pub playlist_id: Option<PlaylistId>,
     pub name: String,
     /// Provider instance name (e.g., "`bilibili_main`", "`alist_company`")
     /// The provider will be looked up from the provider registry
@@ -127,17 +127,18 @@ impl MediaService {
             .check_permission(&room_id, &user_id, PermissionBits::ADD_MOVIE)
             .await?;
 
-        // Verify playlist belongs to room
-        let playlist = self
-            .playlist_repo
-            .get_by_id(&request.playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+        if let Some(ref playlist_id) = request.playlist_id {
+            let playlist = self
+                .playlist_repo
+                .get_by_id(playlist_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
 
-        if playlist.room_id != room_id {
-            return Err(Error::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
+            if playlist.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Playlist does not belong to this room".to_string(),
+                ));
+            }
         }
 
         // Get provider from registry by instance name
@@ -189,7 +190,7 @@ impl MediaService {
         // Get next position in playlist (locked with FOR UPDATE)
         let position = self
             .media_repo
-            .get_next_position_with_tx(&request.playlist_id, &mut tx)
+            .get_next_position_with_tx(&room_id, request.playlist_id.as_ref(), &mut tx)
             .await?;
 
         // Create media with provider info (no enum conversion needed)
@@ -214,7 +215,6 @@ impl MediaService {
 
         tracing::info!(
             room_id = %room_id.as_str(),
-            playlist_id = %request.playlist_id.as_str(),
             media_id = %created_media.id.as_str(),
             name = %created_media.name,
             provider = %request.provider_instance_name,
@@ -249,7 +249,7 @@ impl MediaService {
         &self,
         room_id: RoomId,
         user_id: UserId,
-        playlist_id: PlaylistId,
+        playlist_id: Option<PlaylistId>,
         items: Vec<AddMediaRequest>,
     ) -> Result<Vec<Media>> {
         // Check permission
@@ -257,17 +257,18 @@ impl MediaService {
             .check_permission(&room_id, &user_id, PermissionBits::ADD_MOVIE)
             .await?;
 
-        // Verify playlist belongs to room
-        let playlist = self
-            .playlist_repo
-            .get_by_id(&playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+        if let Some(ref playlist_id) = playlist_id {
+            let playlist = self
+                .playlist_repo
+                .get_by_id(playlist_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
 
-        if playlist.room_id != room_id {
-            return Err(Error::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
+            if playlist.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Playlist does not belong to this room".to_string(),
+                ));
+            }
         }
 
         if items.is_empty() {
@@ -335,7 +336,7 @@ impl MediaService {
         // Get starting position (locked with FOR UPDATE)
         let start_position = self
             .media_repo
-            .get_next_position_with_tx(&playlist_id, &mut tx)
+            .get_next_position_with_tx(&room_id, playlist_id.as_ref(), &mut tx)
             .await?;
 
         // Create media items with provider info
@@ -366,7 +367,6 @@ impl MediaService {
 
         tracing::info!(
             room_id = %room_id.as_str(),
-            playlist_id = %playlist_id.as_str(),
             count = created_items.len(),
             "Batch added media to playlist"
         );
@@ -606,12 +606,17 @@ impl MediaService {
         self.media_repo.get_by_ids(media_ids).await
     }
 
-    /// Get all media in a playlist
+    /// Get all media in a playlist.
     pub async fn get_playlist_media(&self, playlist_id: &PlaylistId) -> Result<Vec<Media>> {
         self.media_repo.get_by_playlist(playlist_id).await
     }
 
-    /// Get paginated media in a playlist
+    /// Get media directly under the room root.
+    pub async fn get_room_root_media(&self, room_id: &RoomId) -> Result<Vec<Media>> {
+        self.media_repo.get_room_root(room_id).await
+    }
+
+    /// Get paginated media in a playlist.
     pub async fn get_playlist_media_paginated(
         &self,
         playlist_id: &PlaylistId,
@@ -621,6 +626,16 @@ impl MediaService {
         self.media_repo
             .get_playlist_paginated(playlist_id, pagination)
             .await
+    }
+
+    /// Get paginated media directly under the room root.
+    pub async fn get_room_root_media_paginated(
+        &self,
+        room_id: &RoomId,
+        pagination: crate::models::PageParams,
+    ) -> Result<(Vec<Media>, i64)> {
+        pagination.validate()?;
+        self.media_repo.get_room_root_paginated(room_id, pagination).await
     }
 
     /// Get media items from a playlist with limit and offset (no count query).
@@ -897,14 +912,22 @@ impl MediaService {
         Ok(())
     }
 
-    /// Count media items in a playlist
-    /// Delete all media in a playlist (single query, no N+1)
-    pub async fn delete_by_playlist(&self, playlist_id: &PlaylistId) -> Result<usize> {
-        self.media_repo.delete_by_playlist(playlist_id).await
+    /// Delete all media in a playlist (single query, no N+1).
+    pub async fn delete_playlist_media(&self, playlist_id: &PlaylistId) -> Result<usize> {
+        self.media_repo.delete_playlist(playlist_id).await
+    }
+
+    /// Delete all media directly under the room root.
+    pub async fn delete_room_root_media(&self, room_id: &RoomId) -> Result<usize> {
+        self.media_repo.delete_room_root(room_id).await
     }
 
     pub async fn count_playlist_media(&self, playlist_id: &PlaylistId) -> Result<i64> {
         self.media_repo.count_by_playlist(playlist_id).await
+    }
+
+    pub async fn count_room_root_media(&self, room_id: &RoomId) -> Result<i64> {
+        self.media_repo.count_room_root(room_id).await
     }
 
     /// Batch count media items across multiple playlists
@@ -1011,7 +1034,7 @@ mod tests {
     #[test]
     fn test_add_media_request_construction() {
         let request = AddMediaRequest {
-            playlist_id: PlaylistId::new(),
+            playlist_id: Some(PlaylistId::new()),
             name: "Test Video".to_string(),
             provider_instance_name: "bilibili_main".to_string(),
             source_config: serde_json::json!({"bvid": "BV1234567890"}),
@@ -1031,7 +1054,7 @@ mod tests {
         });
 
         let request = AddMediaRequest {
-            playlist_id: PlaylistId::new(),
+            playlist_id: Some(PlaylistId::new()),
             name: "Complex Video".to_string(),
             provider_instance_name: "alist_home".to_string(),
             source_config: config.clone(),
@@ -1088,7 +1111,7 @@ mod tests {
     fn test_batch_items_construction() {
         let items: Vec<AddMediaRequest> = (0..101)
             .map(|i| AddMediaRequest {
-                playlist_id: PlaylistId::new(),
+                playlist_id: Some(PlaylistId::new()),
                 name: format!("Video {i}"),
                 provider_instance_name: "test".to_string(),
                 source_config: serde_json::json!({}),
@@ -1109,7 +1132,7 @@ mod tests {
     #[test]
     fn test_source_config_null_value() {
         let request = AddMediaRequest {
-            playlist_id: PlaylistId::new(),
+            playlist_id: Some(PlaylistId::new()),
             name: "Null Config".to_string(),
             provider_instance_name: "test".to_string(),
             source_config: serde_json::Value::Null,
@@ -1133,7 +1156,7 @@ mod tests {
         });
 
         let request = AddMediaRequest {
-            playlist_id: PlaylistId::new(),
+            playlist_id: Some(PlaylistId::new()),
             name: "Nested Config".to_string(),
             provider_instance_name: "alist_home".to_string(),
             source_config: config,

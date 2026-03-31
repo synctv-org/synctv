@@ -33,10 +33,10 @@ pub struct Playlist {
 }
 
 impl Playlist {
-    /// Check if this is a root playlist
+    /// Check if this playlist is directly under the room root.
     #[must_use]
-    pub const fn is_root(&self) -> bool {
-        self.parent_id.is_none() && self.name.is_empty()
+    pub const fn is_top_level(&self) -> bool {
+        self.parent_id.is_none()
     }
 
     /// Check if this is a dynamic folder
@@ -109,24 +109,32 @@ mod tests {
     }
 
     #[test]
-    fn test_playlist_is_root() {
-        let root = make_playlist("", None, None);
-        assert!(root.is_root());
+    fn test_playlist_is_top_level() {
+        let top_level = make_playlist("", None, None);
+        assert!(top_level.is_top_level());
 
         let named = make_playlist("Music", None, None);
-        assert!(!named.is_root()); // has a name
+        assert!(named.is_top_level());
 
         let child = make_playlist("", Some(PlaylistId("parent".to_string())), None);
-        assert!(!child.is_root()); // has parent_id
+        assert!(!child.is_top_level());
     }
 
     #[test]
     fn test_playlist_is_dynamic() {
-        let dynamic = make_playlist("Alist Folder", None, Some("alist".to_string()));
+        let dynamic = make_playlist(
+            "Alist Folder",
+            Some(PlaylistId("parent".to_string())),
+            Some("alist".to_string()),
+        );
         assert!(dynamic.is_dynamic());
         assert!(!dynamic.is_static());
 
-        let static_pl = make_playlist("Manual Folder", None, None);
+        let static_pl = make_playlist(
+            "Manual Folder",
+            Some(PlaylistId("parent".to_string())),
+            None,
+        );
         assert!(!static_pl.is_dynamic());
         assert!(static_pl.is_static());
     }

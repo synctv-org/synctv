@@ -291,7 +291,11 @@ pub(super) fn playback_result_to_proto(
             .as_ref()
             .map(|id| id.as_str().to_string())
             .unwrap_or_default(),
-        playlist_id: result.playlist_id.as_str().to_string(),
+        playlist_id: result
+            .playlist_id
+            .as_ref()
+            .map(|id| id.as_str().to_string())
+            .unwrap_or_default(),
         room_id: result.room_id.as_str().to_string(),
         name: result.name.clone(),
         position: result.position,

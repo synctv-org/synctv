@@ -223,7 +223,7 @@ async fn test_edit_media_sends_notification() {
 
     // Add media
     let add_req = AddMediaRequest {
-        playlist_id: playlist.id.clone(),
+        playlist_id: Some(playlist.id.clone()),
         name: "Test Media".to_string(),
         provider_instance_name: "direct_url".to_string(),
         source_config: json!({
@@ -408,7 +408,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
 
     // Add media
     let add_req = AddMediaRequest {
-        playlist_id: playlist.id.clone(),
+        playlist_id: Some(playlist.id.clone()),
         name: "Test Media".to_string(),
         provider_instance_name: "direct_url".to_string(),
         source_config: json!({

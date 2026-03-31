@@ -455,8 +455,8 @@ async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
 
 use synctv_core::service::auth::brute_force::BruteForceConfig;
 
-/// Test that `BruteForceConfig::default()` matches the original hardcoded values
-/// This ensures backward compatibility when no config is provided
+/// `BruteForceConfig::default()` should preserve the current documented defaults
+/// when no explicit config is provided.
 #[test]
 fn test_brute_force_config_defaults_match_hardcoded() {
     let config = BruteForceConfig::default();

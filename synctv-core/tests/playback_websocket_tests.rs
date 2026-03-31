@@ -17,7 +17,7 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{RoomPlaybackState, User, UserId, UserRole, UserStatus},
+    models::{Playlist, RoomPlaybackState, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
@@ -74,6 +74,28 @@ fn make_user(username: &str) -> User {
         version: 0,
         deleted_at: None,
     }
+}
+
+async fn create_top_level_playlist(pool: &PgPool, room_id: &synctv_core::models::RoomId) -> Playlist {
+    let playlist = Playlist {
+        id: synctv_core::models::PlaylistId::new(),
+        room_id: room_id.clone(),
+        creator_id: None,
+        name: "Top Level".to_string(),
+        parent_id: None,
+        position: 0,
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+
+    synctv_core::repository::PlaylistRepository::new(pool.clone())
+        .create(&playlist)
+        .await
+        .expect("Top-level playlist should be created")
 }
 
 // ============================================================================
@@ -320,20 +342,13 @@ async fn test_media_switch_triggers_broadcast() {
         .await
         .unwrap();
 
-    // Get the root playlist
-    let playlists: Vec<synctv_core::models::Playlist> =
-        sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
-            .bind(room.id.as_str())
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-    let root_playlist = &playlists[0];
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
 
     // Add media
     let now_media = Utc::now();
     let media = synctv_core::models::Media {
         id: synctv_core::models::MediaId::new(),
-        playlist_id: root_playlist.id.clone(),
+        playlist_id: Some(playlist.id.clone()),
         room_id: room.id.clone(),
         creator_id: Some(owner.id.clone()),
         name: "Test Video".to_string(),

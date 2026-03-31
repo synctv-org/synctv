@@ -91,16 +91,12 @@ static X_FRAME_OPTIONS: LazyLock<axum::http::HeaderName> =
     LazyLock::new(|| axum::http::HeaderName::from_static("x-frame-options"));
 static X_CONTENT_TYPE_OPTIONS: LazyLock<axum::http::HeaderName> =
     LazyLock::new(|| axum::http::HeaderName::from_static("x-content-type-options"));
-static X_XSS_PROTECTION: LazyLock<axum::http::HeaderName> =
-    LazyLock::new(|| axum::http::HeaderName::from_static("x-xss-protection"));
 static CONTENT_SECURITY_POLICY: LazyLock<axum::http::HeaderName> =
     LazyLock::new(|| axum::http::HeaderName::from_static("content-security-policy"));
 static REFERRER_POLICY: LazyLock<axum::http::HeaderName> =
     LazyLock::new(|| axum::http::HeaderName::from_static("referrer-policy"));
 static PERMISSIONS_POLICY: LazyLock<axum::http::HeaderName> =
     LazyLock::new(|| axum::http::HeaderName::from_static("permissions-policy"));
-static PRAGMA: LazyLock<axum::http::HeaderName> =
-    LazyLock::new(|| axum::http::HeaderName::from_static("pragma"));
 
 /// Authenticated user extracted from JWT token
 #[derive(Debug, Clone)]
@@ -547,7 +543,6 @@ pub async fn websocket_runtime_required(
 /// common web vulnerabilities:
 /// - X-Frame-Options: Prevents clickjacking
 /// - X-Content-Type-Options: Prevents MIME type sniffing
-/// - X-XSS-Protection: Enables browser XSS filter (legacy, but still useful)
 /// - Content-Security-Policy: Restricts resource loading
 /// - Strict-Transport-Security: Enforces HTTPS (only if configured)
 /// - Referrer-Policy: Controls referrer information
@@ -575,16 +570,6 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
         headers.insert(
             X_CONTENT_TYPE_OPTIONS.clone(),
             axum::http::HeaderValue::from_static("nosniff"),
-        );
-    }
-
-    // Enable XSS filtering in browsers (legacy but still useful for older browsers)
-    // 1; mode=block: Enables XSS filtering. Rather than sanitizing the page,
-    // the browser will prevent rendering of the page entirely if an attack is detected.
-    if !headers.contains_key("X-XSS-Protection") {
-        headers.insert(
-            X_XSS_PROTECTION.clone(),
-            axum::http::HeaderValue::from_static("1; mode=block"),
         );
     }
 
@@ -655,14 +640,6 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
                 ),
             );
         }
-    }
-
-    // Pragma: no-cache (for HTTP/1.0 compatibility) -- skip for streaming paths
-    if !is_streaming_path && !headers.contains_key("Pragma") {
-        headers.insert(
-            PRAGMA.clone(),
-            axum::http::HeaderValue::from_static("no-cache"),
-        );
     }
 
     response
@@ -782,12 +759,10 @@ mod tests {
         let headers = response.headers();
         assert_eq!(headers.get("X-Frame-Options").unwrap(), "DENY");
         assert_eq!(headers.get("X-Content-Type-Options").unwrap(), "nosniff");
-        assert_eq!(headers.get("X-XSS-Protection").unwrap(), "1; mode=block");
         assert!(headers.contains_key("Content-Security-Policy"));
         assert!(headers.contains_key("Referrer-Policy"));
         assert!(headers.contains_key("Permissions-Policy"));
         assert!(headers.contains_key("Cache-Control"));
-        assert_eq!(headers.get("Pragma").unwrap(), "no-cache");
     }
 
     #[tokio::test]
@@ -1070,11 +1045,6 @@ mod tests {
             headers.get("X-Content-Type-Options").unwrap(),
             "nosniff",
             "Provider routes must have X-Content-Type-Options header"
-        );
-        assert_eq!(
-            headers.get("X-XSS-Protection").unwrap(),
-            "1; mode=block",
-            "Provider routes must have X-XSS-Protection header"
         );
         assert!(
             headers.contains_key("Content-Security-Policy"),

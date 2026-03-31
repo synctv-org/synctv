@@ -60,11 +60,11 @@ fn add_media_batch_empty_succeeds() {
 }
 
 // ============================================================================
-// delete_media_batch tests
+// delete_entries tests
 // ============================================================================
 
 #[test]
-fn delete_media_batch_exceeds_limit_returns_error() {
+fn delete_entries_exceeds_limit_returns_error() {
     // Test that 101 delete items exceeds the limit
     let result = validate_batch_size(101);
     assert!(
@@ -74,7 +74,7 @@ fn delete_media_batch_exceeds_limit_returns_error() {
 }
 
 #[test]
-fn delete_media_batch_exactly_100_succeeds() {
+fn delete_entries_exactly_100_succeeds() {
     // Test boundary value
     let result = validate_batch_size(100);
     assert!(

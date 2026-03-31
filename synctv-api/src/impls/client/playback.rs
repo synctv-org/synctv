@@ -2,7 +2,7 @@
 //!
 //! Note: Real-time playback control (play/pause/seek/speed) is handled via WebSocket messages
 
-use synctv_core::models::{MediaId, UserId};
+use synctv_core::models::{MediaId, PlaylistId, UserId};
 use synctv_core::provider::ProviderContext;
 
 use super::convert::{
@@ -12,7 +12,147 @@ use super::ClientApiImpl;
 use crate::impls::ApiError;
 
 impl ClientApiImpl {
-    /// Start playback of a specific media
+    async fn build_provider_context<'a>(
+        &'a self,
+        user_id: &'a str,
+        room_id: &'a str,
+    ) -> ProviderContext<'a> {
+        let mut ctx = ProviderContext::new("synctv")
+            .with_user_id(user_id)
+            .with_room_id(room_id);
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
+        }
+        if let Some(ref key) = self.signing_key {
+            ctx = ctx.with_signing_key(key);
+        }
+        ctx
+    }
+
+    async fn build_static_media_playback_result(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        media: synctv_core::models::Media,
+    ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
+        let providers_manager = self
+            .providers_manager
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal("Providers manager not configured".to_string()))?;
+
+        let instance_name = media
+            .provider_instance_name
+            .as_deref()
+            .unwrap_or(&media.source_provider);
+
+        let provider = providers_manager.get(instance_name).await.ok_or_else(|| {
+            ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
+        })?;
+
+        let ctx = self.build_provider_context(user_id, room_id).await;
+        let provider_result = provider
+            .generate_playback(&ctx, &media.source_config)
+            .await
+            .map_err(ApiError::from)?;
+
+        let mut builder = synctv_core::models::media::PlaybackResult::builder(
+            media.playlist_id.clone(),
+            media.room_id.clone(),
+            media.name.clone(),
+            media.position,
+        )
+        .id(media.id.clone())
+        .default_mode(provider_result.default_mode.clone());
+
+        for (mode_name, provider_info) in provider_result.playback_infos {
+            let info = provider_playback_info_to_model(&provider_info);
+            builder = builder.add_mode(mode_name, info);
+        }
+        for (key, value) in provider_result.metadata {
+            builder = builder.add_metadata(key, value);
+        }
+
+        let full_result = builder
+            .build()
+            .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
+        Ok(playback_result_to_proto(&full_result))
+    }
+
+    async fn build_dynamic_playlist_playback_result(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        room_id_model: &synctv_core::models::RoomId,
+        user_id_model: &UserId,
+        playlist_id: &PlaylistId,
+        relative_path: &str,
+    ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
+        let item = self
+            .room_service
+            .media_service()
+            .resolve_dynamic_playlist_item(
+                room_id_model.clone(),
+                user_id_model.clone(),
+                playlist_id,
+                relative_path,
+            )
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::NotFound("Dynamic playlist item not found".to_string()))?;
+
+        let playlist = self
+            .room_service
+            .playlist_service()
+            .get_playlist(playlist_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
+
+        let provider_name = playlist
+            .source_provider
+            .as_deref()
+            .ok_or_else(|| ApiError::Internal("Dynamic playlist missing provider".to_string()))?;
+        let providers_manager = self
+            .providers_manager
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal("Providers manager not configured".to_string()))?;
+        let provider = providers_manager.get_by_type(provider_name).await.ok_or_else(|| {
+            ApiError::NotFound(format!("Provider '{provider_name}' not found"))
+        })?;
+
+        let ctx = self.build_provider_context(user_id, room_id).await;
+        let provider_result = provider
+            .generate_playback(&ctx, &item.source_config)
+            .await
+            .map_err(ApiError::from)?;
+
+        let mut builder = synctv_core::models::media::PlaybackResult::builder(
+            Some(playlist_id.clone()),
+            room_id_model.clone(),
+            item.name.clone(),
+            0,
+        )
+        .default_mode(provider_result.default_mode.clone());
+
+        for (mode_name, provider_info) in provider_result.playback_infos {
+            let info = provider_playback_info_to_model(&provider_info);
+            builder = builder.add_mode(mode_name, info);
+        }
+        for (key, value) in provider_result.metadata {
+            builder = builder.add_metadata(key, value);
+        }
+
+        let full_result = builder
+            .add_metadata("relative_path".to_string(), serde_json::json!(item.relative_path))
+            .build()
+            .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
+        Ok(playback_result_to_proto(&full_result))
+    }
+
+    /// Start playback of either a static media item or a dynamic playlist item
     /// HTTP API: POST /`api/rooms/{room_id}/playback/start`
     pub async fn start_playback(
         &self,
@@ -20,17 +160,32 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::StartPlaybackRequest,
     ) -> Result<crate::proto::client::StartPlaybackResponse, ApiError> {
-        crate::http::validation::validate_id(&req.media_id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let media_id = MediaId::from_string(req.media_id);
+        let media_id = if req.media_id.is_empty() {
+            None
+        } else {
+            crate::http::validation::validate_id(&req.media_id, "media_id")
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
+            Some(MediaId::from_string(req.media_id))
+        };
+        let playlist_id = if req.playlist_id.is_empty() {
+            None
+        } else {
+            crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
+            Some(PlaylistId::from_string(req.playlist_id))
+        };
 
-        // Permission check (SWITCH_MEDIA) is handled by PlaybackService::switch_media()
         self.room_service
             .playback_service()
-            .switch_media(rid.clone(), uid.clone(), media_id.clone())
+            .switch(
+                rid.clone(),
+                uid.clone(),
+                media_id,
+                playlist_id,
+                req.relative_path,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -88,74 +243,26 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Get currently playing media (if any)
-        let playing_media = self
-            .room_service
-            .get_playing_media(&rid)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Generate playback result with provider
-        let playback_result = if let Some(media) = playing_media {
-            // All media goes through ProvidersManager to generate playback
-            let providers_manager = self.providers_manager.as_ref().ok_or_else(|| {
-                ApiError::Internal("Providers manager not configured".to_string())
-            })?;
-
-            let instance_name = media
-                .provider_instance_name
-                .as_deref()
-                .unwrap_or(&media.source_provider);
-
-            let provider = providers_manager.get(instance_name).await.ok_or_else(|| {
-                ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
-            })?;
-
-            let mut ctx = ProviderContext::new("synctv")
-                .with_user_id(user_id)
-                .with_room_id(room_id);
-            if let Some(ref enc) = self.credential_encryption {
-                ctx = ctx.with_credential_encryption(enc);
-            }
-            if let Some(ref repo) = self.credential_repo {
-                ctx = ctx.with_credential_repo(repo);
-            }
-            if let Some(ref key) = self.signing_key {
-                ctx = ctx.with_signing_key(key);
-            }
-
-            // Generate playback (caching is internal to providers via ProviderStore)
-            let provider_result = provider
-                .generate_playback(&ctx, &media.source_config)
+        let playback_result = if let Some(ref media_id) = state.playing_media_id {
+            let media = self
+                .room_service
+                .media_service()
+                .get_media(media_id)
                 .await
-                .map_err(ApiError::from)?;
-
-            // Build full PlaybackResult from provider result + media fields
-            let mut builder = synctv_core::models::media::PlaybackResult::builder(
-                media.playlist_id.clone(),
-                media.room_id.clone(),
-                media.name.clone(),
-                media.position,
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
+            self.build_static_media_playback_result(user_id, room_id, media)
+                .await?
+        } else if let Some(ref playlist_id) = state.playing_playlist_id {
+            self.build_dynamic_playlist_playback_result(
+                user_id,
+                room_id,
+                &rid,
+                &uid,
+                playlist_id,
+                &state.relative_path,
             )
-            .id(media.id.clone())
-            .default_mode(provider_result.default_mode.clone());
-
-            // Add all playback modes from provider result
-            for (mode_name, provider_info) in provider_result.playback_infos {
-                let info = provider_playback_info_to_model(&provider_info);
-                builder = builder.add_mode(mode_name, info);
-            }
-
-            // Add metadata from provider result
-            for (key, value) in provider_result.metadata {
-                builder = builder.add_metadata(key, value);
-            }
-
-            let full_result = builder
-                .build()
-                .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-
-            playback_result_to_proto(&full_result)
+            .await?
         } else {
             // No media playing, return empty playback result
             crate::proto::client::PlaybackResult {

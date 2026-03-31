@@ -12,11 +12,11 @@ CREATE TABLE IF NOT EXISTS room_playback_state (
     CONSTRAINT playback_media_same_room_fk
         FOREIGN KEY (playing_media_id, room_id)
         REFERENCES media(id, room_id)
-        ON DELETE SET NULL (playing_media_id),
+        ON DELETE RESTRICT,
     CONSTRAINT playback_playlist_same_room_fk
         FOREIGN KEY (playing_playlist_id, room_id)
         REFERENCES playlists(id, room_id)
-        ON DELETE SET NULL (playing_playlist_id)
+        ON DELETE RESTRICT
 );
 
 -- Create indexes
@@ -34,6 +34,24 @@ ALTER TABLE room_playback_state ADD CONSTRAINT playback_current_time_check
     CHECK ("current_time" >= 0);
 ALTER TABLE room_playback_state ADD CONSTRAINT playback_speed_check
     CHECK (speed > 0 AND speed <= 16.0);
+ALTER TABLE room_playback_state ADD CONSTRAINT playback_target_mode_check
+    CHECK (
+        (
+            playing_media_id IS NULL
+            AND playing_playlist_id IS NULL
+            AND relative_path = ''
+        )
+        OR (
+            playing_media_id IS NOT NULL
+            AND playing_playlist_id IS NULL
+            AND relative_path = ''
+        )
+        OR (
+            playing_media_id IS NULL
+            AND playing_playlist_id IS NOT NULL
+            AND relative_path <> ''
+        )
+    );
 
 -- Comments
 COMMENT ON TABLE room_playback_state IS 'Current playback state for each room';

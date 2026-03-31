@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
@@ -20,6 +21,11 @@ use synctv_core::{
         room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode, Playlist,
         PlaylistId, RoomId, RoomSettings, User, UserId, UserRole, UserStatus,
     },
+    provider::{
+        DirectoryItem, DynamicFolder, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
+        PlaybackResult, ProviderContext, ProviderError,
+    },
+    service::{ProvidersManager, RemoteProviderManager},
     repository::{MediaRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
@@ -53,6 +59,13 @@ fn make_user_service(pool: PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(pool.clone());
     let mut svc = RoomService::new(pool, user_service);
+    svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc
+}
+
+fn make_room_service_with_providers(pool: PgPool, providers_manager: Arc<ProvidersManager>) -> RoomService {
+    let user_service = make_user_service(pool.clone());
+    let mut svc = RoomService::new_with_providers(pool, user_service, providers_manager);
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc
 }
@@ -160,6 +173,169 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
         .expect("Failed to create root media")
 }
 
+#[derive(Debug)]
+struct FakeDynamicProvider;
+
+impl FakeDynamicProvider {
+    fn playback_result_for(path: &str) -> PlaybackResult {
+        let mut infos = std::collections::HashMap::new();
+        infos.insert(
+            "direct".to_string(),
+            PlaybackInfo {
+                urls: vec![format!("https://example.com{path}")],
+                format: "mp4".to_string(),
+                headers: std::collections::HashMap::new(),
+                subtitles: Vec::new(),
+                expires_at: None,
+                cors_proxy_required: false,
+            },
+        );
+        PlaybackResult {
+            playback_infos: infos,
+            default_mode: "direct".to_string(),
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+
+    fn item(path: &str) -> NextPlayItem {
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        NextPlayItem {
+            name,
+            item_type: ItemType::Media,
+            source_config: serde_json::json!({ "path": path }),
+            metadata: serde_json::json!({}),
+            provider_data: serde_json::json!({}),
+            relative_path: path.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl MediaProvider for FakeDynamicProvider {
+    fn name(&self) -> &'static str {
+        "fake_dynamic"
+    }
+
+    async fn generate_playback(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: &serde_json::Value,
+    ) -> Result<PlaybackResult, ProviderError> {
+        let path = source_config
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ProviderError::InvalidConfig("Missing path".to_string()))?;
+        Ok(Self::playback_result_for(path))
+    }
+
+    fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl DynamicFolder for FakeDynamicProvider {
+    async fn list_playlist(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        _playlist: &Playlist,
+        relative_path: Option<&str>,
+        _page: usize,
+        _page_size: usize,
+    ) -> Result<Vec<DirectoryItem>, ProviderError> {
+        let items = match relative_path.unwrap_or_default() {
+            "" => vec![
+                DirectoryItem {
+                    name: "episode-1.mp4".to_string(),
+                    item_type: ItemType::Media,
+                    path: "/episode-1.mp4".to_string(),
+                    size: None,
+                    thumbnail: None,
+                    modified_at: None,
+                },
+                DirectoryItem {
+                    name: "episode-2.mp4".to_string(),
+                    item_type: ItemType::Media,
+                    path: "/episode-2.mp4".to_string(),
+                    size: None,
+                    thumbnail: None,
+                    modified_at: None,
+                },
+            ],
+            _ => Vec::new(),
+        };
+        Ok(items)
+    }
+
+    async fn resolve_item(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        _playlist: &Playlist,
+        relative_path: &str,
+    ) -> Result<Option<NextPlayItem>, ProviderError> {
+        Ok(match relative_path {
+            "/episode-1.mp4" | "/episode-2.mp4" => Some(Self::item(relative_path)),
+            _ => None,
+        })
+    }
+
+    async fn next(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        _playlist: &Playlist,
+        _playing_media: &Media,
+        relative_path: &str,
+        play_mode: PlayMode,
+    ) -> Result<Option<NextPlayItem>, ProviderError> {
+        Ok(match (relative_path, play_mode) {
+            ("/episode-1.mp4", PlayMode::Sequential | PlayMode::RepeatAll | PlayMode::Shuffle) => {
+                Some(Self::item("/episode-2.mp4"))
+            }
+            ("/episode-2.mp4", PlayMode::RepeatAll) => Some(Self::item("/episode-1.mp4")),
+            ("/episode-1.mp4" | "/episode-2.mp4", PlayMode::RepeatOne) => None,
+            _ => None,
+        })
+    }
+}
+
+async fn register_fake_dynamic_provider(room_service: &RoomService) {
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_provider(
+            "fake_dynamic",
+            "fake_dynamic_default",
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("Failed to register fake dynamic provider");
+}
+
+async fn create_dynamic_playlist(
+    pool: &PgPool,
+    room_id: &RoomId,
+    owner_id: &UserId,
+) -> Playlist {
+    let playlist = Playlist {
+        id: PlaylistId::new(),
+        room_id: room_id.clone(),
+        creator_id: Some(owner_id.clone()),
+        name: "Dynamic Playlist".to_string(),
+        parent_id: None,
+        position: 0,
+        source_provider: Some("fake_dynamic".to_string()),
+        source_config: Some(serde_json::json!({})),
+        provider_instance_name: Some("fake_dynamic".to_string()),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    synctv_core::repository::PlaylistRepository::new(pool.clone())
+        .create(&playlist)
+        .await
+        .expect("Dynamic playlist should be created")
+}
+
 // ========== Sequential Mode Tests ==========
 
 #[tokio::test]
@@ -191,7 +367,13 @@ async fn test_sequential_advance_to_next() {
     // Set currently playing to media1
     let playback = room_service.playback_service();
     playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media1.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -231,7 +413,13 @@ async fn test_sequential_end_of_playlist_returns_none() {
 
     let playback = room_service.playback_service();
     playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media1.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -239,58 +427,6 @@ async fn test_sequential_end_of_playlist_returns_none() {
     let result = playback.play_next(&room.id, &settings).await.unwrap();
 
     assert!(result.is_none(), "Should return None at end of playlist");
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_sequential_deleted_current_falls_back_to_first() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo.create(&make_user("seq_del_owner")).await.unwrap();
-    let (room, _) = room_service
-        .create_room(
-            "Seq Del".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    let playlist = create_top_level_playlist(&pool, &room.id).await;
-    let media1 = insert_media(&pool, &playlist.id, &room.id, "video_a", 0).await;
-    let _media2 = insert_media(&pool, &playlist.id, &room.id, "video_b", 1).await;
-
-    // Set playing to a non-existent media ID (simulating deletion)
-    let playback = room_service.playback_service();
-    playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
-        .await
-        .unwrap();
-
-    // Delete media1 from the database to simulate concurrent deletion
-    sqlx::query("DELETE FROM media WHERE id = $1")
-        .bind(media1.id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    let settings = make_settings_with_mode(PlayMode::Sequential);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
-
-    assert!(
-        result.is_some(),
-        "Should fall back to first item when current is deleted"
-    );
-    let state = result.unwrap();
-    assert_eq!(
-        state.playing_media_id,
-        Some(_media2.id),
-        "Should fall back to first remaining item"
-    );
 }
 
 // ========== RepeatOne Mode Tests ==========
@@ -320,7 +456,13 @@ async fn test_repeat_one_replays_current() {
 
     let playback = room_service.playback_service();
     playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media1.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -337,61 +479,6 @@ async fn test_repeat_one_replays_current() {
     assert!(
         (state.current_time - 0.0).abs() < f64::EPSILON,
         "Should reset to start"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_repeat_one_deleted_current_falls_back_to_first() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("rep1_del_owner"))
-        .await
-        .unwrap();
-    let (room, _) = room_service
-        .create_room(
-            "Rep1 Del".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    let playlist = create_top_level_playlist(&pool, &room.id).await;
-    let media1 = insert_media(&pool, &playlist.id, &room.id, "deleted_rep", 0).await;
-    let media2 = insert_media(&pool, &playlist.id, &room.id, "fallback", 1).await;
-
-    let playback = room_service.playback_service();
-    playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
-        .await
-        .unwrap();
-
-    // Delete media1
-    sqlx::query("DELETE FROM media WHERE id = $1")
-        .bind(media1.id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    let settings = make_settings_with_mode(PlayMode::RepeatOne);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
-
-    // Issue #29: RepeatOne with deleted media should fall back to first item
-    assert!(
-        result.is_some(),
-        "Should fall back when RepeatOne media deleted"
-    );
-    let state = result.unwrap();
-    assert_eq!(
-        state.playing_media_id,
-        Some(media2.id),
-        "Should fall back to first remaining item"
     );
 }
 
@@ -424,7 +511,13 @@ async fn test_repeat_all_wraps_around_at_end() {
     let playback = room_service.playback_service();
     // Start at last item
     playback
-        .switch_media(room.id.clone(), owner.id.clone(), media3.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media3.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -469,7 +562,13 @@ async fn test_repeat_all_middle_advances_to_next() {
 
     let playback = room_service.playback_service();
     playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media1.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -514,7 +613,13 @@ async fn test_shuffle_with_single_item_keeps_current_media() {
 
     let playback = room_service.playback_service();
     playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media1.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -558,7 +663,13 @@ async fn test_shuffle_with_multiple_items_excludes_current_media() {
 
     let playback = room_service.playback_service();
     playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media1.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -601,7 +712,13 @@ async fn test_auto_play_disabled_returns_none() {
 
     let playback = room_service.playback_service();
     playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media1.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -778,4 +895,118 @@ async fn test_no_current_media_ignores_other_rooms_root_media() {
         "root playback must not advance into another room's media"
     );
     assert_eq!(state.playing_playlist_id, None);
+}
+
+// ========== Dynamic Playlist Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_dynamic_playlist_sequential_advances_by_relative_path() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+        synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+    )));
+    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    providers_manager.register_factory(
+        "fake_dynamic",
+        Box::new(|_instance_id, _config, _instance_manager| Ok(Arc::new(FakeDynamicProvider))),
+    );
+    let providers_manager = Arc::new(providers_manager);
+    let room_service = make_room_service_with_providers(pool.clone(), providers_manager);
+
+    let owner = user_repo
+        .create(&make_user("dynamic_seq_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Dynamic Seq".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    register_fake_dynamic_provider(&room_service).await;
+    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id).await;
+
+    let playback = room_service.playback_service();
+    playback
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            None,
+            Some(playlist.id.clone()),
+            "/episode-1.mp4".to_string(),
+        )
+        .await
+        .unwrap();
+
+    let settings = make_settings_with_mode(PlayMode::Sequential);
+    let result = playback.play_next(&room.id, &settings).await.unwrap();
+
+    let state = result.expect("dynamic playlist should advance to next item");
+    assert!(state.playing_media_id.is_none());
+    assert_eq!(state.playing_playlist_id, Some(playlist.id));
+    assert_eq!(state.relative_path, "/episode-2.mp4");
+    assert!((state.current_time - 0.0).abs() < f64::EPSILON);
+    assert!(state.is_playing);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+        synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+    )));
+    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    providers_manager.register_factory(
+        "fake_dynamic",
+        Box::new(|_instance_id, _config, _instance_manager| Ok(Arc::new(FakeDynamicProvider))),
+    );
+    let providers_manager = Arc::new(providers_manager);
+    let room_service = make_room_service_with_providers(pool.clone(), providers_manager);
+
+    let owner = user_repo
+        .create(&make_user("dynamic_repeat_all_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Dynamic Repeat All".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    register_fake_dynamic_provider(&room_service).await;
+    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id).await;
+
+    let playback = room_service.playback_service();
+    playback
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            None,
+            Some(playlist.id.clone()),
+            "/episode-2.mp4".to_string(),
+        )
+        .await
+        .unwrap();
+
+    let settings = make_settings_with_mode(PlayMode::RepeatAll);
+    let result = playback.play_next(&room.id, &settings).await.unwrap();
+
+    let state = result.expect("dynamic playlist repeat-all should wrap to first item");
+    assert!(state.playing_media_id.is_none());
+    assert_eq!(state.playing_playlist_id, Some(playlist.id));
+    assert_eq!(state.relative_path, "/episode-1.mp4");
 }

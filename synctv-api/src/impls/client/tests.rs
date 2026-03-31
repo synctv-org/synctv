@@ -552,8 +552,8 @@ fn test_playback_state_to_proto() {
     let state = synctv_core::models::RoomPlaybackState {
         room_id: RoomId::from_string("room1".to_string()),
         playing_media_id: Some(MediaId::from_string("media1".to_string())),
-        playing_playlist_id: Some(PlaylistId::from_string("pl1".to_string())),
-        relative_path: "/video.mp4".to_string(),
+        playing_playlist_id: None,
+        relative_path: String::new(),
         current_time: 120.5,
         speed: 1.5,
         is_playing: true,
@@ -565,12 +565,33 @@ fn test_playback_state_to_proto() {
 
     assert_eq!(proto.room_id, "room1");
     assert_eq!(proto.playing_media_id, "media1");
-    assert_eq!(proto.playing_playlist_id, "pl1");
-    assert_eq!(proto.relative_path, "/video.mp4");
+    assert_eq!(proto.playing_playlist_id, "");
+    assert_eq!(proto.relative_path, "");
     assert!((proto.current_time - 120.5).abs() < f64::EPSILON);
     assert!((proto.speed - 1.5).abs() < f64::EPSILON);
     assert!(proto.is_playing);
     assert_eq!(proto.version, 42);
+}
+
+#[test]
+fn test_playback_state_to_proto_dynamic_playlist_target() {
+    let state = synctv_core::models::RoomPlaybackState {
+        room_id: RoomId::from_string("room1".to_string()),
+        playing_media_id: None,
+        playing_playlist_id: Some(PlaylistId::from_string("pl1".to_string())),
+        relative_path: "/video.mp4".to_string(),
+        current_time: 120.5,
+        speed: 1.5,
+        is_playing: true,
+        updated_at: chrono::Utc::now(),
+        version: 42,
+    };
+
+    let proto = playback_state_to_proto(&state);
+
+    assert_eq!(proto.playing_media_id, "");
+    assert_eq!(proto.playing_playlist_id, "pl1");
+    assert_eq!(proto.relative_path, "/video.mp4");
 }
 
 #[test]

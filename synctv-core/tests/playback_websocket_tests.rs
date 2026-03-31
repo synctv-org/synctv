@@ -371,7 +371,13 @@ async fn test_media_switch_triggers_broadcast() {
     // Trigger media switch
     room_service
         .playback_service()
-        .switch_media(room.id.clone(), owner.id.clone(), media.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 

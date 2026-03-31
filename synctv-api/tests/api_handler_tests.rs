@@ -47,9 +47,11 @@ mod update_playback_validation {
                     && req.position.is_none()
                     && req.speed.is_none()
                     && req.media_id.is_none()
+                    && req.playlist_id.is_none()
+                    && req.relative_path.is_none()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
-                        "No valid playback update field provided (state, position, speed, or media_id)",
+                        "No valid playback update field provided (state, position, speed, media_id, or playlist_id)",
                     ));
                 }
                 Ok(Json(serde_json::json!({"status": "ok"})))
@@ -83,6 +85,8 @@ mod update_playback_validation {
                     && req.position.is_none()
                     && req.speed.is_none()
                     && req.media_id.is_none()
+                    && req.playlist_id.is_none()
+                    && req.relative_path.is_none()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
                         "No valid playback update field provided",
@@ -128,6 +132,8 @@ mod update_playback_validation {
                     && req.position.is_none()
                     && req.speed.is_none()
                     && req.media_id.is_none()
+                    && req.playlist_id.is_none()
+                    && req.relative_path.is_none()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
@@ -163,6 +169,8 @@ mod update_playback_validation {
                     && req.position.is_none()
                     && req.speed.is_none()
                     && req.media_id.is_none()
+                    && req.playlist_id.is_none()
+                    && req.relative_path.is_none()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
@@ -198,6 +206,8 @@ mod update_playback_validation {
                     && req.position.is_none()
                     && req.speed.is_none()
                     && req.media_id.is_none()
+                    && req.playlist_id.is_none()
+                    && req.relative_path.is_none()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
@@ -269,6 +279,47 @@ mod update_playback_validation {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let json = body_json(resp).await;
         assert!(json["error"].as_str().unwrap().contains("negative"));
+    }
+
+    #[tokio::test]
+    async fn test_target_switch_fields_cannot_mix_with_state_updates() {
+        let app = Router::new().route(
+            "/api/rooms/{room_id}/playback",
+            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
+                let target_requested =
+                    req.media_id.is_some() || req.playlist_id.is_some() || req.relative_path.is_some();
+
+                if target_requested
+                    && (req.state.is_some()
+                        || req.position.is_some()
+                        || req.speed.is_some()
+                        || req.version.is_some())
+                {
+                    return Err::<Json<Value>, AppError>(AppError::bad_request(
+                        "Target switch requests cannot be combined with play/pause/seek/speed/version updates",
+                    ));
+                }
+
+                Ok(Json(serde_json::json!({"status": "ok"})))
+            }),
+        );
+
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/api/rooms/room123/playback")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                r#"{"playlist_id":"pl1","relative_path":"/ep1.mkv","state":"playing"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be combined"));
     }
 }
 

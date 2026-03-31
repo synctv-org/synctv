@@ -141,6 +141,7 @@ impl ClientApiImpl {
                 crate::proto::client::DeleteEntriesRequest {
                     playlist_ids: vec![req.playlist_id],
                     media_ids: Vec::new(),
+                    force: req.force,
                 },
             )
             .await?;

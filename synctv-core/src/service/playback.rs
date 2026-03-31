@@ -25,6 +25,13 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+#[derive(Debug, Clone)]
+pub struct SwitchPlaybackTarget {
+    pub media_id: Option<MediaId>,
+    pub playlist_id: Option<PlaylistId>,
+    pub relative_path: String,
+}
+
 /// Result of a broadcast operation from `ClusterManager::broadcast`.
 ///
 /// Indicates whether the event was delivered to local subscribers and/or Redis.
@@ -131,6 +138,24 @@ fn validate_playback_speed_value(speed: f64) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn validate_switch_target(target: &SwitchPlaybackTarget) -> Result<()> {
+    match (&target.media_id, &target.playlist_id) {
+        (Some(_), Some(_)) => Err(Error::InvalidInput(
+            "media_id and playlist_id cannot both be set".to_string(),
+        )),
+        (None, None) if !target.relative_path.is_empty() => Err(Error::InvalidInput(
+            "relative_path must be empty when clearing playback".to_string(),
+        )),
+        (Some(_), None) if !target.relative_path.is_empty() => Err(Error::InvalidInput(
+            "relative_path must be empty when switching to a static media item".to_string(),
+        )),
+        (None, Some(_)) if target.relative_path.is_empty() => Err(Error::InvalidInput(
+            "relative_path is required when switching to a dynamic playlist item".to_string(),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Trait for broadcasting playback state changes to cluster replicas.
@@ -818,50 +843,100 @@ impl PlaybackService {
         Ok(state)
     }
 
-    /// Switch to different media in playlist
-    pub async fn switch_media(
+    /// Switch playback target.
+    ///
+    /// Valid targets are mutually exclusive:
+    /// - static media: `media_id` only
+    /// - dynamic playlist item: `playlist_id` + `relative_path`
+    pub async fn switch(
         &self,
         room_id: RoomId,
         user_id: UserId,
-        media_id: MediaId,
-    ) -> Result<RoomPlaybackState> {
-        self.switch_media_with_context(room_id, user_id, media_id, None, String::new())
-            .await
-    }
-
-    /// Switch to different media with playlist context and media path
-    pub async fn switch_media_with_context(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        media_id: MediaId,
+        media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
-        media_path: String,
+        relative_path: String,
     ) -> Result<RoomPlaybackState> {
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::CHANGE_CURRENT_MOVIE)
             .await?;
+        let target = SwitchPlaybackTarget {
+            media_id,
+            playlist_id,
+            relative_path,
+        };
+        validate_switch_target(&target)?;
 
-        // Verify media exists in this room
-        let media = self
-            .media_service
-            .get_media(&media_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        if target.media_id.is_none() && target.playlist_id.is_none() {
+            let state = self
+                .update_state(room_id.clone(), |state| {
+                    state.playing_media_id = None;
+                    state.playing_playlist_id = None;
+                    state.relative_path = String::new();
+                    state.current_time = 0.0;
+                    state.speed = 1.0;
+                    state.is_playing = false;
+                    state.updated_at = chrono::Utc::now();
+                })
+                .await?;
 
-        if media.room_id != room_id {
-            return Err(Error::Authorization(
-                "Media does not belong to this room".to_string(),
-            ));
+            self.broadcast_state_change(&state).await;
+            return Ok(state);
         }
 
-        let effective_playlist_id = playlist_id.or_else(|| media.playlist_id.clone());
+        if let Some(ref media_id) = target.media_id {
+            let media = self
+                .media_service
+                .get_media(media_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+
+            if media.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
+            }
+        }
+
+        if let Some(ref playlist_id) = target.playlist_id {
+            let playlist = self
+                .media_service
+                .get_playlist(playlist_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+            if playlist.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Playlist does not belong to this room".to_string(),
+                ));
+            }
+
+            if !playlist.is_dynamic() {
+                return Err(Error::InvalidInput(
+                    "playlist_id playback target must reference a dynamic playlist".to_string(),
+                ));
+            }
+
+            let resolved = self
+                .media_service
+                .resolve_dynamic_playlist_item(
+                    room_id.clone(),
+                    user_id.clone(),
+                    playlist_id,
+                    &target.relative_path,
+                )
+                .await?;
+            if resolved.is_none() {
+                return Err(Error::NotFound(
+                    "Dynamic playlist item not found".to_string(),
+                ));
+            }
+        }
 
         let state = self
             .update_state(room_id.clone(), |state| {
-                state.playing_media_id = Some(media_id.clone());
-                state.playing_playlist_id = effective_playlist_id.clone();
-                state.relative_path = media_path.clone();
+                state.playing_media_id = target.media_id.clone();
+                state.playing_playlist_id = target.playlist_id.clone();
+                state.relative_path = target.relative_path.clone();
                 state.current_time = 0.0;
                 state.is_playing = true;
                 state.updated_at = chrono::Utc::now();
@@ -903,120 +978,133 @@ impl PlaybackService {
                 None => self.playback_repo.create_or_get(room_id).await?,
             };
 
-            // Get playlist scoped to the current playing playlist folder if set,
-            // otherwise fall back to the flat room-wide list.
-            let playlist = if let Some(ref playlist_id) = state.playing_playlist_id {
-                self.media_service.get_playlist_media(playlist_id).await?
-            } else {
-                self.media_service.get_room_root_media(room_id).await?
-            };
-
-            if playlist.is_empty() {
-                return Ok(None);
+            #[derive(Debug)]
+            enum NextTarget {
+                Static(crate::models::Media),
+                Dynamic {
+                    playlist_id: PlaylistId,
+                    relative_path: String,
+                },
             }
 
-            // Handle different play modes
-            let next_media = match mode {
-                PlayMode::Sequential => {
-                    // Find next media by position.
-                    // If the current media was deleted concurrently (not found in
-                    // playlist), gracefully fall back to the first item instead of
-                    // skipping it.
-                    if let Some(ref current_id) = state.playing_media_id {
-                        match playlist.iter().position(|m| &m.id == current_id) {
-                            Some(pos) if pos + 1 < playlist.len() => Some(&playlist[pos + 1]),
-                            Some(_) => None, // End of playlist
-                            None => {
+            let next_target = if let Some(ref playlist_id) = state.playing_playlist_id {
+                let playlist = self
+                    .media_service
+                    .get_playlist(playlist_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+                self.media_service
+                    .next_dynamic_playlist_item(
+                        room_id,
+                        playlist_id,
+                        &state.relative_path,
+                        mode,
+                    )
+                    .await
+                    .map(|item| item.map(|item| NextTarget::Dynamic {
+                        playlist_id: playlist.id.clone(),
+                        relative_path: item.relative_path,
+                    }))?
+            } else {
+                let playlist = if let Some(ref current_id) = state.playing_media_id {
+                    let current_media = self
+                        .media_service
+                        .get_media(current_id)
+                        .await?
+                        .ok_or_else(|| Error::NotFound("Current media not found".to_string()))?;
+
+                    if current_media.room_id != *room_id {
+                        return Err(Error::Authorization(
+                            "Current media does not belong to this room".to_string(),
+                        ));
+                    }
+
+                    if let Some(ref playlist_id) = current_media.playlist_id {
+                        self.media_service.get_playlist_media(playlist_id).await?
+                    } else {
+                        self.media_service.get_room_root_media(room_id).await?
+                    }
+                } else {
+                    self.media_service.get_room_root_media(room_id).await?
+                };
+
+                if playlist.is_empty() {
+                    return Ok(None);
+                }
+
+                let next_media = match mode {
+                    PlayMode::Sequential => {
+                        if let Some(ref current_id) = state.playing_media_id {
+                            match playlist.iter().position(|m| &m.id == current_id) {
+                                Some(pos) if pos + 1 < playlist.len() => Some(&playlist[pos + 1]),
+                                Some(_) => None,
+                                None => {
+                                    tracing::warn!(
+                                        room_id = %room_id.as_str(),
+                                        media_id = %current_id.as_str(),
+                                        "Sequential: current media no longer present, falling back to first available item"
+                                    );
+                                    playlist.first()
+                                }
+                            }
+                        } else {
+                            playlist.first()
+                        }
+                    }
+                    PlayMode::RepeatOne => {
+                        if let Some(ref current_id) = state.playing_media_id {
+                            playlist
+                                .iter()
+                                .find(|m| &m.id == current_id)
+                                .or_else(|| {
+                                    tracing::warn!(
+                                        room_id = %room_id.as_str(),
+                                        media_id = %current_id.as_str(),
+                                        "RepeatOne: current media no longer present, falling back to first available item"
+                                    );
+                                    playlist.first()
+                                })
+                        } else {
+                            playlist.first()
+                        }
+                    }
+                    PlayMode::RepeatAll => {
+                        if let Some(ref current_id) = state.playing_media_id {
+                            if let Some(pos) = playlist.iter().position(|m| &m.id == current_id) {
+                                Some(&playlist[(pos + 1) % playlist.len()])
+                            } else {
                                 tracing::warn!(
                                     room_id = %room_id.as_str(),
                                     media_id = %current_id.as_str(),
-                                    "Sequential: currently-playing media not found in playlist (deleted?), falling back to first item"
+                                    "RepeatAll: current media no longer present, falling back to first available item"
                                 );
                                 playlist.first()
                             }
-                        }
-                    } else {
-                        playlist.first()
-                    }
-                }
-
-                PlayMode::RepeatOne => {
-                    // Repeat current media.
-                    // Issue #29: If the currently-playing media was deleted from the
-                    // playlist, find() returns None and we would enter a dead state
-                    // where nothing plays. Fall back to Sequential behavior (advance
-                    // to the next item) so playback continues gracefully.
-                    if let Some(ref current_id) = state.playing_media_id {
-                        let found = playlist.iter().find(|m| &m.id == current_id);
-                        if found.is_some() {
-                            found
                         } else {
-                            // Media was deleted — advance to first item as fallback
-                            tracing::warn!(
-                                room_id = %room_id.as_str(),
-                                media_id = %current_id.as_str(),
-                                "RepeatOne: currently-playing media not found in playlist (deleted?), falling back to first item"
-                            );
                             playlist.first()
                         }
-                    } else {
-                        playlist.first()
                     }
-                }
-
-                PlayMode::RepeatAll => {
-                    // Loop back to start.
-                    // If current media was deleted, fall back to the first item.
-                    if let Some(ref current_id) = state.playing_media_id {
-                        if let Some(pos) = playlist.iter().position(|m| &m.id == current_id) {
-                            let next_pos = (pos + 1) % playlist.len();
-                            Some(&playlist[next_pos])
+                    PlayMode::Shuffle => {
+                        if let Some(ref current_id) = state.playing_media_id {
+                            let other_media = playlist
+                                .iter()
+                                .filter(|m| &m.id != current_id)
+                                .collect::<Vec<_>>();
+                            if other_media.is_empty() {
+                                playlist.iter().find(|m| &m.id == current_id)
+                            } else {
+                                other_media.into_iter().choose(&mut rand::rng())
+                            }
                         } else {
-                            tracing::warn!(
-                                room_id = %room_id.as_str(),
-                                media_id = %current_id.as_str(),
-                                "RepeatAll: currently-playing media not found in playlist (deleted?), falling back to first item"
-                            );
                             playlist.first()
                         }
-                    } else {
-                        playlist.first()
                     }
-                }
+                };
 
-                PlayMode::Shuffle => {
-                    // Random next media (excluding current)
-                    //
-                    // NOTE: This is a simplified shuffle implementation that randomly selects
-                    // the next media from the playlist (excluding the current one).
-                    //
-                    // Pros: Simple, efficient, no additional state storage required
-                    // Cons: May play some media more frequently than others
-                    //
-                    // For a production-grade shuffle without repeats, consider implementing
-                    // Fisher-Yates shuffle algorithm with persistent state storage (Redis):
-                    // 1. Shuffle the entire playlist once
-                    // 2. Play through shuffled order
-                    // 3. Re-shuffle when all items played
-                    // See: /Volumes/workspace/rust/design/13-自动连播设计.md §3.4
-                    if let Some(ref current_id) = state.playing_media_id {
-                        let other_media = playlist
-                            .iter()
-                            .filter(|m| &m.id != current_id)
-                            .collect::<Vec<_>>();
-                        if other_media.is_empty() {
-                            playlist.iter().find(|m| &m.id == current_id)
-                        } else {
-                            other_media.into_iter().choose(&mut rand::rng())
-                        }
-                    } else {
-                        playlist.first()
-                    }
-                }
+                next_media.cloned().map(NextTarget::Static)
             };
 
-            // Switch to next media
-            let Some(next) = next_media else {
+            let Some(next_target) = next_target else {
                 tracing::info!(
                     room_id = %room_id.as_str(),
                     mode = ?mode,
@@ -1027,16 +1115,21 @@ impl PlaybackService {
 
             // Apply update to the fetched state and try to save with optimistic locking
             let mut updated_state = state;
-            updated_state.playing_media_id = Some(next.id.clone());
-            updated_state.playing_playlist_id = next.playlist_id.clone();
-            // For dynamic playlists (Alist/Emby), the provider-relative path is
-            // stored in source_config["path"], which differs from the display name.
-            // Fall back to the name for direct/static media that have no path field.
-            updated_state.relative_path = next
-                .source_config
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map_or_else(|| next.name.clone(), String::from);
+            match &next_target {
+                NextTarget::Static(next) => {
+                    updated_state.playing_media_id = Some(next.id.clone());
+                    updated_state.playing_playlist_id = None;
+                    updated_state.relative_path = String::new();
+                }
+                NextTarget::Dynamic {
+                    playlist_id,
+                    relative_path,
+                } => {
+                    updated_state.playing_media_id = None;
+                    updated_state.playing_playlist_id = Some(playlist_id.clone());
+                    updated_state.relative_path = relative_path.clone();
+                }
+            }
             updated_state.current_time = 0.0;
             updated_state.is_playing = true;
             updated_state.updated_at = chrono::Utc::now();
@@ -1053,8 +1146,7 @@ impl PlaybackService {
 
                     tracing::info!(
                         room_id = %room_id.as_str(),
-                        media_id = %next.id.as_str(),
-                        name = %next.name,
+                        target = ?next_target,
                         mode = ?mode,
                         "Auto-played next media"
                     );
@@ -1255,6 +1347,14 @@ impl PlaybackService {
         Ok(state)
     }
 
+    pub async fn broadcast_playback_reset_after_force_delete(
+        &self,
+        state: RoomPlaybackState,
+    ) -> BroadcastResult {
+        self.invalidate_playback_cache(&state.room_id).await;
+        self.broadcast_state_change(&state).await
+    }
+
     /// Check if playback is currently active
     pub async fn is_playing(&self, room_id: &RoomId) -> Result<bool> {
         let state = self.get_state(room_id).await?;
@@ -1288,8 +1388,6 @@ impl PlaybackService {
         playing: Option<bool>,
         current_time: Option<f64>,
         speed: Option<f64>,
-        media_id: Option<MediaId>,
-        playlist_id: Option<Option<PlaylistId>>,
     ) -> Result<RoomPlaybackState> {
         self.update_multiple_with_version(
             room_id,
@@ -1297,8 +1395,6 @@ impl PlaybackService {
             playing,
             current_time,
             speed,
-            media_id,
-            playlist_id,
             None,
         )
         .await
@@ -1323,8 +1419,6 @@ impl PlaybackService {
         playing: Option<bool>,
         current_time: Option<f64>,
         speed: Option<f64>,
-        media_id: Option<MediaId>,
-        playlist_id: Option<Option<PlaylistId>>,
         expected_version: Option<i64>,
     ) -> Result<RoomPlaybackState> {
         // Check permissions based on what's being updated
@@ -1338,10 +1432,6 @@ impl PlaybackService {
         if speed.is_some() {
             required_perms |= PermissionBits::CHANGE_PLAYBACK_RATE;
         }
-        if media_id.is_some() {
-            required_perms |= PermissionBits::CHANGE_CURRENT_MOVIE;
-        }
-
         if required_perms != PermissionBits::NONE {
             self.permission_service
                 .check_permission(&room_id, &user_id, required_perms)
@@ -1354,21 +1444,6 @@ impl PlaybackService {
 
         if let Some(s) = speed {
             validate_playback_speed_value(s)?;
-        }
-
-        // If media_id is provided, verify it exists
-        if let Some(ref mid) = media_id {
-            let media = self
-                .media_service
-                .get_media(mid)
-                .await?
-                .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
         }
 
         // CAS check: when the caller provides an expected version, verify that
@@ -1402,12 +1477,6 @@ impl PlaybackService {
                 }
                 if let Some(s) = speed {
                     state.speed = s;
-                }
-                if let Some(ref mid) = media_id {
-                    state.playing_media_id = Some(mid.clone());
-                }
-                if let Some(ref pid) = playlist_id {
-                    state.playing_playlist_id = pid.clone();
                 }
                 state.updated_at = chrono::Utc::now();
                 // version is incremented by the SQL UPDATE, not here

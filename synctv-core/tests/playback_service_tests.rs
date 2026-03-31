@@ -275,7 +275,13 @@ async fn test_switch_media_resets_position() {
 
     // Switch media should reset position to 0
     let state = playback_service
-        .switch_media(room.id.clone(), owner.id.clone(), media.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -285,7 +291,140 @@ async fn test_switch_media_resets_position() {
         state.current_time
     );
     assert_eq!(state.playing_media_id, Some(media.id));
+    assert!(
+        state.playing_playlist_id.is_none(),
+        "static media playback must not retain a playlist playback target"
+    );
     assert!(state.is_playing, "Should be playing after media switch");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_switch_media_rejects_relative_path() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("switch_media_relpath_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Switch Media Relative Path Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: None,
+        room_id: room.id.clone(),
+        creator_id: Some(owner.id.clone()),
+        name: "Standalone Video".to_string(),
+        position: 0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/standalone.mp4"}),
+        provider_instance_name: None,
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    media_repo.create(&media).await.unwrap();
+
+    let result = room_service
+        .playback_service()
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            "/unexpected".to_string(),
+        )
+        .await;
+
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_switch_with_empty_target_clears_playback_state() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("switch_clear_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Switch Clear Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: None,
+        room_id: room.id.clone(),
+        creator_id: Some(owner.id.clone()),
+        name: "Clearable Video".to_string(),
+        position: 0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/clearable.mp4"}),
+        provider_instance_name: None,
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    media_repo.create(&media).await.unwrap();
+
+    let playback_service = room_service.playback_service();
+    playback_service
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
+    playback_service
+        .seek(room.id.clone(), owner.id.clone(), 33.0)
+        .await
+        .unwrap();
+
+    let state = playback_service
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+    assert!(state.playing_media_id.is_none());
+    assert!(state.playing_playlist_id.is_none());
+    assert!(state.relative_path.is_empty());
+    assert!((state.current_time - 0.0).abs() < f64::EPSILON);
+    assert!((state.speed - 1.0).abs() < f64::EPSILON);
+    assert!(!state.is_playing);
 }
 
 // ========== Optimistic Lock Concurrent Test ==========
@@ -496,7 +635,13 @@ async fn test_play_next_concurrent_playlist_modification() {
     // Start playing first media
     let playback_service = room_service.playback_service();
     playback_service
-        .switch_media(room.id.clone(), owner.id.clone(), media_ids[0].clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media_ids[0].clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -579,7 +724,13 @@ async fn test_play_next_at_end_of_playlist() {
     // Start playing last media
     let playback_service = room_service.playback_service();
     playback_service
-        .switch_media(room.id.clone(), owner.id.clone(), media_ids[2].clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media_ids[2].clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -657,7 +808,13 @@ async fn test_play_next_with_loop_enabled() {
     // Start playing last media
     let playback_service = room_service.playback_service();
     playback_service
-        .switch_media(room.id.clone(), owner.id.clone(), media_ids[2].clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media_ids[2].clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 
@@ -861,7 +1018,13 @@ async fn test_state_consistency_after_mixed_operations() {
 
     // Switch to media
     playback_service
-        .switch_media(room.id.clone(), owner.id.clone(), media.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 

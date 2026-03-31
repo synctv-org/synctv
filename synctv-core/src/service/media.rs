@@ -9,6 +9,7 @@
 
 use crate::{
     models::{Media, MediaId, PermissionBits, PlaylistId, RoomId, UserId},
+    repository::UserProviderCredentialRepository,
     provider::{DirectoryItem, ProviderContext},
     repository::{MediaRepository, PlaylistRepository},
     service::{notification::NotificationService, permission::PermissionService, ProvidersManager},
@@ -66,6 +67,8 @@ pub struct MediaService {
     notification_service: Option<NotificationService>,
     /// Optional credential encryption for protecting sensitive data in `source_config`
     credential_encryption: Option<crate::service::CredentialEncryption>,
+    /// Optional credential repository for provider-backed source resolution
+    credential_repo: Option<Arc<UserProviderCredentialRepository>>,
 }
 
 impl std::fmt::Debug for MediaService {
@@ -90,6 +93,7 @@ impl MediaService {
             providers_manager,
             notification_service: None,
             credential_encryption: None,
+            credential_repo: None,
         }
     }
 
@@ -107,6 +111,11 @@ impl MediaService {
     /// Set credential encryption for protecting sensitive data in `source_config`
     pub fn set_credential_encryption(&mut self, encryption: crate::service::CredentialEncryption) {
         self.credential_encryption = Some(encryption);
+    }
+
+    /// Set credential repository for provider-backed source resolution.
+    pub fn set_credential_repo(&mut self, repo: Arc<UserProviderCredentialRepository>) {
+        self.credential_repo = Some(repo);
     }
 
     /// Add media to a playlist
@@ -160,6 +169,9 @@ impl MediaService {
             .with_room_id(room_id.as_str());
         if let Some(ref enc) = self.credential_encryption {
             ctx = ctx.with_credential_encryption(enc);
+        }
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
         }
 
         provider
@@ -287,6 +299,9 @@ impl MediaService {
             .with_room_id(room_id.as_str());
         if let Some(ref enc) = self.credential_encryption {
             ctx = ctx.with_credential_encryption(enc);
+        }
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
         }
 
         // Validate all items before starting a transaction
@@ -1011,9 +1026,12 @@ impl MediaService {
         })?;
 
         // Create context
-        let ctx = ProviderContext::new("synctv")
+        let mut ctx = ProviderContext::new("synctv")
             .with_user_id(user_id.as_str())
             .with_room_id(room_id.as_str());
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
+        }
 
         // List items
         let items = dynamic_folder
@@ -1022,6 +1040,148 @@ impl MediaService {
             .map_err(Error::from)?;
 
         Ok(items)
+    }
+
+    /// Get playlist metadata needed by playback/media orchestration.
+    pub async fn get_playlist(&self, playlist_id: &PlaylistId) -> Result<Option<crate::models::Playlist>> {
+        self.playlist_repo.get_by_id(playlist_id).await
+    }
+
+    /// Resolve a concrete playable item inside a dynamic playlist.
+    pub async fn resolve_dynamic_playlist_item(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        playlist_id: &PlaylistId,
+        relative_path: &str,
+    ) -> Result<Option<crate::provider::NextPlayItem>> {
+        let playlist = self
+            .playlist_repo
+            .get_by_id(playlist_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+        if playlist.room_id != room_id {
+            return Err(Error::Authorization(
+                "Playlist does not belong to this room".to_string(),
+            ));
+        }
+
+        if !playlist.is_dynamic() {
+            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
+        }
+
+        let provider_name = playlist
+            .source_provider
+            .as_ref()
+            .ok_or_else(|| Error::InvalidInput("Dynamic playlist missing provider".to_string()))?;
+
+        let provider = self
+            .providers_manager
+            .get_by_type(provider_name)
+            .await
+            .ok_or_else(|| Error::NotFound(format!("Provider not found: {provider_name}")))?;
+
+        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Provider {provider_name} does not support dynamic folders"
+            ))
+        })?;
+
+        let mut ctx = ProviderContext::new("synctv")
+            .with_user_id(user_id.as_str())
+            .with_room_id(room_id.as_str());
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
+        }
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
+
+        dynamic_folder
+            .resolve_item(&ctx, &playlist, relative_path)
+            .await
+            .map_err(Error::from)
+    }
+
+    /// Resolve the next auto-play target within a dynamic playlist.
+    ///
+    /// This is internal playback orchestration logic, so it intentionally does
+    /// not perform room membership or permission checks. The caller must already
+    /// have a valid playback state scoped to the room.
+    pub async fn next_dynamic_playlist_item(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+        relative_path: &str,
+        play_mode: crate::models::PlayMode,
+    ) -> Result<Option<crate::provider::NextPlayItem>> {
+        let playlist = self
+            .playlist_repo
+            .get_by_id(playlist_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+        if playlist.room_id != *room_id {
+            return Err(Error::Authorization(
+                "Playlist does not belong to this room".to_string(),
+            ));
+        }
+
+        if !playlist.is_dynamic() {
+            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
+        }
+
+        let provider_name = playlist
+            .source_provider
+            .as_ref()
+            .ok_or_else(|| Error::InvalidInput("Dynamic playlist missing provider".to_string()))?;
+
+        let provider = self
+            .providers_manager()
+            .get_by_type(provider_name)
+            .await
+            .ok_or_else(|| Error::NotFound(format!("Provider not found: {provider_name}")))?;
+
+        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Provider {provider_name} does not support dynamic folders"
+            ))
+        })?;
+
+        let current_dynamic_media = crate::models::Media {
+            id: MediaId::new(),
+            playlist_id: Some(playlist.id.clone()),
+            room_id: room_id.clone(),
+            creator_id: None,
+            name: relative_path.to_string(),
+            position: 0,
+            source_provider: provider_name.clone(),
+            source_config: serde_json::Value::Null,
+            provider_instance_name: playlist.provider_instance_name.clone(),
+            added_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 0,
+        };
+
+        let mut ctx = ProviderContext::new("synctv").with_room_id(room_id.as_str());
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
+        }
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
+
+        dynamic_folder
+            .next(
+                &ctx,
+                &playlist,
+                &current_dynamic_media,
+                relative_path,
+                play_mode,
+            )
+            .await
+            .map_err(Error::from)
     }
 }
 

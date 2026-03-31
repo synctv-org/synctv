@@ -1023,7 +1023,7 @@ mod routing_structure {
 mod request_format {
     use synctv_proto::client::{
         CreateRoomRequest, JoinRoomRequest, LoginRequest, RefreshTokenRequest, RegisterRequest,
-        SetRoomPasswordRequest, StartPlaybackRequest,
+        SetRoomPasswordRequest,
     };
 
     #[test]
@@ -1098,8 +1098,19 @@ mod request_format {
     #[test]
     fn test_start_playback_request_deserializes_without_room_id() {
         let json = r#"{"media_id":"media-123"}"#;
-        let req: StartPlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.media_id, "media-123");
+        let req: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(req["media_id"], "media-123");
+        assert!(req.get("playlist_id").is_none());
+        assert!(req.get("relative_path").is_none());
+    }
+
+    #[test]
+    fn test_start_playback_request_deserializes_dynamic_playlist_target() {
+        let json = r#"{"playlist_id":"playlist-123","relative_path":"/episode-1.mkv"}"#;
+        let req: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert!(req.get("media_id").is_none());
+        assert_eq!(req["playlist_id"], "playlist-123");
+        assert_eq!(req["relative_path"], "/episode-1.mkv");
     }
 
     #[test]
@@ -1502,16 +1513,20 @@ mod playback_request {
         let json = r#"{"media_id": "media_abc"}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.media_id.as_deref(), Some("media_abc"));
+        assert!(req.playlist_id.is_none());
+        assert!(req.relative_path.is_none());
     }
 
     #[test]
-    fn test_combined_fields() {
-        let json = r#"{"state":"paused","position":10.0,"speed":1.5,"media_id":"m1"}"#;
+    fn test_dynamic_target_fields() {
+        let json = r#"{"playlist_id":"pl1","relative_path":"/episode-1.mkv"}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.state.as_deref(), Some("paused"));
-        assert!((req.position.unwrap() - 10.0).abs() < f64::EPSILON);
-        assert!((req.speed.unwrap() - 1.5).abs() < f64::EPSILON);
-        assert_eq!(req.media_id.as_deref(), Some("m1"));
+        assert_eq!(req.playlist_id.as_deref(), Some("pl1"));
+        assert_eq!(req.relative_path.as_deref(), Some("/episode-1.mkv"));
+        assert!(req.state.is_none());
+        assert!(req.position.is_none());
+        assert!(req.speed.is_none());
+        assert!(req.media_id.is_none());
     }
 
     #[test]

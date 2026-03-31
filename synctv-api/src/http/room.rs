@@ -53,7 +53,12 @@ pub struct UpdateRoomSettingsBody {
 
 #[derive(serde::Deserialize)]
 pub struct StartPlaybackBody {
+    #[serde(default)]
     media_id: String,
+    #[serde(default)]
+    playlist_id: String,
+    #[serde(default)]
+    relative_path: String,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -78,6 +83,12 @@ pub struct DeleteEntriesBody {
     playlist_ids: Vec<String>,
     #[serde(default)]
     media_ids: Vec<String>,
+    #[serde(default)]
+    force: bool,
+}
+
+fn parse_force_query(params: &std::collections::HashMap<String, String>) -> bool {
+    params.get("force").is_some_and(|value| value == "true")
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -287,8 +298,10 @@ pub async fn delete_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<DeleteMediaResponse>> {
-    let proto_req = DeleteMediaRequest { media_id };
+    let force = parse_force_query(&params);
+    let proto_req = DeleteMediaRequest { media_id, force };
     let response = state
         .client_api
         .delete_media(&auth.user_id.to_string(), &room_id, proto_req)
@@ -309,6 +322,7 @@ pub async fn delete_entries(
     let req = DeleteEntriesRequest {
         playlist_ids: body.playlist_ids,
         media_ids: body.media_ids,
+        force: body.force,
     };
     let response = state
         .client_api
@@ -426,6 +440,8 @@ pub async fn start_playback(
 ) -> AppResult<Json<StartPlaybackResponse>> {
     let req = StartPlaybackRequest {
         media_id: body.media_id,
+        playlist_id: body.playlist_id,
+        relative_path: body.relative_path,
     };
     let response = state
         .client_api
@@ -791,9 +807,12 @@ pub struct UpdatePlaybackRequest {
     /// Switch to media ID
     #[serde(default)]
     pub media_id: Option<String>,
-    /// Playlist context when switching media
+    /// Switch to dynamic playlist item
     #[serde(default)]
     pub playlist_id: Option<String>,
+    /// Relative path inside the dynamic playlist item space
+    #[serde(default)]
+    pub relative_path: Option<String>,
     /// Expected version for optimistic locking (CAS).
     /// If provided, the update will only succeed if the current playback state
     /// version matches this value, preventing last-writer-wins conflicts.
@@ -803,9 +822,12 @@ pub struct UpdatePlaybackRequest {
 
 /// Unified handler for updating playback state via PATCH
 /// PATCH /`api/rooms/:room_id/playback`
-/// Supports: state (play/pause), position (seek), speed, `media_id` (switch), `playlist_id`
+/// Supports either:
+/// - play/pause/seek/speed updates
+/// - playback target switch (`media_id` or `playlist_id` + `relative_path`)
 ///
-/// Applies ALL provided fields atomically via `PlaybackService::update_multiple()`.
+/// Target switches intentionally use `PlaybackService::switch()` and cannot be
+/// mixed with other playback state updates.
 pub async fn update_playback(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -821,9 +843,10 @@ pub async fn update_playback(
         && req.position.is_none()
         && req.speed.is_none()
         && req.media_id.is_none()
+        && req.playlist_id.is_none()
     {
         return Err(super::AppError::bad_request(
-            "No valid playback update field provided (state, position, speed, or media_id)",
+            "No valid playback update field provided (state, position, speed, media_id, or playlist_id)",
         ));
     }
 
@@ -852,35 +875,44 @@ pub async fn update_playback(
         validate_id(playlist_id, "playlist_id").map_err(map_validation_error)?;
     }
 
-    let media_id = req.media_id.map(MediaId::from_string);
-    let playlist_id = req.playlist_id.map(|pid| {
-        if pid.is_empty() {
-            None
-        } else {
-            Some(PlaylistId::from_string(pid))
-        }
-    });
-
     let rid = RoomId::from_string(room_id.clone());
     let uid = UserId::from_string(user_id.clone());
 
-    // Apply all fields atomically in a single DB update.
-    // When a version is provided, the update uses optimistic locking (CAS)
-    // to prevent concurrent modification conflicts.
-    state
-        .room_service
-        .playback_service()
-        .update_multiple_with_version(
-            rid,
-            uid,
-            playing,
-            req.position,
-            req.speed,
-            media_id,
-            playlist_id,
-            req.version,
-        )
-        .await?;
+    let target_requested = req.media_id.is_some() || req.playlist_id.is_some() || req.relative_path.is_some();
+
+    if target_requested {
+        if req.state.is_some() || req.position.is_some() || req.speed.is_some() || req.version.is_some() {
+            return Err(super::AppError::bad_request(
+                "Target switch requests cannot be combined with play/pause/seek/speed/version updates",
+            ));
+        }
+
+        let media_id = req.media_id.map(MediaId::from_string);
+        let playlist_id = req.playlist_id.map(PlaylistId::from_string);
+        let relative_path = req.relative_path.unwrap_or_default();
+
+        state
+            .room_service
+            .playback_service()
+            .switch(rid, uid, media_id, playlist_id, relative_path)
+            .await?;
+    } else {
+        // Apply all non-target fields atomically in a single DB update.
+        // When a version is provided, the update uses optimistic locking (CAS)
+        // to prevent concurrent modification conflicts.
+        state
+            .room_service
+            .playback_service()
+            .update_multiple_with_version(
+                rid,
+                uid,
+                playing,
+                req.position,
+                req.speed,
+                req.version,
+            )
+            .await?;
+    }
 
     // Return final playback state and playback info
     let pb = state
@@ -1067,8 +1099,10 @@ pub async fn delete_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
     Path((room_id, playlist_id)): Path<(String, String)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<DeletePlaylistResponse>> {
-    let req = DeletePlaylistRequest { playlist_id };
+    let force = parse_force_query(&params);
+    let req = DeletePlaylistRequest { playlist_id, force };
     let response = state
         .client_api
         .delete_playlist(&auth.user_id.to_string(), &room_id, req)
@@ -1132,8 +1166,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        parse_chat_history_request_params, AddMediaBatchBody, UpdateMediaBatchRequest,
-        UpdatePlaybackRequest,
+        parse_chat_history_request_params, parse_force_query, AddMediaBatchBody, DeleteEntriesBody,
+        UpdateMediaBatchRequest, UpdatePlaybackRequest,
     };
 
     #[test]
@@ -1174,17 +1208,20 @@ mod tests {
         assert!(req.position.is_none());
         assert!(req.speed.is_none());
         assert_eq!(req.media_id.as_deref(), Some("media_abc123"));
+        assert!(req.playlist_id.is_none());
+        assert!(req.relative_path.is_none());
     }
 
     #[test]
-    fn test_update_playback_request_deserialize_combined() {
-        let json = r#"{"state": "paused", "position": 10.0, "speed": 1.5, "media_id": "m1", "playlist_id": "pl1"}"#;
+    fn test_update_playback_request_deserialize_dynamic_target() {
+        let json = r#"{"playlist_id": "pl1", "relative_path": "/folder/video.mkv"}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.state.as_deref(), Some("paused"));
-        assert!((req.position.unwrap() - 10.0).abs() < f64::EPSILON);
-        assert!((req.speed.unwrap() - 1.5).abs() < f64::EPSILON);
-        assert_eq!(req.media_id.as_deref(), Some("m1"));
         assert_eq!(req.playlist_id.as_deref(), Some("pl1"));
+        assert_eq!(req.relative_path.as_deref(), Some("/folder/video.mkv"));
+        assert!(req.media_id.is_none());
+        assert!(req.state.is_none());
+        assert!(req.position.is_none());
+        assert!(req.speed.is_none());
     }
 
     #[test]
@@ -1280,5 +1317,47 @@ mod tests {
 
         assert_eq!(req.limit, 20);
         assert_eq!(req.cursor, "2026-03-31T12:00:00+00:00|msg_123");
+    }
+
+    #[test]
+    fn test_parse_force_query_defaults_to_false() {
+        let params = HashMap::new();
+
+        assert!(!parse_force_query(&params));
+    }
+
+    #[test]
+    fn test_parse_force_query_accepts_true_only() {
+        let params = HashMap::from([("force".to_string(), "true".to_string())]);
+        assert!(parse_force_query(&params));
+
+        let params = HashMap::from([("force".to_string(), "false".to_string())]);
+        assert!(!parse_force_query(&params));
+
+        let params = HashMap::from([("force".to_string(), "1".to_string())]);
+        assert!(!parse_force_query(&params));
+    }
+
+    #[test]
+    fn test_delete_entries_body_force_defaults_to_false() {
+        let body: DeleteEntriesBody =
+            serde_json::from_str(r#"{"playlist_ids":["playlist-1"],"media_ids":["media-1"]}"#)
+                .unwrap();
+
+        assert_eq!(body.playlist_ids, vec!["playlist-1"]);
+        assert_eq!(body.media_ids, vec!["media-1"]);
+        assert!(!body.force);
+    }
+
+    #[test]
+    fn test_delete_entries_body_deserializes_force_true() {
+        let body: DeleteEntriesBody = serde_json::from_str(
+            r#"{"playlist_ids":["playlist-1"],"media_ids":["media-1"],"force":true}"#,
+        )
+        .unwrap();
+
+        assert_eq!(body.playlist_ids, vec!["playlist-1"]);
+        assert_eq!(body.media_ids, vec!["media-1"]);
+        assert!(body.force);
     }
 }

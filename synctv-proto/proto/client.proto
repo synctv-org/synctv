@@ -90,7 +90,7 @@ service RoomService {
 
     // Playback Control (room-scoped operations)
     // Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
-    rpc StartPlayback(StartPlaybackRequest) returns (StartPlaybackResponse); // Start playing a specific media
+    rpc StartPlayback(StartPlaybackRequest) returns (StartPlaybackResponse); // Start playing a media or a dynamic-playlist item
     rpc StopPlayback(StopPlaybackRequest) returns (StopPlaybackResponse); // Stop current playback
     rpc GetPlayback(GetPlaybackRequest) returns (GetPlaybackResponse); // Get current playback state and info
 
@@ -428,6 +428,7 @@ message UpdatePlaylistResponse {
 
 message DeletePlaylistRequest {
     string playlist_id = 1;
+    bool force = 2;
 }
 
 message DeletePlaylistResponse {
@@ -457,9 +458,13 @@ message ListPlaylistsResponse {
     int32 total = 2; // Total number of playlists matching filter
 }
 
-// HTTP API: Start playback of a specific media
+// HTTP API: Start playback of either:
+// 1. A concrete media item (`media_id`)
+// 2. A dynamic playlist item (`playlist_id` + `relative_path`)
 message StartPlaybackRequest {
-    string media_id = 1; // Media ID to start playing. Validation: required
+    string media_id = 1; // Static media ID. Mutually exclusive with playlist_id.
+    string playlist_id = 2; // Dynamic playlist ID. Requires relative_path. Mutually exclusive with media_id.
+    string relative_path = 3; // Relative path within dynamic playlist. Empty for static media playback.
 }
 
 message StartPlaybackResponse {
@@ -492,6 +497,7 @@ message AddMediaResponse {
 
 message DeleteMediaRequest {
     string media_id = 1;
+    bool force = 2;
 }
 
 message DeleteMediaResponse {
@@ -501,6 +507,7 @@ message DeleteMediaResponse {
 message DeleteEntriesRequest {
     repeated string playlist_ids = 1;
     repeated string media_ids = 2;
+    bool force = 3;
 }
 
 message DeleteEntriesResponse {

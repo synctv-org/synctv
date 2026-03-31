@@ -302,6 +302,17 @@ pub trait DynamicFolder: MediaProvider {
         page_size: usize,
     ) -> Result<Vec<DirectoryItem>, ProviderError>;
 
+    /// Resolve a single playable media item inside a dynamic playlist.
+    ///
+    /// This is the canonical lookup used when the playback state stores only
+    /// `playlist_id + relative_path` for dynamic playback targets.
+    async fn resolve_item(
+        &self,
+        ctx: &ProviderContext<'_>,
+        playlist: &crate::models::Playlist,
+        relative_path: &str,
+    ) -> Result<Option<NextPlayItem>, ProviderError>;
+
     /// Get next item for auto-play
     ///
     /// Used by the auto-play system to get the next item when current media finishes.

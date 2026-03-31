@@ -246,7 +246,8 @@ async fn test_playback_state_rejects_cross_room_media_and_playlist_references() 
 
     let mut state = playback_repo.create_or_get(&room_a.id).await.unwrap();
     state.playing_media_id = Some(media_b.id.clone());
-    state.playing_playlist_id = Some(playlist_b.id.clone());
+    state.playing_playlist_id = None;
+    state.relative_path = String::new();
 
     let result = playback_repo.update(&state).await;
     assert!(
@@ -257,7 +258,7 @@ async fn test_playback_state_rejects_cross_room_media_and_playlist_references() 
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_deleting_playing_media_clears_reference_without_nulling_room_scope() {
+async fn test_deleting_playing_media_is_rejected_while_playback_references_it() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -312,20 +313,89 @@ async fn test_deleting_playing_media_clears_reference_without_nulling_room_scope
 
     let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
     state.playing_media_id = Some(media.id.clone());
-    state.playing_playlist_id = Some(playlist.id.clone());
+    state.playing_playlist_id = None;
+    state.relative_path = String::new();
     let _updated = playback_repo.update(&state).await.unwrap();
 
-    media_repo.delete(&media.id).await.unwrap();
+    let delete_result = media_repo.delete(&media.id).await;
+    assert!(
+        delete_result.is_err(),
+        "deleting current media must be rejected until playback state is explicitly cleared"
+    );
 
     let state_after_delete = playback_repo.get(&room.id).await.unwrap().unwrap();
-    assert_eq!(state_after_delete.room_id, room.id);
+    assert!(state_after_delete.playing_playlist_id.is_none());
+    assert_eq!(state_after_delete.playing_media_id, Some(media.id));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_deleting_playing_playlist_is_rejected_while_playback_references_it() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_pb_delete_playlist_fk"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room PB Delete Playlist FK", &owner.id))
+        .await
+        .unwrap();
+
+    let playlist = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "Room Delete Playlist".to_string(),
+            parent_id: None,
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let _media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(playlist.id.clone()),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "Room Playlist Media".to_string(),
+            position: 0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({"url": "https://example.com/delete-playlist.mp4"}),
+            provider_instance_name: None,
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
+    state.playing_media_id = None;
+    state.playing_playlist_id = Some(playlist.id.clone());
+    state.relative_path = "/currently-playing.mp4".to_string();
+    let _updated = playback_repo.update(&state).await.unwrap();
+
+    let delete_result = playlist_repo.delete(&playlist.id).await;
     assert!(
-        state_after_delete.playing_media_id.is_none(),
-        "deleting current media must clear the playback media reference"
+        delete_result.is_err(),
+        "deleting current playlist must be rejected until playback state is explicitly cleared"
     );
-    assert_eq!(
-        state_after_delete.playing_playlist_id,
-        Some(playlist.id),
-        "deleting media must not clear the room-scoped playlist reference"
-    );
+
+    let state_after_delete = playback_repo.get(&room.id).await.unwrap().unwrap();
+    assert_eq!(state_after_delete.playing_playlist_id, Some(playlist.id));
+    assert!(state_after_delete.playing_media_id.is_none());
 }

@@ -54,6 +54,7 @@ struct SharedPostgresServer {
     port: u16,
     admin_pool: PgPool,
     template_database: String,
+    _run_lock: ProcessLock,
 }
 
 /// Database lease backed by a shared PostgreSQL test container.
@@ -285,6 +286,47 @@ fn current_test_run_id() -> String {
         .unwrap_or_else(|| format!("pid-{}", current_process_id()))
 }
 
+fn startup_lock_name(run_id: &str) -> String {
+    format!("postgres-startup-{run_id}")
+}
+
+fn run_lock_file_prefix(run_id: &str) -> String {
+    format!("synctv-postgres-run-{run_id}-")
+}
+
+fn acquire_run_lock(run_id: &str) -> ProcessLock {
+    let mut path = PathBuf::from("/tmp");
+    path.push(format!(
+        "{}{}.lock",
+        run_lock_file_prefix(run_id),
+        current_process_id()
+    ));
+    ProcessLock::try_acquire_path(path)
+        .unwrap_or_else(|| panic!("failed to acquire postgres run lock for {run_id}"))
+}
+
+fn run_has_active_lock(run_id: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir("/tmp") else {
+        return false;
+    };
+
+    let prefix = run_lock_file_prefix(run_id);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with(&prefix) || !file_name.ends_with(".lock") {
+            continue;
+        }
+        if ProcessLock::try_acquire_path(path).is_none() {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn docker_rm_force(container_ref: &str) -> Result<(), String> {
     docker_rm_force_with_program("docker", container_ref)
 }
@@ -373,6 +415,9 @@ fn cleanup_orphaned_testcontainers(prefix: &str) {
 
         let run_id = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
         if run_id == current_run_id {
+            continue;
+        }
+        if run_has_active_lock(&run_id) {
             continue;
         }
 
@@ -749,13 +794,15 @@ async fn recreate_template_database(
 }
 
 async fn init_shared_postgres_server() -> SharedPostgresServer {
+    let run_id = current_test_run_id();
+    let run_lock = acquire_run_lock(&run_id);
     cleanup_orphaned_testcontainers("synctv-pg-");
     cleanup_orphaned_run_lock_files("synctv-postgres-run-");
-    let run_id = current_test_run_id();
+    cleanup_orphaned_run_lock_files("synctv-postgres-startup-");
 
     // Serialize first creation per nextest run so concurrent worker processes
     // observe the same reusable container instead of each creating their own.
-    let lock_name = format!("postgres-run-{run_id}");
+    let lock_name = startup_lock_name(&run_id);
     let _startup_lock = tokio::task::spawn_blocking(move || loop {
         if let Some(lock) = ProcessLock::try_acquire(&lock_name) {
             return lock;
@@ -843,6 +890,7 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
         port,
         admin_pool,
         template_database,
+        _run_lock: run_lock,
     }
 }
 

@@ -645,6 +645,83 @@ impl DynamicFolder for AlistProvider {
         Ok(items)
     }
 
+    async fn resolve_item(
+        &self,
+        ctx: &ProviderContext<'_>,
+        playlist: &crate::models::Playlist,
+        relative_path: &str,
+    ) -> Result<Option<NextPlayItem>, ProviderError> {
+        validate_path_for_traversal(relative_path)
+            .map_err(|e| ProviderError::InvalidConfig(format!("Invalid relative path: {e}")))?;
+
+        let config = playlist
+            .source_config
+            .as_ref()
+            .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
+        let base_config = AlistSourceConfig::try_from(config)?;
+
+        let build_next_source_config = |full_path: &str| -> Value {
+            json!({
+                "path": full_path,
+                "password": base_config.password,
+                "provider_instance_name": base_config.provider_instance_name,
+                "credential_ref": {
+                    "credential_owner_id": base_config.credential_ref.credential_owner_id,
+                    "server_id": base_config.credential_ref.server_id,
+                },
+            })
+        };
+
+        let build_full_path = |item_path: &str| -> String {
+            format!("{}{}", base_config.path.trim_end_matches('/'), item_path)
+        };
+
+        let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        });
+
+        const PAGE_SIZE: usize = 50;
+        let mut page = 0;
+        loop {
+            let page_items = self
+                .list_playlist(ctx, playlist, parent_path, page, PAGE_SIZE)
+                .await?;
+            if page_items.is_empty() {
+                return Ok(None);
+            }
+
+            if let Some(item) = page_items
+                .iter()
+                .find(|item| item.item_type == ItemType::Media && item.path == relative_path)
+            {
+                return Ok(Some(
+                    NextPlayItem {
+                        name: item.name.clone(),
+                        item_type: item.item_type,
+                        source_config: build_next_source_config(&build_full_path(&item.path)),
+                        metadata: json!({
+                            "size": item.size,
+                            "thumbnail": item.thumbnail,
+                            "modified_at": item.modified_at
+                        }),
+                        provider_data: json!({}),
+                        relative_path: item.path.clone(),
+                    }
+                    .strip_credentials(),
+                ));
+            }
+
+            if page_items.len() < PAGE_SIZE {
+                return Ok(None);
+            }
+            page += 1;
+        }
+    }
+
     async fn next(
         &self,
         ctx: &ProviderContext<'_>,

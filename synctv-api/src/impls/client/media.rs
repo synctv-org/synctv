@@ -172,6 +172,7 @@ impl ClientApiImpl {
             crate::proto::client::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
                 media_ids: vec![req.media_id],
+                force: req.force,
             },
         )
         .await?;
@@ -232,6 +233,7 @@ impl ClientApiImpl {
                 synctv_core::service::room::DeleteEntriesRequest {
                     playlist_ids,
                     media_ids,
+                    force: req.force,
                 },
             )
             .await

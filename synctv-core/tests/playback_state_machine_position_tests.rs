@@ -95,7 +95,13 @@ async fn test_position_reset_on_media_switch() {
         .unwrap();
 
     let state = playback_service
-        .switch_media(room.id.clone(), owner.id.clone(), media.id.clone())
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            String::new(),
+        )
         .await
         .unwrap();
 

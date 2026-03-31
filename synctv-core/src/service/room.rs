@@ -151,6 +151,7 @@ pub struct RoomService {
 pub struct DeleteEntriesRequest {
     pub playlist_ids: Vec<PlaylistId>,
     pub media_ids: Vec<MediaId>,
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -381,6 +382,15 @@ impl RoomService {
         encryption: crate::service::CredentialEncryption,
     ) {
         self.media_service.set_credential_encryption(encryption);
+    }
+
+    /// Inject credential repository into the media service so dynamic provider
+    /// playlists can resolve stored credentials.
+    pub fn set_media_credential_repo(
+        &mut self,
+        repo: std::sync::Arc<crate::repository::UserProviderCredentialRepository>,
+    ) {
+        self.media_service.set_credential_repo(repo);
     }
 
     #[cfg(test)]
@@ -2140,6 +2150,7 @@ impl RoomService {
             DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
                 media_ids: vec![media_id],
+                force: false,
             },
         )
         .await?;
@@ -2157,6 +2168,7 @@ impl RoomService {
 
         let playlist_ids = dedup_ids(request.playlist_ids);
         let media_ids = dedup_ids(request.media_ids);
+        let force = request.force;
         let total_targets = playlist_ids.len() + media_ids.len();
 
         if total_targets == 0 {
@@ -2269,23 +2281,20 @@ impl RoomService {
             let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
             let playing_playlist_id: Option<String> = row.try_get("playing_playlist_id")?;
 
-            if let Some(ref playing_media_id) = playing_media_id {
-                if deleted_media_ids
+            let deletes_playing_media = playing_media_id.as_ref().is_some_and(|current_id| {
+                deleted_media_ids
                     .iter()
-                    .any(|id| id.as_str() == playing_media_id)
-                {
-                    return Err(Error::InvalidInput(
-                        "Cannot delete entries that include the currently playing media"
-                            .to_string(),
-                    ));
-                }
-            }
+                    .any(|id| id.as_str() == current_id.as_str())
+            });
 
-            if let Some(ref playing_playlist_id) = playing_playlist_id {
+            let deletes_playing_playlist = if let Some(ref playing_playlist_id) = playing_playlist_id
+            {
                 let targeted_playlist_ids: Vec<&str> =
                     playlist_ids.iter().map(PlaylistId::as_str).collect();
-                if !targeted_playlist_ids.is_empty() {
-                    let deletes_playing_playlist: bool = sqlx::query_scalar(
+                if targeted_playlist_ids.is_empty() {
+                    false
+                } else {
+                    sqlx::query_scalar(
                         "WITH RECURSIVE target_playlists AS (
                             SELECT id
                             FROM playlists
@@ -2304,15 +2313,35 @@ impl RoomService {
                     .bind(&targeted_playlist_ids)
                     .bind(playing_playlist_id.as_str())
                     .fetch_one(&mut *tx)
-                    .await?;
-
-                    if deletes_playing_playlist {
-                        return Err(Error::InvalidInput(
-                            "Cannot delete entries that include the currently playing media"
-                                .to_string(),
-                        ));
-                    }
+                    .await?
                 }
+            } else {
+                false
+            };
+
+            if deletes_playing_media || deletes_playing_playlist {
+                if !force {
+                    return Err(Error::InvalidInput(
+                        "Cannot delete entries that include the currently playing media"
+                            .to_string(),
+                    ));
+                }
+
+                sqlx::query(
+                    "UPDATE room_playback_state
+                     SET playing_media_id = NULL,
+                         playing_playlist_id = NULL,
+                         relative_path = '',
+                         \"current_time\" = 0,
+                         speed = 1.0,
+                         is_playing = false,
+                         version = version + 1,
+                         updated_at = NOW()
+                     WHERE room_id = $1",
+                )
+                .bind(room_id.as_str())
+                .execute(&mut *tx)
+                .await?;
             }
         }
 
@@ -2328,6 +2357,13 @@ impl RoomService {
         }
 
         tx.commit().await?;
+
+        if force {
+            let state = self.playback_service.get_state(&room_id).await?;
+            self.playback_service
+                .broadcast_playback_reset_after_force_delete(state)
+                .await;
+        }
 
         if !deleted_media_ids.is_empty() {
             for media_id in &deleted_media_ids {
@@ -2410,10 +2446,11 @@ impl RoomService {
     /// This method no longer performs its own permission check to avoid
     /// inconsistency with the API layer's `CLEAR_PLAYLIST` check.
     ///
-    /// If the currently playing media is in the playlist being cleared,
+    /// If the currently playing media is in the room root being cleared,
     /// the playback state is reset to stopped within the same transaction
-    /// before clearing, giving a clean state. The FK has ON DELETE SET NULL
-    /// so it's safe, but explicitly resetting avoids orphaned playback state.
+    /// before deleting media. Playback references are protected by `RESTRICT`
+    /// FKs, so the state must be cleared explicitly before the delete can
+    /// commit.
     pub async fn clear_playlist(
         &self,
         room_id: RoomId,
@@ -2561,7 +2598,7 @@ impl RoomService {
         media_id: MediaId,
     ) -> Result<RoomPlaybackState> {
         self.playback_service
-            .switch_media(room_id, user_id, media_id)
+            .switch(room_id, user_id, Some(media_id), None, String::new())
             .await
     }
 

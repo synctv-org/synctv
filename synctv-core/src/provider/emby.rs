@@ -909,6 +909,63 @@ impl DynamicFolder for EmbyProvider {
         Ok(items)
     }
 
+    async fn resolve_item(
+        &self,
+        ctx: &ProviderContext<'_>,
+        playlist: &crate::models::Playlist,
+        relative_path: &str,
+    ) -> Result<Option<NextPlayItem>, ProviderError> {
+        let config = playlist
+            .source_config
+            .as_ref()
+            .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
+        let base_config = EmbySourceConfig::try_from(config)?;
+
+        let build_next_source_config = |item_id: &str| -> Value {
+            json!({
+                "item_id": item_id,
+                "provider_instance_name": base_config.provider_instance_name,
+                "credential_ref": {
+                    "credential_owner_id": base_config.credential_ref.credential_owner_id,
+                    "server_id": base_config.credential_ref.server_id,
+                },
+            })
+        };
+
+        const PAGE_SIZE: usize = 50;
+        let mut page = 0;
+        loop {
+            let page_items = self
+                .list_playlist(ctx, playlist, Some(&base_config.item_id), page, PAGE_SIZE)
+                .await?;
+            if page_items.is_empty() {
+                return Ok(None);
+            }
+
+            if let Some(item) = page_items
+                .iter()
+                .find(|item| item.item_type == ItemType::Media && item.path == relative_path)
+            {
+                return Ok(Some(
+                    NextPlayItem {
+                        name: item.name.clone(),
+                        item_type: item.item_type,
+                        source_config: build_next_source_config(&item.path),
+                        metadata: json!({}),
+                        provider_data: json!({}),
+                        relative_path: item.path.clone(),
+                    }
+                    .strip_credentials(),
+                ));
+            }
+
+            if page_items.len() < PAGE_SIZE {
+                return Ok(None);
+            }
+            page += 1;
+        }
+    }
+
     async fn next(
         &self,
         _ctx: &ProviderContext<'_>,

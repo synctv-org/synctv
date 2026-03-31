@@ -527,6 +527,8 @@ pub struct UpdatePlaylistResponse {
 pub struct DeletePlaylistRequest {
     #[prost(string, tag = "1")]
     pub playlist_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub force: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -577,13 +579,22 @@ pub struct ListPlaylistsResponse {
     #[prost(int32, tag = "2")]
     pub total: i32,
 }
-/// HTTP API: Start playback of a specific media
+/// HTTP API: Start playback of either:
+///
+/// 1. A concrete media item (`media_id`)
+/// 1. A dynamic playlist item (`playlist_id` + `relative_path`)
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StartPlaybackRequest {
-    /// Media ID to start playing. Validation: required
+    /// Static media ID. Mutually exclusive with playlist_id.
     #[prost(string, tag = "1")]
     pub media_id: ::prost::alloc::string::String,
+    /// Dynamic playlist ID. Requires relative_path. Mutually exclusive with media_id.
+    #[prost(string, tag = "2")]
+    pub playlist_id: ::prost::alloc::string::String,
+    /// Relative path within dynamic playlist. Empty for static media playback.
+    #[prost(string, tag = "3")]
+    pub relative_path: ::prost::alloc::string::String,
 }
 /// Empty: playback started successfully
 /// Use GetPlayback to retrieve current state and info
@@ -629,6 +640,8 @@ pub struct AddMediaResponse {
 pub struct DeleteMediaRequest {
     #[prost(string, tag = "1")]
     pub media_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub force: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -643,6 +656,8 @@ pub struct DeleteEntriesRequest {
     pub playlist_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(string, repeated, tag = "2")]
     pub media_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(bool, tag = "3")]
+    pub force: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

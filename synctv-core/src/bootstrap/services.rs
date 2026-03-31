@@ -434,6 +434,7 @@ pub async fn init_services(
     let mut room_service = build_room_service(RoomServiceBuildArgs {
         pool: pool.clone(),
         user_service: user_service.clone(),
+        credential_repo: user_provider_credential_repo.clone(),
         providers_manager: providers_manager.clone(),
         cache_invalidation: cache_invalidation.clone(),
         brute_force: brute_force.clone(),
@@ -806,6 +807,7 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
 struct RoomServiceBuildArgs<'a> {
     pool: PgPool,
     user_service: UserService,
+    credential_repo: Arc<UserProviderCredentialRepository>,
     providers_manager: Arc<ProvidersManager>,
     cache_invalidation: Arc<CacheInvalidationService>,
     brute_force: crate::service::auth::BruteForceProtection,
@@ -820,6 +822,7 @@ fn build_room_service(args: RoomServiceBuildArgs<'_>) -> RoomService {
     let RoomServiceBuildArgs {
         pool,
         user_service,
+        credential_repo,
         providers_manager,
         cache_invalidation,
         brute_force,
@@ -843,6 +846,7 @@ fn build_room_service(args: RoomServiceBuildArgs<'_>) -> RoomService {
         providers_manager,
         permission_service,
     );
+    room_service.set_media_credential_repo(credential_repo);
     if cluster_mode {
         let redis_handles = redis_handles.expect(
             "cluster.enabled=true requires Redis and is validated before service initialization",
@@ -1133,6 +1137,7 @@ mod tests {
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
             user_service,
+            credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: test_providers_manager(&pool),
             cache_invalidation,
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
@@ -1206,6 +1211,7 @@ mod tests {
         let standalone_room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
             user_service: user_service.clone(),
+            credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: test_providers_manager(&pool),
             cache_invalidation: cache_invalidation.clone(),
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
@@ -1229,6 +1235,7 @@ mod tests {
         let cluster_room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
             user_service,
+            credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: test_providers_manager(&pool),
             cache_invalidation,
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
@@ -1289,6 +1296,7 @@ mod tests {
         let mut room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
             user_service: user_service.clone(),
+            credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: test_providers_manager(&pool),
             cache_invalidation,
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
@@ -1345,8 +1353,9 @@ mod tests {
         let providers_manager = test_providers_manager(&pool);
 
         let room_service = build_room_service(RoomServiceBuildArgs {
-            pool,
+            pool: pool.clone(),
             user_service,
+            credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
@@ -1397,8 +1406,9 @@ mod tests {
         ));
         let providers_manager = test_providers_manager(&pool);
         let mut room_service = build_room_service(RoomServiceBuildArgs {
-            pool,
+            pool: pool.clone(),
             user_service,
+            credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
             brute_force: crate::service::auth::BruteForceProtection::in_memory(

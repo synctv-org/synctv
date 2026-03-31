@@ -2498,6 +2498,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: vec![top_level_playlist.id.clone()],
                 media_ids: vec![root_media.id.clone()],
+                force: false,
             },
         )
         .await
@@ -2666,6 +2667,7 @@ async fn test_delete_entries_allows_playlist_delete_with_granted_reorder_permiss
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: vec![playlist.id.clone()],
                 media_ids: Vec::new(),
+                force: false,
             },
         )
         .await
@@ -2744,6 +2746,7 @@ async fn test_delete_entries_denies_playlist_delete_when_reorder_permission_revo
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: vec![playlist.id.clone()],
                 media_ids: Vec::new(),
+                force: false,
             },
         )
         .await;
@@ -2813,6 +2816,7 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
                 media_ids: vec![media.id.clone()],
+                force: false,
             },
         )
         .await
@@ -2872,6 +2876,7 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
                 media_ids: vec![media.id.clone()],
+                force: false,
             },
         )
         .await
@@ -3196,6 +3201,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: vec![parent.id.clone()],
                 media_ids: Vec::new(),
+                force: false,
             },
         )
         .await
@@ -3279,6 +3285,7 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: vec![playlist.id.clone()],
                 media_ids: Vec::new(),
+                force: false,
             },
         )
         .await
@@ -3299,6 +3306,384 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
         }
         other => panic!("expected MediaRemoved event, got: {other:?}"),
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_entries_rejects_currently_playing_media_without_force() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("delete_entries_playing_media_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Delete Entries Playing Media".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: None,
+            room_id: room.id.clone(),
+            name: "playing-media".to_string(),
+            position: 0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: None,
+            creator_id: Some(owner.id.clone()),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    room_service
+        .playback_service()
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+    let result = room_service
+        .delete_entries(
+            room.id.clone(),
+            owner.id.clone(),
+            synctv_core::service::room::DeleteEntriesRequest {
+                playlist_ids: Vec::new(),
+                media_ids: vec![media.id.clone()],
+                force: false,
+            },
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(Error::InvalidInput(_))),
+        "deleting currently playing media without force must be rejected"
+    );
+    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_some());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_media_without_force() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("delete_entries_playing_playlist_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Delete Entries Playing Playlist".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let parent = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "parent".to_string(),
+            parent_id: None,
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+    let child = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "child".to_string(),
+            parent_id: Some(parent.id.clone()),
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(child.id.clone()),
+            room_id: room.id.clone(),
+            name: "deep-playing-media".to_string(),
+            position: 0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: None,
+            creator_id: Some(owner.id.clone()),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    room_service
+        .playback_service()
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+    let result = room_service
+        .delete_entries(
+            room.id.clone(),
+            owner.id.clone(),
+            synctv_core::service::room::DeleteEntriesRequest {
+                playlist_ids: vec![parent.id.clone()],
+                media_ids: Vec::new(),
+                force: false,
+            },
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(Error::InvalidInput(_))),
+        "deleting an ancestor playlist of the currently playing media without force must be rejected"
+    );
+    assert!(playlist_repo.get_by_id(&parent.id).await.unwrap().is_some());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_media() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("delete_entries_force_media_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Delete Entries Force Media".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: None,
+            room_id: room.id.clone(),
+            name: "force-playing-media".to_string(),
+            position: 0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: None,
+            creator_id: Some(owner.id.clone()),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    room_service
+        .playback_service()
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+    let result = room_service
+        .delete_entries(
+            room.id.clone(),
+            owner.id.clone(),
+            synctv_core::service::room::DeleteEntriesRequest {
+                playlist_ids: Vec::new(),
+                media_ids: vec![media.id.clone()],
+                force: true,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.deleted_media, 1);
+    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_none());
+
+    let state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
+    assert!(state.playing_media_id.is_none());
+    assert!(state.playing_playlist_id.is_none());
+    assert!(!state.is_playing);
+    assert_eq!(state.current_time, 0.0);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_playlist() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("delete_entries_force_playlist_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Delete Entries Force Playlist".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let parent = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "force-parent".to_string(),
+            parent_id: None,
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+    let child = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "force-child".to_string(),
+            parent_id: Some(parent.id.clone()),
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+    let media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(child.id.clone()),
+            room_id: room.id.clone(),
+            name: "force-deep-playing-media".to_string(),
+            position: 0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: None,
+            creator_id: Some(owner.id.clone()),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    room_service
+        .playback_service()
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+    let result = room_service
+        .delete_entries(
+            room.id.clone(),
+            owner.id.clone(),
+            synctv_core::service::room::DeleteEntriesRequest {
+                playlist_ids: vec![parent.id.clone()],
+                media_ids: Vec::new(),
+                force: true,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.deleted_playlists, 1);
+    assert_eq!(result.deleted_media, 1);
+    assert!(playlist_repo.get_by_id(&parent.id).await.unwrap().is_none());
+    assert!(playlist_repo.get_by_id(&child.id).await.unwrap().is_none());
+    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_none());
+
+    let state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
+    assert!(state.playing_media_id.is_none());
+    assert!(state.playing_playlist_id.is_none());
+    assert!(!state.is_playing);
+    assert_eq!(state.current_time, 0.0);
 }
 
 // ========== Room Name and Description Edge Cases ==========

@@ -98,7 +98,7 @@ pub const IP_ATTEMPTS_TTL_SECS: u64 = 600;
 ///
 /// ## Default Values
 ///
-/// The defaults match the original hardcoded values for backward compatibility:
+/// The defaults match the current production thresholds:
 /// - Tier 1: 5 failures → 60 second lockout
 /// - Tier 2: 10 failures → 5 minute lockout
 /// - Tier 3: 15 failures → 15 minute lockout

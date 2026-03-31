@@ -154,8 +154,8 @@ pub struct RtmpAuthCallbackImpl {
     registry: Option<Arc<dyn StreamRegistryTrait>>,
     /// Node ID for publisher registration (required if registry is set).
     node_id: String,
-    /// Advertised gRPC address for cross-node proxying.
-    grpc_address: String,
+    /// Advertised shared API address for cross-node proxying.
+    api_address: String,
     /// Optional flag to check if StreamHub is restarting.
     /// When set and true, new publications are rejected to prevent race conditions
     /// during the restart window.
@@ -174,7 +174,7 @@ impl RtmpAuthCallbackImpl {
             stream_tracker: None,
             registry: None,
             node_id: String::new(),
-            grpc_address: String::new(),
+            api_address: String::new(),
             is_restarting: None,
             pending_publish_epochs: Arc::new(DashMap::new()),
         }
@@ -191,7 +191,7 @@ impl RtmpAuthCallbackImpl {
             stream_tracker: Some(stream_tracker),
             registry: None,
             node_id: String::new(),
-            grpc_address: String::new(),
+            api_address: String::new(),
             is_restarting: None,
             pending_publish_epochs: Arc::new(DashMap::new()),
         }
@@ -205,11 +205,11 @@ impl RtmpAuthCallbackImpl {
         mut self,
         registry: Arc<dyn StreamRegistryTrait>,
         node_id: String,
-        grpc_address: String,
+        api_address: String,
     ) -> Self {
         self.registry = Some(registry);
         self.node_id = node_id;
-        self.grpc_address = grpc_address;
+        self.api_address = api_address;
         self
     }
 
@@ -303,7 +303,7 @@ impl AuthCallback for RtmpAuthCallbackImpl {
                     &claims.media_id,
                     &self.node_id,
                     &claims.user_id,
-                    &self.grpc_address,
+                    &self.api_address,
                 )
                 .await
                 .map_err(|e| format!("Failed to register publisher in Redis: {e}"))?;

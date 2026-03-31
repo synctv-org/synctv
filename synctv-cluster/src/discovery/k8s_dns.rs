@@ -298,21 +298,6 @@ impl K8sDnsDiscovery {
         self.peers.read().await.clone()
     }
 
-    /// Convert discovered peers to `NodeInfo` structs for compatibility
-    /// with the existing cluster infrastructure (health monitor, load balancer).
-    pub async fn get_peers_as_node_info(&self) -> Vec<NodeInfo> {
-        let peers = self.peers.read().await;
-        peers
-            .iter()
-            .map(|peer| {
-                let mut info = NodeInfo::new(peer.ip.clone(), peer.api_address.clone());
-                info.metadata
-                    .insert("discovery".to_string(), "k8s_dns".to_string());
-                info
-            })
-            .collect()
-    }
-
     /// Start a background loop that periodically re-resolves DNS to track
     /// scaling events (pod additions/removals).
     ///
@@ -351,15 +336,6 @@ impl K8sDnsDiscovery {
         &self.dns_name
     }
 
-    /// Build a `HashMap<String, NodeInfo>` keyed by node_id (IP) for
-    /// compatibility with code that needs to look up peers by ID.
-    pub async fn get_peer_map(&self) -> HashMap<String, NodeInfo> {
-        let peers = self.get_peers_as_node_info().await;
-        peers
-            .into_iter()
-            .map(|info| (info.node_id.clone(), info))
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -436,28 +412,6 @@ mod tests {
         );
         let peers = disc.get_peers().await;
         assert!(peers.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_get_peers_as_node_info_empty() {
-        let disc = K8sDnsDiscovery::new(
-            "test.default.svc.cluster.local".to_string(),
-            8080,
-            "10.0.0.1".to_string(),
-        );
-        let nodes = disc.get_peers_as_node_info().await;
-        assert!(nodes.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_get_peer_map_empty() {
-        let disc = K8sDnsDiscovery::new(
-            "test.default.svc.cluster.local".to_string(),
-            8080,
-            "10.0.0.1".to_string(),
-        );
-        let map = disc.get_peer_map().await;
-        assert!(map.is_empty());
     }
 
     #[tokio::test]

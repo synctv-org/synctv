@@ -199,7 +199,7 @@ where
 
             let result = self
                 .singleflight
-                .do_work_with_fallback(
+                .do_work(
                     sf_key,
                     {
                         async move {
@@ -218,10 +218,14 @@ where
                             }
                         }
                     },
-                    || "SingleFlight worker failed during L2 cache fetch".to_string(),
                 )
                 .await
-                .map_err(Error::Internal)?;
+                .map_err(|error| match error {
+                    super::SingleFlightError::WorkerFailed => {
+                        Error::Internal("SingleFlight worker failed during L2 cache fetch".to_string())
+                    }
+                    super::SingleFlightError::Inner(message) => Error::Internal(message),
+                })?;
 
             if let Some(ref value) = result {
                 let l2 = String::from("l2");
@@ -459,17 +463,21 @@ where
 
             let jsons: Vec<Option<String>> = self
                 .batch_singleflight
-                .do_work_with_fallback(
+                .do_work(
                     sf_key,
                     async move {
                         l2.get_batch(&full_keys)
                             .await
                             .map_err(|e| format!("Failed to batch get {cache_type} from L2: {e}"))
                     },
-                    || "SingleFlight worker failed during L2 batch cache fetch".to_string(),
                 )
                 .await
-                .map_err(Error::Internal)?;
+                .map_err(|error| match error {
+                    super::SingleFlightError::WorkerFailed => Error::Internal(
+                        "SingleFlight worker failed during L2 batch cache fetch".to_string(),
+                    ),
+                    super::SingleFlightError::Inner(message) => Error::Internal(message),
+                })?;
 
             // Issue #30: Check global epoch first. If it changed, all results
             // are stale — skip all L1 writes.

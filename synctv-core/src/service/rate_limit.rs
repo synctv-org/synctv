@@ -698,6 +698,7 @@ impl Default for RateLimitConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core_testing::start_redis;
 
     #[test]
     fn test_rate_limiter_without_redis() {
@@ -708,8 +709,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_rate_limit_basic() {
-        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
-        let conn = infra.connection_manager().await;
+        let (_redis, conn) = start_redis().await;
         let conn = Arc::new(tokio::sync::RwLock::new(conn));
         let limiter = RateLimiter::new(Some(conn), "test:".to_string());
 
@@ -736,8 +736,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_rate_limit_sliding_window() {
-        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
-        let conn = infra.connection_manager().await;
+        let (_redis, conn) = start_redis().await;
         let conn = Arc::new(tokio::sync::RwLock::new(conn));
         let limiter = RateLimiter::new(Some(conn), "test:".to_string());
 
@@ -759,8 +758,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_quota() {
-        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
-        let conn = infra.connection_manager().await;
+        let (_redis, conn) = start_redis().await;
         let conn = Arc::new(tokio::sync::RwLock::new(conn));
         let limiter = RateLimiter::new(Some(conn), "test:".to_string());
 

@@ -225,7 +225,7 @@ impl HlsProxyClient {
     ///   cache namespaces, ensuring stale data isn't returned after stream restarts.
     pub async fn get_playlist(
         &self,
-        grpc_address: &str,
+        api_address: &str,
         room_id: &str,
         media_id: &str,
         segment_url_base: &str,
@@ -248,7 +248,7 @@ impl HlsProxyClient {
 
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
-        let mut client = self.connect(grpc_address).await?;
+        let mut client = self.connect(api_address).await?;
 
         let mut request = Request::new(GetHlsPlaylistRequest {
             room_id: room_id.to_string(),
@@ -260,13 +260,13 @@ impl HlsProxyClient {
 
         let response = match client.get_hls_playlist(request).await {
             Ok(response) => {
-                self.connection_pool.record_connection_success(grpc_address);
+                self.connection_pool.record_connection_success(api_address);
                 response.into_inner()
             }
             Err(error) => {
-                self.connection_pool.record_connection_error(grpc_address);
+                self.connection_pool.record_connection_error(api_address);
                 if should_invalidate_connection(&error) {
-                    self.connection_pool.invalidate(grpc_address);
+                    self.connection_pool.invalidate(api_address);
                 }
                 return Err(anyhow::anyhow!("gRPC GetHlsPlaylist failed: {error}"));
             }
@@ -292,7 +292,7 @@ impl HlsProxyClient {
     ///   cache namespaces, ensuring stale data isn't returned after stream restarts.
     pub async fn get_segment(
         &self,
-        grpc_address: &str,
+        api_address: &str,
         room_id: &str,
         media_id: &str,
         segment_name: &str,
@@ -316,7 +316,7 @@ impl HlsProxyClient {
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
         // Cache miss — fetch from publisher node
-        let mut client = self.connect(grpc_address).await?;
+        let mut client = self.connect(api_address).await?;
 
         let mut request = Request::new(GetHlsSegmentRequest {
             room_id: room_id.to_string(),
@@ -328,13 +328,13 @@ impl HlsProxyClient {
 
         let response = match client.get_hls_segment(request).await {
             Ok(response) => {
-                self.connection_pool.record_connection_success(grpc_address);
+                self.connection_pool.record_connection_success(api_address);
                 response.into_inner()
             }
             Err(error) => {
-                self.connection_pool.record_connection_error(grpc_address);
+                self.connection_pool.record_connection_error(api_address);
                 if should_invalidate_connection(&error) {
-                    self.connection_pool.invalidate(grpc_address);
+                    self.connection_pool.invalidate(api_address);
                 }
                 return Err(anyhow::anyhow!("gRPC GetHlsSegment failed: {error}"));
             }
@@ -382,15 +382,15 @@ impl HlsProxyClient {
     /// attempt creates a fresh connection.
     async fn connect(
         &self,
-        grpc_address: &str,
+        api_address: &str,
     ) -> anyhow::Result<StreamRelayServiceClient<tonic::transport::Channel>> {
         let channel = self
             .connection_pool
-            .get_channel(grpc_address)
+            .get_channel(api_address)
             .await
             .map_err(|e| {
-                self.connection_pool.invalidate(grpc_address);
-                anyhow::anyhow!("Failed to connect to publisher gRPC at {grpc_address}: {e}")
+                self.connection_pool.invalidate(api_address);
+                anyhow::anyhow!("Failed to connect to publisher API at {api_address}: {e}")
             })?;
         Ok(StreamRelayServiceClient::new(channel))
     }

@@ -177,7 +177,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
         media_id: &str,
         node_id: &str,
         app_name: &str,
-        grpc_address: &str,
+        api_address: &str,
     ) -> Result<bool> {
         // Increment call counter for testing
         self.register_call_count
@@ -194,7 +194,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
 
             entry.insert(PublisherInfo {
                 node_id: node_id.to_string(),
-                grpc_address: grpc_address.to_string(),
+                api_address: api_address.to_string(),
                 app_name: app_name.to_string(),
                 user_id: String::new(),
                 started_at: Utc::now(),
@@ -212,7 +212,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
         media_id: &str,
         node_id: &str,
         user_id: &str,
-        grpc_address: &str,
+        api_address: &str,
     ) -> Result<bool> {
         let mut publishers = self.publishers.lock().await;
         let mut epoch_counters = self.epoch_counters.lock().await;
@@ -225,7 +225,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
 
             entry.insert(PublisherInfo {
                 node_id: node_id.to_string(),
-                grpc_address: grpc_address.to_string(),
+                api_address: api_address.to_string(),
                 app_name: "live".to_string(),
                 user_id: user_id.to_string(),
                 started_at: Utc::now(),
@@ -527,7 +527,7 @@ mod tests {
             ("room1".to_string(), "media1".to_string()),
             PublisherInfo {
                 node_id: "node1".to_string(),
-                grpc_address: String::new(),
+                api_address: String::new(),
                 app_name: "live".to_string(),
                 user_id: String::new(),
                 started_at: Utc::now(),

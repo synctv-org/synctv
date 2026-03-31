@@ -282,7 +282,7 @@ fn test_ssrf_acl_private_ip_blocked() {
     ];
     for ip in &blocked {
         assert!(
-            synctv_common::ssrf::is_ip_blocked(ip),
+            synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
             "IP {ip} should be blocked"
         );
     }
@@ -294,7 +294,7 @@ fn test_ssrf_acl_public_ip_allowed() {
     let allowed: Vec<IpAddr> = vec!["1.1.1.1".parse().unwrap(), "8.8.8.8".parse().unwrap()];
     for ip in &allowed {
         assert!(
-            !synctv_common::ssrf::is_ip_blocked(ip),
+            !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
             "IP {ip} should be allowed"
         );
     }
@@ -305,7 +305,7 @@ fn test_ssrf_acl_loopback_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "127.0.0.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Loopback should be blocked"
     );
 }
@@ -464,7 +464,7 @@ fn test_ssrf_acl_link_local_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "169.254.1.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Link-local should be blocked"
     );
 }
@@ -474,7 +474,7 @@ fn test_ssrf_acl_cgnat_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "100.64.0.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "CGNAT should be blocked"
     );
 }
@@ -712,7 +712,7 @@ fn test_max_proxy_body_size_constant() {
     // Verify the ACL allows public IPs that would serve large files.
     use std::net::IpAddr;
     let ip: IpAddr = "93.184.216.34".parse().unwrap();
-    assert!(!synctv_common::ssrf::is_ip_blocked(&ip));
+    assert!(!synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip));
 }
 
 // ==================================================================
@@ -724,7 +724,7 @@ fn test_ssrf_acl_ipv6_loopback_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "::1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "IPv6 loopback should be blocked"
     );
 }
@@ -734,7 +734,7 @@ fn test_ssrf_acl_ipv6_unspecified_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "::".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "IPv6 unspecified should be blocked"
     );
 }
@@ -744,7 +744,7 @@ fn test_ssrf_acl_ipv6_public_allowed() {
     use std::net::IpAddr;
     let ip: IpAddr = "2606:4700:4700::1111".parse().unwrap();
     assert!(
-        !synctv_common::ssrf::is_ip_blocked(&ip),
+        !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Public IPv6 should be allowed"
     );
 }
@@ -754,7 +754,7 @@ fn test_ssrf_acl_cloud_metadata_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "169.254.169.254".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Cloud metadata IP should be blocked"
     );
 }
@@ -1089,7 +1089,7 @@ fn test_m3u8_ssrf_private_ip_blocked_by_acl() {
 
     for ip in &blocked {
         assert!(
-            synctv_common::ssrf::is_ip_blocked(ip),
+            synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
             "Private/internal IP {ip} should be blocked by SSRF ACL"
         );
     }
@@ -1103,7 +1103,7 @@ fn test_m3u8_ssrf_public_ip_allowed_by_acl() {
 
     for ip in &allowed {
         assert!(
-            !synctv_common::ssrf::is_ip_blocked(ip),
+            !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
             "Public IP {ip} should be allowed by SSRF ACL"
         );
     }

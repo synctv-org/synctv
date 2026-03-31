@@ -802,7 +802,6 @@ mod tests {
                     cluster_enabled: false,
                     node_id: "hook-test-node".to_string(),
                     dedup_window: Duration::from_secs(1),
-                    cleanup_interval: Duration::from_secs(1),
                     critical_channel_capacity: 16,
                     publish_channel_capacity: 16,
                     key_prefix: "hook-test:".to_string(),

@@ -188,7 +188,7 @@ fn map_grpc_status(context: &str, status: Status) -> synctv_media_providers::Pro
             if let Some(http_status) = grpc_status_to_http_status(code) {
                 synctv_media_providers::ProviderClientError::Http {
                     status: http_status,
-                    url: format!("grpc://remote/{context}"),
+                    url: format!("http://remote/{context}"),
                     retry_after_secs: None,
                     body: message,
                 }
@@ -1028,12 +1028,12 @@ mod tests {
     }
 
     #[test]
-    fn test_build_grpc_request_omits_header_when_secret_missing() {
-        let request = build_grpc_request(None, 42_u32).expect("request should build");
+    fn test_build_grpc_request_omits_header_when_secret_is_blank() {
+        let request = build_grpc_request(Some("   "), 42_u32).expect("request should build");
         assert_eq!(request.get_ref(), &42_u32);
         assert!(
             request.metadata().get("x-provider-secret").is_none(),
-            "legacy remote instances without jwt_secret should preserve the pre-header request format"
+            "blank secrets must not produce a malformed header"
         );
     }
 
@@ -1048,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_auth_secret_allows_legacy_missing_secret() {
+    fn test_validate_auth_secret_allows_absent_secret_only_for_non_remote_callers() {
         assert_eq!(validate_auth_secret(None).unwrap(), None);
         assert_eq!(
             validate_auth_secret(Some("  shared-secret  ")).unwrap(),
@@ -1102,7 +1102,7 @@ mod tests {
             error,
             ProviderClientError::Http { status, ref url, ref body, retry_after_secs: None }
                 if status == StatusCode::NOT_FOUND
-                    && url == "grpc://remote/me"
+                    && url == "http://remote/me"
                     && body == "user not found"
         ));
     }

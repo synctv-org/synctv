@@ -5,10 +5,11 @@
 //!
 //! # Quick Start
 //!
-//! Use the free functions for production defaults:
+//! Use the shared default guard for production defaults:
 //! ```
-//! let resolver = synctv_common::ssrf::ssrf_dns_resolver();
-//! let blocked = synctv_common::ssrf::is_ip_blocked(&"127.0.0.1".parse().unwrap());
+//! let guard = synctv_common::ssrf::SsrfGuard::shared_default();
+//! let resolver = guard.dns_resolver();
+//! let blocked = guard.is_ip_blocked(&"127.0.0.1".parse().unwrap());
 //! ```
 //!
 //! Or use [`SsrfGuard`] directly for custom policies:
@@ -60,6 +61,18 @@ impl SsrfGuard {
     #[must_use]
     pub fn default_policy() -> Self {
         Self::builder().build()
+    }
+
+    /// Access the shared default SSRF policy.
+    ///
+    /// This is the canonical production entry point when custom policy
+    /// configuration is not required.
+    #[must_use]
+    pub fn shared_default() -> &'static Self {
+        static DEFAULT_GUARD: std::sync::LazyLock<SsrfGuard> =
+            std::sync::LazyLock::new(SsrfGuard::default_policy);
+
+        &DEFAULT_GUARD
     }
 
     /// Create from builder for custom policies.
@@ -216,53 +229,6 @@ impl SsrfGuardBuilder {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Backward-compatible free functions (cached via LazyLock)
-// ---------------------------------------------------------------------------
-
-/// Cached default SSRF guard. The guard is constructed once and reused by all
-/// free functions, avoiding repeated ACL + middleware construction on every call.
-static DEFAULT_GUARD: std::sync::LazyLock<SsrfGuard> =
-    std::sync::LazyLock::new(SsrfGuard::default_policy);
-
-/// Create the default [`SsrfGuard`] with production defaults.
-#[must_use]
-pub fn default_ssrf_guard() -> SsrfGuard {
-    DEFAULT_GUARD.clone()
-}
-
-/// Create the standard SSRF-safe ACL used across all HTTP clients.
-///
-/// Equivalent to `SsrfGuard::default_policy().acl().clone()`.
-#[must_use]
-pub fn ssrf_acl() -> HttpAcl {
-    DEFAULT_GUARD.acl().clone()
-}
-
-/// Create a SSRF-safe DNS resolver for use with `reqwest::Client::builder().dns_resolver()`.
-///
-/// Equivalent to `SsrfGuard::default_policy().dns_resolver()`.
-#[must_use]
-pub fn ssrf_dns_resolver() -> Arc<dyn reqwest::dns::Resolve> {
-    DEFAULT_GUARD.dns_resolver()
-}
-
-/// Check if an IP address is blocked by the default SSRF policy.
-///
-/// Equivalent to `SsrfGuard::default_policy().is_ip_blocked(ip)`.
-#[must_use]
-pub fn is_ip_blocked(ip: &IpAddr) -> bool {
-    DEFAULT_GUARD.is_ip_blocked(ip)
-}
-
-/// Check if a hostname is blocked by the default SSRF policy.
-///
-/// Equivalent to `SsrfGuard::default_policy().is_host_blocked(host)`.
-#[must_use]
-pub fn is_host_blocked(host: &str) -> bool {
-    DEFAULT_GUARD.is_host_blocked(host)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,16 +370,17 @@ mod tests {
 
     #[test]
     fn test_is_ip_blocked() {
-        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
-        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
-        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
-        assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
-        assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+        let guard = SsrfGuard::shared_default();
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
     }
 
     #[test]
     fn test_ssrf_dns_resolver_creation() {
-        let _resolver = ssrf_dns_resolver();
+        let _resolver = SsrfGuard::shared_default().dns_resolver();
     }
 
     #[test]
@@ -556,8 +523,8 @@ mod tests {
     }
 
     #[test]
-    fn test_default_ssrf_guard_matches_default_policy() {
-        let guard1 = default_ssrf_guard();
+    fn test_shared_default_guard_matches_default_policy() {
+        let guard1 = SsrfGuard::shared_default();
         let guard2 = SsrfGuard::default_policy();
         // Both should block/allow the same IPs
         let test_ip = IpAddr::V4(Ipv4Addr::LOCALHOST);

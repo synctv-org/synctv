@@ -68,10 +68,10 @@ impl PermissionBits {
     /// Kick member
     pub const KICK_MEMBER: u64 = 1 << 21;
 
-    /// Invite user (alias for `APPROVE_MEMBER`)
+    /// Invite user
     pub const INVITE_USER: u64 = 1 << 20;
 
-    /// Kick user (alias for `KICK_MEMBER`)
+    /// Kick user
     pub const KICK_USER: u64 = 1 << 21;
 
     /// Ban/unban member
@@ -79,9 +79,6 @@ impl PermissionBits {
 
     /// Set member permissions
     pub const SET_MEMBER_PERMISSIONS: u64 = 1 << 23;
-
-    /// Grant permissions to members (alias for `SET_MEMBER_PERMISSIONS`)
-    pub const GRANT_PERMISSION: u64 = 1 << 23;
 
     /// Manage admins (promote/demote)
     pub const MANAGE_ADMIN: u64 = 1 << 24;
@@ -97,9 +94,6 @@ impl PermissionBits {
     /// Delete chat messages
     pub const DELETE_CHAT: u64 = 1 << 32;
 
-    /// Delete messages (alias for `DELETE_CHAT`)
-    pub const DELETE_MESSAGE: u64 = 1 << 32;
-
     /// View room statistics
     pub const VIEW_STATS: u64 = 1 << 33;
 
@@ -108,32 +102,6 @@ impl PermissionBits {
 
     /// Delete room
     pub const DELETE_ROOM: u64 = 1 << 35;
-
-    // ===== Aliases for backward compatibility =====
-
-    /// Update room settings (alias for `SET_ROOM_SETTINGS`)
-    pub const UPDATE_ROOM_SETTINGS: u64 = 1 << 30;
-
-    /// Add media (alias for `ADD_MOVIE`)
-    pub const ADD_MEDIA: u64 = 1 << 1;
-
-    /// Remove media (alias for `DELETE_MOVIE_ANY`)
-    pub const REMOVE_MEDIA: u64 = 1 << 3;
-
-    /// Switch media (alias for `CHANGE_CURRENT_MOVIE`)
-    pub const SWITCH_MEDIA: u64 = 1 << 11;
-
-    /// Play/pause (alias for `PLAY_CONTROL`)
-    pub const PLAY_PAUSE: u64 = 1 << 10;
-
-    /// Seek (alias for `PLAY_CONTROL`)
-    pub const SEEK: u64 = 1 << 10;
-
-    /// Change speed (alias for `CHANGE_PLAYBACK_RATE`)
-    pub const CHANGE_SPEED: u64 = 1 << 12;
-
-    /// Revoke permission (alias for `SET_MEMBER_PERMISSIONS`)
-    pub const REVOKE_PERMISSION: u64 = 1 << 23;
 
     // ===== View Permissions (40-49) =====
 
@@ -237,16 +205,6 @@ impl PermissionBits {
         } else {
             self.revoke(permission);
         }
-    }
-
-    /// Add permissions (alias for grant)
-    pub const fn add(&mut self, permission: u64) {
-        self.grant(permission);
-    }
-
-    /// Remove permissions (alias for revoke)
-    pub const fn remove(&mut self, permission: u64) {
-        self.revoke(permission);
     }
 
     /// Toggle permission
@@ -447,24 +405,6 @@ mod tests {
         assert!(perms.has(PermissionBits::SEND_CHAT));
         perms.toggle(PermissionBits::SEND_CHAT);
         assert!(!perms.has(PermissionBits::SEND_CHAT));
-    }
-
-    #[test]
-    fn test_permission_add_is_alias_for_grant() {
-        let mut p1 = PermissionBits::empty();
-        let mut p2 = PermissionBits::empty();
-        p1.grant(PermissionBits::BAN_MEMBER);
-        p2.add(PermissionBits::BAN_MEMBER);
-        assert_eq!(p1.0, p2.0);
-    }
-
-    #[test]
-    fn test_permission_remove_is_alias_for_revoke() {
-        let mut p1 = PermissionBits(PermissionBits::ALL);
-        let mut p2 = PermissionBits(PermissionBits::ALL);
-        p1.revoke(PermissionBits::BAN_MEMBER);
-        p2.remove(PermissionBits::BAN_MEMBER);
-        assert_eq!(p1.0, p2.0);
     }
 
     #[test]

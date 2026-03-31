@@ -303,12 +303,12 @@ fn validate_target_url_against_ssrf(url: &url::Url) -> Result<(), ProxyError> {
         .ok_or_else(|| ProxyError::InvalidRequest("URL host is required".to_string()))?;
 
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if synctv_common::ssrf::is_ip_blocked(&ip) {
+        if synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip) {
             return Err(ProxyError::Ssrf(format!(
                 "target host `{host}` is blocked by SSRF policy"
             )));
         }
-    } else if synctv_common::ssrf::is_host_blocked(host) {
+    } else if synctv_common::ssrf::SsrfGuard::shared_default().is_host_blocked(host) {
         return Err(ProxyError::Ssrf(format!(
             "target host `{host}` is blocked by SSRF policy"
         )));
@@ -1398,7 +1398,7 @@ mod tests {
         for ip_str in blocked {
             let ip: IpAddr = ip_str.parse().unwrap();
             assert!(
-                synctv_common::ssrf::is_ip_blocked(&ip),
+                synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
                 "IP {ip} should be blocked"
             );
         }
@@ -1411,7 +1411,7 @@ mod tests {
         for ip_str in allowed {
             let ip: IpAddr = ip_str.parse().unwrap();
             assert!(
-                !synctv_common::ssrf::is_ip_blocked(&ip),
+                !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
                 "IP {ip} should be allowed"
             );
         }

@@ -313,6 +313,7 @@ impl NotificationRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core_testing::create_test_pool;
     use crate::models::notification::{MarkAllAsReadRequest, MarkAsReadRequest};
     use crate::models::pagination::PageParams;
 
@@ -505,11 +506,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_notification() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
 
         // Create a user first (for foreign key constraint)
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
         let user = crate::test_helpers::UserFixture::new().build();
         let created_user = user_repo.create(&user).await.unwrap();
 
@@ -539,11 +540,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_by_id() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
 
         // Create user and notification
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
         let user = crate::test_helpers::UserFixture::new().build();
         let created_user = user_repo.create(&user).await.unwrap();
 
@@ -568,8 +569,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_by_id_not_found() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
 
         let non_existent_id = Uuid::new_v4();
         let found = repo.get_by_id(non_existent_id).await.unwrap();
@@ -580,9 +581,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_list_by_user_with_count() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
 
         // Create user
         let user = crate::test_helpers::UserFixture::new().build();
@@ -620,9 +621,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_list_by_user_with_count_filter_by_read() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
 
         // Create user
         let user = crate::test_helpers::UserFixture::new().build();
@@ -672,9 +673,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_list_by_user_with_count_filter_by_type() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
 
         // Create user
         let user = crate::test_helpers::UserFixture::new().build();
@@ -716,9 +717,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_mark_as_read() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
 
         // Create user
         let user = crate::test_helpers::UserFixture::new().build();
@@ -754,8 +755,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_mark_as_read_empty_list() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
         let user_id = UserId::new();
 
         let affected = repo.mark_as_read(&user_id, &[]).await.unwrap();
@@ -766,9 +767,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_mark_all_as_read() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
 
         // Create user
         let user = crate::test_helpers::UserFixture::new().build();
@@ -799,9 +800,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_mark_all_as_read_with_before() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
 
         // Create user
         let user = crate::test_helpers::UserFixture::new().build();
@@ -830,9 +831,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_delete_notification() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
 
         // Create user
         let user = crate::test_helpers::UserFixture::new().build();
@@ -862,8 +863,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_delete_notification_not_found() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
         let user_id = UserId::new();
         let non_existent_id = Uuid::new_v4();
 
@@ -876,9 +877,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_count_unread() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
 
         // Create user
         let user = crate::test_helpers::UserFixture::new().build();
@@ -923,9 +924,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_count_by_user_with_filters() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
 
         // Create user
         let user = crate::test_helpers::UserFixture::new().build();
@@ -970,9 +971,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_delete_all_read() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
-        let user_repo = crate::repository::user::UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
+        let user_repo = crate::repository::user::UserRepository::new(pool.clone());
 
         // Create user
         let user = crate::test_helpers::UserFixture::new().build();
@@ -1013,8 +1014,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_delete_older_than() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = NotificationRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = NotificationRepository::new(pool.clone());
 
         // delete_older_than removes notifications older than specified days
         // Since we can't create notifications with past timestamps easily,

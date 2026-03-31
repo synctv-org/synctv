@@ -580,7 +580,7 @@ mod tests {
         let err = repo
             .ensure_encryption_for_sensitive_fields(&ProviderInstance {
                 name: "remote".to_string(),
-                endpoint: "grpc://remote.example.com:50051".to_string(),
+                endpoint: "http://remote.example.com:50051".to_string(),
                 comment: None,
                 jwt_secret: Some("secret".to_string()),
                 custom_ca: None,

@@ -359,7 +359,7 @@ impl HealthMonitor {
         let probe_results: Vec<_> = futures::future::join_all(nodes_to_probe.iter().map(|node| {
             let addr = node.api_address.clone();
             let secret = secret.clone();
-            async move { Self::probe_node_grpc(&addr, probe_timeout, &secret).await }
+            async move { Self::probe_node_api(&addr, probe_timeout, &secret).await }
         }))
         .await;
 
@@ -424,13 +424,13 @@ impl HealthMonitor {
         states.retain(|node_id, _| active_node_ids.contains(node_id));
     }
 
-    /// Probe a node's gRPC service by calling `GetNodes`.
+    /// Probe a node's gRPC service on the shared API address by calling `GetNodes`.
     ///
     /// Unlike a TCP-only probe, this validates that the application-layer
     /// gRPC service is responsive, not just that the port is open.
-    /// Delegates to the shared [`super::probe_node_grpc`] function.
-    async fn probe_node_grpc(grpc_address: &str, timeout_secs: u64, cluster_secret: &str) -> bool {
-        super::probe_node_grpc(grpc_address, timeout_secs, cluster_secret).await
+    /// Delegates to the shared [`super::probe_node_api`] function.
+    async fn probe_node_api(api_address: &str, timeout_secs: u64, cluster_secret: &str) -> bool {
+        super::probe_node_api(api_address, timeout_secs, cluster_secret).await
     }
 
     /// Gracefully shut down the health monitoring loop.
@@ -631,28 +631,28 @@ mod tests {
         );
     }
 
-    // --- probe_node_grpc ---
+    // --- probe_node_api ---
 
     #[tokio::test]
-    async fn test_probe_node_grpc_invalid_address() {
+    async fn test_probe_node_api_invalid_address() {
         // Invalid address should return false
-        assert!(!HealthMonitor::probe_node_grpc("not-an-address", 1, "").await);
+        assert!(!HealthMonitor::probe_node_api("not-an-address", 1, "").await);
     }
 
     #[tokio::test]
-    async fn test_probe_node_grpc_unreachable() {
+    async fn test_probe_node_api_unreachable() {
         // Unreachable address should return false (timeout)
-        assert!(!HealthMonitor::probe_node_grpc("192.0.2.1:12345", 1, "").await);
+        assert!(!HealthMonitor::probe_node_api("192.0.2.1:12345", 1, "").await);
     }
 
     #[tokio::test]
-    async fn test_probe_node_grpc_no_port() {
-        assert!(!HealthMonitor::probe_node_grpc("localhost", 1, "").await);
+    async fn test_probe_node_api_no_port() {
+        assert!(!HealthMonitor::probe_node_api("localhost", 1, "").await);
     }
 
     #[tokio::test]
-    async fn test_probe_node_grpc_invalid_port() {
-        assert!(!HealthMonitor::probe_node_grpc("localhost:abc", 1, "").await);
+    async fn test_probe_node_api_invalid_port() {
+        assert!(!HealthMonitor::probe_node_api("localhost:abc", 1, "").await);
     }
 
     // --- ProbeState ---

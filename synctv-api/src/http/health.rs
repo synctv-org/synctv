@@ -6,7 +6,6 @@
 //!
 //! - `/health/live` - Liveness probe: checks if the application is running (basic check)
 //! - `/health/ready` - Readiness probe: checks if dependencies (DB, Redis) are healthy
-//! - `/health` - Alias for `/health/live` for backward compatibility
 //! - `/metrics` - Prometheus metrics endpoint
 
 use axum::{
@@ -34,7 +33,6 @@ const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 pub fn create_health_router() -> Router<AppState> {
     // Metrics are conditionally registered via create_health_router_with_config
     Router::new()
-        .route("/health", get(liveness_check))
         .route("/health/live", get(liveness_check))
         .route("/health/ready", get(readiness_check))
 }
@@ -42,7 +40,6 @@ pub fn create_health_router() -> Router<AppState> {
 /// Create health router with `/metrics` Prometheus endpoint
 pub fn create_health_router_with_metrics() -> Router<AppState> {
     Router::new()
-        .route("/health", get(liveness_check))
         .route("/health/live", get(liveness_check))
         .route("/health/ready", get(readiness_check))
         .route("/metrics", get(prometheus_metrics))

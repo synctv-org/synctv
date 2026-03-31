@@ -48,8 +48,6 @@ pub struct ClusterConfig {
     pub node_id: String,
     /// Deduplication window duration
     pub dedup_window: Duration,
-    /// How often to cleanup dedup entries
-    pub cleanup_interval: Duration,
     /// Capacity for the high-priority critical event channel.
     /// Critical events are never dropped; senders block when full.
     pub critical_channel_capacity: usize,
@@ -94,7 +92,6 @@ impl std::fmt::Debug for ClusterConfig {
             .field("cluster_enabled", &self.cluster_enabled)
             .field("node_id", &self.node_id)
             .field("dedup_window", &self.dedup_window)
-            .field("cleanup_interval", &self.cleanup_interval)
             .field("critical_channel_capacity", &self.critical_channel_capacity)
             .field("publish_channel_capacity", &self.publish_channel_capacity)
             .field("key_prefix", &self.key_prefix)
@@ -117,7 +114,6 @@ impl Default for ClusterConfig {
             cluster_enabled: false,
             node_id: format!("node_{}", nanoid::nanoid!(8)),
             dedup_window: Duration::from_mins(15),
-            cleanup_interval: Duration::from_secs(30),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -239,10 +235,7 @@ impl ClusterManager {
         permission_service: Option<PermissionService>,
         cache_invalidation: Option<synctv_core::cache::CacheInvalidationService>,
     ) -> ClusterResult<Self> {
-        let deduplicator = Arc::new(MessageDeduplicator::new(
-            config.dedup_window,
-            config.cleanup_interval,
-        ));
+        let deduplicator = Arc::new(MessageDeduplicator::new(config.dedup_window));
         let manager_cancel_token = config.parent_cancel_token.as_ref().map_or_else(
             CancellationToken::new,
             tokio_util::sync::CancellationToken::child_token,
@@ -899,8 +892,7 @@ impl ClusterManager {
             }
         }
 
-        // Shut down deduplicator cleanup task
-        self.deduplicator.shutdown();
+        self.deduplicator.clear();
     }
 
     /// Broadcast an event to all subscribers
@@ -1159,7 +1151,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -1226,7 +1217,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -1279,7 +1269,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -1334,7 +1323,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_node_cache".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -1405,7 +1393,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_node_no_cache".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -1457,7 +1444,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "stuck-heartbeat-node".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -1495,7 +1481,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "shutdown-race-node".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -1578,7 +1563,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "tracked-critical-retry-node".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1,
             publish_channel_capacity: 1,
             key_prefix: "synctv:".to_string(),
@@ -1633,7 +1617,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "shutdown-drain-critical-window".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1,
             publish_channel_capacity: 1,
             key_prefix: "synctv:".to_string(),
@@ -1702,7 +1685,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "shutdown-room-hub-node".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1,
             publish_channel_capacity: 1,
             key_prefix: "synctv:".to_string(),
@@ -1735,7 +1717,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "shutdown-critical-event-node".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 4,
             publish_channel_capacity: 4,
             key_prefix: "synctv:".to_string(),
@@ -1779,7 +1760,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "shutdown-noncritical-event-node".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 4,
             publish_channel_capacity: 4,
             key_prefix: "synctv:".to_string(),
@@ -1850,7 +1830,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_node_epoch".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -1916,7 +1895,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_node_quarantine".to_string(),
             dedup_window: Duration::from_secs(60),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -1989,7 +1967,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_metrics_injection".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -2036,7 +2013,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_critical_fallback".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1,
             publish_channel_capacity: 1,
             key_prefix: "synctv:".to_string(),
@@ -2104,7 +2080,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_publish_only".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 4,
             publish_channel_capacity: 4,
             key_prefix: "synctv:".to_string(),
@@ -2165,7 +2140,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_publish_only_user_notification".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 4,
             publish_channel_capacity: 4,
             key_prefix: "synctv:".to_string(),
@@ -2218,7 +2192,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_drop_connection_manager_cleanup".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 4,
             publish_channel_capacity: 4,
             key_prefix: "synctv:".to_string(),
@@ -2254,7 +2227,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_metrics_quarantine".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -2290,7 +2262,6 @@ mod tests {
             cluster_enabled: false,
             node_id: "test_cluster_requires_redis".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -2324,7 +2295,6 @@ mod tests {
             cluster_enabled: true,
             node_id: "test_cluster_requires_redis".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -2354,7 +2324,6 @@ mod tests {
             cluster_enabled: true,
             node_id: "test_cluster_missing_conn".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
@@ -2381,7 +2350,6 @@ mod tests {
             cluster_enabled: false, // Cluster mode disabled
             node_id: "test_non_cluster_no_redis".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),

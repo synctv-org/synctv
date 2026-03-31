@@ -421,7 +421,7 @@ impl MemberService {
         // Check if granter has permission to modify permissions without cache
         // Critical operation requires fresh permissions
         self.permission_service
-            .check_permission_no_cache(&room_id, &granter_id, PermissionBits::GRANT_PERMISSION)
+            .check_permission_no_cache(&room_id, &granter_id, PermissionBits::SET_MEMBER_PERMISSIONS)
             .await?;
 
         let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
@@ -498,7 +498,7 @@ impl MemberService {
         // Check if granter has permission to modify permissions without cache
         // Critical operation requires fresh permissions
         self.permission_service
-            .check_permission_no_cache(&room_id, &granter_id, PermissionBits::GRANT_PERMISSION)
+            .check_permission_no_cache(&room_id, &granter_id, PermissionBits::SET_MEMBER_PERMISSIONS)
             .await?;
 
         let target_member = self.member_repo.get(&room_id, &target_user_id).await?;
@@ -561,7 +561,7 @@ impl MemberService {
         // Check if granter has permission to modify permissions without cache
         // Critical operation requires fresh permissions
         self.permission_service
-            .check_permission_no_cache(&room_id, &granter_id, PermissionBits::GRANT_PERMISSION)
+            .check_permission_no_cache(&room_id, &granter_id, PermissionBits::SET_MEMBER_PERMISSIONS)
             .await?;
 
         let target_member = self.member_repo.get(&room_id, &target_user_id).await?;
@@ -623,7 +623,7 @@ impl MemberService {
         // Check if granter has permission to modify permissions without cache
         // Critical operation requires fresh permissions
         self.permission_service
-            .check_permission_no_cache(&room_id, &granter_id, PermissionBits::GRANT_PERMISSION)
+            .check_permission_no_cache(&room_id, &granter_id, PermissionBits::SET_MEMBER_PERMISSIONS)
             .await?;
 
         let updated_member = super::optimistic_retry::retry_with_optimistic_lock(

@@ -44,57 +44,6 @@ impl ChatRepository {
         Ok(msg)
     }
 
-    /// Get chat history for a room using legacy timestamp-based cursor.
-    /// Returns messages in reverse chronological order (newest first).
-    ///
-    /// Prefer [`list_by_room_cursor`] for large rooms to avoid the O(N) OFFSET
-    /// scan that the timestamp approach causes when many messages share the same
-    /// timestamp.
-    pub async fn list_by_room(
-        &self,
-        room_id: &RoomId,
-        before: Option<DateTime<Utc>>,
-        limit: i32,
-    ) -> Result<Vec<ChatMessage>> {
-        let limit = limit.min(100); // Cap at 100 messages per request
-
-        let messages = if let Some(before_time) = before {
-            sqlx::query_as::<_, ChatMessage>(
-                r"
-                SELECT id, room_id, user_id, content, message_type, created_at
-                FROM chat_messages
-                WHERE room_id = $1 AND created_at < $2
-                ORDER BY created_at DESC
-                LIMIT $3
-                ",
-            )
-            .bind(room_id.as_str())
-            .bind(before_time)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            // Initial load (no cursor): add a created_at lower bound so PostgreSQL
-            // can prune old partitions. Matches the 90-day retention period.
-            sqlx::query_as::<_, ChatMessage>(
-                r"
-                SELECT id, room_id, user_id, content, message_type, created_at
-                FROM chat_messages
-                WHERE room_id = $1
-                  AND created_at >= NOW() - INTERVAL '90 days'
-                ORDER BY created_at DESC
-                LIMIT $2
-                ",
-            )
-            .bind(room_id.as_str())
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?
-        };
-
-        Ok(messages)
-    }
-
     /// Get chat history using keyset (cursor) pagination.
     ///
     /// Returns at most `limit` messages (capped at 100) ordered by

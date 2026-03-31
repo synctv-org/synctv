@@ -69,7 +69,6 @@ fn make_cluster_config_with_prefix(
         cluster_enabled: true,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_mins(1),
-        cleanup_interval: Duration::from_secs(10),
         critical_channel_capacity: 100,
         publish_channel_capacity: 1000,
         key_prefix,
@@ -172,7 +171,7 @@ async fn test_cross_node_broadcast() {
 /// Test that duplicate events are detected correctly.
 #[tokio::test]
 async fn test_message_deduplication() {
-    let dedup = MessageDeduplicator::new(Duration::from_mins(1), Duration::from_secs(10));
+    let dedup = MessageDeduplicator::new(Duration::from_mins(1));
 
     let room = rid("room1");
     let user = uid("user1");
@@ -223,10 +222,7 @@ async fn test_message_deduplication() {
 /// Test that deduplication respects the TTL window.
 #[tokio::test]
 async fn test_dedup_ttl_expiry() {
-    let dedup = MessageDeduplicator::new(
-        Duration::from_millis(100), // Very short window
-        Duration::from_secs(10),
-    );
+    let dedup = MessageDeduplicator::new(Duration::from_millis(100)); // Very short window
 
     let room = rid("room1");
     let event = ClusterEvent::ChatMessage {
@@ -260,7 +256,7 @@ async fn test_dedup_ttl_expiry() {
 /// Test deduplication with different event types.
 #[tokio::test]
 async fn test_dedup_with_different_events() {
-    let dedup = MessageDeduplicator::new(Duration::from_mins(1), Duration::from_secs(10));
+    let dedup = MessageDeduplicator::new(Duration::from_mins(1));
 
     let room = rid("room1");
     let user = uid("user1");

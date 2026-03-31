@@ -1,7 +1,8 @@
 //! SSRF protection tests for the proxy module.
 //!
 //! SSRF protection is now enforced at the DNS resolver level via `synctv-common`.
-//! The proxy HTTP client uses `ssrf_dns_resolver()` which blocks connections
+//! The proxy HTTP client uses `SsrfGuard::shared_default().dns_resolver()`
+//! which blocks connections
 //! to private/internal IP addresses at DNS resolution time.
 //!
 //! These tests verify that `proxy_fetch_and_forward` blocks SSRF attempts

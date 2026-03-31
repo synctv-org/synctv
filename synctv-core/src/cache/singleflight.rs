@@ -86,25 +86,6 @@ where
             })
     }
 
-    /// Execute a function only once for a given key, with legacy error type
-    ///
-    /// Converts `SingleFlightError` back to `E` using the provided error factory
-    /// for worker failures.
-    pub async fn do_work_with_fallback<Fut, Ef>(
-        &self,
-        key: K,
-        f: Fut,
-        error_factory: Ef,
-    ) -> Result<V, E>
-    where
-        Fut: std::future::Future<Output = Result<V, E>> + Send,
-        Ef: FnOnce() -> E,
-    {
-        self.do_work(key, f).await.map_err(|e| match e {
-            SingleFlightError::WorkerFailed => error_factory(),
-            SingleFlightError::Inner(err) => err,
-        })
-    }
 }
 
 impl<K, V, E> Default for SingleFlight<K, V, E>
@@ -217,26 +198,6 @@ mod tests {
             Err(SingleFlightError::Inner(msg)) => assert_eq!(msg, "test error"),
             _ => panic!("Expected Inner error"),
         }
-    }
-
-    #[tokio::test]
-    async fn test_singleflight_fallback_wrapper() {
-        let sf: SingleFlight<String, i32, String> = SingleFlight::new();
-        let counter = Arc::new(AtomicU32::new(0));
-
-        let counter_clone = counter.clone();
-        let result = sf
-            .do_work_with_fallback(
-                "key1".to_string(),
-                async move {
-                    counter_clone.fetch_add(1, Ordering::SeqCst);
-                    Ok(42)
-                },
-                || "worker failed".to_string(),
-            )
-            .await;
-
-        assert_eq!(result.unwrap(), 42);
     }
 
     #[tokio::test]

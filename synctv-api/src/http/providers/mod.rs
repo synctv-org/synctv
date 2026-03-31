@@ -435,14 +435,9 @@ mod tests {
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
-        let provider_instance_manager = Arc::new(RemoteProviderManager::new(
-            Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
-                pool.clone(),
-            )),
-            None,
-            None,
-            "test:",
-        ));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+            synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+        )));
         let providers = ProviderSet {
             alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
             bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
@@ -554,14 +549,9 @@ mod tests {
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
-        let provider_instance_manager = Arc::new(RemoteProviderManager::new(
-            Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
-                pool.clone(),
-            )),
-            None,
-            None,
-            "test:",
-        ));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+            synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+        )));
         let providers = ProviderSet {
             alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
             bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),

@@ -396,14 +396,9 @@ async fn test_playback_state_cross_replica_sync() {
             synctv_core::repository::PlaylistRepository::new(pool.clone()),
             permission_service.clone(),
             Arc::new(synctv_core::service::ProvidersManager::new(Arc::new(
-                synctv_core::service::RemoteProviderManager::new(
-                    Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
-                        pool.clone(),
-                    )),
-                    None,
-                    None,
-                    "",
-                ),
+                synctv_core::service::RemoteProviderManager::new(Arc::new(
+                    synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+                )),
             ))),
         ),
         synctv_core::repository::MediaRepository::new(pool.clone()),
@@ -422,14 +417,9 @@ async fn test_playback_state_cross_replica_sync() {
             synctv_core::repository::PlaylistRepository::new(pool.clone()),
             permission_service.clone(),
             Arc::new(synctv_core::service::ProvidersManager::new(Arc::new(
-                synctv_core::service::RemoteProviderManager::new(
-                    Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
-                        pool.clone(),
-                    )),
-                    None,
-                    None,
-                    "",
-                ),
+                synctv_core::service::RemoteProviderManager::new(Arc::new(
+                    synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+                )),
             ))),
         ),
         synctv_core::repository::MediaRepository::new(pool.clone()),

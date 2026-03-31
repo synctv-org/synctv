@@ -1767,15 +1767,6 @@ impl RedisPubSub {
     /// Handles deduplication, admin channel routing, permission cache invalidation,
     /// and local broadcast to room subscribers.
     async fn dispatch_event(&self, channel: &str, event: ClusterEvent) {
-        // Skip unknown/unrecognized event types (forward compatibility)
-        if matches!(&event, ClusterEvent::Unknown) {
-            debug!(
-                channel = %channel,
-                "Skipping unknown cluster event type (forward compatibility)"
-            );
-            return;
-        }
-
         // Deduplicate events (prevents duplicate delivery during catch-up + live overlap)
         let dedup_key = DedupKey::from_event(&event);
         if !self.deduplicator.should_process(&dedup_key) {

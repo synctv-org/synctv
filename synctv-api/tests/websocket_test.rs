@@ -926,12 +926,8 @@ mod websocket_e2e {
         let provider_instance_repo = Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
         );
-        let provider_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
-            provider_instance_repo,
-            None,
-            None,
-            "",
-        ));
+        let provider_instance_manager =
+            Arc::new(synctv_core::service::RemoteProviderManager::new(provider_instance_repo));
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
         let providers = synctv_core::provider::ProviderSet {
@@ -4115,12 +4111,8 @@ mod websocket_connection_limit_timing {
         let provider_instance_repo = Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
         );
-        let provider_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
-            provider_instance_repo,
-            None,
-            None,
-            "",
-        ));
+        let provider_instance_manager =
+            Arc::new(synctv_core::service::RemoteProviderManager::new(provider_instance_repo));
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
         let providers = synctv_core::provider::ProviderSet {

@@ -155,7 +155,7 @@ async fn test_concurrent_update_without_optimistic_lock_causes_lost_update() {
     .unwrap();
 
     // Get the initial version
-    let initial = repo.get_with_version("concurrent_test_key").await.unwrap();
+    let initial = repo.get("concurrent_test_key").await.unwrap();
     let initial_version = initial.version;
 
     // Simulate two concurrent updates
@@ -237,7 +237,7 @@ async fn test_update_with_version_increments_version() {
     .unwrap();
 
     // Get initial version
-    let v0 = repo.get_with_version("version_test_key").await.unwrap();
+    let v0 = repo.get("version_test_key").await.unwrap();
     assert_eq!(v0.version, 0, "Initial version should be 0");
 
     // First update

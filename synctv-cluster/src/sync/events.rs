@@ -1,14 +1,8 @@
-use std::sync::LazyLock;
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::models::permission::PermissionBits;
 use synctv_core::models::playback::RoomPlaybackState;
-
-/// Default timestamp sentinel (UNIX epoch) used for the `Unknown` variant.
-static UNKNOWN_TIMESTAMP: LazyLock<DateTime<Utc>> =
-    LazyLock::new(|| DateTime::<Utc>::from(std::time::UNIX_EPOCH));
 
 /// The kind of cache to invalidate in a `CacheInvalidate` cluster event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,7 +29,6 @@ pub enum ClusterEvent {
     /// Chat message sent in a room
     /// If position is set, this can be displayed as a danmaku (bullet comment)
     ChatMessage {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -50,7 +43,6 @@ pub enum ClusterEvent {
 
     /// Room playback state changed (play, pause, seek, etc.)
     PlaybackStateChanged {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -61,7 +53,6 @@ pub enum ClusterEvent {
 
     /// User joined a room
     UserJoined {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -83,7 +74,6 @@ pub enum ClusterEvent {
 
     /// User left a room
     UserLeft {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -93,7 +83,6 @@ pub enum ClusterEvent {
 
     /// Media added to room playlist
     MediaAdded {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -105,7 +94,6 @@ pub enum ClusterEvent {
 
     /// Media removed from room playlist
     MediaRemoved {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -116,7 +104,6 @@ pub enum ClusterEvent {
 
     /// Media metadata updated in room playlist
     MediaUpdated {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -129,7 +116,6 @@ pub enum ClusterEvent {
     /// Batch of media removed from room playlist (efficient for bulk deletions)
     /// Instead of sending 100 individual MediaRemoved events, send one batch event.
     MediaRemovedBatch {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -141,7 +127,6 @@ pub enum ClusterEvent {
 
     /// Playlist media order changed in a room.
     PlaylistReordered {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -152,7 +137,6 @@ pub enum ClusterEvent {
 
     /// User permissions changed in a room
     PermissionChanged {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         target_user_id: UserId,
@@ -172,7 +156,6 @@ pub enum ClusterEvent {
 
     /// Room settings updated
     RoomSettingsChanged {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -185,7 +168,6 @@ pub enum ClusterEvent {
 
     /// WebRTC signaling message (offer, answer, `ice_candidate`)
     WebRTCSignaling {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         message_type: String, // "offer", "answer", "ice_candidate"
@@ -206,7 +188,6 @@ pub enum ClusterEvent {
 
     /// User joined WebRTC call in room
     WebRTCJoin {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -217,7 +198,6 @@ pub enum ClusterEvent {
 
     /// User left WebRTC call in room
     WebRTCLeave {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -227,7 +207,6 @@ pub enum ClusterEvent {
 
     /// Notification for all clients (system-wide)
     SystemNotification {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         message: String,
         level: NotificationLevel,
@@ -237,7 +216,6 @@ pub enum ClusterEvent {
     /// Kick an active publisher (RTMP stream termination).
     /// Broadcast cluster-wide when admin bans user/room or deletes media/room.
     KickPublisher {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         media_id: MediaId,
@@ -248,7 +226,6 @@ pub enum ClusterEvent {
     /// Kick all active publishers for a user across all replicas.
     /// Broadcast cluster-wide when a user is banned.
     KickUser {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         user_id: UserId,
         reason: String,
@@ -259,7 +236,6 @@ pub enum ClusterEvent {
     /// Broadcast cluster-wide when a member is kicked or banned from a room,
     /// so other replicas can force-disconnect the user's connections to that room.
     KickUserFromRoom {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
@@ -270,7 +246,6 @@ pub enum ClusterEvent {
     /// A new room was created.
     /// Broadcast cluster-wide so other replicas can update room lists / caches.
     RoomCreated {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         room_name: String,
@@ -282,7 +257,6 @@ pub enum ClusterEvent {
     /// Broadcast cluster-wide so other replicas can evict caches,
     /// disconnect users, and terminate active streams.
     RoomDeleted {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         room_id: RoomId,
         /// The user who initiated the deletion (may be the room creator or an admin).
@@ -296,7 +270,6 @@ pub enum ClusterEvent {
     /// connection can push the notification in real time instead of requiring the
     /// client to poll.
     UserNotification {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         /// The user who should receive the notification.
         user_id: UserId,
@@ -318,25 +291,11 @@ pub enum ClusterEvent {
     /// Receiving nodes should invalidate the specified cache targets in their
     /// local L1 caches.
     CacheInvalidate {
-        #[serde(default = "generate_event_id")]
         event_id: String,
         /// One or more cache targets to invalidate.
         targets: Vec<CacheTarget>,
         timestamp: DateTime<Utc>,
     },
-
-    /// Unknown/unrecognized event type for forward compatibility.
-    ///
-    /// When a newer cluster node sends an event type that this node does not
-    /// understand, serde will deserialize it into this variant instead of
-    /// failing. This allows rolling upgrades without breaking deserialization.
-    #[serde(other)]
-    Unknown,
-}
-
-/// Generate a unique event ID using nanoid
-fn generate_event_id() -> String {
-    nanoid::nanoid!(16)
 }
 
 /// Notification severity level
@@ -375,7 +334,6 @@ impl ClusterEvent {
             | Self::RoomDeleted { event_id, .. }
             | Self::UserNotification { event_id, .. }
             | Self::CacheInvalidate { event_id, .. } => event_id,
-            Self::Unknown => "unknown",
         }
     }
 
@@ -404,8 +362,7 @@ impl ClusterEvent {
             Self::SystemNotification { .. }
             | Self::KickUser { .. }
             | Self::UserNotification { .. }
-            | Self::CacheInvalidate { .. }
-            | Self::Unknown => None,
+            | Self::CacheInvalidate { .. } => None,
         }
     }
 
@@ -434,8 +391,7 @@ impl ClusterEvent {
             Self::WebRTCSignaling { .. }
             | Self::SystemNotification { .. }
             | Self::KickPublisher { .. }
-            | Self::CacheInvalidate { .. }
-            | Self::Unknown => None,
+            | Self::CacheInvalidate { .. } => None,
         }
     }
 
@@ -465,7 +421,6 @@ impl ClusterEvent {
             | Self::RoomDeleted { timestamp, .. }
             | Self::UserNotification { timestamp, .. }
             | Self::CacheInvalidate { timestamp, .. } => timestamp,
-            Self::Unknown => &UNKNOWN_TIMESTAMP,
         }
     }
 
@@ -541,7 +496,6 @@ impl ClusterEvent {
             Self::RoomDeleted { .. } => "room_deleted",
             Self::UserNotification { .. } => "user_notification",
             Self::CacheInvalidate { .. } => "cache_invalidate",
-            Self::Unknown => "unknown",
         }
     }
 }
@@ -553,7 +507,7 @@ mod tests {
     #[test]
     fn test_cluster_event_serialization() {
         let event = ClusterEvent::ChatMessage {
-            event_id: generate_event_id(),
+            event_id: nanoid::nanoid!(16),
             room_id: RoomId::from_string("room123".to_string()),
             user_id: UserId::from_string("user456".to_string()),
             username: "testuser".to_string(),
@@ -574,9 +528,48 @@ mod tests {
     }
 
     #[test]
+    fn test_cluster_event_deserialization_requires_event_id() {
+        let json = serde_json::json!({
+            "type": "chat_message",
+            "room_id": "room123",
+            "user_id": "user456",
+            "username": "testuser",
+            "message": "Hello world!",
+            "timestamp": Utc::now(),
+            "position": null,
+            "color": null
+        });
+
+        let err = serde_json::from_value::<ClusterEvent>(json)
+            .expect_err("cluster events without event_id must fail closed");
+
+        assert!(
+            err.to_string().contains("event_id"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_cluster_event_deserialization_rejects_unknown_type() {
+        let json = serde_json::json!({
+            "type": "future_event_type",
+            "event_id": nanoid::nanoid!(16),
+            "timestamp": Utc::now()
+        });
+
+        let err = serde_json::from_value::<ClusterEvent>(json)
+            .expect_err("unknown cluster event types must fail closed");
+
+        assert!(
+            err.to_string().contains("unknown variant"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_cluster_event_room_id() {
         let event = ClusterEvent::UserJoined {
-            event_id: generate_event_id(),
+            event_id: nanoid::nanoid!(16),
             room_id: RoomId::from_string("room123".to_string()),
             user_id: UserId::from_string("user456".to_string()),
             username: "testuser".to_string(),
@@ -597,7 +590,7 @@ mod tests {
     #[test]
     fn test_system_notification_no_room() {
         let event = ClusterEvent::SystemNotification {
-            event_id: generate_event_id(),
+            event_id: nanoid::nanoid!(16),
             message: "Server maintenance in 1 hour".to_string(),
             level: NotificationLevel::Warning,
             timestamp: Utc::now(),
@@ -611,7 +604,7 @@ mod tests {
     #[test]
     fn test_kick_publisher_serialization() {
         let event = ClusterEvent::KickPublisher {
-            event_id: generate_event_id(),
+            event_id: nanoid::nanoid!(16),
             room_id: RoomId::from_string("room123".to_string()),
             media_id: MediaId::from_string("media456".to_string()),
             reason: "user_banned".to_string(),
@@ -649,7 +642,7 @@ mod tests {
     #[test]
     fn test_kick_publisher_has_room_id_no_user_id() {
         let event = ClusterEvent::KickPublisher {
-            event_id: generate_event_id(),
+            event_id: nanoid::nanoid!(16),
             room_id: RoomId::from_string("room789".to_string()),
             media_id: MediaId::from_string("media012".to_string()),
             reason: "room_deleted".to_string(),
@@ -664,7 +657,7 @@ mod tests {
     #[test]
     fn test_kick_user_serialization() {
         let event = ClusterEvent::KickUser {
-            event_id: generate_event_id(),
+            event_id: nanoid::nanoid!(16),
             user_id: UserId::from_string("user123".to_string()),
             reason: "user_banned".to_string(),
             timestamp: Utc::now(),
@@ -681,21 +674,9 @@ mod tests {
     }
 
     #[test]
-    fn test_kick_user_dedup_extra() {
-        let event = ClusterEvent::KickUser {
-            event_id: generate_event_id(),
-            user_id: UserId::from_string("user456".to_string()),
-            reason: "user_banned".to_string(),
-            timestamp: Utc::now(),
-        };
-
-        assert_eq!(event.dedup_extra(), "kick_user:user456");
-    }
-
-    #[test]
     fn test_cache_invalidate_serialization() {
         let event = ClusterEvent::CacheInvalidate {
-            event_id: generate_event_id(),
+            event_id: nanoid::nanoid!(16),
             targets: vec![
                 CacheTarget::User {
                     user_id: "u1".to_string(),

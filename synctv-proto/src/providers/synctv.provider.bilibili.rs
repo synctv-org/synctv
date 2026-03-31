@@ -73,7 +73,7 @@ pub struct CheckQrRequest {
 pub struct QrStatusResponse {
     #[prost(enumeration = "QrLoginStatus", tag = "1")]
     pub status: i32,
-    /// "bilibili" when login succeeded and credentials are stored
+    /// Stored credential identifier returned after successful login
     #[prost(string, tag = "2")]
     pub server_id: ::prost::alloc::string::String,
 }
@@ -137,7 +137,7 @@ pub struct LoginSmsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LoginSmsResponse {
-    /// "bilibili" when login succeeded and credentials are stored
+    /// Stored credential identifier returned after successful login
     #[prost(string, tag = "1")]
     pub server_id: ::prost::alloc::string::String,
 }
@@ -169,7 +169,7 @@ pub struct UserInfoResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogoutRequest {
-    /// Which credential to unbind (default: "bilibili")
+    /// Which credential to unbind
     #[prost(string, tag = "1")]
     pub server_id: ::prost::alloc::string::String,
     /// Optional provider instance name

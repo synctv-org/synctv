@@ -301,7 +301,6 @@ mod tests {
             cluster_enabled: true,
             node_id: "bootstrap-k8s-env-order".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 16,
             publish_channel_capacity: 16,
             key_prefix: "test-k8s-env-order:".to_string(),

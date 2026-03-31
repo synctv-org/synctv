@@ -160,7 +160,11 @@ fn test_max_response_size_value() {
 
 mod ssrf_tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-    use synctv_common::ssrf::is_ip_blocked;
+    use synctv_common::ssrf::SsrfGuard;
+
+    fn is_ip_blocked(ip: &IpAddr) -> bool {
+        SsrfGuard::shared_default().is_ip_blocked(ip)
+    }
 
     #[test]
     fn test_blocked_ipv4_172_range_boundary() {

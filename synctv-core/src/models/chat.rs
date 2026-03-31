@@ -37,23 +37,6 @@ pub struct SendChatRequest {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatHistoryQuery {
-    pub room_id: RoomId,
-    pub limit: i32,
-    pub before: Option<DateTime<Utc>>,
-}
-
-impl Default for ChatHistoryQuery {
-    fn default() -> Self {
-        Self {
-            room_id: RoomId::from_string(String::new()),
-            limit: 100,
-            before: None,
-        }
-    }
-}
-
 /// Danmaku message (memory-only, not persisted)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DanmakuMessage {

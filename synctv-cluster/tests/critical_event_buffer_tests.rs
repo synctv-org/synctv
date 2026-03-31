@@ -8,6 +8,10 @@ use synctv_cluster::sync::events::ClusterEvent;
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::models::PermissionBits;
 
+fn event_id() -> String {
+    nanoid::nanoid!(16)
+}
+
 // ============================================================================
 // Test 1: is_critical returns true for KickUser
 // ============================================================================
@@ -16,7 +20,7 @@ use synctv_core::models::PermissionBits;
 fn test_kick_user_is_critical() {
     let user_id = UserId::new();
     let event = ClusterEvent::KickUser {
-        event_id: String::new(),
+        event_id: event_id(),
         user_id,
         reason: "test kick".to_string(),
         timestamp: chrono::Utc::now(),
@@ -33,7 +37,7 @@ fn test_kick_publisher_is_critical() {
     let room_id = RoomId::new();
     let media_id = MediaId::new();
     let event = ClusterEvent::KickPublisher {
-        event_id: String::new(),
+        event_id: event_id(),
         room_id,
         media_id,
         reason: "test kick publisher".to_string(),
@@ -54,7 +58,7 @@ fn test_kick_user_from_room_is_critical() {
     let user_id = UserId::new();
     let room_id = RoomId::new();
     let event = ClusterEvent::KickUserFromRoom {
-        event_id: String::new(),
+        event_id: event_id(),
         user_id,
         room_id,
         reason: "test kick from room".to_string(),
@@ -76,7 +80,7 @@ fn test_permission_changed_is_critical() {
     let changed_by = UserId::new();
     let room_id = RoomId::new();
     let event = ClusterEvent::PermissionChanged {
-        event_id: String::new(),
+        event_id: event_id(),
         room_id,
         target_user_id,
         target_username: "test_target".to_string(),
@@ -105,7 +109,7 @@ fn test_room_deleted_is_critical() {
     let room_id = RoomId::new();
     let deleted_by = UserId::new();
     let event = ClusterEvent::RoomDeleted {
-        event_id: String::new(),
+        event_id: event_id(),
         room_id,
         deleted_by,
         timestamp: chrono::Utc::now(),
@@ -125,7 +129,7 @@ fn test_user_left_is_critical() {
     let user_id = UserId::new();
     let room_id = RoomId::new();
     let event = ClusterEvent::UserLeft {
-        event_id: String::new(),
+        event_id: event_id(),
         user_id,
         room_id,
         username: "test_user".to_string(),
@@ -143,7 +147,7 @@ fn test_chat_message_is_not_critical() {
     let user_id = UserId::new();
     let room_id = RoomId::new();
     let event = ClusterEvent::ChatMessage {
-        event_id: String::new(),
+        event_id: event_id(),
         user_id,
         room_id,
         username: "test_user".to_string(),
@@ -167,7 +171,7 @@ fn test_playback_state_changed_is_not_critical() {
     let user_id = UserId::new();
     let room_id = RoomId::new();
     let event = ClusterEvent::PlaybackStateChanged {
-        event_id: String::new(),
+        event_id: event_id(),
         user_id,
         room_id: room_id.clone(),
         username: "test_user".to_string(),
@@ -189,7 +193,7 @@ fn test_room_created_is_not_critical() {
     let room_id = RoomId::new();
     let creator_id = UserId::new();
     let event = ClusterEvent::RoomCreated {
-        event_id: String::new(),
+        event_id: event_id(),
         room_id,
         room_name: "Test Room".to_string(),
         creator_id,
@@ -210,7 +214,7 @@ fn test_media_added_is_not_critical() {
     let user_id = UserId::new();
     let room_id = RoomId::new();
     let event = ClusterEvent::MediaAdded {
-        event_id: String::new(),
+        event_id: event_id(),
         user_id,
         room_id,
         username: "test_user".to_string(),
@@ -233,7 +237,7 @@ fn test_media_removed_is_not_critical() {
     let user_id = UserId::new();
     let room_id = RoomId::new();
     let event = ClusterEvent::MediaRemoved {
-        event_id: String::new(),
+        event_id: event_id(),
         user_id,
         room_id,
         username: "test_user".to_string(),

@@ -1050,14 +1050,9 @@ mod tests {
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
-        let provider_instance_manager = Arc::new(RemoteProviderManager::new(
-            Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
-                pool.clone(),
-            )),
-            None,
-            None,
-            "test:",
-        ));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+            synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+        )));
         let providers = ProviderSet {
             alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
             bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
@@ -1163,7 +1158,6 @@ mod tests {
                     cluster_enabled: false,
                     node_id: "test-node".to_string(),
                     dedup_window: Duration::from_secs(30),
-                    cleanup_interval: Duration::from_secs(30),
                     critical_channel_capacity: 8,
                     publish_channel_capacity: 8,
                     key_prefix: "test:".to_string(),
@@ -1261,14 +1255,9 @@ mod tests {
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
-        let provider_instance_manager = Arc::new(RemoteProviderManager::new(
-            Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
-                pool.clone(),
-            )),
-            None,
-            None,
-            "test:",
-        ));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+            synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+        )));
         let providers = ProviderSet {
             alist: Arc::new(AlistProvider::new(provider_instance_manager.clone())),
             bilibili: Arc::new(BilibiliProvider::new(provider_instance_manager.clone())),
@@ -1459,6 +1448,29 @@ mod tests {
             second.status(),
             StatusCode::TOO_MANY_REQUESTS,
             "provider login endpoints must share the stricter auth rate-limit bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bilibili_me_route_requires_post() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/providers/bilibili/me")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "Bilibili /me must require an explicit request body carrying server_id"
         );
     }
 

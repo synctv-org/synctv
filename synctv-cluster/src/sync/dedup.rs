@@ -27,46 +27,22 @@ pub struct DedupKey {
 
 impl DedupKey {
     /// Create a deduplication key from a cluster event.
-    ///
-    /// Uses the event's unique `event_id` (nanoid) as the primary dedup key
-    /// when available, falling back to content hashing for legacy events
-    /// without an `event_id`.
     #[must_use]
     pub fn from_event(event: &crate::sync::events::ClusterEvent) -> Self {
         let eid = event.event_id();
-        // If event_id is present and non-empty, use it as the sole differentiator
-        // to avoid hash collisions entirely.
-        let content_hash = if eid.is_empty() {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            if let Ok(json) = serde_json::to_string(event) {
-                json.hash(&mut hasher);
-            }
-            hasher.finish()
-        } else {
-            0
-        };
+        assert!(
+            !eid.is_empty(),
+            "cluster events must carry a non-empty event_id"
+        );
         Self {
             event_type: event.event_type().to_string(),
             room_id: event
                 .room_id()
                 .map_or_else(|| "global".to_string(), |id| id.as_str().to_string()),
-            user_id: if eid.is_empty() {
-                event
-                    .user_id()
-                    .map_or_else(|| "system".to_string(), |id| id.as_str().to_string())
-            } else {
-                // When event_id is present, embed it in the user_id field
-                // so each event gets a distinct key
-                String::new()
-            },
-            extra: if eid.is_empty() {
-                event.dedup_extra()
-            } else {
-                eid.to_string()
-            },
+            user_id: String::new(),
+            extra: eid.to_string(),
             timestamp_ms: event.timestamp().timestamp_millis(),
-            content_hash,
+            content_hash: 0,
         }
     }
 }
@@ -104,9 +80,8 @@ impl MessageDeduplicator {
     /// * `dedup_window` - How long to remember events for deduplication. Should
     ///   be at least 2x the maximum expected disconnection window (see
     ///   [`DEFAULT_DEDUP_TTL`] for rationale).
-    /// * `_cleanup_interval` - Ignored (moka handles cleanup internally), kept for API compatibility
     #[must_use]
-    pub fn new(dedup_window: Duration, _cleanup_interval: Duration) -> Self {
+    pub fn new(dedup_window: Duration) -> Self {
         let cache = moka::sync::Cache::builder()
             .time_to_live(dedup_window)
             .build();
@@ -120,7 +95,21 @@ impl MessageDeduplicator {
     /// See [`DEFAULT_DEDUP_TTL`] for the full rationale.
     #[must_use]
     pub fn with_defaults() -> Self {
-        Self::new(DEFAULT_DEDUP_TTL, Duration::from_mins(1))
+        Self::new(DEFAULT_DEDUP_TTL)
+    }
+
+    /// Get the number of tracked events
+    #[must_use]
+    pub fn len(&self) -> usize {
+        // Run pending tasks to get accurate count
+        self.cache.run_pending_tasks();
+        self.cache.entry_count() as usize
+    }
+
+    /// Check if there are any tracked events
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Check if an event should be processed (not a duplicate)
@@ -145,25 +134,6 @@ impl MessageDeduplicator {
     /// Mark an event as processed
     pub fn mark_processed(&self, key: DedupKey) {
         self.cache.insert(key, ());
-    }
-
-    /// Shutdown the deduplicator (no-op with moka, kept for API compatibility)
-    pub fn shutdown(&self) {
-        self.cache.invalidate_all();
-    }
-
-    /// Get the number of tracked events
-    #[must_use]
-    pub fn len(&self) -> usize {
-        // Run pending tasks to get accurate count
-        self.cache.run_pending_tasks();
-        self.cache.entry_count() as usize
-    }
-
-    /// Check if there are any tracked events
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// Clear all tracked events (for testing)
@@ -275,6 +245,23 @@ mod tests {
 
         assert!(dedup.should_process(&key));
         assert!(!dedup.should_process(&key));
+    }
+
+    #[test]
+    #[should_panic(expected = "cluster events must carry a non-empty event_id")]
+    fn test_dedup_from_event_rejects_empty_event_id() {
+        let event = crate::sync::events::ClusterEvent::ChatMessage {
+            event_id: String::new(),
+            room_id: RoomId::from_string("room1".to_string()),
+            user_id: UserId::from_string("user1".to_string()),
+            username: "test".to_string(),
+            message: "Hello".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        };
+
+        let _ = DedupKey::from_event(&event);
     }
 
     #[test]

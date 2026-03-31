@@ -808,7 +808,7 @@ async fn test_concurrent_speed_changes() {
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
     assert!(state.speed > 0.0, "Speed should be positive");
-    assert!(state.speed <= 16.0, "Speed should be <= max");
+    assert!(state.speed <= 4.0, "Speed should be <= max");
 }
 
 // ============================================================================

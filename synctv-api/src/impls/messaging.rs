@@ -2792,7 +2792,7 @@ impl StreamMessageHandler {
         // silently rewrite the server-side position by sending crafted progress
         // messages, effectively acting as an unauthorized seek.
         self.room_service
-            .check_permission(&self.room_id, &self.user_id, PermissionBits::SEEK)
+            .check_permission(&self.room_id, &self.user_id, PermissionBits::PLAY_CONTROL)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -2991,18 +2991,16 @@ impl StreamMessageHandler {
     }
 }
 
-/// Convert cluster event to zero or more server messages.
-///
-/// Returns a `Vec` because some events (e.g. `MediaRemovedBatch`) expand into
-/// multiple individual client messages.
+/// Convert a cluster event into one or more server messages.
 fn cluster_event_to_server_messages(
     event: &synctv_cluster::sync::ClusterEvent,
     room_id: &str,
 ) -> Vec<ServerMessage> {
     use crate::proto::client::server_message::Message;
     use crate::proto::client::{
-        ChatMessageReceive, ErrorMessage, MediaUpdated, PlaybackState, PlaybackStateChanged,
-        PlaylistReordered, RoomSettingsChanged, ServerMessage, UserJoinedRoom, UserLeftRoom,
+        ChatMessageReceive, ErrorMessage, MediaRemovedBatch, MediaUpdated, PlaybackState,
+        PlaybackStateChanged, PlaylistReordered, RoomSettingsChanged, ServerMessage,
+        UserJoinedRoom, UserLeftRoom,
     };
     use synctv_cluster::sync::ClusterEvent;
     use synctv_proto::common::RoomMember;
@@ -3120,22 +3118,14 @@ fn cluster_event_to_server_messages(
             user_id,
             username,
             ..
-        } => {
-            // Expand batch removal into individual MediaRemoved messages for
-            // backward compatibility. Clients receive one message per item, but
-            // only one Redis pub/sub message was sent (O(1) network traffic).
-            media_ids
-                .iter()
-                .map(|mid| ServerMessage {
-                    message: Some(Message::MediaRemoved(crate::proto::client::MediaRemoved {
-                        room_id: room_id.to_string(),
-                        media_id: mid.as_str().to_string(),
-                        removed_by: username.clone(),
-                        removed_by_user_id: user_id.as_str().to_string(),
-                    })),
-                })
-                .collect()
-        }
+        } => vec![ServerMessage {
+            message: Some(Message::MediaRemovedBatch(MediaRemovedBatch {
+                room_id: room_id.to_string(),
+                media_ids: media_ids.iter().map(|mid| mid.as_str().to_string()).collect(),
+                removed_by: username.clone(),
+                removed_by_user_id: user_id.as_str().to_string(),
+            })),
+        }],
         ClusterEvent::MediaUpdated {
             media_id,
             media_title,
@@ -3342,8 +3332,7 @@ fn cluster_event_to_server_messages(
         | ClusterEvent::KickUserFromRoom { .. }
         | ClusterEvent::RoomCreated { .. }
         | ClusterEvent::CacheInvalidate { .. }
-        | ClusterEvent::UserNotification { .. }
-        | ClusterEvent::Unknown => {
+        | ClusterEvent::UserNotification { .. } => {
             // Admin/internal events are handled by other channels,
             // not forwarded to WebSocket clients via the room event path
             vec![]
@@ -3869,7 +3858,6 @@ mod tests {
                     cluster_enabled: false,
                     node_id: node_id.to_string(),
                     dedup_window: Duration::from_mins(1),
-                    cleanup_interval: Duration::from_secs(10),
                     critical_channel_capacity: 100,
                     publish_channel_capacity: 1000,
                     key_prefix: "synctv:".to_string(),
@@ -3904,7 +3892,6 @@ mod tests {
                     cluster_enabled: false,
                     node_id: node_id.to_string(),
                     dedup_window: Duration::from_mins(1),
-                    cleanup_interval: Duration::from_secs(10),
                     critical_channel_capacity: 100,
                     publish_channel_capacity: 1000,
                     key_prefix: "synctv:".to_string(),
@@ -4649,6 +4636,33 @@ mod tests {
                 assert_eq!(mr.removed_by, "frank");
             }
             other => panic!("Expected MediaRemoved, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_media_removed_batch_event_conversion() {
+        let event = ClusterEvent::MediaRemovedBatch {
+            event_id: "evt6_batch".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "frank".to_string(),
+            media_ids: vec![
+                MediaId::from_string("media_a".to_string()),
+                MediaId::from_string("media_b".to_string()),
+            ],
+            timestamp: now(),
+        };
+
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
+            Some(Message::MediaRemovedBatch(batch)) => {
+                assert_eq!(batch.room_id, "room_test");
+                assert_eq!(batch.media_ids, vec!["media_a", "media_b"]);
+                assert_eq!(batch.removed_by, "frank");
+                assert_eq!(batch.removed_by_user_id, "user_test");
+            }
+            other => panic!("Expected MediaRemovedBatch, got: {other:?}"),
         }
     }
 

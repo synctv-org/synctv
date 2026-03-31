@@ -631,13 +631,14 @@ mod tests {
     fn roundtrip_bilibili_parse_request() {
         let req = crate::providers::bilibili::ParseRequest {
             url: "https://bilibili.com/video/BV123".into(),
-            server_id: "bilibili".into(),
+            server_id:
+                "7dc8643f29f86b5c8e0d26c6d4f1d4648d5d5c2db9c9c18e4f6e7f2b0a6b4891".into(),
             instance_name: "bilibili_main".into(),
         };
         let bytes = req.encode_to_vec();
         let decoded = crate::providers::bilibili::ParseRequest::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.url, req.url);
-        assert_eq!(decoded.server_id, "bilibili");
+        assert_eq!(decoded.server_id, req.server_id);
     }
 
     #[test]

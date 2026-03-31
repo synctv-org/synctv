@@ -185,7 +185,7 @@ async fn test_edit_media_sends_notification() {
     let provider_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
     let provider = synctv_core::models::ProviderInstance {
         name: "direct_url".to_string(),
-        endpoint: "grpc://localhost:50051".to_string(),
+        endpoint: "http://localhost:50051".to_string(),
         comment: None,
         jwt_secret: None,
         custom_ca: None,
@@ -201,12 +201,8 @@ async fn test_edit_media_sends_notification() {
 
     let provider_instance_repo =
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
-    let remote_provider_manager = synctv_core::service::RemoteProviderManager::new(
-        Arc::new(provider_instance_repo),
-        None, // No Redis
-        None, // No cluster manager
-        "",
-    );
+    let remote_provider_manager =
+        synctv_core::service::RemoteProviderManager::new(Arc::new(provider_instance_repo));
     let providers_manager = Arc::new(ProvidersManager::new(Arc::new(remote_provider_manager)));
 
     // Register the "direct_url" provider in the in-memory instances map
@@ -377,7 +373,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
     let provider_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
     let provider = synctv_core::models::ProviderInstance {
         name: "direct_url".to_string(),
-        endpoint: "grpc://localhost:50051".to_string(),
+        endpoint: "http://localhost:50051".to_string(),
         comment: None,
         jwt_secret: None,
         custom_ca: None,
@@ -393,12 +389,8 @@ async fn test_edit_media_without_notification_service_succeeds() {
 
     let provider_instance_repo =
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
-    let remote_provider_manager = synctv_core::service::RemoteProviderManager::new(
-        Arc::new(provider_instance_repo),
-        None, // No Redis
-        None, // No cluster manager
-        "",
-    );
+    let remote_provider_manager =
+        synctv_core::service::RemoteProviderManager::new(Arc::new(provider_instance_repo));
     let providers_manager = Arc::new(ProvidersManager::new(Arc::new(remote_provider_manager)));
 
     // Register the "direct_url" provider in the in-memory instances map

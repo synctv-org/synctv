@@ -210,7 +210,7 @@ fn test_proxy_m3u8_manifest_size_limit() {
     use std::net::IpAddr;
     let ip: IpAddr = "10.0.0.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Private IP should be blocked by SSRF ACL"
     );
 }
@@ -270,7 +270,7 @@ async fn test_redirect_single_hop_via_wiremock() {
 fn test_public_ip_allowed_by_acl() {
     let ip: std::net::IpAddr = "93.184.216.34".parse().unwrap();
     assert!(
-        !synctv_common::ssrf::is_ip_blocked(&ip),
+        !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Public IP should be allowed by SSRF ACL"
     );
 }
@@ -281,7 +281,7 @@ async fn test_link_local_blocked_via_proxy() {
     use std::net::IpAddr;
     let ip: IpAddr = "169.254.169.254".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Link-local/cloud metadata IP should be blocked"
     );
 }

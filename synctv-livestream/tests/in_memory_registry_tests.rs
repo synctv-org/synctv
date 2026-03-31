@@ -21,7 +21,7 @@ async fn test_register_publisher_success() {
 
     let info = publisher.unwrap();
     assert_eq!(info.node_id, "node1");
-    assert_eq!(info.grpc_address, "localhost:50051");
+    assert_eq!(info.api_address, "localhost:50051");
     assert_eq!(info.user_id, "user1");
     assert_eq!(info.epoch, 1);
 }
@@ -273,7 +273,7 @@ async fn test_epoch_does_not_reset_after_many_other_streams_churn() {
 async fn test_register_publisher_via_register_publisher_method() {
     let registry = InMemoryStreamRegistry::new();
 
-    // Test the register_publisher method (which now takes grpc_address)
+    // Test the register_publisher method (which now takes api_address)
     let registered = registry
         .register_publisher("room1", "media1", "node1", "live", "localhost:50051")
         .await
@@ -286,7 +286,7 @@ async fn test_register_publisher_via_register_publisher_method() {
         .unwrap()
         .unwrap();
     assert_eq!(info.node_id, "node1");
-    assert_eq!(info.grpc_address, "localhost:50051");
+    assert_eq!(info.api_address, "localhost:50051");
     assert_eq!(info.app_name, "live");
 }
 

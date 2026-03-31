@@ -531,6 +531,7 @@ impl UserRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core_testing::create_test_pool;
     use crate::models::SignupMethod;
 
     #[test]
@@ -629,8 +630,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_user() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = UserRepository::new(pool.clone());
         let user = User::new(
             "testuser".into(),
             Some("test@example.com".into()),
@@ -645,8 +646,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_user_duplicate_username_returns_already_exists() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = UserRepository::new(pool.clone());
         let user1 = User::new(
             "same_name".into(),
             Some("a@b.com".into()),
@@ -667,8 +668,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_soft_delete_user() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let repo = UserRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = UserRepository::new(pool.clone());
         let user = User::new("deleteme".into(), None, "hash".into(), SignupMethod::Email);
         let created = repo.create(&user).await.unwrap();
         assert!(repo.delete(&created.id).await.unwrap());

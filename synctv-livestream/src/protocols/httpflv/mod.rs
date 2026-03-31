@@ -223,7 +223,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "node-local".to_string(),
-                    grpc_address: "127.0.0.1:50051".to_string(),
+                    api_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: String::new(),
                     started_at: Utc::now(),
@@ -315,7 +315,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "node-remote".to_string(),
-                    grpc_address: String::new(),
+                    api_address: String::new(),
                     app_name: "live".to_string(),
                     user_id: String::new(),
                     started_at: Utc::now(),
@@ -366,7 +366,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "node-local".to_string(),
-                    grpc_address: "127.0.0.1:50051".to_string(),
+                    api_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: String::new(),
                     started_at: Utc::now(),

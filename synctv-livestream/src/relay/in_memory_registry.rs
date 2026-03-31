@@ -52,7 +52,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         media_id: &str,
         node_id: &str,
         app_name: &str,
-        grpc_address: &str,
+        api_address: &str,
     ) -> Result<bool> {
         use std::collections::hash_map::Entry;
         let mut publishers = self.publishers.lock().await;
@@ -65,7 +65,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
                 vacant.insert(PublisherInfo {
                     node_id: node_id.to_string(),
-                    grpc_address: grpc_address.to_string(),
+                    api_address: api_address.to_string(),
                     app_name: app_name.to_string(),
                     user_id: String::new(),
                     started_at: Utc::now(),
@@ -82,7 +82,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         media_id: &str,
         node_id: &str,
         user_id: &str,
-        grpc_address: &str,
+        api_address: &str,
     ) -> Result<bool> {
         use std::collections::hash_map::Entry;
         let mut publishers = self.publishers.lock().await;
@@ -95,7 +95,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
                 vacant.insert(PublisherInfo {
                     node_id: node_id.to_string(),
-                    grpc_address: grpc_address.to_string(),
+                    api_address: api_address.to_string(),
                     app_name: "live".to_string(),
                     user_id: user_id.to_string(),
                     started_at: Utc::now(),

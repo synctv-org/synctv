@@ -18,7 +18,7 @@ impl ClientApiImpl {
 
         // Check membership and add media permission
         self.room_service
-            .check_permission(&rid, &uid, PermissionBits::ADD_MEDIA)
+            .check_permission(&rid, &uid, PermissionBits::ADD_MOVIE)
             .await
             .map_err(Self::map_room_access_error)?;
 

@@ -518,40 +518,40 @@ async fn test_stream_subscriber_guard_normal_drop() {
 // ========== PublisherInfo validation tests ==========
 
 #[tokio::test]
-async fn test_publisher_info_validate_grpc_address() {
+async fn test_publisher_info_validate_api_address() {
     use chrono::Utc;
     use synctv_livestream::relay::PublisherInfo;
 
     let valid = PublisherInfo {
         node_id: "node1".to_string(),
-        grpc_address: "10.0.0.1:50051".to_string(),
+        api_address: "10.0.0.1:50051".to_string(),
         app_name: "live".to_string(),
         user_id: "user1".to_string(),
         started_at: Utc::now(),
         epoch: 1,
     };
-    assert!(valid.validate_grpc_address().is_ok());
-    assert_eq!(valid.validate_grpc_address().unwrap(), "10.0.0.1:50051");
+    assert!(valid.validate_api_address().is_ok());
+    assert_eq!(valid.validate_api_address().unwrap(), "10.0.0.1:50051");
 
     let empty = PublisherInfo {
         node_id: "node1".to_string(),
-        grpc_address: String::new(),
+        api_address: String::new(),
         app_name: "live".to_string(),
         user_id: "user1".to_string(),
         started_at: Utc::now(),
         epoch: 1,
     };
-    assert!(empty.validate_grpc_address().is_err());
+    assert!(empty.validate_api_address().is_err());
 
     let whitespace = PublisherInfo {
         node_id: "node1".to_string(),
-        grpc_address: "   ".to_string(),
+        api_address: "   ".to_string(),
         app_name: "live".to_string(),
         user_id: "user1".to_string(),
         started_at: Utc::now(),
         epoch: 1,
     };
-    assert!(whitespace.validate_grpc_address().is_err());
+    assert!(whitespace.validate_api_address().is_err());
 }
 
 // ========== PublisherInfo serialization round-trip ==========
@@ -563,7 +563,7 @@ async fn test_publisher_info_serde_round_trip() {
 
     let info = PublisherInfo {
         node_id: "node-abc".to_string(),
-        grpc_address: "10.0.0.1:50051".to_string(),
+        api_address: "10.0.0.1:50051".to_string(),
         app_name: "live".to_string(),
         user_id: "user-123".to_string(),
         started_at: Utc::now(),
@@ -571,10 +571,18 @@ async fn test_publisher_info_serde_round_trip() {
     };
 
     let json = serde_json::to_string(&info).unwrap();
+    assert!(
+        json.contains("\"api_address\""),
+        "wire format must use api_address: {json}"
+    );
+    assert!(
+        !json.contains("\"grpc_address\""),
+        "wire format must not emit grpc_address: {json}"
+    );
     let deserialized: PublisherInfo = serde_json::from_str(&json).unwrap();
 
     assert_eq!(info.node_id, deserialized.node_id);
-    assert_eq!(info.grpc_address, deserialized.grpc_address);
+    assert_eq!(info.api_address, deserialized.api_address);
     assert_eq!(info.epoch, deserialized.epoch);
     assert_eq!(info.user_id, deserialized.user_id);
 }
@@ -593,9 +601,28 @@ async fn test_publisher_info_serde_defaults() {
     }"#;
 
     let info: PublisherInfo = serde_json::from_str(json).unwrap();
-    assert_eq!(info.grpc_address, "");
+    assert_eq!(info.api_address, "");
     assert_eq!(info.user_id, "");
     assert_eq!(info.epoch, 0);
+}
+
+#[tokio::test]
+async fn test_publisher_info_deserializes_api_address_field() {
+    use synctv_livestream::relay::PublisherInfo;
+
+    let json = r#"{
+        "node_id": "node1",
+        "api_address": "10.0.0.1:50051",
+        "app_name": "live",
+        "user_id": "user1",
+        "started_at": "2024-01-01T00:00:00Z",
+        "epoch": 7
+    }"#;
+
+    let info: PublisherInfo = serde_json::from_str(json).unwrap();
+    assert_eq!(info.api_address, "10.0.0.1:50051");
+    assert_eq!(info.user_id, "user1");
+    assert_eq!(info.epoch, 7);
 }
 
 // ========== HLS Cleanup Task Leak Tests ==========

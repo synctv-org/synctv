@@ -1077,7 +1077,7 @@ pub struct PlaybackProgressReport {
 pub struct ServerMessage {
     #[prost(
         oneof = "server_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 25, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
     )]
     pub message: ::core::option::Option<server_message::Message>,
 }
@@ -1104,6 +1104,8 @@ pub mod server_message {
         MediaAdded(super::MediaAdded),
         #[prost(message, tag = "9")]
         MediaRemoved(super::MediaRemoved),
+        #[prost(message, tag = "25")]
+        MediaRemovedBatch(super::MediaRemovedBatch),
         #[prost(message, tag = "10")]
         PermissionChanged(super::PermissionChanged),
         #[prost(message, tag = "11")]
@@ -1282,11 +1284,8 @@ pub struct GetChatHistoryRequest {
     /// Max page size (clamped to 100 server-side). Default: 50.
     #[prost(int32, tag = "1")]
     pub limit: i32,
-    /// Legacy timestamp cursor: return messages created before this UNIX timestamp.
-    #[prost(int64, tag = "2")]
-    pub before: i64,
-    /// Preferred cursor: return messages with ID \< cursor (opaque, returned by server).
-    #[prost(string, tag = "3")]
+    /// Opaque keyset cursor returned by the server as "\<rfc3339_created_at>|\<message_id>".
+    #[prost(string, tag = "2")]
     pub cursor: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1640,6 +1639,20 @@ pub struct MediaRemoved {
     pub room_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub media_id: ::prost::alloc::string::String,
+    /// Username
+    #[prost(string, tag = "4")]
+    pub removed_by: ::prost::alloc::string::String,
+    /// User ID
+    #[prost(string, tag = "5")]
+    pub removed_by_user_id: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MediaRemovedBatch {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "2")]
+    pub media_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Username
     #[prost(string, tag = "4")]
     pub removed_by: ::prost::alloc::string::String,

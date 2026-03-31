@@ -385,6 +385,7 @@ async fn init_sentinel(
 #[cfg(test)]
 mod concurrency_tests {
     use super::*;
+    use synctv_core_testing::start_redis_with_client;
 
     /// M15: Verify that the sentinel health check uses a read lock (clone) for PING,
     /// not a write lock. We test this by confirming that multiple concurrent readers
@@ -410,10 +411,12 @@ mod concurrency_tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_conn_snapshot_returns_clone() {
-        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
-        let conn = infra.connection_manager().await;
+        let (_redis, client) = start_redis_with_client().await;
+        let conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
         let handles = RedisHandles {
-            client: redis::Client::open("redis://127.0.0.1:6379").unwrap(),
+            client,
             conn: Arc::new(RwLock::new(conn)),
         };
 

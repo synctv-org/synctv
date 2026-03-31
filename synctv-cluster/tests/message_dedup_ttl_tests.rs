@@ -27,10 +27,7 @@ fn make_key(event_type: &str, ts: i64) -> DedupKey {
 /// We must actually sleep (wall clock) since moka uses `std::time`.
 #[tokio::test]
 async fn test_dedup_ttl_expiry_allows_reprocessing() {
-    let dedup = MessageDeduplicator::new(
-        Duration::from_secs(1), // 1 second dedup window
-        Duration::from_mins(1), // cleanup interval (unused by moka)
-    );
+    let dedup = MessageDeduplicator::new(Duration::from_secs(1)); // 1 second dedup window
 
     let key = make_key("chat", 1000);
 
@@ -52,7 +49,7 @@ async fn test_dedup_ttl_expiry_allows_reprocessing() {
                    // Actually, clear() invalidates all entries. Let's use a different approach:
 
     // Re-create with the same short TTL
-    let dedup2 = MessageDeduplicator::new(Duration::from_secs(1), Duration::from_mins(1));
+    let dedup2 = MessageDeduplicator::new(Duration::from_secs(1));
 
     let key2 = make_key("chat", 2000);
 
@@ -73,14 +70,8 @@ async fn test_dedup_ttl_expiry_allows_reprocessing() {
 /// Verify that entries with different TTL windows behave correctly.
 #[tokio::test]
 async fn test_dedup_short_ttl_vs_long_ttl() {
-    let short_dedup = MessageDeduplicator::new(
-        Duration::from_millis(500), // 500ms window
-        Duration::from_mins(1),
-    );
-    let long_dedup = MessageDeduplicator::new(
-        Duration::from_mins(1), // 60s window
-        Duration::from_mins(1),
-    );
+    let short_dedup = MessageDeduplicator::new(Duration::from_millis(500)); // 500ms window
+    let long_dedup = MessageDeduplicator::new(Duration::from_mins(1)); // 60s window
 
     let key = make_key("chat", 3000);
 
@@ -111,7 +102,7 @@ async fn test_dedup_short_ttl_vs_long_ttl() {
 /// Verify that `mark_processed` also respects TTL.
 #[tokio::test]
 async fn test_mark_processed_respects_ttl() {
-    let dedup = MessageDeduplicator::new(Duration::from_secs(1), Duration::from_mins(1));
+    let dedup = MessageDeduplicator::new(Duration::from_secs(1));
 
     let key = make_key("playback", 4000);
 
@@ -137,10 +128,7 @@ async fn test_concurrent_should_process_per_ttl_window() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    let dedup = Arc::new(MessageDeduplicator::new(
-        Duration::from_secs(1),
-        Duration::from_mins(1),
-    ));
+    let dedup = Arc::new(MessageDeduplicator::new(Duration::from_secs(1)));
     let key = make_key("sync", 5000);
 
     // Window 1: 10 concurrent callers
@@ -206,7 +194,7 @@ async fn test_concurrent_should_process_per_ttl_window() {
 /// `len()` and `is_empty()` should reflect TTL expiry.
 #[tokio::test]
 async fn test_len_reflects_ttl_expiry() {
-    let dedup = MessageDeduplicator::new(Duration::from_secs(1), Duration::from_mins(1));
+    let dedup = MessageDeduplicator::new(Duration::from_secs(1));
 
     assert!(dedup.is_empty());
     assert_eq!(dedup.len(), 0);

@@ -638,8 +638,8 @@ async fn test_list_by_room_initial_load_has_partition_lower_bound() {
     let msg = make_chat_message(&room.id, &user.id, "recent message");
     chat_repo.create(&msg).await.unwrap();
 
-    // Initial load (no cursor / before parameter) should only return recent messages
-    let messages = chat_repo.list_by_room(&room.id, None, 100).await.unwrap();
+    // Initial load (no cursor) should only return recent messages
+    let (messages, next_cursor) = chat_repo.list_by_room_cursor(&room.id, None, 100).await.unwrap();
 
     // The old message (>90 days) should NOT be returned due to partition pruning filter
     assert_eq!(
@@ -648,6 +648,10 @@ async fn test_list_by_room_initial_load_has_partition_lower_bound() {
         "Initial load should only return messages within 90-day window"
     );
     assert_eq!(messages[0].content, "recent message");
+    assert!(
+        next_cursor.is_none(),
+        "Single-message initial load should not expose a next cursor"
+    );
 }
 
 /// Verify that list_by_room_cursor (initial load, no cursor) includes a created_at

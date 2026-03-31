@@ -75,14 +75,6 @@ impl SettingsRepository {
         })
     }
 
-    /// Get a single setting by key with version for optimistic locking (Task #45)
-    ///
-    /// This is an alias for `get()` but makes the intent clearer when
-    /// the caller plans to use optimistic locking.
-    pub async fn get_with_version(&self, key: &str) -> Result<SettingsGroup> {
-        self.get(key).await
-    }
-
     /// Update a setting value by key
     ///
     /// A database trigger on the `settings` table automatically sends a

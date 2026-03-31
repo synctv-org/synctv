@@ -89,14 +89,14 @@ async fn test_reregister_all_publishers_empty() {
 }
 
 #[tokio::test]
-async fn test_with_grpc_address() {
+async fn test_with_api_address() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let manager =
         synctv_livestream::relay::PublisherManager::new(registry, "test-node".to_string(), tx)
-            .with_grpc_address("10.0.0.1:50051".to_string());
+            .with_api_address("10.0.0.1:50051".to_string());
 
-    // Manager should be created successfully with grpc_address
+    // Manager should be created successfully with api_address
     assert_eq!(manager.lag_event_count(), 0);
 }
 

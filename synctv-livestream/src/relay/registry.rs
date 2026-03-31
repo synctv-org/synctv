@@ -60,13 +60,14 @@ const _: () = assert!(
 pub struct PublisherInfo {
     /// Node ID of the publisher
     pub node_id: String,
-    /// gRPC address of the publisher node (e.g., "10.0.0.1:50051").
-    /// Used by pull streams to connect to the publisher.
+    /// Shared API address of the publisher node (e.g., "10.0.0.1:8080").
+    /// Used by pull streams to connect to the publisher over gRPC on the
+    /// shared single-port listener.
     ///
     /// **Must not be empty** when the publisher is used for cross-node proxying.
-    /// Use [`PublisherInfo::validate_grpc_address`] before connecting.
+    /// Use [`PublisherInfo::validate_api_address`] before connecting.
     #[serde(default)]
-    pub grpc_address: String,
+    pub api_address: String,
     /// RTMP app name
     pub app_name: String,
     /// User ID of the publisher (for reverse-index lookups)
@@ -82,18 +83,19 @@ pub struct PublisherInfo {
 }
 
 impl PublisherInfo {
-    /// Validate that `grpc_address` is set and non-empty.
+    /// Validate that `api_address` is set and non-empty.
     ///
     /// Returns `Err` if the address is empty, which would happen if the publisher
-    /// registered without configuring a gRPC listen address (misconfiguration).
-    pub fn validate_grpc_address(&self) -> Result<&str> {
-        if self.grpc_address.trim().is_empty() {
+    /// registered without configuring its shared API listen address
+    /// (misconfiguration).
+    pub fn validate_api_address(&self) -> Result<&str> {
+        if self.api_address.trim().is_empty() {
             return Err(anyhow!(
-                "PublisherInfo for node={} has empty grpc_address (room/media stream cannot be proxied)",
+                "PublisherInfo for node={} has empty api_address (room/media stream cannot be proxied)",
                 self.node_id
             ));
         }
-        Ok(&self.grpc_address)
+        Ok(&self.api_address)
     }
 }
 
@@ -102,12 +104,12 @@ impl PublisherInfo {
 /// **Role**: Publisher Ownership -- enforces single-publisher-per-media and provides
 /// publisher discovery for cross-node gRPC relay. Used by the livestream layer to:
 /// 1. Atomically register a publisher (prevents duplicate publishers for the same media)
-/// 2. Look up the publisher's node/gRPC address for cross-node relay
+/// 2. Look up the publisher's node/API address for cross-node relay
 /// 3. Manage publisher TTL via heartbeat for crash detection
 ///
 /// **Distinction from `synctv_cluster::sync::StreamRegistry`**:
 /// - This registry tracks *publisher ownership* (who is publishing, on which node,
-///   with what gRPC address, at what epoch) using `room_id/media_id` keys.
+///   with what API address, at what epoch) using `room_id/media_id` keys.
 /// - The cluster stream registry tracks *stream presence* for routing/discovery
 ///   using app/stream identifiers.
 /// - Both use Redis; this one is Redis-only (no local cache) because publisher
@@ -183,9 +185,9 @@ impl StreamRegistry {
         media_id: &str,
         node_id: &str,
         _app_name: &str,
-        grpc_address: &str,
+        api_address: &str,
     ) -> anyhow::Result<bool> {
-        self.try_register_publisher_with_user(room_id, media_id, node_id, "", grpc_address)
+        self.try_register_publisher_with_user(room_id, media_id, node_id, "", api_address)
             .await
     }
 
@@ -196,9 +198,9 @@ impl StreamRegistry {
         room_id: &str,
         media_id: &str,
         node_id: &str,
-        grpc_address: &str,
+        api_address: &str,
     ) -> anyhow::Result<bool> {
-        self.try_register_publisher_with_user(room_id, media_id, node_id, "", grpc_address)
+        self.try_register_publisher_with_user(room_id, media_id, node_id, "", api_address)
             .await
     }
 
@@ -210,21 +212,21 @@ impl StreamRegistry {
     ///
     /// # Errors
     ///
-    /// Returns an error if `grpc_address` is empty, as cross-node proxying requires
-    /// a valid gRPC address.
+    /// Returns an error if `api_address` is empty, as cross-node proxying requires
+    /// a valid shared API address.
     pub async fn try_register_publisher_with_user(
         &self,
         room_id: &str,
         media_id: &str,
         node_id: &str,
         user_id: &str,
-        grpc_address: &str,
+        api_address: &str,
     ) -> anyhow::Result<bool> {
-        // Validate grpc_address at registration time (not usage time)
-        // This ensures publishers cannot register without a valid gRPC address
-        if grpc_address.trim().is_empty() {
+        // Validate api_address at registration time (not usage time)
+        // This ensures publishers cannot register without a valid shared API address.
+        if api_address.trim().is_empty() {
             return Err(anyhow!(
-                "Cannot register publisher for node={node_id} with empty grpc_address (room={room_id}, media={media_id})"
+                "Cannot register publisher for node={node_id} with empty api_address (room={room_id}, media={media_id})"
             ));
         }
 
@@ -235,7 +237,7 @@ impl StreamRegistry {
         // Create PublisherInfo template (epoch will be filled by Lua script)
         let info = PublisherInfo {
             node_id: node_id.to_string(),
-            grpc_address: grpc_address.to_string(),
+            api_address: api_address.to_string(),
             app_name: "live".to_string(),
             user_id: user_id.to_string(),
             started_at: Utc::now(),
@@ -410,7 +412,7 @@ impl StreamRegistry {
     }
 
     /// Epoch-validated unregister: only deletes if the stored epoch matches the expected epoch.
-    /// If `expected_epoch` is None, deletes unconditionally (backwards compatible).
+    /// If `expected_epoch` is None, deletes unconditionally.
     ///
     /// This prevents a race where publisher A dies, publisher B registers, then
     /// publisher A's delayed cleanup incorrectly removes publisher B's entry.
@@ -982,7 +984,7 @@ mod tests {
         let (_container, _client, redis) = setup_redis().await;
         let registry = StreamRegistry::new(redis);
 
-        // First registration should succeed (use with_user variant with grpc_address)
+        // First registration should succeed (use with_user variant with api_address)
         let registered = registry
             .try_register_publisher_with_user(
                 "room123",
@@ -1001,7 +1003,7 @@ mod tests {
 
         let pub_info = publisher.unwrap();
         assert_eq!(pub_info.node_id, "node1");
-        assert_eq!(pub_info.grpc_address, "localhost:50051");
+        assert_eq!(pub_info.api_address, "localhost:50051");
 
         // Cleanup
         registry
@@ -1289,7 +1291,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(publisher.node_id, "node1");
-        assert_eq!(publisher.grpc_address, "localhost:50051");
+        assert_eq!(publisher.api_address, "localhost:50051");
         assert!(publisher.started_at <= chrono::Utc::now());
 
         // Cleanup

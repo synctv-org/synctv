@@ -240,12 +240,8 @@ impl RoomService {
         let provider_instance_repo = Arc::new(crate::repository::ProviderInstanceRepository::new(
             pool.clone(),
         ));
-        let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(
-            provider_instance_repo,
-            None,
-            None,
-            "",
-        ));
+        let provider_instance_manager =
+            Arc::new(crate::service::RemoteProviderManager::new(provider_instance_repo));
         let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
         Self::new_with_providers(pool, user_service, providers_manager)
     }
@@ -1357,7 +1353,7 @@ impl RoomService {
     ) -> Result<Room> {
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::UPDATE_ROOM_SETTINGS)
+            .check_permission(&room_id, &user_id, PermissionBits::SET_ROOM_SETTINGS)
             .await?;
 
         // Validate permission escalation
@@ -1526,7 +1522,7 @@ impl RoomService {
         Ok(result)
     }
 
-    /// Update single room setting by key (requires `UPDATE_ROOM_SETTINGS` permission)
+    /// Update single room setting by key (requires `SET_ROOM_SETTINGS` permission)
     ///
     /// The flow is fully generic -- no per-setting special cases here:
     /// 1. Permission check
@@ -1544,7 +1540,7 @@ impl RoomService {
 
         // 1. Permission check
         self.permission_service
-            .check_permission(room_id, user_id, PermissionBits::UPDATE_ROOM_SETTINGS)
+            .check_permission(room_id, user_id, PermissionBits::SET_ROOM_SETTINGS)
             .await?;
 
         // 2. Validate via registry (type parsing + value constraints from macro validators)
@@ -1627,7 +1623,7 @@ impl RoomService {
     /// Reset room settings to default values with optimistic locking.
     pub async fn reset_room_settings(&self, room_id: &RoomId, user_id: &UserId) -> Result<String> {
         self.permission_service
-            .check_permission(room_id, user_id, PermissionBits::UPDATE_ROOM_SETTINGS)
+            .check_permission(room_id, user_id, PermissionBits::SET_ROOM_SETTINGS)
             .await?;
 
         let default_settings = RoomSettings::default();
@@ -1894,12 +1890,12 @@ impl RoomService {
 
     /// Update room description.
     ///
-    /// Requires `UPDATE_ROOM_SETTINGS` permission.
+    /// Requires `SET_ROOM_SETTINGS` permission.
     ///
     /// # Errors
     ///
     /// - `Error::InvalidInput` - Description exceeds 500 characters
-    /// - `Error::Authentication` - User lacks `UPDATE_ROOM_SETTINGS` permission
+    /// - `Error::Authentication` - User lacks `SET_ROOM_SETTINGS` permission
     pub async fn update_room_description(
         &self,
         room_id: &RoomId,
@@ -1914,7 +1910,7 @@ impl RoomService {
 
         // Check permission
         self.permission_service
-            .check_permission(room_id, user_id, PermissionBits::UPDATE_ROOM_SETTINGS)
+            .check_permission(room_id, user_id, PermissionBits::SET_ROOM_SETTINGS)
             .await?;
 
         let room = self
@@ -2474,20 +2470,7 @@ impl RoomService {
 
     // ========== Chat Operations ==========
 
-    /// Get chat history for a room (legacy timestamp cursor)
-    pub async fn get_chat_history(
-        &self,
-        room_id: &RoomId,
-        before: Option<DateTime<Utc>>,
-        limit: i32,
-    ) -> Result<Vec<ChatMessage>> {
-        self.chat_repo.list_by_room(room_id, before, limit).await
-    }
-
     /// Get chat history using keyset (cursor) pagination.
-    ///
-    /// Prefer this over [`get_chat_history`] for large rooms — it avoids the
-    /// O(N) timestamp scan by using `(created_at, id)` composite keyset pagination.
     ///
     /// Returns `(messages, next_cursor)`.
     pub async fn get_chat_history_cursor(

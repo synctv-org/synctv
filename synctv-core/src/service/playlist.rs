@@ -122,7 +122,7 @@ impl PlaylistService {
 
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
+            .check_permission(&room_id, &user_id, PermissionBits::ADD_MOVIE)
             .await?;
 
         // Verify parent exists and belongs to room

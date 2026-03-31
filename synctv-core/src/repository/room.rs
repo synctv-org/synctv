@@ -609,6 +609,7 @@ impl RoomRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core_testing::create_test_pool;
 
     #[test]
     fn test_build_room_list_conditions_no_filters() {
@@ -770,9 +771,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner user first (rooms have FK to users)
         let owner = UserFixture::new().with_username("room_owner").build();
@@ -877,8 +878,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_nonexistent_room() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let room_repo = RoomRepository::new(pool.clone());
 
         let room_id = RoomId::from_string("nonexistent".to_string());
         let result = room_repo.get_by_id(&room_id).await.unwrap();
@@ -892,9 +893,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner and room
         let owner = UserFixture::new().with_username("update_owner").build();
@@ -924,9 +925,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner and room
         let owner = UserFixture::new().with_username("delete_owner").build();
@@ -962,9 +963,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner and room
         let owner = UserFixture::new()
@@ -990,9 +991,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner and room
         let owner = UserFixture::new().with_username("status_owner").build();
@@ -1027,9 +1028,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner and room
         let owner = UserFixture::new().with_username("ban_owner").build();
@@ -1064,9 +1065,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner and room
         let owner = UserFixture::new().with_username("desc_owner").build();
@@ -1094,9 +1095,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner
         let owner = UserFixture::new().with_username("list_owner").build();
@@ -1143,9 +1144,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner
         let owner = UserFixture::new().with_username("filter_owner").build();
@@ -1215,9 +1216,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create two users
         let owner1 = UserFixture::new().with_username("creator1").build();
@@ -1267,9 +1268,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner
         let owner = UserFixture::new().with_username("accessible_owner").build();
@@ -1311,9 +1312,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner and room
         let owner = UserFixture::new()
@@ -1354,9 +1355,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner
         let owner = UserFixture::new().with_username("executor_owner").build();
@@ -1368,7 +1369,7 @@ mod tests {
             .with_owner(owner.id.clone())
             .build();
         let created = room_repo
-            .create_with_executor(&room, &infra.pool)
+            .create_with_executor(&room, &pool)
             .await
             .unwrap();
         assert_eq!(created.name, "Executor Room");
@@ -1378,8 +1379,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_nonexistent_room() {
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Try to update non-existent room
         let room = Room::new("Non-existent".to_string(), UserId::new());
@@ -1394,9 +1395,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner and room
         let owner = UserFixture::new().with_username("optimistic_owner").build();
@@ -1442,9 +1443,9 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
 
         // Create owner and room
         let owner = UserFixture::new().with_username("softdel_owner").build();

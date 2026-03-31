@@ -47,21 +47,18 @@ impl BilibiliApiImpl {
         requested_instance_name: Option<&str>,
     ) -> Result<(HashMap<String, String>, Option<String>), synctv_core::provider::ProviderError>
     {
-        let server_id = if server_id.is_empty()
-            || (server_id == UserProviderCredential::BILIBILI_SERVER_ID
-                && requested_instance_name.is_some())
-        {
-            UserProviderCredential::bilibili_server_id(requested_instance_name)
-        } else {
-            server_id.to_string()
-        };
+        if server_id.is_empty() {
+            return Err(synctv_core::provider::ProviderError::InvalidConfig(
+                "Bilibili requests must provide an explicit server_id".to_string(),
+            ));
+        }
 
         let cred = self
             .credential_repo
             .get_by_provider_and_server(
                 caller_user_id,
                 synctv_core::provider::BilibiliProvider::NAME,
-                &server_id,
+                server_id,
             )
             .await
             .map_err(|e| {
@@ -387,19 +384,18 @@ impl BilibiliApiImpl {
         caller_user_id: &str,
         req: LogoutRequest,
     ) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
-        let default_server_id = UserProviderCredential::bilibili_server_id(None);
-        let server_id = if req.server_id.is_empty() {
-            default_server_id.as_str()
-        } else {
-            &req.server_id
-        };
+        if req.server_id.is_empty() {
+            return Err(synctv_core::provider::ProviderError::InvalidConfig(
+                "Bilibili logout requires an explicit server_id".to_string(),
+            ));
+        }
 
         if let Some(existing) = self
             .credential_repo
             .get_by_provider_and_server(
                 caller_user_id,
                 synctv_core::provider::BilibiliProvider::NAME,
-                server_id,
+                &req.server_id,
             )
             .await
             .map_err(|e| {
@@ -421,5 +417,76 @@ impl BilibiliApiImpl {
         Ok(LogoutResponse {
             message: "Logout successful".to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BilibiliApiImpl;
+    use std::sync::Arc;
+    use synctv_core::provider::{BilibiliProvider, ProviderError};
+    use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
+    use synctv_core::service::RemoteProviderManager;
+    use synctv_core_testing::create_test_pool;
+
+    fn provider() -> Arc<BilibiliProvider> {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        Arc::new(BilibiliProvider::new(Arc::new(RemoteProviderManager::new(
+            repo,
+        ))))
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn get_user_info_rejects_empty_server_id() {
+        let (_postgres, pool) = create_test_pool().await;
+        let api =
+            BilibiliApiImpl::new(provider(), Arc::new(UserProviderCredentialRepository::new(pool)));
+
+        let err = api
+            .get_user_info(
+                "user-1",
+                crate::proto::providers::bilibili::UserInfoRequest {
+                    server_id: String::new(),
+                    instance_name: String::new(),
+                },
+                None,
+            )
+            .await
+            .expect_err("empty server_id must fail before credential lookup");
+
+        match err {
+            ProviderError::InvalidConfig(message) => {
+                assert!(message.contains("explicit server_id"));
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn logout_rejects_empty_server_id() {
+        let (_postgres, pool) = create_test_pool().await;
+        let api =
+            BilibiliApiImpl::new(provider(), Arc::new(UserProviderCredentialRepository::new(pool)));
+
+        let err = api
+            .logout(
+                "user-1",
+                crate::proto::providers::bilibili::LogoutRequest {
+                    server_id: String::new(),
+                    instance_name: String::new(),
+                },
+            )
+            .await
+            .expect_err("empty server_id must fail before credential lookup");
+
+        match err {
+            ProviderError::InvalidConfig(message) => {
+                assert!(message.contains("explicit server_id"));
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
     }
 }

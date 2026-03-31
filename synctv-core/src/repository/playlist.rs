@@ -590,6 +590,7 @@ impl PlaylistRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core_testing::create_test_pool;
 
     /// Unit test: Repository constructor is const
     #[test]
@@ -741,10 +742,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         // Create owner and room
         let owner = UserFixture::new().with_username("playlist_owner").build();
@@ -779,10 +780,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("root_playlist_owner")
@@ -813,10 +814,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("room_playlist_owner")
@@ -868,10 +869,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("update_playlist_owner")
@@ -916,10 +917,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("version_playlist_owner")
@@ -973,10 +974,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("delete_playlist_owner")
@@ -1020,10 +1021,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("cascade_playlist_owner")
@@ -1072,10 +1073,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("position_playlist_owner")
@@ -1125,10 +1126,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("auto_position_owner")
@@ -1179,10 +1180,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("children_playlist_owner")
@@ -1227,10 +1228,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new().with_username("paginated_owner").build();
         let owner = user_repo.create(&owner).await.unwrap();
@@ -1280,10 +1281,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("count_children_owner")
@@ -1331,10 +1332,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new().with_username("count_room_owner").build();
         let owner = user_repo.create(&owner).await.unwrap();
@@ -1374,10 +1375,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("path_playlist_owner")
@@ -1427,10 +1428,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new()
             .with_username("room_paginated_owner")
@@ -1484,10 +1485,10 @@ mod tests {
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
 
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
 
         let owner = UserFixture::new().with_username("executor_owner").build();
         let owner = user_repo.create(&owner).await.unwrap();
@@ -1510,7 +1511,7 @@ mod tests {
             .build();
 
         let result = playlist_repo
-            .create_with_executor(&child_auto, &infra.pool)
+            .create_with_executor(&child_auto, &pool)
             .await;
         assert!(result.is_err());
 
@@ -1522,7 +1523,7 @@ mod tests {
             .build();
 
         let result = playlist_repo
-            .create_with_executor(&child_explicit, &infra.pool)
+            .create_with_executor(&child_explicit, &pool)
             .await;
         assert!(result.is_ok());
     }

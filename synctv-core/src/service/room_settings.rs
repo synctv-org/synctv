@@ -289,7 +289,7 @@ impl RoomSettingsService {
 
         let settings = self
             .single_flight
-            .do_work_with_fallback(
+            .do_work(
                 sf_key,
                 async move {
                     // Double-check cache (another task may have populated it)
@@ -305,10 +305,14 @@ impl RoomSettingsService {
 
                     Ok(settings)
                 },
-                || "SingleFlight worker failed during room settings fetch".to_string(),
             )
             .await
-            .map_err(Error::Internal)?;
+            .map_err(|error| match error {
+                crate::cache::SingleFlightError::WorkerFailed => Error::Internal(
+                    "SingleFlight worker failed during room settings fetch".to_string(),
+                ),
+                crate::cache::SingleFlightError::Inner(message) => Error::Internal(message),
+            })?;
 
         Ok(settings)
     }

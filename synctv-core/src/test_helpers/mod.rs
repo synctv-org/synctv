@@ -3,8 +3,6 @@
 //! This module provides common test utilities, fixtures, and helpers
 //! to reduce boilerplate and improve test consistency across the codebase.
 
-pub mod containers;
-
 use crate::models::{PlaylistId, RoomId, UserId, UserRole, UserStatus};
 use chrono::Utc;
 

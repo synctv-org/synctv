@@ -26,7 +26,7 @@ fn make_instance(
     let now = Utc::now();
     ProviderInstance {
         name: name.to_string(),
-        endpoint: "grpc://localhost:50051".to_string(),
+        endpoint: "http://localhost:50051".to_string(),
         comment: Some("test instance".to_string()),
         jwt_secret: jwt_secret.map(std::string::ToString::to_string),
         custom_ca: custom_ca.map(std::string::ToString::to_string),
@@ -53,7 +53,7 @@ async fn test_plaintext_jwt_secret_rejected_by_check_constraint() {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind("constraint_test_jwt")
-    .bind("grpc://localhost:50051")
+    .bind("http://localhost:50051")
     .bind("plaintext_secret") // NOT enc: prefixed
     .bind("10s")
     .bind(false)
@@ -87,7 +87,7 @@ async fn test_plaintext_custom_ca_rejected_by_check_constraint() {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind("constraint_test_ca")
-    .bind("grpc://localhost:50051")
+    .bind("http://localhost:50051")
     .bind("-----BEGIN CERTIFICATE-----\nplaintext_cert\n-----END CERTIFICATE-----") // NOT enc: prefixed
     .bind("10s")
     .bind(false)
@@ -121,7 +121,7 @@ async fn test_null_secrets_allowed_by_check_constraint() {
          VALUES ($1, $2, NULL, NULL, $3, $4, $5, $6, $7)",
     )
     .bind("constraint_test_null")
-    .bind("grpc://localhost:50051")
+    .bind("http://localhost:50051")
     .bind("10s")
     .bind(false)
     .bind(false)
@@ -150,7 +150,7 @@ async fn test_enc_prefixed_secrets_allowed_by_check_constraint() {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind("constraint_test_enc")
-    .bind("grpc://localhost:50051")
+    .bind("http://localhost:50051")
     .bind("enc:encrypted_jwt_secret_data")
     .bind("enc:encrypted_custom_ca_data")
     .bind("10s")

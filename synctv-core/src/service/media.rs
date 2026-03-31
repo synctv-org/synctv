@@ -124,7 +124,7 @@ impl MediaService {
     ) -> Result<Media> {
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
+            .check_permission(&room_id, &user_id, PermissionBits::ADD_MOVIE)
             .await?;
 
         // Verify playlist belongs to room
@@ -254,7 +254,7 @@ impl MediaService {
     ) -> Result<Vec<Media>> {
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
+            .check_permission(&room_id, &user_id, PermissionBits::ADD_MOVIE)
             .await?;
 
         // Verify playlist belongs to room

@@ -793,6 +793,7 @@ message ServerMessage {
         ErrorMessage error = 7;
         MediaAdded media_added = 8;
         MediaRemoved media_removed = 9;
+        MediaRemovedBatch media_removed_batch = 25;
         PermissionChanged permission_changed = 10;
         PlaylistCreated playlist_created = 11;
         PlaylistUpdated playlist_updated = 12;
@@ -895,10 +896,8 @@ message UserNotification {
 // Chat History
 // Note: room_id extracted from x-room-id metadata
 message GetChatHistoryRequest {
-    int32 limit = 1;   // Max page size (clamped to 100 server-side). Default: 50.
-    int64 before = 2;  // Legacy timestamp cursor: return messages created before this UNIX timestamp.
-    string cursor = 3; // Preferred cursor: return messages with ID < cursor (opaque, returned by server).
-                       // If both cursor and before are supplied, cursor takes precedence.
+    int32 limit = 1;  // Max page size (clamped to 100 server-side). Default: 50.
+    string cursor = 2; // Opaque keyset cursor returned by the server as "<rfc3339_created_at>|<message_id>".
 }
 
 message GetChatHistoryResponse {
@@ -1119,6 +1118,13 @@ message MediaAdded {
 message MediaRemoved {
     string room_id = 1;
     string media_id = 2;
+    string removed_by = 4; // Username
+    string removed_by_user_id = 5; // User ID
+}
+
+message MediaRemovedBatch {
+    string room_id = 1;
+    repeated string media_ids = 2;
     string removed_by = 4; // Username
     string removed_by_user_id = 5; // User ID
 }

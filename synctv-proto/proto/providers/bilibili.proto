@@ -93,7 +93,7 @@ enum QRLoginStatus {
 // QR status response
 message QRStatusResponse {
   QRLoginStatus status = 1;
-  string server_id = 2; // "bilibili" when login succeeded and credentials are stored
+  string server_id = 2; // Stored credential identifier returned after successful login
 }
 
 // Get captcha request
@@ -132,7 +132,7 @@ message LoginSMSRequest {
 
 // Login with SMS response
 message LoginSMSResponse {
-  string server_id = 1; // "bilibili" when login succeeded and credentials are stored
+  string server_id = 1; // Stored credential identifier returned after successful login
 }
 
 // User info request
@@ -151,7 +151,7 @@ message UserInfoResponse {
 
 // Logout request
 message LogoutRequest {
-  string server_id = 1; // Which credential to unbind (default: "bilibili")
+  string server_id = 1; // Which credential to unbind
   string instance_name = 2; // Optional provider instance name
 }
 

@@ -31,7 +31,7 @@ fn test_oversized_response_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "192.168.1.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Should block private IP"
     );
 }
@@ -61,7 +61,7 @@ async fn test_content_length_validation_blocks_oversized() {
 fn test_public_url_allowed() {
     // example.com resolves to a public IP - verify ACL allows public IPs
     let ip: IpAddr = "93.184.216.34".parse().unwrap();
-    assert!(!synctv_common::ssrf::is_ip_blocked(&ip));
+    assert!(!synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip));
 }
 
 /// Test that redirect chains to private IPs are blocked
@@ -70,7 +70,7 @@ fn test_redirect_chain_to_private_blocked() {
     // Each IP in a redirect chain is validated by the DNS resolver
     let ip: IpAddr = "192.168.50.50".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Private IP redirect should be blocked"
     );
 }
@@ -91,7 +91,7 @@ fn test_private_ipv4_ranges_blocked() {
     ];
     for ip in &blocked_ips {
         assert!(
-            synctv_common::ssrf::is_ip_blocked(ip),
+            synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
             "IP {ip} should be blocked by SSRF ACL"
         );
     }
@@ -102,7 +102,7 @@ fn test_private_ipv4_ranges_blocked() {
 fn test_ipv6_loopback_blocked() {
     let ip: IpAddr = "::1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "IPv6 loopback should be blocked"
     );
 }
@@ -111,7 +111,7 @@ fn test_ipv6_loopback_blocked() {
 fn test_ipv6_unspecified_blocked() {
     let ip: IpAddr = "::".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "IPv6 unspecified should be blocked"
     );
 }
@@ -120,7 +120,7 @@ fn test_ipv6_unspecified_blocked() {
 fn test_ipv6_link_local_blocked() {
     let ip: IpAddr = "fe80::1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "IPv6 link-local should be blocked"
     );
 }
@@ -129,7 +129,7 @@ fn test_ipv6_link_local_blocked() {
 fn test_ipv6_unique_local_blocked() {
     let ip: IpAddr = "fc00::1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "IPv6 unique local should be blocked"
     );
 }
@@ -139,7 +139,7 @@ fn test_ipv6_unique_local_blocked() {
 fn test_ipv4_mapped_ipv6_private_blocked() {
     let ip: IpAddr = "::ffff:192.168.1.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "IPv4-mapped private IPv6 should be blocked"
     );
 }
@@ -149,7 +149,7 @@ fn test_ipv4_mapped_ipv6_private_blocked() {
 fn test_aws_metadata_endpoint_blocked() {
     let ip: IpAddr = "169.254.169.254".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "AWS metadata IP should be blocked"
     );
 }
@@ -159,7 +159,7 @@ fn test_aws_metadata_endpoint_blocked() {
 fn test_multicast_ip_blocked() {
     let ip: IpAddr = "224.0.0.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Multicast IP should be blocked"
     );
 }
@@ -169,7 +169,7 @@ fn test_multicast_ip_blocked() {
 fn test_broadcast_ip_blocked() {
     let ip: IpAddr = "255.255.255.255".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Broadcast IP should be blocked"
     );
 }
@@ -179,7 +179,7 @@ fn test_broadcast_ip_blocked() {
 fn test_zero_ip_blocked() {
     let ip: IpAddr = "0.0.0.0".parse().unwrap();
     assert!(
-        synctv_common::ssrf::is_ip_blocked(&ip),
+        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "Zero IP should be blocked"
     );
 }
@@ -195,7 +195,7 @@ fn test_public_ips_allowed() {
     ];
     for ip in &allowed_ips {
         assert!(
-            !synctv_common::ssrf::is_ip_blocked(ip),
+            !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
             "Public IP {ip} should be allowed"
         );
     }

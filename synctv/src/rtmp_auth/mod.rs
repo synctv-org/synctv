@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use percent_encoding::percent_decode_str;
 use std::collections::VecDeque;
-use synctv_livestream::api::UserStreamTracker;
+use synctv_livestream::api::StreamTracker;
 use synctv_livestream::relay::StreamRegistryTrait;
 use synctv_livestream::AuthCallback;
 use tokio::sync::RwLock;
@@ -80,13 +80,13 @@ pub struct SyncTvRtmpAuth {
     room_service: Arc<RoomService>,
     user_service: Arc<UserService>,
     publish_key_service: Arc<PublishKeyService>,
-    user_stream_tracker: UserStreamTracker,
+    user_stream_tracker: Arc<StreamTracker>,
     /// Publisher registry (Redis) for single-publisher-per-media enforcement
     registry: Arc<dyn StreamRegistryTrait>,
     /// This node's unique identifier for publisher registration
     node_id: String,
-    /// Advertised gRPC address for cross-node proxying (e.g., "10.0.0.1:50051")
-    grpc_address: String,
+    /// Advertised shared API address for cross-node proxying (e.g., "10.0.0.1:8080")
+    api_address: String,
     /// Broadcast channel for stream lifecycle events (StreamStarted/StreamStopped)
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     /// Redis key prefix from config (e.g., "synctv:") for multi-instance isolation
@@ -117,10 +117,10 @@ impl SyncTvRtmpAuth {
         room_service: Arc<RoomService>,
         user_service: Arc<UserService>,
         publish_key_service: Arc<PublishKeyService>,
-        user_stream_tracker: UserStreamTracker,
+        user_stream_tracker: Arc<StreamTracker>,
         registry: Arc<dyn StreamRegistryTrait>,
         node_id: String,
-        grpc_address: String,
+        api_address: String,
         stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
         key_prefix: String,
     ) -> Self {
@@ -131,7 +131,7 @@ impl SyncTvRtmpAuth {
             user_stream_tracker,
             registry,
             node_id,
-            grpc_address,
+            api_address,
             stream_event_tx,
             key_prefix,
             is_restarting: None,
@@ -620,43 +620,23 @@ impl SyncTvRtmpAuth {
 
         validate_rtmp_room_state(&room).map_err(|reason| reason.into_error(app_name))?;
 
-        // Extract token: prefer query string parameter (URL-decoded), fall back to stream_name
+        // RTMP publish requires an explicit token query parameter. The stream name
+        // is reserved for the media binding and must not be overloaded as a token.
         let token_owned: Option<String> = query.and_then(extract_token_from_query);
-        let token = token_owned.as_deref().unwrap_or(stream_name);
+        let token = token_owned.as_deref().ok_or_else(|| {
+            "Missing token query parameter; RTMP publish must use ?token=<publish_key>"
+                .to_string()
+        })?;
 
         // Validate JWT stream_key
         let expected_room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
-        let claims = if token_owned.is_some() {
-            let expected_media_id =
-                synctv_core::models::MediaId::from_string(stream_name.to_string());
-            self.publish_key_service
-                .validate_publish_key_for_stream_claims(
-                    token,
-                    &expected_room_id,
-                    &expected_media_id,
-                )
-                .await
-        } else {
-            // Legacy RTMP publish URLs use /{room_id}/{JWT_TOKEN}, so stream_name is
-            // the token itself rather than the media ID. Preserve that format by
-            // validating the token and room here, then enforcing media ownership
-            // against the claims below before registration.
-            self.publish_key_service
-                .validate_publish_key(token)
-                .await
-                .and_then(|claims| {
-                    if claims.room_id == expected_room_id.as_str() {
-                        Ok(claims)
-                    } else {
-                        Err(synctv_core::Error::Authorization(format!(
-                            "Token room mismatch: expected {}, got {}",
-                            expected_room_id.as_str(),
-                            claims.room_id
-                        )))
-                    }
-                })
-        }
-        .map_err(|e| format!("Invalid stream key: {e}"))?;
+        let expected_media_id =
+            synctv_core::models::MediaId::from_string(stream_name.to_string());
+        let claims = self
+            .publish_key_service
+            .validate_publish_key_for_stream_claims(token, &expected_room_id, &expected_media_id)
+            .await
+            .map_err(|e| format!("Invalid stream key: {e}"))?;
 
         // Re-verify user status at connection time
         let user_id = UserId::from_string(claims.user_id.clone());
@@ -826,7 +806,7 @@ impl SyncTvRtmpAuth {
                 &validated.media_id,
                 &self.node_id,
                 &validated.user_id,
-                &self.grpc_address,
+                &self.api_address,
             )
             .await
             .map_err(|e| format!("Failed to register publisher in Redis: {e}"))?;
@@ -1020,10 +1000,10 @@ mod tests {
             media_id: &str,
             node_id: &str,
             app_name: &str,
-            grpc_address: &str,
+            api_address: &str,
         ) -> anyhow::Result<bool> {
             self.inner
-                .register_publisher(room_id, media_id, node_id, app_name, grpc_address)
+                .register_publisher(room_id, media_id, node_id, app_name, api_address)
                 .await
         }
 
@@ -1033,10 +1013,10 @@ mod tests {
             media_id: &str,
             node_id: &str,
             user_id: &str,
-            grpc_address: &str,
+            api_address: &str,
         ) -> anyhow::Result<bool> {
             self.inner
-                .try_register_publisher(room_id, media_id, node_id, user_id, grpc_address)
+                .try_register_publisher(room_id, media_id, node_id, user_id, api_address)
                 .await
         }
 
@@ -1217,19 +1197,13 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_rtmp_publish_without_query_uses_stream_name_as_token() {
+    fn test_publish_requires_query_token() {
         let query = None;
-        let stream_name = "legacy_jwt_token";
         let token_owned: Option<String> = query.and_then(extract_token_from_query);
-        let token = token_owned.as_deref().unwrap_or(stream_name);
 
-        assert_eq!(
-            token, stream_name,
-            "legacy RTMP path-token publish must continue treating stream_name as the token"
-        );
         assert!(
             token_owned.is_none(),
-            "legacy path-token mode must not require a query parameter"
+            "RTMP publish without ?token= must not produce a token"
         );
     }
 
@@ -1238,7 +1212,9 @@ mod tests {
         let query = Some("token=query_jwt_token");
         let stream_name = "media_123";
         let token_owned: Option<String> = query.and_then(extract_token_from_query);
-        let token = token_owned.as_deref().unwrap_or(stream_name);
+        let token = token_owned
+            .as_deref()
+            .expect("query token mode must require an explicit token");
 
         assert_eq!(token, "query_jwt_token");
         assert_eq!(

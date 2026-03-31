@@ -32,7 +32,7 @@ use synctv_xiu::streamhub::define::StreamHubEventSender;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-pub use super::tracker::{StreamSubscriberGuard, StreamTracker, UserStreamTracker};
+pub use super::tracker::{StreamSubscriberGuard, StreamTracker};
 
 /// Live streaming infrastructure bundle
 ///
@@ -57,7 +57,7 @@ pub struct LiveStreamingInfrastructure {
     /// HLS stream registry for M3U8 generation
     pub hls_stream_registry: Option<HlsStreamRegistry>,
     /// Tracks active RTMP publishers by `user_id` for kick-on-ban
-    pub user_stream_tracker: UserStreamTracker,
+    pub user_stream_tracker: Arc<StreamTracker>,
     /// Local node ID for comparing with publisher node
     pub local_node_id: String,
     /// HLS proxy client for fetching playlists/segments from remote publisher nodes
@@ -71,7 +71,7 @@ impl LiveStreamingInfrastructure {
         stream_hub_event_sender: StreamHubEventSender,
         pull_manager: Arc<PullStreamManager>,
         external_publish_manager: Arc<ExternalPublishManager>,
-        user_stream_tracker: UserStreamTracker,
+        user_stream_tracker: Arc<StreamTracker>,
     ) -> Self {
         Self {
             registry,
@@ -474,9 +474,9 @@ impl HlsStreamingApi {
             // Local publisher: read from local HLS stream registry
             Self::generate_playlist_local(infrastructure, room_id, media_id, url_generator)
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            // Validate gRPC address before attempting remote proxy
-            let grpc_addr = publisher_info
-                .validate_grpc_address()
+            // Validate API address before attempting remote proxy
+            let api_addr = publisher_info
+                .validate_api_address()
                 .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
 
             // Remote publisher: proxy via gRPC
@@ -491,7 +491,7 @@ impl HlsStreamingApi {
 
             let playlist = hls_proxy
                 .get_playlist(
-                    grpc_addr,
+                    api_addr,
                     room_id,
                     media_id,
                     &segment_url_base,
@@ -590,15 +590,15 @@ impl HlsStreamingApi {
             // Local publisher: read from local storage
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            // Validate gRPC address before attempting remote proxy
-            let grpc_addr = publisher_info.validate_grpc_address().map_err(|e| {
+            // Validate API address before attempting remote proxy
+            let api_addr = publisher_info.validate_api_address().map_err(|e| {
                 anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}")
             })?;
 
             // Remote publisher: proxy via gRPC (with local cache)
             let segment = hls_proxy
                 .get_segment(
-                    grpc_addr,
+                    api_addr,
                     room_id,
                     media_id,
                     segment_name,
@@ -641,14 +641,14 @@ mod tests {
     fn make_infrastructure_with_publisher(
         local_node_id: &str,
         publisher_node_id: &str,
-        grpc_address: &str,
+        api_address: &str,
     ) -> LiveStreamingInfrastructure {
         let registry = Arc::new(MockStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: publisher_node_id.to_string(),
-                    grpc_address: grpc_address.to_string(),
+                    api_address: api_address.to_string(),
                     app_name: "live".to_string(),
                     user_id: String::new(),
                     started_at: Utc::now(),
@@ -700,7 +700,7 @@ mod tests {
             ("room1".to_string(), "media1".to_string()),
             PublisherInfo {
                 node_id: "node-local".to_string(),
-                grpc_address: String::new(),
+                api_address: String::new(),
                 app_name: "live".to_string(),
                 user_id: String::new(),
                 started_at: Utc::now(),
@@ -760,7 +760,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "node-local".to_string(),
-                    grpc_address: "127.0.0.1:50051".to_string(),
+                    api_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: Utc::now(),
@@ -832,7 +832,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "node-local".to_string(),
-                    grpc_address: "127.0.0.1:50051".to_string(),
+                    api_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: Utc::now(),
@@ -909,7 +909,7 @@ mod tests {
                     ("room1".to_string(), "media1".to_string()),
                     PublisherInfo {
                         node_id: "node-local".to_string(),
-                        grpc_address: "127.0.0.1:50051".to_string(),
+                        api_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: Utc::now(),
@@ -920,7 +920,7 @@ mod tests {
                     ("room2".to_string(), "media2".to_string()),
                     PublisherInfo {
                         node_id: "node-local".to_string(),
-                        grpc_address: "127.0.0.1:50051".to_string(),
+                        api_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: Utc::now(),
@@ -1013,7 +1013,7 @@ mod tests {
                     ("room1".to_string(), "media1".to_string()),
                     PublisherInfo {
                         node_id: "node-local".to_string(),
-                        grpc_address: "127.0.0.1:50051".to_string(),
+                        api_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: Utc::now(),
@@ -1024,7 +1024,7 @@ mod tests {
                     ("room2".to_string(), "media2".to_string()),
                     PublisherInfo {
                         node_id: "node-local".to_string(),
-                        grpc_address: "127.0.0.1:50051".to_string(),
+                        api_address: "127.0.0.1:50051".to_string(),
                         app_name: "live".to_string(),
                         user_id: "user1".to_string(),
                         started_at: Utc::now(),

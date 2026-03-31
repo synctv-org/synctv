@@ -80,7 +80,8 @@ impl StaticDiscovery {
     /// Start the background probe loop.
     ///
     /// Returns the JoinHandle for the spawned task.
-    /// Normalize a configured peer entry to the shared API address.
+    /// Normalize a configured peer entry to the shared API address used for
+    /// both probing and registration.
     fn derive_api_address(peer_address: &str, default_api_port: u16) -> String {
         // Try to split host:port
         if let Some(colon_pos) = peer_address.rfind(':') {
@@ -153,6 +154,7 @@ impl StaticDiscovery {
                                     &peer.api_address,
                                     timeout,
                                     &secret,
+                                    default_api_port,
                                 ).await;
                                 (peer, discovered)
                             });
@@ -256,8 +258,10 @@ impl StaticDiscovery {
         address: &str,
         connect_timeout: Duration,
         cluster_secret: &str,
+        default_api_port: u16,
     ) -> Option<ProbedNodeIdentity> {
-        super::probe_node_identity(address, connect_timeout.as_secs(), cluster_secret).await
+        let api_address = Self::derive_api_address(address, default_api_port);
+        super::probe_node_identity(&api_address, connect_timeout.as_secs(), cluster_secret).await
     }
 }
 

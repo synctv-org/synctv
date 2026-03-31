@@ -1,7 +1,8 @@
 //! Tests for DNS-level SSRF protection in synctv-proxy.
 //!
 //! SSRF protection is enforced at the DNS resolver level via `synctv-common`.
-//! The proxy HTTP client uses `ssrf_dns_resolver()` which blocks connections
+//! The proxy HTTP client uses `SsrfGuard::shared_default().dns_resolver()`
+//! which blocks connections
 //! to private/internal IP addresses at DNS resolution time.
 //!
 //! These tests verify that the DNS resolver correctly blocks private IPs
@@ -93,7 +94,7 @@ fn test_ssrf_acl_blocks_private_ranges() {
     ];
     for ip in &blocked {
         assert!(
-            synctv_common::ssrf::is_ip_blocked(ip),
+            synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
             "IP {ip} should be blocked"
         );
     }
@@ -105,7 +106,7 @@ fn test_ssrf_acl_blocks_private_ranges() {
     ];
     for ip in &allowed {
         assert!(
-            !synctv_common::ssrf::is_ip_blocked(ip),
+            !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
             "IP {ip} should be allowed"
         );
     }

@@ -8,7 +8,7 @@
 // is encapsulated here.
 
 use crate::{
-    api::{LiveStreamingInfrastructure, UserStreamTracker},
+    api::{LiveStreamingInfrastructure, StreamTracker},
     error::StreamResult,
     livestream::{
         external_publish_manager::ExternalPublishManager,
@@ -87,9 +87,9 @@ pub struct LivestreamConfig {
     /// Maximum memory (in megabytes) for the GOP cache per stream.
     /// 0 means use the built-in default (500 MB).
     pub gop_cache_max_memory_mb: u64,
-    /// Advertised gRPC address of this node for cross-node proxying.
+    /// Advertised shared API address of this node for cross-node proxying.
     /// Used by `PublisherManager` for re-registration after `StreamHub` restart.
-    pub grpc_address: String,
+    pub api_address: String,
     /// Maximum memory (in megabytes) for in-memory HLS segment storage.
     /// 0 means use the built-in default (512 MB).
     pub hls_memory_max_mb: u64,
@@ -413,7 +413,7 @@ impl Drop for LivestreamHandle {
 pub struct LivestreamServer {
     config: LivestreamConfig,
     publisher_registry: Arc<dyn StreamRegistryTrait>,
-    user_stream_tracker: UserStreamTracker,
+    user_stream_tracker: Arc<StreamTracker>,
     auth: Option<Arc<dyn AuthCallback>>,
     /// Pre-bound RTMP listener for early port conflict detection.
     rtmp_listener: Option<tokio::net::TcpListener>,
@@ -426,7 +426,7 @@ impl LivestreamServer {
     pub fn new(
         config: LivestreamConfig,
         publisher_registry: Arc<dyn StreamRegistryTrait>,
-        user_stream_tracker: UserStreamTracker,
+        user_stream_tracker: Arc<StreamTracker>,
     ) -> Self {
         Self {
             config,
@@ -807,7 +807,7 @@ impl LivestreamServer {
                 event_sender.clone(),
                 Arc::clone(&is_restarting_flag),
             )
-            .with_grpc_address(self.config.grpc_address.clone()),
+            .with_api_address(self.config.api_address.clone()),
         );
 
         // Create activity callback for the HLS remuxer to record publisher data activity.
@@ -893,7 +893,7 @@ impl LivestreamServer {
         let external_publish_manager = Arc::new(ExternalPublishManager::with_timeouts(
             self.publisher_registry.clone(),
             self.config.node_id.clone(),
-            self.config.grpc_address.clone(),
+            self.config.api_address.clone(),
             event_sender.clone(),
             self.config.cleanup_check_interval_seconds,
             self.config.stream_timeout_seconds,
@@ -1034,7 +1034,7 @@ mod tests {
             cluster_enabled: false,
             cluster_secret: None,
             gop_cache_max_memory_mb: 0,
-            grpc_address: "127.0.0.1:0".to_string(),
+            api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
             hls_shared_storage: false,
             hls_storage_path: String::new(),
@@ -1111,8 +1111,8 @@ mod tests {
         );
     }
 
-    /// Helper to create a `UserStreamTracker` for testing
-    fn test_tracker() -> UserStreamTracker {
+    /// Helper to create a `StreamTracker` for testing
+    fn test_tracker() -> Arc<StreamTracker> {
         Arc::new(StreamTracker::new())
     }
 
@@ -1429,7 +1429,7 @@ mod tests {
             cluster_enabled: false,
             cluster_secret: None,
             gop_cache_max_memory_mb: 0,
-            grpc_address: "127.0.0.1:0".to_string(),
+            api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
             hls_shared_storage: false,
             hls_storage_path: String::new(),
@@ -1469,7 +1469,7 @@ mod tests {
             cluster_enabled: false,
             cluster_secret: None,
             gop_cache_max_memory_mb: 0,
-            grpc_address: "127.0.0.1:0".to_string(),
+            api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
             hls_shared_storage: false,
             hls_storage_path: String::new(),
@@ -1513,7 +1513,7 @@ mod tests {
             cluster_enabled: false,
             cluster_secret: None,
             gop_cache_max_memory_mb: 0,
-            grpc_address: "127.0.0.1:0".to_string(),
+            api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
             hls_shared_storage: false,
             hls_storage_path: String::new(),

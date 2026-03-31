@@ -363,7 +363,6 @@ mod p1_cluster_cleanup_tests {
             cluster_enabled: false,
             node_id: "cancel-test-node".to_string(),
             dedup_window: Duration::from_secs(1),
-            cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),

@@ -108,6 +108,7 @@ impl Default for MessagingRateLimitConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
@@ -551,7 +552,7 @@ pub struct OAuth2Config {
     pub providers: serde_json::Value,
     /// URL scheme for `OAuth2` redirect URLs.
     /// Supported values: "http", "https"
-    /// Default: "http" for backward compatibility.
+    /// Default: "https".
     /// When behind a reverse proxy terminating TLS, set this to "https".
     #[serde(default = "default_redirect_scheme")]
     pub redirect_scheme: String,
@@ -733,21 +734,26 @@ impl Config {
     /// 2. Config file (if provided)
     /// 3. Defaults (lowest priority)
     pub fn load(config_file: Option<&str>) -> Result<Self, ConfigError> {
-        Self::load_with_env(config_file, &process_env)
+        let env: HashMap<String, String> = std::env::vars().collect();
+        Self::load_with_env_map(config_file, &env)
     }
 
     pub fn load_with_env_map(
         config_file: Option<&str>,
         env: &HashMap<String, String>,
     ) -> Result<Self, ConfigError> {
-        Self::load_with_env(config_file, &|name| env.get(name).cloned())
+        Self::load_with_env(config_file, env)
     }
 
     fn load_with_env(
         config_file: Option<&str>,
-        get_env: &impl Fn(&str) -> Option<String>,
+        env: &HashMap<String, String>,
     ) -> Result<Self, ConfigError> {
-        Self::reject_legacy_server_port_settings(config_file, get_env)?;
+        let seen_env_keys = std::cell::RefCell::new(std::collections::HashSet::<String>::new());
+        let get_env = |name: &str| {
+            seen_env_keys.borrow_mut().insert(name.to_string());
+            env.get(name).cloned()
+        };
 
         let mut builder = ConfigBuilder::builder();
 
@@ -771,52 +777,42 @@ impl Config {
         // We don't use the config crate's Environment source because its separator
         // cannot distinguish nesting from underscores within field names.
         // Instead, every SYNCTV_ env var is mapped explicitly here.
-        config.apply_env_overrides_with(get_env)?;
+        config.apply_env_overrides_with(&get_env)?;
+        Self::reject_unknown_synctv_env_vars(env, &seen_env_keys.into_inner())?;
 
         Ok(config)
     }
 
-    fn reject_legacy_server_port_settings(
-        config_file: Option<&str>,
-        get_env: &impl Fn(&str) -> Option<String>,
+    fn reject_unknown_synctv_env_vars(
+        env: &HashMap<String, String>,
+        seen_env_keys: &std::collections::HashSet<String>,
     ) -> Result<(), ConfigError> {
-        let mut legacy_env_vars = Vec::new();
-        for name in ["SYNCTV_SERVER_GRPC_PORT", "SYNCTV_SERVER_HTTP_PORT"] {
-            if get_env(name).is_some() {
-                legacy_env_vars.push(name);
-            }
-        }
+        let mut unknown_keys: Vec<&str> = env
+            .keys()
+            .filter_map(|key| {
+                if key.starts_with("SYNCTV_") && !seen_env_keys.contains(key) {
+                    Some(key.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        unknown_keys.sort_unstable();
 
-        if !legacy_env_vars.is_empty() {
-            return Err(ConfigError::Message(format!(
-                "Legacy environment variable(s) {} are no longer supported. Use SYNCTV_SERVER_PORT.",
-                legacy_env_vars.join(", ")
-            )));
+        if unknown_keys.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigError::Message(format!(
+                "Unsupported environment variable(s): {}",
+                unknown_keys.join(", ")
+            )))
         }
-
-        if let Some(path) = config_file.filter(|path| Path::new(path).exists()) {
-            let contents = std::fs::read_to_string(path).map_err(|error| {
-                ConfigError::Message(format!("failed to read config file {path}: {error}"))
-            })?;
-            let legacy_keys = find_legacy_server_port_keys(&contents);
-            if !legacy_keys.is_empty() {
-                return Err(ConfigError::Message(format!(
-                    "Legacy config key(s) {} are no longer supported. Replace them with server.port.",
-                    legacy_keys
-                        .into_iter()
-                        .map(|key| format!("server.{key}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
-            }
-        }
-
-        Ok(())
     }
 
     /// Load from environment variables only (for Docker/K8s)
     pub fn from_env() -> Result<Self, ConfigError> {
-        Self::load(None)
+        let env: HashMap<String, String> = std::env::vars().collect();
+        Self::load_with_env_map(None, &env)
     }
 
     pub fn from_env_map(env: &HashMap<String, String>) -> Result<Self, ConfigError> {
@@ -2116,54 +2112,6 @@ impl Config {
     }
 }
 
-fn find_legacy_server_port_keys(contents: &str) -> Vec<&'static str> {
-    let mut found = Vec::new();
-    let mut in_server_block = false;
-    let mut server_indent = 0usize;
-
-    for line in contents.lines() {
-        let Some((indent, key)) = yaml_mapping_key(line) else {
-            continue;
-        };
-
-        if in_server_block && indent <= server_indent {
-            in_server_block = false;
-        }
-
-        if !in_server_block {
-            if indent == 0 && key == "server" {
-                in_server_block = true;
-                server_indent = indent;
-            }
-            continue;
-        }
-
-        if key == "grpc_port" && !found.contains(&"grpc_port") {
-            found.push("grpc_port");
-        }
-        if key == "http_port" && !found.contains(&"http_port") {
-            found.push("http_port");
-        }
-    }
-
-    found
-}
-
-fn yaml_mapping_key(line: &str) -> Option<(usize, &str)> {
-    let trimmed = line.trim_start();
-    if trimmed.is_empty() || trimmed.starts_with('#') {
-        return None;
-    }
-
-    let indent = line.len() - trimmed.len();
-    let key = trimmed.split_once(':')?.0.trim();
-    if key.is_empty() {
-        return None;
-    }
-
-    Some((indent, key))
-}
-
 /// Connection limits configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -2786,17 +2734,17 @@ mod tests {
     }
 
     #[test]
-    fn test_from_env_rejects_legacy_server_port_env_vars() {
+    fn test_from_env_rejects_unknown_server_port_env_vars() {
         let error = Config::from_env_map(&env_map(&[
             ("SYNCTV_SERVER_GRPC_PORT", "50051"),
             ("SYNCTV_SERVER_HTTP_PORT", "8080"),
         ]))
-        .expect_err("legacy split-port env vars must fail closed");
+        .expect_err("unknown split-port env vars must fail closed");
 
         let message = error.to_string();
+        assert!(message.contains("Unsupported environment variable"));
         assert!(message.contains("SYNCTV_SERVER_GRPC_PORT"));
         assert!(message.contains("SYNCTV_SERVER_HTTP_PORT"));
-        assert!(message.contains("SYNCTV_SERVER_PORT"));
     }
 
     /// Helper to create a valid production config for validation tests
@@ -3074,7 +3022,7 @@ jwt:
     }
 
     #[test]
-    fn test_from_file_rejects_legacy_server_port_keys() {
+    fn test_from_file_rejects_unknown_server_port_keys() {
         let unique = format!(
             "synctv-legacy-port-config-{}-{}.yaml",
             std::process::id(),
@@ -3098,13 +3046,12 @@ jwt:
         .expect("write config");
 
         let error = Config::from_file(path.to_str().expect("utf-8 path"))
-            .expect_err("legacy split-port file keys must fail closed");
+            .expect_err("unknown split-port file keys must fail closed");
         let _ = std::fs::remove_file(&path);
 
         let message = error.to_string();
-        assert!(message.contains("server.grpc_port"));
-        assert!(message.contains("server.http_port"));
-        assert!(message.contains("server.port"));
+        assert!(message.contains("unknown field"));
+        assert!(message.contains("grpc_port"));
     }
 
     #[test]

@@ -153,7 +153,8 @@ where
                 AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
             })?;
 
-        // Extract password version from claims, defaulting to 0 for legacy tokens
+        // Password version is carried directly in JWT claims and already validated
+        // by the shared security pipeline.
         let password_version = authenticated.claims.pv;
 
         Ok(Self {

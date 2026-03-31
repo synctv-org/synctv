@@ -729,7 +729,7 @@ mod provider_security_headers {
             )
             .route(
                 "/api/providers/bilibili/me",
-                get(|| async { "bilibili me" }),
+                post(|| async { "bilibili me" }),
             )
             // Simulate /api/providers/alist/* routes
             .route("/api/providers/alist/list", get(|| async { "alist list" }))
@@ -879,7 +879,7 @@ mod provider_security_headers {
     #[tokio::test]
     async fn test_provider_routes_csp_has_frame_ancestors_none() {
         let app = provider_style_router();
-        let req = Request::get("/api/providers/bilibili/me")
+        let req = Request::post("/api/providers/bilibili/me")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -971,22 +971,13 @@ mod health_endpoints {
     }
 
     #[tokio::test]
-    async fn test_liveness_alias() {
-        let app = Router::new().route("/health", get(synctv_api::http::health::liveness_check));
-
-        let req = Request::get("/health").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-
-        assert_eq!(resp.status(), StatusCode::OK);
-        let json = body_json(resp).await;
-        assert_eq!(json["status"], "ok");
-    }
-
-    #[tokio::test]
     async fn test_liveness_json_structure() {
-        let app = Router::new().route("/health", get(synctv_api::http::health::liveness_check));
+        let app = Router::new().route(
+            "/health/live",
+            get(synctv_api::http::health::liveness_check),
+        );
 
-        let req = Request::get("/health").body(Body::empty()).unwrap();
+        let req = Request::get("/health/live").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         let json = body_json(resp).await;
@@ -1005,7 +996,7 @@ mod routing_structure {
 
     fn minimal_router() -> Router {
         Router::new()
-            .route("/health", get(|| async { "ok" }))
+            .route("/health/live", get(|| async { "ok" }))
             .route("/api/auth/login", post(|| async { "login" }))
             .route("/api/rooms", get(|| async { "rooms" }))
     }
@@ -1034,7 +1025,7 @@ mod routing_structure {
     #[tokio::test]
     async fn test_health_endpoint_accessible() {
         let app = minimal_router();
-        let req = Request::get("/health").body(Body::empty()).unwrap();
+        let req = Request::get("/health/live").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);

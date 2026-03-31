@@ -100,8 +100,6 @@ impl SeekResponse {
 const MAX_PLAYBACK_POSITION_SECONDS: f64 = 86_400.0;
 const MIN_PLAYBACK_SPEED: f64 = 0.25;
 const MAX_PLAYBACK_SPEED: f64 = 4.0;
-const MAX_PATCH_PLAYBACK_SPEED: f64 = 16.0;
-
 fn validate_seek_position(current_time: f64) -> Result<()> {
     if !current_time.is_finite() {
         return Err(Error::InvalidInput(
@@ -130,20 +128,6 @@ fn validate_playback_speed_value(speed: f64) -> Result<()> {
     if !(MIN_PLAYBACK_SPEED..=MAX_PLAYBACK_SPEED).contains(&speed) {
         return Err(Error::InvalidInput(format!(
             "Speed must be between {MIN_PLAYBACK_SPEED} and {MAX_PLAYBACK_SPEED}"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_patch_playback_speed_value(speed: f64) -> Result<()> {
-    if !speed.is_finite() {
-        return Err(Error::InvalidInput(
-            "Speed must be a finite number".to_string(),
-        ));
-    }
-    if speed <= 0.0 || speed > MAX_PATCH_PLAYBACK_SPEED {
-        return Err(Error::InvalidInput(format!(
-            "Speed must be greater than 0 and at most {MAX_PATCH_PLAYBACK_SPEED}"
         )));
     }
     Ok(())
@@ -266,23 +250,10 @@ impl PlaybackService {
     /// message, this node's local L1 cache entry for that room is evicted so the
     /// next read fetches fresh data from the DB.
     ///
-    /// For backward compatibility, wiring the service auto-starts the listener
-    /// when a Tokio runtime is available. Call [`start`](Self::start) explicitly
-    /// during app bootstrap to surface startup errors and after
-    /// [`shutdown`](Self::shutdown) to restart the listener.
+    /// Call [`start`](Self::start) explicitly during app bootstrap to surface
+    /// startup errors and after [`shutdown`](Self::shutdown) to restart the listener.
     pub fn set_invalidation_service(&mut self, service: Arc<CacheInvalidationService>) {
         self.invalidation_service = Some(service);
-        if tokio::runtime::Handle::try_current().is_ok() {
-            let service = self.clone();
-            crate::spawn::spawn_monitored("playback_invalidation_autostart", async move {
-                if let Err(error) = service.start().await {
-                    tracing::warn!(
-                        error = %error,
-                        "Failed to auto-start playback invalidation listener after wiring invalidation service"
-                    );
-                }
-            });
-        }
     }
 
     pub fn has_invalidation_service(&self) -> bool {
@@ -656,7 +627,7 @@ impl PlaybackService {
 
         let state = self
             .single_flight
-            .do_work_with_fallback(
+            .do_work(
                 cache_key,
                 async move {
                     let state = match repo.get(&room_id_clone).await {
@@ -686,10 +657,14 @@ impl PlaybackService {
 
                     Ok(state)
                 },
-                || "SingleFlight worker failed during playback state fetch".to_string(),
             )
             .await
-            .map_err(Error::Internal)?;
+            .map_err(|error| match error {
+                crate::cache::SingleFlightError::WorkerFailed => Error::Internal(
+                    "SingleFlight worker failed during playback state fetch".to_string(),
+                ),
+                crate::cache::SingleFlightError::Inner(message) => Error::Internal(message),
+            })?;
 
         crate::metrics::cache::CACHE_MISSES
             .with_label_values(&["playback", "l1_l2"])
@@ -738,7 +713,7 @@ impl PlaybackService {
         playing: bool,
     ) -> Result<RoomPlaybackState> {
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::PLAY_PAUSE)
+            .check_permission(&room_id, &user_id, PermissionBits::PLAY_CONTROL)
             .await?;
 
         let state = self
@@ -780,7 +755,7 @@ impl PlaybackService {
         validate_seek_position(current_time)?;
 
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::SEEK)
+            .check_permission(&room_id, &user_id, PermissionBits::PLAY_CONTROL)
             .await?;
 
         let result = self
@@ -823,7 +798,7 @@ impl PlaybackService {
         speed: f64,
     ) -> Result<RoomPlaybackState> {
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::CHANGE_SPEED)
+            .check_permission(&room_id, &user_id, PermissionBits::CHANGE_PLAYBACK_RATE)
             .await?;
 
         validate_playback_speed_value(speed)?;
@@ -867,7 +842,7 @@ impl PlaybackService {
         media_path: String,
     ) -> Result<RoomPlaybackState> {
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::SWITCH_MEDIA)
+            .check_permission(&room_id, &user_id, PermissionBits::CHANGE_CURRENT_MOVIE)
             .await?;
 
         // Verify media exists in this room
@@ -1261,7 +1236,7 @@ impl PlaybackService {
     /// Reset playback to initial state
     pub async fn reset(&self, room_id: RoomId, user_id: UserId) -> Result<RoomPlaybackState> {
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::PLAY_PAUSE)
+            .check_permission(&room_id, &user_id, PermissionBits::PLAY_CONTROL)
             .await?;
 
         let state = self
@@ -1356,16 +1331,16 @@ impl PlaybackService {
         // Check permissions based on what's being updated
         let mut required_perms = PermissionBits::NONE;
         if playing.is_some() {
-            required_perms |= PermissionBits::PLAY_PAUSE;
+            required_perms |= PermissionBits::PLAY_CONTROL;
         }
         if current_time.is_some() {
-            required_perms |= PermissionBits::SEEK;
+            required_perms |= PermissionBits::PLAY_CONTROL;
         }
         if speed.is_some() {
-            required_perms |= PermissionBits::CHANGE_SPEED;
+            required_perms |= PermissionBits::CHANGE_PLAYBACK_RATE;
         }
         if media_id.is_some() {
-            required_perms |= PermissionBits::SWITCH_MEDIA;
+            required_perms |= PermissionBits::CHANGE_CURRENT_MOVIE;
         }
 
         if required_perms != PermissionBits::NONE {
@@ -1378,11 +1353,8 @@ impl PlaybackService {
             validate_seek_position(ct)?;
         }
 
-        // Preserve the legacy PATCH contract used by clients performing
-        // atomic multi-field updates, even though interactive speed changes
-        // remain limited to the UI/websocket bounds.
         if let Some(s) = speed {
-            validate_patch_playback_speed_value(s)?;
+            validate_playback_speed_value(s)?;
         }
 
         // If media_id is provided, verify it exists
@@ -1576,18 +1548,17 @@ mod tests {
     }
 
     #[test]
-    fn test_patch_speed_validation_bounds() {
-        assert!(validate_patch_playback_speed_value(0.25).is_ok());
-        assert!(validate_patch_playback_speed_value(1.0).is_ok());
-        assert!(validate_patch_playback_speed_value(4.0).is_ok());
-        assert!(validate_patch_playback_speed_value(8.0).is_ok());
-        assert!(validate_patch_playback_speed_value(16.0).is_ok());
+    fn test_update_multiple_speed_uses_standard_validation_bounds() {
+        assert!(validate_playback_speed_value(0.25).is_ok());
+        assert!(validate_playback_speed_value(1.0).is_ok());
+        assert!(validate_playback_speed_value(4.0).is_ok());
 
-        assert!(validate_patch_playback_speed_value(0.0).is_err());
-        assert!(validate_patch_playback_speed_value(-1.0).is_err());
-        assert!(validate_patch_playback_speed_value(16.1).is_err());
-        assert!(validate_patch_playback_speed_value(f64::NAN).is_err());
-        assert!(validate_patch_playback_speed_value(f64::INFINITY).is_err());
+        assert!(validate_playback_speed_value(0.0).is_err());
+        assert!(validate_playback_speed_value(-1.0).is_err());
+        assert!(validate_playback_speed_value(4.1).is_err());
+        assert!(validate_playback_speed_value(8.0).is_err());
+        assert!(validate_playback_speed_value(f64::NAN).is_err());
+        assert!(validate_playback_speed_value(f64::INFINITY).is_err());
     }
 
     #[test]
@@ -1704,12 +1675,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_invalidation_service_auto_starts_listener_for_existing_callers() {
+    async fn test_start_activates_invalidation_listener_after_wiring_service() {
         let (mut playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
         let room_id = RoomId::from_string("room-playback-autostart".to_string());
         let cache_key = room_id.as_str().to_string();
 
         playback_service.set_invalidation_service(invalidation_service.clone());
+        playback_service
+            .start()
+            .await
+            .expect("explicit start should activate playback invalidation listener");
 
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while !playback_service.invalidation_task_started() {
@@ -1717,7 +1692,7 @@ mod tests {
             }
         })
         .await
-        .expect("setter should auto-start playback invalidation listener when a runtime exists");
+        .expect("start() should mark playback invalidation listener as running");
 
         let updated_state = RoomPlaybackState {
             room_id: room_id.clone(),
@@ -1748,7 +1723,7 @@ mod tests {
             }
         })
         .await
-        .expect("auto-started playback invalidation listener should process broadcasts");
+        .expect("started playback invalidation listener should process broadcasts");
 
         assert_eq!(cached.version, updated_state.version);
 
@@ -1756,7 +1731,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_auto_started_invalidation_listener_uses_l2_cache_wired_after_start() {
+    async fn test_started_invalidation_listener_uses_l2_cache_wired_after_start() {
         let (mut playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
         let backend = Arc::new(CountingL2Backend::default());
         let l2_cache = PlaybackStateCache::new(
@@ -1770,6 +1745,10 @@ mod tests {
         let room_id = RoomId::from_string("room-playback-late-l2".to_string());
 
         playback_service.set_invalidation_service(invalidation_service.clone());
+        playback_service
+            .start()
+            .await
+            .expect("explicit start should activate playback invalidation listener");
 
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while !playback_service.invalidation_task_started() {
@@ -1777,7 +1756,7 @@ mod tests {
             }
         })
         .await
-        .expect("setter should auto-start playback invalidation listener when a runtime exists");
+        .expect("start() should mark playback invalidation listener as running");
 
         playback_service.set_l2_cache(l2_cache);
 
@@ -1794,7 +1773,7 @@ mod tests {
             }
         })
         .await
-        .expect("listener should invalidate L2 even when L2 is wired after auto-start");
+        .expect("listener should invalidate L2 even when L2 is wired after explicit start");
 
         playback_service.shutdown().await;
     }

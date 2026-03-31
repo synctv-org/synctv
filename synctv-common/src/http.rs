@@ -4,12 +4,13 @@
 //! - [`SsrfSafeClientBuilder::provider()`] — for media-provider API calls
 //! - [`SsrfSafeClientBuilder::proxy()`] — for outbound media proxy fetches
 //!
-//! All clients enforce SSRF protection via [`crate::ssrf::ssrf_dns_resolver()`]
+//! All clients enforce SSRF protection via
+//! [`crate::ssrf::SsrfGuard::shared_default()`]
 //! and disable automatic redirects.
 
 use std::time::Duration;
 
-use crate::ssrf::ssrf_dns_resolver;
+use crate::ssrf::SsrfGuard;
 
 /// Builder for SSRF-safe [`reqwest::Client`] instances.
 ///
@@ -129,7 +130,7 @@ impl SsrfSafeClientBuilder {
     /// Build the [`reqwest::Client`].
     pub fn build(self) -> Result<reqwest::Client, reqwest::Error> {
         let mut builder = reqwest::Client::builder()
-            .dns_resolver(ssrf_dns_resolver())
+            .dns_resolver(SsrfGuard::shared_default().dns_resolver())
             .connect_timeout(self.connect_timeout)
             .pool_max_idle_per_host(self.pool_max_idle_per_host)
             .redirect(reqwest::redirect::Policy::none());

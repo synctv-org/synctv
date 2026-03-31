@@ -8,16 +8,12 @@ use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::post,
     Json, Router,
 };
 use serde_json::json;
 
 use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
-
-fn user_info_server_id(instance_name: Option<&str>) -> String {
-    synctv_core::models::UserProviderCredential::bilibili_server_id(instance_name)
-}
 
 /// Bilibili endpoints that authenticate, issue challenges, or mutate stored credentials.
 pub fn bilibili_auth_routes() -> Router<AppState> {
@@ -34,7 +30,7 @@ pub fn bilibili_auth_routes() -> Router<AppState> {
 pub fn bilibili_read_routes() -> Router<AppState> {
     Router::new()
         .route("/parse", post(parse))
-        .route("/me", get(user_info))
+        .route("/me", post(user_info))
 }
 
 // ------------------------------------------------------------------
@@ -175,14 +171,11 @@ async fn user_info(
     auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
+    Json(req): Json<crate::proto::providers::bilibili::UserInfoRequest>,
 ) -> impl IntoResponse {
     tracing::info!("Bilibili user info request");
 
     let api = &state.bilibili_api;
-    let req = crate::proto::providers::bilibili::UserInfoRequest {
-        server_id: user_info_server_id(query.as_deref()),
-        instance_name: query.instance_name.clone().unwrap_or_default(),
-    };
 
     match api
         .get_user_info(&auth.user_id.to_string(), req, query.as_deref())
@@ -217,28 +210,11 @@ async fn logout(
 
 #[cfg(test)]
 mod tests {
-    use super::user_info_server_id;
     use synctv_core::models::UserProviderCredential;
 
     #[test]
-    fn user_info_server_id_defaults_without_instance_name() {
-        assert_eq!(
-            user_info_server_id(None),
-            UserProviderCredential::BILIBILI_SERVER_ID
-        );
-        assert_eq!(
-            user_info_server_id(Some("   ")),
-            UserProviderCredential::BILIBILI_SERVER_ID
-        );
-    }
-
-    #[test]
-    fn user_info_server_id_scopes_to_requested_instance() {
-        let scoped = user_info_server_id(Some("bili-main"));
-        assert_eq!(
-            scoped,
-            UserProviderCredential::bilibili_server_id(Some("bili-main"))
-        );
-        assert_ne!(scoped, UserProviderCredential::BILIBILI_SERVER_ID);
+    fn bilibili_server_id_scopes_to_requested_instance() {
+        let scoped = UserProviderCredential::bilibili_server_id(Some("bili-main"));
+        assert_ne!(scoped, UserProviderCredential::bilibili_server_id(None));
     }
 }

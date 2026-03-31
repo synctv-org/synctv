@@ -5,7 +5,11 @@
 
 #![allow(clippy::unwrap_used)]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use synctv_common::ssrf::is_ip_blocked;
+use synctv_common::ssrf::SsrfGuard;
+
+fn is_ip_blocked(ip: &IpAddr) -> bool {
+    SsrfGuard::shared_default().is_ip_blocked(ip)
+}
 
 // ============================================================================
 // Teredo IPv6 (2001:0000::/32) blocking
@@ -17,7 +21,7 @@ fn test_teredo_ipv6_blocked() {
         0x2001, 0x0000, 0x1234, 0x5678, 0x9abc, 0xdef0, 0x1111, 0x2222,
     );
     assert!(
-        is_ip_blocked(&IpAddr::V6(teredo)),
+        SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V6(teredo)),
         "Teredo addresses (2001:0000::/32) must be blocked"
     );
 }
@@ -37,7 +41,7 @@ fn test_teredo_ipv6_various_payloads() {
     ];
     for addr in &addrs {
         assert!(
-            is_ip_blocked(&IpAddr::V6(*addr)),
+            SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V6(*addr)),
             "Teredo address {addr} must be blocked"
         );
     }
@@ -53,7 +57,7 @@ fn test_6to4_ipv6_blocked() {
         0x2002, 0xc0a8, 0x0101, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001,
     );
     assert!(
-        is_ip_blocked(&IpAddr::V6(six_to_four)),
+        SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V6(six_to_four)),
         "6to4 addresses (2002::/16) must be blocked"
     );
 }
@@ -66,7 +70,7 @@ fn test_6to4_ipv6_encapsulating_public() {
         0x2002, 0x0808, 0x0808, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001,
     );
     assert!(
-        is_ip_blocked(&IpAddr::V6(addr)),
+        SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V6(addr)),
         "6to4 even with public IPv4 payload must be blocked"
     );
 }
@@ -80,21 +84,21 @@ fn test_ipv4_mapped_ipv6_private_blocked() {
     // ::ffff:127.0.0.1
     let mapped_loopback = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001);
     assert!(
-        is_ip_blocked(&IpAddr::V6(mapped_loopback)),
+        SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V6(mapped_loopback)),
         "IPv4-mapped loopback must be blocked"
     );
 
     // ::ffff:192.168.1.1
     let mapped_private = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0101);
     assert!(
-        is_ip_blocked(&IpAddr::V6(mapped_private)),
+        SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V6(mapped_private)),
         "IPv4-mapped private must be blocked"
     );
 
     // ::ffff:10.0.0.1
     let mapped_10 = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0a00, 0x0001);
     assert!(
-        is_ip_blocked(&IpAddr::V6(mapped_10)),
+        SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V6(mapped_10)),
         "IPv4-mapped 10.x must be blocked"
     );
 }
@@ -109,7 +113,7 @@ fn test_ipv4_mapped_ipv6_public_blocked() {
     // ::ffff:8.8.8.8
     let mapped_public = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0808, 0x0808);
     assert!(
-        is_ip_blocked(&IpAddr::V6(mapped_public)),
+        SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V6(mapped_public)),
         "IPv4-mapped IPv6 addresses should be blocked for security reasons"
     );
 }

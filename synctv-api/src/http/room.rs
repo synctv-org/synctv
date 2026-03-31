@@ -944,23 +944,7 @@ pub async fn get_chat_history(
     Path(room_id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<GetChatHistoryResponse>> {
-    let limit = params
-        .get("limit")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50i32)
-        .clamp(1, 100);
-    let before = params
-        .get("before")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0i64);
-
-    // Read cursor for keyset pagination (takes precedence over before timestamp)
-    let cursor = params.get("cursor").cloned().unwrap_or_default();
-    let req = crate::proto::client::GetChatHistoryRequest {
-        limit,
-        before,
-        cursor,
-    };
+    let req = parse_chat_history_request_params(&params)?;
     let response = state
         .client_api
         .get_chat_history(&auth.user_id.to_string(), &room_id, req)
@@ -968,6 +952,27 @@ pub async fn get_chat_history(
         .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
+}
+
+fn parse_chat_history_request_params(
+    params: &std::collections::HashMap<String, String>,
+) -> AppResult<crate::proto::client::GetChatHistoryRequest> {
+    if params.contains_key("before") {
+        return Err(super::AppError::bad_request(
+            "The 'before' query parameter is no longer supported; use 'cursor' instead",
+        ));
+    }
+
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50i32)
+        .clamp(1, 100);
+
+    Ok(crate::proto::client::GetChatHistoryRequest {
+        limit,
+        cursor: params.get("cursor").cloned().unwrap_or_default(),
+    })
 }
 
 // ==================== Playlist CRUD ====================
@@ -1084,7 +1089,12 @@ pub async fn get_hot_rooms(
 
 #[cfg(test)]
 mod tests {
-    use super::{AddMediaBatchBody, UpdateMediaBatchRequest, UpdatePlaybackRequest};
+    use std::collections::HashMap;
+
+    use super::{
+        parse_chat_history_request_params, AddMediaBatchBody, UpdateMediaBatchRequest,
+        UpdatePlaybackRequest,
+    };
 
     #[test]
     fn test_update_playback_request_deserialize_state_only() {
@@ -1196,5 +1206,39 @@ mod tests {
         let swap = req.swap.expect("swap operation should deserialize");
         assert_eq!(swap.media_id1, "media-1");
         assert_eq!(swap.media_id2, "media-2");
+    }
+
+    #[test]
+    fn test_parse_chat_history_request_rejects_before_param() {
+        let params = HashMap::from([
+            ("limit".to_string(), "20".to_string()),
+            ("before".to_string(), "1710000000".to_string()),
+        ]);
+
+        let err =
+            parse_chat_history_request_params(&params).expect_err("before must be rejected");
+
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(
+            err.message.contains("no longer supported"),
+            "unexpected message: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_parse_chat_history_request_accepts_cursor_only() {
+        let params = HashMap::from([
+            ("limit".to_string(), "20".to_string()),
+            (
+                "cursor".to_string(),
+                "2026-03-31T12:00:00+00:00|msg_123".to_string(),
+            ),
+        ]);
+
+        let req = parse_chat_history_request_params(&params).expect("cursor-only request");
+
+        assert_eq!(req.limit, 20);
+        assert_eq!(req.cursor, "2026-03-31T12:00:00+00:00|msg_123");
     }
 }

@@ -12,6 +12,7 @@ use md5::{Digest, Md5};
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
+use synctv_common::ssrf::SsrfGuard;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
@@ -2934,15 +2935,15 @@ async fn resolve_validated_danmaku_addr(
         ))
     })?;
 
-    let guard = crate::ssrf::ssrf_acl();
-    if guard.is_host_allowed(hostname).is_denied() {
+    let guard = SsrfGuard::shared_default();
+    if guard.is_host_blocked(hostname) {
         return Err(BilibiliError::Network(format!(
             "WebSocket host is blocked by SSRF policy: {hostname}"
         )));
     }
 
     if let Ok(ip) = hostname.parse::<std::net::IpAddr>() {
-        if crate::ssrf::is_ip_blocked(&ip) {
+        if guard.is_ip_blocked(&ip) {
             return Err(BilibiliError::Network(format!(
                 "WebSocket host IP is blocked by SSRF policy: {ip}"
             )));
@@ -2966,7 +2967,7 @@ async fn resolve_validated_danmaku_addr(
     if let Some(blocked_ip) = resolved
         .iter()
         .map(std::net::SocketAddr::ip)
-        .find(crate::ssrf::is_ip_blocked)
+        .find(|ip| guard.is_ip_blocked(ip))
     {
         return Err(BilibiliError::Network(format!(
             "WebSocket host resolves to blocked IP: {blocked_ip}"

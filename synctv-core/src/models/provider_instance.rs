@@ -17,7 +17,7 @@ pub struct ProviderInstance {
     /// Instance name (primary key, unique identifier)
     pub name: String,
 
-    /// gRPC service endpoint (e.g., "<grpc://beijing.example.com:50051>")
+    /// gRPC service endpoint (e.g., "http://beijing.example.com:50051")
     pub endpoint: String,
 
     /// Human-readable description
@@ -82,8 +82,8 @@ pub struct UserProviderCredential {
     pub provider: String,
 
     /// Server identifier
-    /// - Bilibili: "bilibili" (constant, ensures one credential per user)
-    /// - Alist/Emby: MD5(host) (allows multiple servers per user)
+    /// - Bilibili: SHA-256(provider scope + optional instance name)
+    /// - Alist/Emby: SHA-256(host or host+instance) (allows multiple servers per user)
     pub server_id: String,
 
     /// Associated media provider instance name (optional)
@@ -103,8 +103,7 @@ pub struct UserProviderCredential {
 }
 
 impl UserProviderCredential {
-    /// Fixed `server_id` for Bilibili (ensures one credential per user)
-    pub const BILIBILI_SERVER_ID: &'static str = "bilibili";
+    const BILIBILI_SCOPE: &'static str = "bilibili";
 
     fn normalized_instance_name(provider_instance_name: Option<&str>) -> Option<&str> {
         provider_instance_name.and_then(|name| {
@@ -125,11 +124,6 @@ impl UserProviderCredential {
     }
 
     /// Generate a `server_id` scoped to the provider instance.
-    ///
-    /// Without an instance name this preserves the legacy identifier so existing
-    /// single-instance credentials are stable. When an instance name is present,
-    /// it becomes part of the identifier to prevent credentials for different
-    /// provider backends from overwriting each other.
     #[must_use]
     pub fn generate_server_id_for_instance(
         host: &str,
@@ -153,13 +147,11 @@ impl UserProviderCredential {
     pub fn bilibili_server_id(provider_instance_name: Option<&str>) -> String {
         use sha2::{Digest, Sha256};
 
-        match Self::normalized_instance_name(provider_instance_name) {
-            Some(instance_name) => format!(
-                "{:x}",
-                Sha256::digest(format!("{}\n{instance_name}", Self::BILIBILI_SERVER_ID).as_bytes())
-            ),
-            None => Self::BILIBILI_SERVER_ID.to_string(),
-        }
+        let input = match Self::normalized_instance_name(provider_instance_name) {
+            Some(instance_name) => format!("{}\n{instance_name}", Self::BILIBILI_SCOPE),
+            None => Self::BILIBILI_SCOPE.to_string(),
+        };
+        format!("{:x}", Sha256::digest(input.as_bytes()))
     }
 
     /// Check if this credential has expired
@@ -254,7 +246,7 @@ mod tests {
     fn test_provider_instance_supports_provider() {
         let instance = ProviderInstance {
             name: "test-instance".to_string(),
-            endpoint: "grpc://localhost:50051".to_string(),
+            endpoint: "http://localhost:50051".to_string(),
             comment: None,
             jwt_secret: None,
             custom_ca: None,
@@ -276,7 +268,7 @@ mod tests {
     fn test_provider_instance_parse_timeout() {
         let instance = ProviderInstance {
             name: "test".to_string(),
-            endpoint: "grpc://localhost:50051".to_string(),
+            endpoint: "http://localhost:50051".to_string(),
             comment: None,
             jwt_secret: None,
             custom_ca: None,
@@ -326,15 +318,12 @@ mod tests {
     }
 
     #[test]
-    fn test_bilibili_server_id_defaults_to_legacy_constant_without_instance() {
-        assert_eq!(
-            UserProviderCredential::bilibili_server_id(None),
-            UserProviderCredential::BILIBILI_SERVER_ID
-        );
-        assert_eq!(
-            UserProviderCredential::bilibili_server_id(Some("   ")),
-            UserProviderCredential::BILIBILI_SERVER_ID
-        );
+    fn test_bilibili_server_id_without_instance_is_stable_hash() {
+        let default = UserProviderCredential::bilibili_server_id(None);
+        let blank = UserProviderCredential::bilibili_server_id(Some("   "));
+
+        assert_eq!(default.len(), 64);
+        assert_eq!(default, blank);
     }
 
     #[test]
@@ -346,7 +335,7 @@ mod tests {
         assert_eq!(main.len(), 64);
         assert_eq!(main, main_dup);
         assert_ne!(main, backup);
-        assert_ne!(main, UserProviderCredential::BILIBILI_SERVER_ID);
+        assert_ne!(main, UserProviderCredential::bilibili_server_id(None));
     }
 
     #[test]
@@ -358,7 +347,7 @@ mod tests {
             id: "test_id".to_string(),
             user_id: "user_id".to_string(),
             provider: "bilibili".to_string(),
-            server_id: "bilibili".to_string(),
+            server_id: UserProviderCredential::bilibili_server_id(None),
             provider_instance_name: None,
             credential_data: serde_json::json!({}),
             expires_at: Some(Utc::now() - Duration::hours(1)),

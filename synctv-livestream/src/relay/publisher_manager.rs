@@ -185,8 +185,8 @@ fn is_redis_unreachable_error(error: &anyhow::Error) -> bool {
 pub struct PublisherManager {
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
-    /// Advertised gRPC address of this node (L-05: used for re-registration after restart).
-    local_grpc_address: String,
+    /// Advertised shared API address of this node (L-05: used for re-registration after restart).
+    local_api_address: String,
     /// Active publishers (composite key -> `PublisherEntry`)
     /// Live streaming is media-level, not room-level
     active_publishers: Arc<DashMap<String, Arc<PublisherEntry>>>,
@@ -211,7 +211,7 @@ impl PublisherManager {
         Self {
             registry,
             local_node_id,
-            local_grpc_address: String::new(),
+            local_api_address: String::new(),
             active_publishers: Arc::new(DashMap::new()),
             hub_event_sender,
             lag_event_count: AtomicU64::new(0),
@@ -234,7 +234,7 @@ impl PublisherManager {
         Self {
             registry,
             local_node_id,
-            local_grpc_address: String::new(),
+            local_api_address: String::new(),
             active_publishers: Arc::new(DashMap::new()),
             hub_event_sender,
             lag_event_count: AtomicU64::new(0),
@@ -252,11 +252,11 @@ impl PublisherManager {
         Arc::clone(&self.is_restarting)
     }
 
-    /// Set the advertised gRPC address for this node.
+    /// Set the advertised shared API address for this node.
     /// Used during re-registration after `StreamHub` restart (L-05).
     #[must_use]
-    pub fn with_grpc_address(mut self, grpc_address: String) -> Self {
-        self.local_grpc_address = grpc_address;
+    pub fn with_api_address(mut self, api_address: String) -> Self {
+        self.local_api_address = api_address;
         self
     }
 
@@ -308,12 +308,12 @@ impl PublisherManager {
 
     /// Start listening to `StreamHub` broadcast events
     pub async fn start(self: Arc<Self>, mut event_receiver: BroadcastEventReceiver) {
-        if self.local_grpc_address.is_empty() {
+        if self.local_api_address.is_empty() {
             warn!(
-                "PublisherManager started with empty grpc_address. \
+                "PublisherManager started with empty api_address. \
                  Re-registration after StreamHub restart will use an empty address, \
                  preventing cross-node HLS proxy from reaching this node. \
-                 Set grpc_address in LivestreamConfig."
+                 Set api_address in LivestreamConfig."
             );
         }
 
@@ -755,7 +755,7 @@ impl PublisherManager {
                 media_id,
                 &self.local_node_id,
                 &entry.user_id,
-                &self.local_grpc_address,
+                &self.local_api_address,
             )
             .await
         {
@@ -841,10 +841,10 @@ impl PublisherManager {
             return;
         }
 
-        if self.local_grpc_address.is_empty() {
+        if self.local_api_address.is_empty() {
             warn!(
-                "Re-registering {} publishers with empty local_grpc_address. \
-                 Cross-node HLS proxying will fail until grpc_address is set in LivestreamConfig. \
+                "Re-registering {} publishers with empty local_api_address. \
+                 Cross-node HLS proxying will fail until api_address is set in LivestreamConfig. \
                  Proceeding with re-registration to restore local publisher ownership in Redis.",
                 snapshot.len()
             );
@@ -867,7 +867,7 @@ impl PublisherManager {
                         media_id,
                         &self.local_node_id,
                         &entry.user_id,
-                        &self.local_grpc_address,
+                        &self.local_api_address,
                     )
                     .await
                 {
@@ -1428,7 +1428,7 @@ mod tests {
             Self {
                 publisher: tokio::sync::Mutex::new(Some(PublisherInfo {
                     node_id: "test-node".to_string(),
-                    grpc_address: "addr1".to_string(),
+                    api_address: "addr1".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: Utc::now(),
@@ -1450,9 +1450,9 @@ mod tests {
             media_id: &str,
             node_id: &str,
             _app_name: &str,
-            grpc_address: &str,
+            api_address: &str,
         ) -> Result<bool> {
-            self.try_register_publisher(room_id, media_id, node_id, "", grpc_address)
+            self.try_register_publisher(room_id, media_id, node_id, "", api_address)
                 .await
         }
 
@@ -1462,7 +1462,7 @@ mod tests {
             _media_id: &str,
             node_id: &str,
             user_id: &str,
-            grpc_address: &str,
+            api_address: &str,
         ) -> Result<bool> {
             let mut publisher = self.publisher.lock().await;
             if self
@@ -1478,7 +1478,7 @@ mod tests {
                 let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
                 *publisher = Some(PublisherInfo {
                     node_id: node_id.to_string(),
-                    grpc_address: grpc_address.to_string(),
+                    api_address: api_address.to_string(),
                     app_name: "live".to_string(),
                     user_id: user_id.to_string(),
                     started_at: Utc::now(),
@@ -1494,7 +1494,7 @@ mod tests {
             let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
             *publisher = Some(PublisherInfo {
                 node_id: node_id.to_string(),
-                grpc_address: grpc_address.to_string(),
+                api_address: api_address.to_string(),
                 app_name: "live".to_string(),
                 user_id: user_id.to_string(),
                 started_at: Utc::now(),
@@ -1711,7 +1711,7 @@ mod tests {
         let registry = Arc::new(RecreateOnReregisterRegistry::new());
         let (tx, _rx) = tokio::sync::mpsc::channel(64);
         let manager = PublisherManager::new(registry.clone(), "test-node".to_string(), tx)
-            .with_grpc_address("addr1".to_string());
+            .with_api_address("addr1".to_string());
         manager.active_publishers.insert(
             "room-reregister:media-reregister".to_string(),
             Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
@@ -1751,7 +1751,7 @@ mod tests {
             .store(true, Ordering::Release);
         let (tx, _rx) = tokio::sync::mpsc::channel(64);
         let manager = PublisherManager::new(registry.clone(), "test-node".to_string(), tx)
-            .with_grpc_address("addr1".to_string());
+            .with_api_address("addr1".to_string());
         manager.active_publishers.insert(
             "room-reregister:media-reregister".to_string(),
             Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
@@ -1791,7 +1791,7 @@ mod tests {
             .store(true, Ordering::Release);
         let (tx, _rx) = tokio::sync::mpsc::channel(64);
         let manager = PublisherManager::new(registry.clone(), "test-node".to_string(), tx)
-            .with_grpc_address("addr1".to_string());
+            .with_api_address("addr1".to_string());
         manager.active_publishers.insert(
             "room-reregister:media-reregister".to_string(),
             Arc::new(PublisherEntry::with_registration("user1".to_string(), 1)),
@@ -2607,7 +2607,7 @@ mod tests {
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
                     node_id: "test-node".to_string(),
-                    grpc_address: "127.0.0.1:50051".to_string(),
+                    api_address: "127.0.0.1:50051".to_string(),
                     app_name: "live".to_string(),
                     user_id: "user1".to_string(),
                     started_at: Utc::now(),

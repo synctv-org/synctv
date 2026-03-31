@@ -26,14 +26,14 @@ pub struct ProbedNodeIdentity {
     pub epoch: u64,
 }
 
-/// Probe a node's gRPC service by calling `GetNodes`.
+/// Probe a node's gRPC service on the shared API address by calling `GetNodes`.
 ///
 /// Validates that the application-layer gRPC service is responsive, not just
 /// that the port is open. Used by both `HealthMonitor` and `StaticDiscovery`.
 ///
 /// Returns `true` if the node responds successfully to the `GetNodes` RPC.
-pub async fn probe_node_grpc(grpc_address: &str, timeout_secs: u64, cluster_secret: &str) -> bool {
-    probe_node_identity(grpc_address, timeout_secs, cluster_secret)
+pub async fn probe_node_api(api_address: &str, timeout_secs: u64, cluster_secret: &str) -> bool {
+    probe_node_identity(api_address, timeout_secs, cluster_secret)
         .await
         .is_some()
 }
@@ -43,21 +43,21 @@ pub async fn probe_node_grpc(grpc_address: &str, timeout_secs: u64, cluster_secr
 /// This is used by static discovery so registrations use the remote node's
 /// actual `node_id` instead of a synthetic ID derived from the address.
 pub async fn probe_node_identity(
-    grpc_address: &str,
+    api_address: &str,
     timeout_secs: u64,
     cluster_secret: &str,
 ) -> Option<ProbedNodeIdentity> {
-    let uri = if grpc_address.starts_with("http://") || grpc_address.starts_with("https://") {
-        grpc_address.to_string()
+    let uri = if api_address.starts_with("http://") || api_address.starts_with("https://") {
+        api_address.to_string()
     } else {
-        format!("http://{grpc_address}")
+        format!("http://{api_address}")
     };
 
     let connect_timeout = Duration::from_secs(timeout_secs);
     let endpoint = match Endpoint::from_shared(uri) {
         Ok(ep) => ep.connect_timeout(connect_timeout).timeout(connect_timeout),
         Err(e) => {
-            tracing::warn!(peer = %grpc_address, error = %e, "Invalid peer address");
+            tracing::warn!(peer = %api_address, error = %e, "Invalid peer address");
             return None;
         }
     };
@@ -87,9 +87,9 @@ pub async fn probe_node_identity(
     }
 
     match client.get_nodes(request).await {
-        Ok(response) => extract_probed_node_identity(response.into_inner(), grpc_address),
+        Ok(response) => extract_probed_node_identity(response.into_inner(), api_address),
         Err(e) => {
-            tracing::debug!(peer = %grpc_address, error = %e, "Peer health check failed");
+            tracing::debug!(peer = %api_address, error = %e, "Peer health check failed");
             None
         }
     }

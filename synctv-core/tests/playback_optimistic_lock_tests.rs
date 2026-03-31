@@ -630,7 +630,7 @@ async fn test_high_contention_operations_remain_consistent() {
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
     assert!(
-        state.speed > 0.0 && state.speed <= 16.0,
+        state.speed > 0.0 && state.speed <= 4.0,
         "Speed should be valid"
     );
     assert!(state.version > 0, "Version should have advanced");

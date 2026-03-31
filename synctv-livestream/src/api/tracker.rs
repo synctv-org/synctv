@@ -61,9 +61,6 @@ impl Drop for StreamSubscriberGuard {
     }
 }
 
-/// Legacy type alias — prefer `StreamTracker` for new code.
-pub type UserStreamTracker = Arc<StreamTracker>;
-
 /// Inner state holding all five indexes, protected by an outer `RwLock`.
 ///
 /// Using regular `HashMap`/`HashSet` instead of `DashMap`/`DashSet` since

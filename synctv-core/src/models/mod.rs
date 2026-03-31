@@ -15,8 +15,7 @@ pub mod settings;
 pub mod user;
 
 pub use chat::{
-    ChatHistoryQuery, ChatMessage, DanmakuMessage, DanmakuPosition, SendChatRequest,
-    SendDanmakuRequest,
+    ChatMessage, DanmakuMessage, DanmakuPosition, SendChatRequest, SendDanmakuRequest,
 };
 pub use id::{generate_id, MediaId, PlaylistId, RoomId, UserId, ID_LENGTH};
 pub use media::{

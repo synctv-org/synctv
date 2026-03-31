@@ -178,7 +178,7 @@ impl ExternalStreamPuller {
         if !host.is_empty() {
             if let Ok(ip) = host.parse::<std::net::IpAddr>() {
                 // Literal IP address - check directly
-                if synctv_common::ssrf::is_ip_blocked(&ip) {
+                if synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip) {
                     return Err(anyhow::anyhow!(
                         "SSRF protection blocked IP: {ip} is private/reserved"
                     ));
@@ -191,7 +191,7 @@ impl ExternalStreamPuller {
                 // Filter out blocked IPs
                 let safe_addrs: Vec<std::net::SocketAddr> = addrs
                     .into_iter()
-                    .filter(|addr| !synctv_common::ssrf::is_ip_blocked(&addr.ip()))
+                    .filter(|addr| !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&addr.ip()))
                     .collect();
 
                 if safe_addrs.is_empty() {

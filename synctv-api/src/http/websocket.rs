@@ -676,6 +676,7 @@ const fn requires_state_resync(message: &ServerMessage) -> bool {
                 | Message::UserLeft(_)
                 | Message::MediaAdded(_)
                 | Message::MediaRemoved(_)
+                | Message::MediaRemovedBatch(_)
                 | Message::MediaUpdated(_)
                 | Message::PlaylistReordered(_)
                 | Message::PlaylistCreated(_)
@@ -699,6 +700,7 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
         Some(Message::Error(_)) => "Error",
         Some(Message::MediaAdded(_)) => "MediaAdded",
         Some(Message::MediaRemoved(_)) => "MediaRemoved",
+        Some(Message::MediaRemovedBatch(_)) => "MediaRemovedBatch",
         Some(Message::MediaUpdated(_)) => "MediaUpdated",
         Some(Message::PermissionChanged(_)) => "PermissionChanged",
         Some(Message::PlaylistReordered(_)) => "PlaylistReordered",
@@ -1265,6 +1267,23 @@ mod tests {
         let json = r#"{"ticket":"tix","extra":"ignored"}"#;
         let query: WsQuery = serde_json::from_str(json).expect("deserialize with extra");
         assert_eq!(query.ticket.as_deref(), Some("tix"));
+    }
+
+    #[test]
+    fn test_media_removed_batch_requires_state_resync() {
+        let message = ServerMessage {
+            message: Some(crate::proto::client::server_message::Message::MediaRemovedBatch(
+                crate::proto::client::MediaRemovedBatch {
+                    room_id: "room_test".to_string(),
+                    media_ids: vec!["media_a".to_string(), "media_b".to_string()],
+                    removed_by: "frank".to_string(),
+                    removed_by_user_id: "user_test".to_string(),
+                },
+            )),
+        };
+
+        assert!(requires_state_resync(&message));
+        assert_eq!(message_type_name(&message), "MediaRemovedBatch");
     }
 
     // ========== AuthMethod Tests ==========

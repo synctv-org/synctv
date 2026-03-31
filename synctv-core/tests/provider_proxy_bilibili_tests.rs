@@ -20,9 +20,7 @@ fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderM
     let repo = Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
         pool,
     ));
-    Arc::new(synctv_core::service::RemoteProviderManager::new(
-        repo, None, None, "",
-    ))
+    Arc::new(synctv_core::service::RemoteProviderManager::new(repo))
 }
 
 fn provider() -> BilibiliProvider {

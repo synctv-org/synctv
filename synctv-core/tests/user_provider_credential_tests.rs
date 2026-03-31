@@ -27,6 +27,10 @@ fn make_user(username: &str) -> User {
     )
 }
 
+fn bilibili_server_id() -> String {
+    UserProviderCredential::bilibili_server_id(None)
+}
+
 fn make_credential(user_id: &str, provider: &str, server_id: &str) -> UserProviderCredential {
     let now = Utc::now();
     UserProviderCredential {
@@ -59,7 +63,7 @@ fn make_credential_with_instance(
 fn make_provider_instance(name: &str, providers: &[&str]) -> ProviderInstance {
     ProviderInstance {
         name: name.to_string(),
-        endpoint: format!("grpc://{name}.example.com:50051"),
+        endpoint: format!("http://{name}.example.com:50051"),
         comment: None,
         jwt_secret: None,
         custom_ca: None,
@@ -89,12 +93,13 @@ async fn test_create_credential() {
     let user = user_repo.create(&make_user("cred_user1")).await.unwrap();
 
     // Create a credential
-    let cred = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let bilibili_server_id = bilibili_server_id();
+    let cred = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id);
     cred_repo.create(&cred).await.unwrap();
 
     // Retrieve it
     let found = cred_repo
-        .get_by_provider_and_server(user.id.as_str(), "bilibili", "bilibili")
+        .get_by_provider_and_server(user.id.as_str(), "bilibili", &bilibili_server_id)
         .await
         .unwrap();
 
@@ -102,7 +107,7 @@ async fn test_create_credential() {
     let found = found.unwrap();
     assert_eq!(found.user_id, user.id.as_str());
     assert_eq!(found.provider, "bilibili");
-    assert_eq!(found.server_id, "bilibili");
+    assert_eq!(found.server_id, bilibili_server_id);
 }
 
 #[tokio::test]
@@ -118,7 +123,7 @@ async fn test_create_multiple_providers() {
         .unwrap();
 
     // Create credentials for different providers
-    let bilibili = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let bilibili = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
     let alist = make_credential(user.id.as_str(), "alist", "server1_hash");
     let emby = make_credential(user.id.as_str(), "emby", "server2_hash");
 
@@ -141,7 +146,8 @@ async fn test_get_by_id() {
     let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("getbyid_user")).await.unwrap();
-    let cred = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let bilibili_server_id = bilibili_server_id();
+    let cred = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id);
     cred_repo.create(&cred).await.unwrap();
 
     let found = cred_repo.get_by_id(&cred.id).await.unwrap();
@@ -168,7 +174,7 @@ async fn test_get_by_provider() {
     // Create multiple Alist credentials (different servers)
     let alist1 = make_credential(user.id.as_str(), "alist", "server1");
     let alist2 = make_credential(user.id.as_str(), "alist", "server2");
-    let bilibili = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let bilibili = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
 
     cred_repo.create(&alist1).await.unwrap();
     cred_repo.create(&alist2).await.unwrap();
@@ -199,7 +205,8 @@ async fn test_update_credential() {
     let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("update_user")).await.unwrap();
-    let mut cred = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let bilibili_server_id = bilibili_server_id();
+    let mut cred = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id);
     cred_repo.create(&cred).await.unwrap();
 
     // Update credential data
@@ -211,7 +218,7 @@ async fn test_update_credential() {
 
     // Verify update
     let found = cred_repo
-        .get_by_provider_and_server(user.id.as_str(), "bilibili", "bilibili")
+        .get_by_provider_and_server(user.id.as_str(), "bilibili", &bilibili_server_id)
         .await
         .unwrap()
         .unwrap();
@@ -230,7 +237,8 @@ async fn test_update_credential_with_expiration() {
     let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("expire_user")).await.unwrap();
-    let mut cred = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let bilibili_server_id = bilibili_server_id();
+    let mut cred = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id);
     cred_repo.create(&cred).await.unwrap();
 
     // Set expiration
@@ -240,7 +248,7 @@ async fn test_update_credential_with_expiration() {
 
     // Verify expiration
     let found = cred_repo
-        .get_by_provider_and_server(user.id.as_str(), "bilibili", "bilibili")
+        .get_by_provider_and_server(user.id.as_str(), "bilibili", &bilibili_server_id)
         .await
         .unwrap()
         .unwrap();
@@ -258,7 +266,7 @@ async fn test_delete_credential() {
     let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
     let user = user_repo.create(&make_user("delete_user")).await.unwrap();
-    let cred = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let cred = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
     cred_repo.create(&cred).await.unwrap();
 
     // Delete
@@ -281,7 +289,7 @@ async fn test_delete_by_user_and_provider() {
     // Create multiple Alist credentials
     let alist1 = make_credential(user.id.as_str(), "alist", "server1");
     let alist2 = make_credential(user.id.as_str(), "alist", "server2");
-    let bilibili = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let bilibili = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
 
     cred_repo.create(&alist1).await.unwrap();
     cred_repo.create(&alist2).await.unwrap();
@@ -319,11 +327,12 @@ async fn test_unique_constraint_user_provider_server() {
     let user = user_repo.create(&make_user("unique_user")).await.unwrap();
 
     // Create first credential
-    let cred1 = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let bilibili_server_id = bilibili_server_id();
+    let cred1 = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id);
     cred_repo.create(&cred1).await.unwrap();
 
     // Try to create duplicate (same user + provider + server_id)
-    let cred2 = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let cred2 = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id);
     let result = cred_repo.create(&cred2).await;
 
     assert!(result.is_err(), "Should fail due to unique constraint");
@@ -412,7 +421,7 @@ async fn test_credentials_deleted_when_user_deleted() {
     let user = user_repo.create(&make_user("cascade_user")).await.unwrap();
 
     // Create credentials
-    let cred = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let cred = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
     cred_repo.create(&cred).await.unwrap();
 
     // Delete user (soft delete first, then hard delete would cascade)
@@ -446,7 +455,7 @@ async fn test_delete_expired_credentials() {
     cred_repo.create(&expired).await.unwrap();
 
     // Create valid credential
-    let mut valid = make_credential(user.id.as_str(), "bilibili", "bilibili");
+    let mut valid = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
     valid.expires_at = Some(Utc::now() + Duration::hours(1));
     cred_repo.create(&valid).await.unwrap();
 

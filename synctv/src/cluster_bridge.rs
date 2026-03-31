@@ -109,7 +109,6 @@ mod tests {
                     cluster_enabled: false,
                     node_id: "node-local".to_string(),
                     dedup_window: Duration::from_secs(30),
-                    cleanup_interval: Duration::from_secs(30),
                     critical_channel_capacity: 16,
                     publish_channel_capacity: 16,
                     key_prefix: "test:".to_string(),

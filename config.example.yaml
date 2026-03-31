@@ -282,16 +282,13 @@ cluster:
 
   # --- Static Discovery Configuration ---
   # When discovery_mode is "static", list peers explicitly.
-  # Each peer requires a gRPC address; http_address is optional and will be
-  # derived from the gRPC address (replacing the port with default_api_port)
-  # if not specified.
+  # Each peer is a single shared API address. The same port serves gRPC over h2
+  # and REST over h1.
+  # If a peer omits its port, SyncTV probes it on server.port.
   #
-  # static_peers:
-  #   - grpc_address: "node2.example.com:8080"
-  #     http_address: "node2.example.com:8080"   # optional
-  #   - grpc_address: "node3.example.com:8080"
-  #     # http_address omitted: derived as node3.example.com:8080
-  # default_api_port: 8080
+  # peers:
+  #   - "node2.example.com:8080"
+  #   - "node3.example.com"
 
   # Leader election mode for singleton operations.
   # - "redis": Use Redis-based distributed locks (default, works everywhere)

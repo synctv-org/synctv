@@ -50,8 +50,7 @@ pub async fn init_livestream(
     };
 
     // Shared tracker for user->stream mapping (kick-on-ban)
-    let user_stream_tracker: synctv_livestream::api::UserStreamTracker =
-        Arc::new(synctv_livestream::api::StreamTracker::new());
+    let user_stream_tracker = Arc::new(synctv_livestream::api::StreamTracker::new());
 
     // Stream lifecycle event channel (app-level logging)
     let (stream_lifecycle_tx, mut stream_lifecycle_rx) =
@@ -130,7 +129,7 @@ pub async fn init_livestream(
                 None
             },
             gop_cache_max_memory_mb: config.livestream.gop_cache_max_memory_mb,
-            grpc_address: config.advertise_api_address(),
+            api_address: config.advertise_api_address(),
             hls_memory_max_mb: config.livestream.hls_memory_max_mb,
             hls_shared_storage: config.livestream.hls_shared_storage,
             hls_storage_path: config.livestream.hls_storage_path.clone(),

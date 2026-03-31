@@ -27,7 +27,7 @@ use synctv_core::{
 };
 use synctv_core_testing::create_test_pool;
 use synctv_livestream::{
-    api::UserStreamTracker,
+    api::StreamTracker,
     relay::{
         registry::PublisherInfo,
         registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait},
@@ -96,7 +96,7 @@ fn make_rtmp_auth(
     user_service: Arc<UserService>,
     publish_key_service: Arc<PublishKeyService>,
 ) -> SyncTvRtmpAuth {
-    let user_stream_tracker = UserStreamTracker::new(synctv_livestream::api::StreamTracker::new());
+    let user_stream_tracker = Arc::new(StreamTracker::new());
     let registry = Arc::new(MockStreamRegistry::new());
 
     SyncTvRtmpAuth::new(
@@ -131,7 +131,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
         _media_id: &str,
         _node_id: &str,
         _app_name: &str,
-        _grpc_address: &str,
+        _api_address: &str,
     ) -> anyhow::Result<bool> {
         Ok(true)
     }
@@ -142,7 +142,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
         _media_id: &str,
         _node_id: &str,
         _user_id: &str,
-        _grpc_address: &str,
+        _api_address: &str,
     ) -> anyhow::Result<bool> {
         Ok(true)
     }

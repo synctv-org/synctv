@@ -837,15 +837,6 @@ impl PermissionService {
         }
     }
 
-    /// Check if user can perform an action (alias for `check_permission`)
-    pub async fn can(&self, room_id: &RoomId, user_id: &UserId, permission: u64) -> Result<bool> {
-        match self.check_permission(room_id, user_id, permission).await {
-            Ok(()) => Ok(true),
-            Err(Error::Authorization(_)) => Ok(false),
-            Err(e) => Err(e),
-        }
-    }
-
     /// Check multiple permissions at once
     pub async fn check_permissions(
         &self,

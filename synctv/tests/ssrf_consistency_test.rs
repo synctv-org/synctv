@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use synctv_common::ssrf::{is_ip_blocked, ssrf_acl};
+use synctv_common::ssrf::SsrfGuard;
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -43,14 +43,17 @@ const ALLOWED_IPV4: &[(u8, u8, u8, u8)] = &[
 
 #[test]
 fn ssrf_acl_builds_successfully() {
-    let _acl = ssrf_acl();
+    let _acl = SsrfGuard::shared_default().acl().clone();
 }
 
 #[test]
 fn blocked_ipv4_are_blocked() {
     for &(a, b, c, d) in BLOCKED_IPV4 {
         let ip = IpAddr::V4(Ipv4Addr::new(a, b, c, d));
-        assert!(is_ip_blocked(&ip), "is_ip_blocked should block {ip}");
+        assert!(
+            SsrfGuard::shared_default().is_ip_blocked(&ip),
+            "is_ip_blocked should block {ip}"
+        );
     }
 }
 
@@ -58,7 +61,10 @@ fn blocked_ipv4_are_blocked() {
 fn allowed_ipv4_are_allowed() {
     for &(a, b, c, d) in ALLOWED_IPV4 {
         let ip = IpAddr::V4(Ipv4Addr::new(a, b, c, d));
-        assert!(!is_ip_blocked(&ip), "is_ip_blocked should allow {ip}");
+        assert!(
+            !SsrfGuard::shared_default().is_ip_blocked(&ip),
+            "is_ip_blocked should allow {ip}"
+        );
     }
 }
 
@@ -74,7 +80,10 @@ fn blocked_ipv6_are_blocked() {
 
     for ipv6 in &blocked {
         let ip = IpAddr::V6(*ipv6);
-        assert!(is_ip_blocked(&ip), "is_ip_blocked should block {ip}");
+        assert!(
+            SsrfGuard::shared_default().is_ip_blocked(&ip),
+            "is_ip_blocked should block {ip}"
+        );
     }
 }
 
@@ -87,6 +96,9 @@ fn allowed_ipv6_are_allowed() {
 
     for ipv6 in &allowed {
         let ip = IpAddr::V6(*ipv6);
-        assert!(!is_ip_blocked(&ip), "is_ip_blocked should allow {ip}");
+        assert!(
+            !SsrfGuard::shared_default().is_ip_blocked(&ip),
+            "is_ip_blocked should allow {ip}"
+        );
     }
 }

@@ -920,6 +920,7 @@ mod tests {
 
         assert_eq!(media.name, "Single Mode Video");
         assert_eq!(media.position, 5);
+        assert_eq!(media.provider_instance_name, "direct_url");
         assert!(media.source_config.get("playback_infos").is_some());
     }
 
@@ -961,6 +962,7 @@ mod tests {
 
         assert_eq!(media.name, "Multimode Video");
         assert_eq!(media.position, 10);
+        assert_eq!(media.provider_instance_name, "direct_url");
         assert!(media.source_config.get("playback_infos").is_some());
         assert!(media.source_config.get("metadata").is_some());
     }

@@ -619,7 +619,7 @@ fn make_test_media() -> synctv_core::models::Media {
         position: 3,
         source_provider: "bilibili".to_string(),
         source_config: serde_json::json!({"bvid": "BV1234"}),
-        provider_instance_name: Some("bili_main".to_string()),
+        provider_instance_name: "bili_main".to_string(),
         added_at: now,
         updated_at: now,
         version: 0,
@@ -641,11 +641,21 @@ fn test_media_to_proto_basic() {
 }
 
 #[test]
-fn test_media_to_proto_no_instance_name() {
-    let mut media = make_test_media();
-    media.provider_instance_name = None;
+fn test_media_to_proto_direct_media_uses_direct_url_instance_binding() {
+    let media = synctv_core::models::Media::from_direct_single_mode(
+        Some(PlaylistId::from_string("playlist1".to_string())),
+        RoomId::from_string("room1".to_string()),
+        Some(UserId::from_string("user1".to_string())),
+        "Direct Media".to_string(),
+        "direct",
+        synctv_core::models::PlaybackInfo::single_url(
+            "https://example.com/video.mp4".to_string(),
+            "1080p".to_string(),
+        ),
+        1,
+    );
     let proto = media_to_proto(&media);
-    assert_eq!(proto.provider_instance_name, "");
+    assert_eq!(proto.provider_instance_name, "direct_url");
 }
 
 // === Room Member Conversion Tests ===

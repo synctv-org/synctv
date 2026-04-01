@@ -134,7 +134,7 @@ pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::clien
             .creator_id
             .as_ref()
             .map_or(String::new(), |id| id.as_str().to_string()),
-        provider_instance_name: media.provider_instance_name.clone().unwrap_or_default(),
+        provider_instance_name: media.provider_instance_name.clone(),
         source_config: serde_json::to_vec(&sanitized_config).unwrap_or_default(),
     }
 }

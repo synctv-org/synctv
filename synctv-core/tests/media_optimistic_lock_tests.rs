@@ -114,7 +114,7 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
         position,
         source_provider: "direct_url".to_string(),
         source_config: json!({"url": "https://example.com/video.mp4"}),
-        provider_instance_name: None,
+        provider_instance_name: "direct_url".to_string(),
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,

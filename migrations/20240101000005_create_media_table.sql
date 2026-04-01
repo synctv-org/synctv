@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS media (
     source_config JSONB NOT NULL,
 
     -- Provider instance name (for registry lookup)
-    provider_instance_name VARCHAR(64),
+    provider_instance_name VARCHAR(64) NOT NULL,
 
     -- Timestamps
     added_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -59,7 +59,7 @@ CREATE INDEX idx_media_room ON media(room_id);
 CREATE INDEX idx_media_creator ON media(creator_id);
 CREATE INDEX idx_media_added_at ON media(added_at DESC);
 CREATE INDEX idx_media_source_provider ON media(source_provider);
-CREATE INDEX idx_media_provider_name ON media(provider_instance_name) WHERE provider_instance_name IS NOT NULL;
+CREATE INDEX idx_media_provider_name ON media(provider_instance_name);
 CREATE INDEX idx_media_source_config ON media USING gin(source_config);
 
 -- Performance optimization: covering index for playlist queries
@@ -73,7 +73,7 @@ COMMENT ON COLUMN media.name IS 'Media display name. It is not a routing key or 
 COMMENT ON COLUMN media.position IS 'Position in playlist (0-indexed)';
 COMMENT ON COLUMN media.source_provider IS 'Media provider type name (e.g., "bilibili", "alist", "emby", "direct_url")';
 COMMENT ON COLUMN media.source_config IS 'Media provider-specific configuration (persistent)';
-COMMENT ON COLUMN media.provider_instance_name IS 'Media provider instance name for registry lookup (e.g., "bilibili_main")';
+COMMENT ON COLUMN media.provider_instance_name IS 'Media provider instance name for registry lookup (e.g., "bilibili_main"). Always required.';
 COMMENT ON COLUMN media.version IS 'Optimistic locking version, incremented on each update';
 COMMENT ON COLUMN media.updated_at IS 'Timestamp of last update (auto-maintained by trigger)';
 COMMENT ON CONSTRAINT valid_media_name ON media IS 'Media display name must fit within the database column limit.';

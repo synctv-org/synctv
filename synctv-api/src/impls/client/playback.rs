@@ -12,6 +12,19 @@ use super::convert::{
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 
+fn static_media_provider_instance_name(
+    media: &synctv_core::models::Media,
+) -> Result<&str, ApiError> {
+    if media.provider_instance_name.trim().is_empty() {
+        return Err(ApiError::Internal(format!(
+            "Static media '{}' is missing provider_instance_name",
+            media.id
+        )));
+    }
+
+    Ok(media.provider_instance_name.as_str())
+}
+
 impl ClientApiImpl {
     async fn build_provider_context<'a>(
         &'a self,
@@ -44,10 +57,7 @@ impl ClientApiImpl {
             .as_ref()
             .ok_or_else(|| ApiError::Internal("Providers manager not configured".to_string()))?;
 
-        let instance_name = media
-            .provider_instance_name
-            .as_deref()
-            .unwrap_or(&media.source_provider);
+        let instance_name = static_media_provider_instance_name(&media)?;
 
         let provider = providers_manager.get(instance_name).await.ok_or_else(|| {
             ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
@@ -389,5 +399,43 @@ impl ClientApiImpl {
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::static_media_provider_instance_name;
+    use chrono::Utc;
+    use synctv_core::models::{Media, MediaId, RoomId};
+
+    fn make_media(provider_instance_name: &str) -> Media {
+        Media {
+            id: MediaId::from_string("media_static".to_string()),
+            playlist_id: None,
+            room_id: RoomId::from_string("room_static".to_string()),
+            creator_id: None,
+            name: "Static Media".to_string(),
+            position: 0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+            provider_instance_name: provider_instance_name.to_string(),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        }
+    }
+
+    #[test]
+    fn test_static_media_provider_instance_name_uses_explicit_binding() {
+        let media = make_media("direct_url");
+        let instance_name = static_media_provider_instance_name(&media).unwrap();
+        assert_eq!(instance_name, "direct_url");
+    }
+
+    #[test]
+    fn test_static_media_provider_instance_name_rejects_missing_binding() {
+        let media = make_media("");
+        let err = static_media_provider_instance_name(&media).unwrap_err();
+        assert!(err.to_string().contains("provider_instance_name"));
     }
 }

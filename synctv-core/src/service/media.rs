@@ -1215,6 +1215,12 @@ impl MediaService {
                 "Provider {provider_name} does not support dynamic folders"
             ))
         })?;
+        let provider_instance_name = playlist.provider_instance_name.clone().ok_or_else(|| {
+            Error::Internal(format!(
+                "Dynamic playlist '{}' is missing provider_instance_name",
+                playlist.id
+            ))
+        })?;
 
         let current_dynamic_media = crate::models::Media {
             id: MediaId::new(),
@@ -1225,7 +1231,7 @@ impl MediaService {
             position: 0,
             source_provider: provider_name.clone(),
             source_config: serde_json::Value::Null,
-            provider_instance_name: playlist.provider_instance_name.clone(),
+            provider_instance_name,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,

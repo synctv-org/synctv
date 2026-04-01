@@ -113,7 +113,7 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
         position,
         source_provider: "direct_url".to_string(),
         source_config: json!({"url": "https://example.com/video.mp4"}),
-        provider_instance_name: None,
+        provider_instance_name: "direct_url".to_string(),
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -130,7 +130,7 @@ fn make_room_root_media(room_id: &RoomId, name: &str, position: i32) -> Media {
         position,
         source_provider: "direct_url".to_string(),
         source_config: json!({"url": "https://example.com/video.mp4"}),
-        provider_instance_name: None,
+        provider_instance_name: "direct_url".to_string(),
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -315,7 +315,7 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
         "INSERT INTO media (
             id, playlist_id, room_id, creator_id, name, position,
             source_provider, source_config, provider_instance_name, added_at, updated_at, version
-        ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, NULL, NOW(), NOW(), 0)",
+        ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW(), 0)",
     )
     .bind(media_id.as_str())
     .bind(room.id.as_str())
@@ -324,6 +324,7 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
     .bind(0)
     .bind("direct_url")
     .bind(json!({"url": "https://example.com/root.mp4"}))
+    .bind("direct_url")
     .execute(&pool)
     .await
     .unwrap();
@@ -958,7 +959,7 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
                 position,
                 source_provider: "direct_url".to_string(),
                 source_config: json!({"url": format!("https://example.com/video{}.mp4", i)}),
-                provider_instance_name: None,
+                provider_instance_name: "direct_url".to_string(),
                 added_at: Utc::now(),
                 updated_at: Utc::now(),
                 version: 0,
@@ -1067,7 +1068,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
                 position,
                 source_provider: "direct_url".to_string(),
                 source_config: json!({"url": format!("https://example.com/new{}.mp4", i)}),
-                provider_instance_name: None,
+                provider_instance_name: "direct_url".to_string(),
                 added_at: Utc::now(),
                 updated_at: Utc::now(),
                 version: 0,
@@ -1195,7 +1196,7 @@ async fn test_media_rejects_cross_room_playlist_reference() {
             position: 0,
             source_provider: "direct_url".to_string(),
             source_config: json!({"url": "https://example.com/cross-room.mp4"}),
-            provider_instance_name: None,
+            provider_instance_name: "direct_url".to_string(),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,

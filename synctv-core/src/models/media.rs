@@ -67,8 +67,9 @@ pub struct Media {
     /// Should ONLY be parsed by the provider implementation, NOT by Media model
     pub source_config: JsonValue,
     /// Provider instance name (e.g., "`bilibili_main`", "`alist_company`")
-    /// Used to look up the provider from the registry at playback time
-    pub provider_instance_name: Option<String>,
+    /// Used to look up the provider from the registry at playback time.
+    /// Media must always bind to a concrete provider instance.
+    pub provider_instance_name: String,
     pub added_at: DateTime<Utc>,
     /// Timestamp of last update (auto-maintained by database trigger)
     pub updated_at: DateTime<Utc>,
@@ -126,7 +127,7 @@ impl Media {
             position,
             source_provider: provider_name.to_string(),
             source_config,
-            provider_instance_name: Some(provider_instance_name),
+            provider_instance_name,
             added_at: now,
             updated_at: now,
             version: 0,
@@ -146,7 +147,7 @@ impl Media {
             position: params.position,
             source_provider: params.provider_name,
             source_config: params.source_config,
-            provider_instance_name: Some(params.provider_instance_name),
+            provider_instance_name: params.provider_instance_name,
             added_at: now,
             updated_at: now,
             version: 0,
@@ -184,7 +185,7 @@ impl Media {
             position,
             source_provider: "direct_url".to_string(),
             source_config,
-            provider_instance_name: None,
+            provider_instance_name: "direct_url".to_string(),
             added_at: now,
             updated_at: now,
             version: 0,

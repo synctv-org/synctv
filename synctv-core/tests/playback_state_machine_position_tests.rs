@@ -84,7 +84,7 @@ async fn test_position_reset_on_media_switch() {
         position: 0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
-        provider_instance_name: None,
+        provider_instance_name: "direct_url".to_string(),
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,

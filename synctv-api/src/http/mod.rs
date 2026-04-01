@@ -595,11 +595,7 @@ fn register_read_routes(state: &AppState) -> Router<AppState> {
             "/api/rooms/{room_id}/playlists/{playlist_id}",
             get(room::get_playlist),
         )
-        .route(
-            "/api/rooms/{room_id}/playlists/{playlist_id}/items",
-            get(room::list_playlist_items),
-        )
-        .route("/api/rooms/{room_id}/media", get(room::list_media))
+        .route("/api/rooms/{room_id}/media/list", post(room::list_playlist_items))
         .route(
             "/api/rooms/{room_id}/media/{media_id}",
             get(room::get_media),
@@ -2091,7 +2087,7 @@ mod tests {
             .expect("response");
         assert_eq!(api_response.status(), StatusCode::UNAUTHORIZED);
 
-        let legacy_response = app
+        let removed_route_response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -2101,7 +2097,7 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(legacy_response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(removed_route_response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

@@ -266,45 +266,12 @@ impl Default for DatabaseConfig {
 /// - **Sentinel**: Redis Sentinel for high availability. Automatic master
 ///   failover is NOT yet supported; a restart is required after failover.
 ///   A proper `SentinelClient` integration is planned.
-///
-/// # Why Redis Cluster is not supported
-///
-/// Redis Cluster mode is defined here for forward compatibility but is
-/// **not currently supported** at runtime. Attempting to use it will fail
-/// at startup with an error. The reasons are:
-///
-/// 1. **`ConnectionManager` does not support cluster-aware routing.**
-///    The `redis` crate's `ConnectionManager` (used throughout for
-///    multiplexed async connections) connects to a single Redis node.
-///    Redis Cluster requires a `ClusterClient` that maintains connections
-///    to all shard nodes and routes commands by key hash slot.
-///
-/// 2. **Lua scripts use multi-key operations.** The node registry and
-///    leader election use Lua scripts that touch multiple Redis keys
-///    (e.g., SCAN + GET). In Redis Cluster, all keys accessed in a
-///    single script invocation must hash to the same slot. Refactoring
-///    to use hash tags (`{prefix}:key`) is required.
-///
-/// 3. **Pub/Sub semantics differ.** In Redis Cluster, PUBLISH is
-///    broadcast to all nodes, but SUBSCRIBE only receives messages
-///    published on the connected node's shard. The current pub/sub
-///    architecture assumes single-node semantics.
-///
-/// # Future plan
-///
-/// Redis Cluster support requires:
-/// - Migrate from `ConnectionManager` to `ClusterConnection`
-/// - Add hash tags to all Redis keys so related keys land on the same slot
-/// - Test Pub/Sub behavior under cluster mode (may need sharded pub/sub
-///   from Redis 7.0+)
-/// - Validate Lua scripts work within single-slot constraints
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RedisDeploymentMode {
     #[default]
     Standalone,
     Sentinel,
-    Cluster,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -313,14 +280,12 @@ pub struct RedisConfig {
     pub url: String,
     pub connect_timeout_seconds: u64,
     pub key_prefix: String,
-    /// Deployment mode: standalone (default), sentinel, or cluster
+    /// Deployment mode: standalone (default) or sentinel
     pub deployment_mode: RedisDeploymentMode,
     /// Sentinel master name (required for sentinel mode)
     pub sentinel_master_name: Option<String>,
     /// Sentinel node addresses (required for sentinel mode)
     pub sentinel_addresses: Vec<String>,
-    /// Cluster node addresses (required for cluster mode)
-    pub cluster_nodes: Vec<String>,
 }
 
 impl std::fmt::Debug for RedisConfig {
@@ -370,8 +335,6 @@ impl std::fmt::Debug for RedisConfig {
             .iter()
             .map(|u| mask_url(u))
             .collect();
-        let masked_cluster: Vec<String> = self.cluster_nodes.iter().map(|u| mask_url(u)).collect();
-
         f.debug_struct("RedisConfig")
             .field("url", &masked_url)
             .field("connect_timeout_seconds", &self.connect_timeout_seconds)
@@ -379,7 +342,6 @@ impl std::fmt::Debug for RedisConfig {
             .field("deployment_mode", &self.deployment_mode)
             .field("sentinel_master_name", &self.sentinel_master_name)
             .field("sentinel_addresses", &masked_sentinel)
-            .field("cluster_nodes", &masked_cluster)
             .finish()
     }
 }
@@ -393,7 +355,6 @@ impl Default for RedisConfig {
             deployment_mode: RedisDeploymentMode::Standalone,
             sentinel_master_name: None,
             sentinel_addresses: Vec::new(),
-            cluster_nodes: Vec::new(),
         }
     }
 }
@@ -1083,10 +1044,9 @@ impl Config {
             match val.to_lowercase().as_str() {
                 "standalone" => self.redis.deployment_mode = RedisDeploymentMode::Standalone,
                 "sentinel" => self.redis.deployment_mode = RedisDeploymentMode::Sentinel,
-                "cluster" => self.redis.deployment_mode = RedisDeploymentMode::Cluster,
                 _ => {
                     return Err(ConfigError::Message(format!(
-                        "Invalid value for environment variable SYNCTV_REDIS_DEPLOYMENT_MODE: '{val}' (expected one of: standalone, sentinel, cluster)"
+                        "Invalid value for environment variable SYNCTV_REDIS_DEPLOYMENT_MODE: '{val}' (expected one of: standalone, sentinel)"
                     )));
                 }
             }
@@ -1100,7 +1060,6 @@ impl Config {
             "SYNCTV_REDIS_SENTINEL_ADDRESSES",
             &mut self.redis.sentinel_addresses,
         );
-        env_override_csv("SYNCTV_REDIS_CLUSTER_NODES", &mut self.redis.cluster_nodes);
 
         // -- JWT --
         env_override_str("SYNCTV_JWT_SECRET", &mut self.jwt.secret);
@@ -1689,16 +1648,6 @@ impl Config {
             }
         }
 
-        // Reject Redis Cluster mode (not yet supported)
-        if self.redis.deployment_mode == RedisDeploymentMode::Cluster {
-            errors.push(
-                "Redis Cluster mode is not yet supported. \
-                 Please use Standalone or Sentinel mode. \
-                 See the RedisDeploymentMode documentation for details."
-                    .to_string(),
-            );
-        }
-
         // Validate Redis Sentinel mode required fields
         if self.redis.deployment_mode == RedisDeploymentMode::Sentinel {
             if self.redis.sentinel_master_name.is_none()
@@ -1886,7 +1835,6 @@ impl Config {
                     .is_some_and(|name| !name.is_empty())
                     && !self.redis.sentinel_addresses.is_empty()
             }
-            RedisDeploymentMode::Cluster => !self.redis.cluster_nodes.is_empty(),
         };
         if cluster_mode_active && !redis_backend_configured {
             errors.push(
@@ -2098,7 +2046,7 @@ impl Config {
         if oauth2_enabled && !redis_backend_configured && self.cluster.enabled {
             errors.push(
                 "OAuth2 requires Redis for state storage in cluster mode. \
-                 Configure a Redis backend (redis.url, Sentinel, or Cluster) \
+                 Configure a Redis backend (redis.url or Sentinel settings) \
                  or disable OAuth2 by removing all oauth2.providers."
                     .to_string(),
             );
@@ -2724,6 +2672,18 @@ mod tests {
     }
 
     #[test]
+    fn test_from_env_rejects_unsupported_redis_cluster_mode_override() {
+        let error = Config::from_env_map(&env_map(&[("SYNCTV_REDIS_DEPLOYMENT_MODE", "cluster")]))
+            .expect_err("unsupported redis cluster mode override must fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("SYNCTV_REDIS_DEPLOYMENT_MODE"));
+        assert!(message.contains("cluster"));
+        assert!(message.contains("standalone"));
+        assert!(message.contains("sentinel"));
+    }
+
+    #[test]
     fn test_from_env_rejects_invalid_webrtc_mode_override() {
         let error = Config::from_env_map(&env_map(&[("SYNCTV_WEBRTC_MODE", "p2p")]))
             .expect_err("invalid webrtc mode override must fail closed");
@@ -2876,7 +2836,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_cluster_oauth2_rejects_redis_cluster_backend_without_url() {
+    fn test_validate_cluster_oauth2_rejects_missing_redis_backend() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.oauth2.providers = serde_json::json!({
@@ -2887,16 +2847,13 @@ mod tests {
             }
         });
         config.redis.url.clear();
-        config.redis.deployment_mode = RedisDeploymentMode::Cluster;
-        config.redis.cluster_nodes =
-            vec!["127.0.0.1:7000".to_string(), "127.0.0.1:7001".to_string()];
 
         let result = config.validate();
 
-        let errors = result.expect_err("unsupported Redis Cluster backend must be rejected");
+        let errors = result.expect_err("cluster OAuth2 must require a configured Redis backend");
         assert!(errors
             .iter()
-            .any(|e| e.contains("Redis Cluster mode is not yet supported")));
+            .any(|e| e.contains("cluster mode requires Redis to be configured")));
     }
 
     #[test]
@@ -3024,7 +2981,7 @@ jwt:
     #[test]
     fn test_from_file_rejects_unknown_server_port_keys() {
         let unique = format!(
-            "synctv-legacy-port-config-{}-{}.yaml",
+            "synctv-unknown-port-config-{}-{}.yaml",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3301,16 +3258,6 @@ jwt:
         config.webrtc.mode = WebRTCMode::SignalingOnly;
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
         assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_validate_redis_cluster_mode_rejected() {
-        let mut config = valid_prod_config();
-        config.redis.deployment_mode = RedisDeploymentMode::Cluster;
-        let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("Cluster") && e.contains("not yet supported")));
     }
 
     #[test]

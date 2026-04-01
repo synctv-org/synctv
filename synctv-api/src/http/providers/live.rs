@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn room_query_rejects_legacy_room_id_casing() {
+    fn room_query_rejects_removed_room_id_casing() {
         assert!(serde_urlencoded::from_str::<RoomQuery>("roomId=room123").is_err());
     }
 

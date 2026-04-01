@@ -128,7 +128,7 @@ mod tests {
             updated_at: 1_700_000_000,
             version: 42,
             playing_playlist_id: "playlist-1".into(),
-            relative_path: "Season 1/ep01.mkv".into(),
+            target: br#"{"item_id":"provider-item-42"}"#.to_vec(),
         };
         let bytes = state.encode_to_vec();
         let decoded = crate::client::PlaybackState::decode(bytes.as_slice()).unwrap();
@@ -183,7 +183,7 @@ mod tests {
                         updated_at: 0,
                         version: 1,
                         playing_playlist_id: String::new(),
-                        relative_path: String::new(),
+                        target: Vec::new(),
                     }),
                 },
             )),
@@ -360,7 +360,7 @@ mod tests {
             updated_at: 1_700_000_000,
             version: 42,
             playing_playlist_id: "playlist-1".into(),
-            relative_path: String::new(),
+            target: Vec::new(),
         };
         let json = serde_json::to_string(&state).unwrap();
         let decoded: crate::client::PlaybackState = serde_json::from_str(&json).unwrap();

@@ -79,7 +79,6 @@ service RoomService {
     rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
     rpc DeleteEntries(DeleteEntriesRequest) returns (DeleteEntriesResponse);
     rpc EditMedia(EditMediaRequest) returns (EditMediaResponse);
-    rpc ListPlaylist(ListPlaylistRequest) returns (ListPlaylistResponse);
     rpc ListPlaylistItems(ListPlaylistItemsRequest) returns (ListPlaylistItemsResponse); // List dynamic playlist items
     rpc SwapMedia(SwapMediaRequest) returns (SwapMediaResponse);
     rpc ClearPlaylist(ClearPlaylistRequest) returns (ClearPlaylistResponse);
@@ -190,11 +189,10 @@ message Playlist {
     string name = 3;
     string parent_id = 4; // Parent playlist ID for nested playlists (null for root)
     int32 position = 5; // Position among sibling playlists
-    bool is_folder = 6; // True if this is a folder (can contain other playlists)
-    bool is_dynamic = 7; // True if this is a dynamic playlist (provider-based)
-    int32 item_count = 8; // Number of items in this playlist
-    int64 created_at = 9;
-    int64 updated_at = 10;
+    bool is_dynamic = 6; // True if this is a dynamic playlist (provider-based)
+    int32 item_count = 7; // Number of items in this playlist
+    int64 created_at = 8;
+    int64 updated_at = 9;
 }
 
 message PlaybackState {
@@ -206,7 +204,7 @@ message PlaybackState {
     int64 updated_at = 6;
     int64 version = 7; // For optimistic locking
     string playing_playlist_id = 8; // Currently playing playlist
-    string relative_path = 9; // Relative path within dynamic folder (empty for static playlists)
+    bytes target = 9; // Provider-facing playback target payload (empty for static media or cleared state)
 }
 
 // Authentication Messages
@@ -409,7 +407,9 @@ message UnbanMemberResponse {
 message CreatePlaylistRequest {
     string name = 1;
     string parent_id = 2; // Optional parent playlist ID for nested playlists
-    bool is_folder = 3; // True if creating a folder (can contain other playlists)
+    string source_provider = 3; // Optional provider type for dynamic playlists
+    bytes source_config = 4; // Provider-specific config for dynamic playlists
+    string provider_instance_name = 5; // Optional provider instance binding
 }
 
 message CreatePlaylistResponse {
@@ -460,11 +460,11 @@ message ListPlaylistsResponse {
 
 // HTTP API: Start playback of either:
 // 1. A concrete media item (`media_id`)
-// 2. A dynamic playlist item (`playlist_id` + `relative_path`)
+// 2. A dynamic playlist item (`playlist_id` + `target`)
 message StartPlaybackRequest {
     string media_id = 1; // Static media ID. Mutually exclusive with playlist_id.
-    string playlist_id = 2; // Dynamic playlist ID. Requires relative_path. Mutually exclusive with media_id.
-    string relative_path = 3; // Relative path within dynamic playlist. Empty for static media playback.
+    string playlist_id = 2; // Dynamic playlist ID. Requires target. Mutually exclusive with media_id.
+    bytes target = 3; // Provider-facing playback target payload. Empty for static media playback.
 }
 
 message StartPlaybackResponse {
@@ -515,20 +515,9 @@ message DeleteEntriesResponse {
     int32 deleted_media = 2;
 }
 
-message ListPlaylistRequest {
-    int32 page = 1; // Page number (default 1). Validation: >= 1
-    int32 page_size = 2; // Items per page (default 50). Validation: max 100
-}
-
-message ListPlaylistResponse {
-    Playlist playlist = 1;
-    repeated Media media = 2;
-    int32 total = 3; // Total number of items in playlist
-}
-
 message ListPlaylistItemsRequest {
-    string playlist_id = 1; // Playlist ID. Validation: required, max 64 chars
-    string relative_path = 2; // Relative path within dynamic folder (empty for root, only for dynamic playlists)
+    string playlist_id = 1; // Empty means room root; otherwise the playlist being browsed
+    bytes target = 2; // Provider-facing browse target payload (empty for room root or dynamic root)
     int32 page = 3; // Page number (default 1). Validation: >= 1
     int32 page_size = 4; // Items per page (default 50). Validation: max 100
 }
@@ -542,6 +531,7 @@ message ListPlaylistItemsResponse {
 
     // For dynamic playlists only
     repeated PlaylistItem dynamic_items = 6; // Remote provider items (used when browsing dynamic folders)
+    repeated PlaylistBrowsePathNode current_path = 7; // Breadcrumb path for the current browse location
 }
 
 enum ItemType {
@@ -553,10 +543,16 @@ enum ItemType {
 message PlaylistItem {
     string name = 1; // Item name
     ItemType item_type = 2; // Item type (PLAYLIST or MEDIA)
-    string path = 3; // Full path from root
+    bytes target = 3; // Provider-facing target payload for this item
     optional int64 size = 4; // File size in bytes (for files)
     optional string thumbnail = 5; // Thumbnail URL
     optional int64 modified_at = 6; // Modified time (Unix timestamp)
+}
+
+message PlaylistBrowsePathNode {
+    string playlist_id = 1; // Present for persisted playlist nodes; empty for provider-only dynamic segments
+    string name = 2; // Display name for the current path segment
+    bytes target = 3; // Provider-facing target payload for this segment; empty for static playlist nodes
 }
 
 message SwapMediaRequest {

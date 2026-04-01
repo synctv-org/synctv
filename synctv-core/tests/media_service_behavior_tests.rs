@@ -117,7 +117,7 @@ fn test_remove_media_owner_vs_non_owner_permission() {
         "DELETE_MOVIE_ANY"
     );
 
-    // Media with no creator (legacy) needs DELETE_MOVIE_ANY
+    // Media with no creator recorded needs DELETE_MOVIE_ANY
     assert_eq!(required_delete_permission(None, &other), "DELETE_MOVIE_ANY");
 }
 

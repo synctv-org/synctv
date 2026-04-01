@@ -553,7 +553,7 @@ fn test_playback_state_to_proto() {
         room_id: RoomId::from_string("room1".to_string()),
         playing_media_id: Some(MediaId::from_string("media1".to_string())),
         playing_playlist_id: None,
-        relative_path: String::new(),
+        target: Vec::new(),
         current_time: 120.5,
         speed: 1.5,
         is_playing: true,
@@ -566,7 +566,7 @@ fn test_playback_state_to_proto() {
     assert_eq!(proto.room_id, "room1");
     assert_eq!(proto.playing_media_id, "media1");
     assert_eq!(proto.playing_playlist_id, "");
-    assert_eq!(proto.relative_path, "");
+    assert!(proto.target.is_empty());
     assert!((proto.current_time - 120.5).abs() < f64::EPSILON);
     assert!((proto.speed - 1.5).abs() < f64::EPSILON);
     assert!(proto.is_playing);
@@ -579,7 +579,7 @@ fn test_playback_state_to_proto_dynamic_playlist_target() {
         room_id: RoomId::from_string("room1".to_string()),
         playing_media_id: None,
         playing_playlist_id: Some(PlaylistId::from_string("pl1".to_string())),
-        relative_path: "/video.mp4".to_string(),
+        target: br#"{"item_id":"provider-item-9"}"#.to_vec(),
         current_time: 120.5,
         speed: 1.5,
         is_playing: true,
@@ -591,7 +591,8 @@ fn test_playback_state_to_proto_dynamic_playlist_target() {
 
     assert_eq!(proto.playing_media_id, "");
     assert_eq!(proto.playing_playlist_id, "pl1");
-    assert_eq!(proto.relative_path, "/video.mp4");
+    let target: serde_json::Value = serde_json::from_slice(&proto.target).unwrap();
+    assert_eq!(target, serde_json::json!({"item_id":"provider-item-9"}));
 }
 
 #[test]
@@ -732,8 +733,7 @@ fn test_playlist_to_proto() {
     assert_eq!(proto.name, "My Playlist");
     assert_eq!(proto.parent_id, "");
     assert_eq!(proto.item_count, 10);
-    // No parent_id means it could be a root folder
-    assert!(proto.is_folder);
+    assert!(!proto.is_dynamic);
 }
 
 #[test]
@@ -757,7 +757,6 @@ fn test_playlist_to_proto_dynamic() {
 
     assert_eq!(proto.parent_id, "pl1");
     assert!(proto.is_dynamic);
-    assert!(proto.is_folder); // has source_provider
 }
 
 // === URL-Derived Title Sanitization Tests (Issue 3) ===
@@ -1095,8 +1094,9 @@ fn test_add_media_batch_uses_provider_instance_name() {
     // This test documents that the batch path uses item.provider_instance_name
     // directly (not the provider type name), serving as a regression guard.
     //
-    // The fix for add_media aligns its behavior with add_media_batch:
-    // both now prefer req.provider_instance_name over req.provider for registry lookup.
+    // Single-item add_media is stricter now: non-direct providers must send an
+    // explicit provider_instance_name instead of falling back to req.provider.
+    // The batch path already used item.provider_instance_name directly.
     let instance_name = "bilibili_main";
     let type_name = "bilibili";
     // Instance name and type name should be distinct
@@ -1104,58 +1104,6 @@ fn test_add_media_batch_uses_provider_instance_name() {
         instance_name, type_name,
         "Instance name and type name must be different to catch the bug"
     );
-}
-
-// === M10: is_folder always true for playlists ===
-
-#[test]
-fn test_playlist_to_proto_child_is_folder() {
-    // A child playlist (with parent_id set, no source_provider) should
-    // still be marked as is_folder=true since all playlists are containers.
-    let child_playlist = synctv_core::models::Playlist {
-        id: PlaylistId::from_string("child_pl".to_string()),
-        room_id: RoomId::from_string("room1".to_string()),
-        creator_id: Some(UserId::from_string("user1".to_string())),
-        name: "Child Playlist".to_string(),
-        parent_id: Some(PlaylistId::from_string("parent_pl".to_string())),
-        position: 1,
-        source_provider: None,
-        source_config: None,
-        provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        version: 0,
-    };
-
-    let proto = playlist_to_proto(&child_playlist, 3);
-
-    assert!(
-        proto.is_folder,
-        "Child playlists must be marked as folders since all playlists are containers"
-    );
-    assert_eq!(proto.parent_id, "parent_pl");
-    assert_eq!(proto.item_count, 3);
-}
-
-#[test]
-fn test_playlist_to_proto_root_is_folder() {
-    let root_playlist = synctv_core::models::Playlist {
-        id: PlaylistId::from_string("root_pl".to_string()),
-        room_id: RoomId::from_string("room1".to_string()),
-        creator_id: None,
-        name: "Root".to_string(),
-        parent_id: None,
-        position: 0,
-        source_provider: None,
-        source_config: None,
-        provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        version: 0,
-    };
-
-    let proto = playlist_to_proto(&root_playlist, 0);
-    assert!(proto.is_folder, "Root playlist must be marked as folder");
 }
 
 // === M13: Playback version i64 not truncated to i32 ===
@@ -1168,7 +1116,7 @@ fn test_playback_state_version_no_truncation() {
         room_id: RoomId::from_string("room_v".to_string()),
         playing_media_id: None,
         playing_playlist_id: None,
-        relative_path: String::new(),
+        target: Vec::new(),
         current_time: 0.0,
         speed: 1.0,
         is_playing: false,
@@ -1190,7 +1138,7 @@ fn test_playback_state_version_i32_range_still_works() {
         room_id: RoomId::from_string("room_v2".to_string()),
         playing_media_id: None,
         playing_playlist_id: None,
-        relative_path: String::new(),
+        target: Vec::new(),
         current_time: 0.0,
         speed: 1.0,
         is_playing: false,

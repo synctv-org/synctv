@@ -5,11 +5,10 @@
 use super::{
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
     store::{ProviderStoreExt, VersionedPlayback},
-    DirectoryItem, DynamicFolder, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
-    PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
+    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider,
+    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
-use crate::validation::validate_path_for_traversal;
 use async_trait::async_trait;
 use chrono::Utc;
 use rand::prelude::IndexedRandom;
@@ -26,6 +25,11 @@ use urlencoding;
 pub struct EmbyProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct EmbyBrowseTarget {
+    item_id: String,
 }
 
 impl EmbyProvider {
@@ -151,6 +155,84 @@ impl EmbyProvider {
     ) -> Result<synctv_media_providers::grpc::emby::MeResp, ProviderError> {
         let client = self.get_client(instance_name).await?;
         client.me(req).await.map_err(std::convert::Into::into)
+    }
+
+    fn encode_target(item_id: &str) -> Result<Vec<u8>, ProviderError> {
+        if item_id.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby target item_id cannot be empty".to_string(),
+            ));
+        }
+
+        serde_json::to_vec(&EmbyBrowseTarget {
+            item_id: item_id.to_string(),
+        })
+        .map_err(|e| ProviderError::InvalidConfig(format!("Failed to encode Emby target: {e}")))
+    }
+
+    fn decode_target(target: Option<&[u8]>) -> Result<Option<String>, ProviderError> {
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        if target.is_empty() {
+            return Ok(None);
+        }
+
+        let payload: EmbyBrowseTarget = serde_json::from_slice(target)
+            .map_err(|e| ProviderError::InvalidConfig(format!("Invalid Emby target: {e}")))?;
+        if payload.item_id.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby target item_id cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(Some(payload.item_id))
+    }
+
+    async fn fetch_item(
+        &self,
+        resolved: &ResolvedEmbyConfig,
+        item_id: &str,
+    ) -> Result<synctv_media_providers::grpc::emby::Item, ProviderError> {
+        let client = self
+            .get_client(resolved.provider_instance_name.as_deref())
+            .await?;
+        let request = synctv_media_providers::grpc::emby::GetItemReq {
+            host: resolved.host.clone(),
+            token: resolved.token.clone(),
+            item_id: item_id.to_string(),
+            user_id: resolved.user_id.clone(),
+        };
+        client.get_item(request).await.map_err(Into::into)
+    }
+
+    fn item_type_from_listing(item: &synctv_media_providers::grpc::emby::Item) -> Option<ItemType> {
+        if item.is_folder {
+            Some(ItemType::Playlist)
+        } else {
+            match item.r#type.as_str() {
+                "Movie" | "Episode" | "Video" | "Audio" | "MusicAlbum" => Some(ItemType::Media),
+                _ => None,
+            }
+        }
+    }
+
+    fn build_thumbnail_url(host: &str, item_id: &str) -> String {
+        format!(
+            "/api/providers/proxy/emby/thumbnail/{item_id}?maxHeight=300&host={host}",
+            host = urlencoding::encode(host),
+        )
+    }
+
+    fn build_next_source_config(base_config: &EmbySourceConfig, item_id: &str) -> Value {
+        json!({
+            "item_id": item_id,
+            "provider_instance_name": base_config.provider_instance_name,
+            "credential_ref": {
+                "credential_owner_id": base_config.credential_ref.credential_owner_id,
+                "server_id": base_config.credential_ref.server_id,
+            },
+        })
     }
 
     /// Resolve EmbySourceConfig + credential_ref into ResolvedEmbyConfig.
@@ -815,41 +897,18 @@ impl super::proxy::ProviderProxy for EmbyProvider {
 impl DynamicFolder for EmbyProvider {
     async fn list_playlist(
         &self,
-        _ctx: &ProviderContext<'_>,
+        ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        relative_path: Option<&str>,
+        target: Option<&[u8]>,
         page: usize,
         page_size: usize,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
-        // Parse base config from playlist.source_config
         let config = playlist
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let resolved = self.resolve_config(_ctx, config).await?;
-
-        // Validate relative_path to prevent path traversal and injection.
-        // Uses the shared validate_path_for_traversal which handles URL-encoded
-        // variants (%2e%2e, %252e%252e), backslash traversal, null bytes, etc.
-        if let Some(rel) = relative_path {
-            if rel.contains('/') || rel.contains('\\') {
-                return Err(ProviderError::InvalidConfig(
-                    "Relative path must not contain slashes".to_string(),
-                ));
-            }
-            validate_path_for_traversal(rel).map_err(|e| {
-                ProviderError::InvalidConfig(format!("Relative path failed traversal check: {e}"))
-            })?;
-        }
-
-        // Determine path to list
-        // If relative_path is provided, use it as the item_id to list that folder's contents
-        // Otherwise, use the base config's item_id
-        let target_path = relative_path
-            .filter(|s| !s.is_empty() && *s != "/")
-            .unwrap_or(&resolved.item_id);
-
-        // Call fs_list to get items
+        let resolved = self.resolve_config(ctx, config).await?;
+        let target_item_id = Self::decode_target(target)?.unwrap_or_else(|| resolved.item_id.clone());
         let client = self
             .get_client(resolved.provider_instance_name.as_deref())
             .await?;
@@ -857,7 +916,7 @@ impl DynamicFolder for EmbyProvider {
         let list_req = synctv_media_providers::grpc::emby::FsListReq {
             host: resolved.host.clone(),
             token: resolved.token.clone(),
-            path: target_path.to_string(),
+            path: target_item_id,
             start_index: (page * page_size) as u64,
             limit: page_size as u64,
             search_term: String::new(),
@@ -865,39 +924,16 @@ impl DynamicFolder for EmbyProvider {
         };
 
         let response = client.fs_list(list_req).await?;
-
-        // Convert Item to DirectoryItem
-        let items: Vec<DirectoryItem> = response
+        let items = response
             .items
             .into_iter()
             .filter_map(|item| {
-                // Determine item type
-                let item_type = if item.is_folder {
-                    ItemType::Playlist
-                } else {
-                    match item.r#type.as_str() {
-                        "Movie" | "Episode" | "Video" | "Audio" | "MusicAlbum" => ItemType::Media,
-                        _ => return None, // Skip other types
-                    }
-                };
-
-                // Route thumbnails through synctv's proxy endpoint so the Emby
-                // API key is never exposed to the client.  The proxy handler
-                // will inject the authentication header server-side using the
-                // stored playlist credentials (looked up by host).
-                //
-                // SECURITY: The raw Emby token must NEVER appear in the URL.
-                // The proxy endpoint resolves credentials server-side from the
-                // playlist's source_config, keyed by host.
-                let thumbnail_url = format!(
-                    "/api/providers/proxy/emby/thumbnail/{item_id}?maxHeight=300&host={host}",
-                    item_id = item.id,
-                    host = urlencoding::encode(&resolved.host),
-                );
+                let item_type = Self::item_type_from_listing(&item)?;
+                let thumbnail_url = Self::build_thumbnail_url(&resolved.host, &item.id);
 
                 Some(DirectoryItem {
                     name: item.name,
-                    path: item.id,
+                    target: Self::encode_target(&item.id).ok()?,
                     item_type,
                     size: None,
                     thumbnail: Some(thumbnail_url),
@@ -913,119 +949,82 @@ impl DynamicFolder for EmbyProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        relative_path: &str,
+        target: &[u8],
     ) -> Result<Option<NextPlayItem>, ProviderError> {
+        let item_id = Self::decode_target(Some(target))?.ok_or_else(|| {
+            ProviderError::InvalidConfig("Emby target is required".to_string())
+        })?;
         let config = playlist
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
         let base_config = EmbySourceConfig::try_from(config)?;
-
-        let build_next_source_config = |item_id: &str| -> Value {
-            json!({
-                "item_id": item_id,
-                "provider_instance_name": base_config.provider_instance_name,
-                "credential_ref": {
-                    "credential_owner_id": base_config.credential_ref.credential_owner_id,
-                    "server_id": base_config.credential_ref.server_id,
-                },
-            })
+        let resolved = self.resolve_config(ctx, config).await?;
+        let item = self.fetch_item(&resolved, &item_id).await?;
+        let Some(item_type) = Self::item_type_from_listing(&item) else {
+            return Ok(None);
         };
-
-        const PAGE_SIZE: usize = 50;
-        let mut page = 0;
-        loop {
-            let page_items = self
-                .list_playlist(ctx, playlist, Some(&base_config.item_id), page, PAGE_SIZE)
-                .await?;
-            if page_items.is_empty() {
-                return Ok(None);
-            }
-
-            if let Some(item) = page_items
-                .iter()
-                .find(|item| item.item_type == ItemType::Media && item.path == relative_path)
-            {
-                return Ok(Some(
-                    NextPlayItem {
-                        name: item.name.clone(),
-                        item_type: item.item_type,
-                        source_config: build_next_source_config(&item.path),
-                        metadata: json!({}),
-                        provider_data: json!({}),
-                        relative_path: item.path.clone(),
-                    }
-                    .strip_credentials(),
-                ));
-            }
-
-            if page_items.len() < PAGE_SIZE {
-                return Ok(None);
-            }
-            page += 1;
+        if item_type != ItemType::Media {
+            return Ok(None);
         }
+
+        Ok(Some(
+            NextPlayItem {
+                name: item.name,
+                item_type,
+                source_config: Self::build_next_source_config(&base_config, &item_id),
+                metadata: json!({}),
+                provider_data: json!({}),
+                target: Self::encode_target(&item_id)?,
+            }
+            .strip_credentials(),
+        ))
     }
 
     async fn next(
         &self,
-        _ctx: &ProviderContext<'_>,
+        ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
         _playing_media: &crate::models::Media,
-        relative_path: &str,
+        target: &[u8],
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         use crate::models::PlayMode;
+        let item_id = Self::decode_target(Some(target))?.ok_or_else(|| {
+            ProviderError::InvalidConfig("Emby target is required".to_string())
+        })?;
 
-        // Parse base playlist config and resolve credentials
         let config = playlist
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
         let base_config = EmbySourceConfig::try_from(config)?;
-
-        // Build a helper to create NextPlayItem source_configs with credential_ref
-        let build_next_source_config = |item_id: &str| -> Value {
-            json!({
-                "item_id": item_id,
-                "provider_instance_name": base_config.provider_instance_name,
-                "credential_ref": {
-                    "credential_owner_id": base_config.credential_ref.credential_owner_id,
-                    "server_id": base_config.credential_ref.server_id,
-                },
-            })
+        let resolved = self.resolve_config(ctx, config).await?;
+        let current_item = self.fetch_item(&resolved, &item_id).await?;
+        let sibling_parent_id = if current_item.parent_id.is_empty() {
+            base_config.item_id.clone()
+        } else {
+            current_item.parent_id.clone()
         };
+        let sibling_target = Self::encode_target(&sibling_parent_id)?;
 
         match play_mode {
-            PlayMode::RepeatOne => {
-                // Repeat current: return None to signal player to replay current
-                Ok(None)
-            }
+            PlayMode::RepeatOne => Ok(None),
             PlayMode::Sequential | PlayMode::RepeatAll => {
-                // Stream through pages to find current item and next, avoiding loading all items.
-                // This uses cursor-based pagination with bounded memory (max PAGE_SIZE items).
                 const PAGE_SIZE: usize = 50;
-
                 let mut found_current = false;
                 let mut current_page = 0;
 
                 loop {
                     let page_items = self
-                        .list_playlist(
-                            _ctx,
-                            playlist,
-                            Some(&base_config.item_id),
-                            current_page,
-                            PAGE_SIZE,
-                        )
+                        .list_playlist(ctx, playlist, Some(&sibling_target), current_page, PAGE_SIZE)
                         .await?;
 
                     if page_items.is_empty() {
                         break;
                     }
 
-                    // If we haven't found current item yet, search for it
                     if found_current {
-                        // We've already found current, look for next media in this page
                         if let Some(next) = page_items
                             .iter()
                             .find(|item| item.item_type == ItemType::Media)
@@ -1034,20 +1033,25 @@ impl DynamicFolder for EmbyProvider {
                                 NextPlayItem {
                                     name: next.name.clone(),
                                     item_type: next.item_type,
-                                    source_config: build_next_source_config(&next.path),
+                                    source_config: Self::build_next_source_config(
+                                        &base_config,
+                                        &Self::decode_target(Some(&next.target))?.ok_or_else(|| {
+                                            ProviderError::InvalidConfig(
+                                                "Missing Emby item target".to_string(),
+                                            )
+                                        })?,
+                                    ),
                                     metadata: json!({}),
                                     provider_data: json!({}),
-                                    relative_path: next.path.clone(),
+                                    target: next.target.clone(),
                                 }
                                 .strip_credentials(),
                             ));
                         }
-                    } else if let Some(idx) = page_items
-                        .iter()
-                        .position(|item| item.path == relative_path)
+                    } else if let Some(idx) =
+                        page_items.iter().position(|item| item.target == target)
                     {
                         found_current = true;
-                        // Look for next media item in remaining items of this page
                         if let Some(next) = page_items
                             .iter()
                             .skip(idx + 1)
@@ -1057,29 +1061,32 @@ impl DynamicFolder for EmbyProvider {
                                 NextPlayItem {
                                     name: next.name.clone(),
                                     item_type: next.item_type,
-                                    source_config: build_next_source_config(&next.path),
+                                    source_config: Self::build_next_source_config(
+                                        &base_config,
+                                        &Self::decode_target(Some(&next.target))?.ok_or_else(|| {
+                                            ProviderError::InvalidConfig(
+                                                "Missing Emby item target".to_string(),
+                                            )
+                                        })?,
+                                    ),
                                     metadata: json!({}),
                                     provider_data: json!({}),
-                                    relative_path: next.path.clone(),
+                                    target: next.target.clone(),
                                 }
                                 .strip_credentials(),
                             ));
                         }
-                        // Current is at end of page, need to check next page
                     }
 
-                    // Check if this is the last page
                     if page_items.len() < PAGE_SIZE {
                         break;
                     }
                     current_page += 1;
                 }
 
-                // If we found current but no next, and we're in RepeatAll mode, wrap to first
                 if found_current && play_mode == PlayMode::RepeatAll {
-                    // Fetch first page again to get first item
                     let first_page = self
-                        .list_playlist(_ctx, playlist, Some(&base_config.item_id), 0, PAGE_SIZE)
+                        .list_playlist(ctx, playlist, Some(&sibling_target), 0, PAGE_SIZE)
                         .await?;
 
                     if let Some(first) = first_page
@@ -1090,30 +1097,33 @@ impl DynamicFolder for EmbyProvider {
                             NextPlayItem {
                                 name: first.name.clone(),
                                 item_type: first.item_type,
-                                source_config: build_next_source_config(&first.path),
+                                source_config: Self::build_next_source_config(
+                                    &base_config,
+                                    &Self::decode_target(Some(&first.target))?.ok_or_else(|| {
+                                        ProviderError::InvalidConfig(
+                                            "Missing Emby item target".to_string(),
+                                        )
+                                    })?,
+                                ),
                                 metadata: json!({}),
                                 provider_data: json!({}),
-                                relative_path: first.path.clone(),
+                                target: first.target.clone(),
                             }
                             .strip_credentials(),
                         ));
                     }
                 }
 
-                // No next item found
                 Ok(None)
             }
             PlayMode::Shuffle => {
-                // Get video/audio items and pick random, using paginated fetching.
-                // Cap at MAX_ITEMS (4 pages of 50) to prevent memory exhaustion.
-                // This is acceptable for shuffle mode which doesn't need exact ordering.
                 const PAGE_SIZE: usize = 50;
-                const MAX_ITEMS: usize = 200; // 4 pages
+                const MAX_ITEMS: usize = 200;
                 let mut all_items = Vec::with_capacity(MAX_ITEMS);
                 let mut page = 0;
                 loop {
                     let page_items = self
-                        .list_playlist(_ctx, playlist, Some(&base_config.item_id), page, PAGE_SIZE)
+                        .list_playlist(ctx, playlist, Some(&sibling_target), page, PAGE_SIZE)
                         .await?;
                     let is_last_page = page_items.len() < PAGE_SIZE;
                     all_items.extend(page_items);
@@ -1122,11 +1132,8 @@ impl DynamicFolder for EmbyProvider {
                     }
                     page += 1;
                 }
-                // Truncate to max items if needed
                 all_items.truncate(MAX_ITEMS);
-                let items = all_items;
-
-                let playable_items: Vec<_> = items
+                let playable_items: Vec<_> = all_items
                     .iter()
                     .filter(|item| item.item_type == ItemType::Media)
                     .collect();
@@ -1135,15 +1142,13 @@ impl DynamicFolder for EmbyProvider {
                     return Ok(None);
                 }
 
-                // Pick random item (excluding current)
                 let mut rng = rand::rng();
                 let candidates: Vec<_> = playable_items
                     .iter()
-                    .filter(|item| item.path != relative_path)
+                    .filter(|item| item.target != target)
                     .collect();
 
                 let random_item = if candidates.is_empty() {
-                    // Only one item, pick it
                     playable_items.choose(&mut rng).copied()
                 } else {
                     candidates.choose(&mut rng).copied().copied()
@@ -1154,10 +1159,17 @@ impl DynamicFolder for EmbyProvider {
                         NextPlayItem {
                             name: random.name.clone(),
                             item_type: random.item_type,
-                            source_config: build_next_source_config(&random.path),
+                            source_config: Self::build_next_source_config(
+                                &base_config,
+                                &Self::decode_target(Some(&random.target))?.ok_or_else(|| {
+                                    ProviderError::InvalidConfig(
+                                        "Missing Emby item target".to_string(),
+                                    )
+                                })?,
+                            ),
                             metadata: json!({}),
                             provider_data: json!({}),
-                            relative_path: random.path.clone(),
+                            target: random.target.clone(),
                         }
                         .strip_credentials(),
                     ))
@@ -1166,6 +1178,45 @@ impl DynamicFolder for EmbyProvider {
                 }
             }
         }
+    }
+
+    async fn browse_path(
+        &self,
+        ctx: &ProviderContext<'_>,
+        playlist: &crate::models::Playlist,
+        target: Option<&[u8]>,
+    ) -> Result<Vec<DynamicBrowsePathSegment>, ProviderError> {
+        let Some(mut current_id) = Self::decode_target(target)? else {
+            return Ok(Vec::new());
+        };
+
+        let config = playlist
+            .source_config
+            .as_ref()
+            .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
+        let base_config = EmbySourceConfig::try_from(config)?;
+        let resolved = self.resolve_config(ctx, config).await?;
+
+        let mut segments = Vec::new();
+        for _ in 0..32 {
+            if current_id == base_config.item_id {
+                break;
+            }
+
+            let item = self.fetch_item(&resolved, &current_id).await?;
+            segments.push(DynamicBrowsePathSegment {
+                name: item.name,
+                target: Self::encode_target(&current_id)?,
+            });
+
+            if item.parent_id.is_empty() {
+                break;
+            }
+            current_id = item.parent_id;
+        }
+
+        segments.reverse();
+        Ok(segments)
     }
 }
 
@@ -1351,25 +1402,6 @@ mod tests {
         assert!(
             !thumbnail_url.contains("token="),
             "Thumbnail URL must not include a 'token=' query parameter"
-        );
-    }
-
-    // ========== Emby path traversal: use shared validate_path_for_traversal ==========
-
-    #[test]
-    fn test_emby_relative_path_url_encoded_traversal_rejected() {
-        // The emby list_playlist should reject URL-encoded path traversal
-        // in relative_path, not just literal ".."
-        let encoded_traversal = "%2e%2e";
-        assert!(
-            validate_path_for_traversal(encoded_traversal).is_err(),
-            "URL-encoded .. (%2e%2e) must be rejected"
-        );
-
-        let mixed_traversal = "%2e%2e/../../etc/passwd";
-        assert!(
-            validate_path_for_traversal(mixed_traversal).is_err(),
-            "Mixed encoded traversal must be rejected"
         );
     }
 }

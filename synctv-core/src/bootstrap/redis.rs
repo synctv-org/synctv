@@ -83,9 +83,6 @@ pub async fn init_redis(
             })
         }
         RedisDeploymentMode::Sentinel => init_sentinel(config, cancel).await,
-        RedisDeploymentMode::Cluster => {
-            unreachable!("Cluster mode was already checked and rejected by config validation");
-        }
     }
 }
 

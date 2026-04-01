@@ -48,7 +48,7 @@ mod update_playback_validation {
                     && req.speed.is_none()
                     && req.media_id.is_none()
                     && req.playlist_id.is_none()
-                    && req.relative_path.is_none()
+                    && req.target.is_none()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
                         "No valid playback update field provided (state, position, speed, media_id, or playlist_id)",
@@ -86,7 +86,7 @@ mod update_playback_validation {
                     && req.speed.is_none()
                     && req.media_id.is_none()
                     && req.playlist_id.is_none()
-                    && req.relative_path.is_none()
+                    && req.target.is_none()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
                         "No valid playback update field provided",
@@ -133,7 +133,7 @@ mod update_playback_validation {
                     && req.speed.is_none()
                     && req.media_id.is_none()
                     && req.playlist_id.is_none()
-                    && req.relative_path.is_none()
+                    && req.target.is_none()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
@@ -170,7 +170,7 @@ mod update_playback_validation {
                     && req.speed.is_none()
                     && req.media_id.is_none()
                     && req.playlist_id.is_none()
-                    && req.relative_path.is_none()
+                    && req.target.is_none()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
@@ -207,7 +207,7 @@ mod update_playback_validation {
                     && req.speed.is_none()
                     && req.media_id.is_none()
                     && req.playlist_id.is_none()
-                    && req.relative_path.is_none()
+                    && req.target.is_none()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
@@ -287,7 +287,7 @@ mod update_playback_validation {
             "/api/rooms/{room_id}/playback",
             patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
                 let target_requested =
-                    req.media_id.is_some() || req.playlist_id.is_some() || req.relative_path.is_some();
+                    req.media_id.is_some() || req.playlist_id.is_some() || req.target.is_some();
 
                 if target_requested
                     && (req.state.is_some()
@@ -309,7 +309,7 @@ mod update_playback_validation {
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
             .body(Body::from(
-                r#"{"playlist_id":"pl1","relative_path":"/ep1.mkv","state":"playing"}"#,
+                r#"{"playlist_id":"pl1","target":{"item_id":"provider-item-1"},"state":"playing"}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1034,13 +1034,13 @@ mod live_streaming_validation {
     }
 
     #[test]
-    fn test_live_query_deserialize_legacy_room_id_rejected() {
+    fn test_live_query_deserialize_removed_room_id_casing_rejected() {
         use synctv_api::http::providers::live::RoomQuery;
 
         let result: Result<RoomQuery, _> = serde_urlencoded::from_str("roomId=room123");
         assert!(
             result.is_err(),
-            "legacy camelCase roomId must not deserialize"
+            "removed camelCase roomId must not deserialize"
         );
     }
 }
@@ -1717,7 +1717,7 @@ mod add_media_batch_provider_instance {
         assert_eq!(req.provider_instance_name, "bilibili_main");
     }
 
-    /// Test that `AddMediaRequest` with empty `provider_instance_name` works
+    /// Test that `direct_url` requests can omit `provider_instance_name`
     #[test]
     fn test_add_media_request_empty_provider_instance_name() {
         let req = AddMediaRequest {
@@ -1730,13 +1730,12 @@ mod add_media_batch_provider_instance {
         assert!(req.provider_instance_name.is_empty());
     }
 
-    /// Test that `provider_instance_name` can be used to specify provider instance
+    /// Test that the field can carry explicit instance bindings for remote providers
     #[test]
     fn test_provider_instance_name_variations() {
         let cases = vec![
             ("bilibili_main", "bilibili_main"),
             ("alist_personal", "alist_personal"),
-            ("", ""),
         ];
 
         for (input, expected) in cases {

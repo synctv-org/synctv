@@ -8,7 +8,7 @@ pub struct RoomPlaybackState {
     pub room_id: RoomId,
     pub playing_media_id: Option<MediaId>,
     pub playing_playlist_id: Option<PlaylistId>,
-    pub relative_path: String,
+    pub target: Vec<u8>,
     pub current_time: f64, // playback position in seconds
     pub speed: f64,        // 0.5, 1.0, 1.5, 2.0, etc.
     pub is_playing: bool,
@@ -23,7 +23,7 @@ impl RoomPlaybackState {
             room_id,
             playing_media_id: None,
             playing_playlist_id: None,
-            relative_path: String::new(),
+            target: Vec::new(),
             current_time: 0.0,
             speed: 1.0,
             is_playing: false,
@@ -76,7 +76,7 @@ mod tests {
         assert_eq!(state.room_id, room_id);
         assert!(state.playing_media_id.is_none());
         assert!(state.playing_playlist_id.is_none());
-        assert!(state.relative_path.is_empty());
+        assert!(state.target.is_empty());
         assert!((state.current_time - 0.0).abs() < f64::EPSILON);
         assert!((state.speed - 1.0).abs() < f64::EPSILON);
         assert!(!state.is_playing);

@@ -93,8 +93,8 @@ pub struct DirectoryItem {
     /// Item type
     pub item_type: ItemType,
 
-    /// Full path from root
-    pub path: String,
+    /// Provider-facing target payload for this item
+    pub target: Vec<u8>,
 
     /// File size in bytes (for files)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -287,7 +287,7 @@ pub trait DynamicFolder: MediaProvider {
     /// # Arguments
     /// - `ctx`: Provider context (includes `user_id`, `room_id`, etc.)
     /// - `playlist`: The dynamic folder (playlist object)
-    /// - `relative_path`: Relative path within the dynamic folder (e.g., "subfolder/video.mp4")
+    /// - `target`: Provider-facing target payload within the dynamic folder
     /// - `page`: Page number (0-indexed)
     /// - `page_size`: Items per page
     ///
@@ -297,7 +297,7 @@ pub trait DynamicFolder: MediaProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        relative_path: Option<&str>,
+        target: Option<&[u8]>,
         page: usize,
         page_size: usize,
     ) -> Result<Vec<DirectoryItem>, ProviderError>;
@@ -305,12 +305,12 @@ pub trait DynamicFolder: MediaProvider {
     /// Resolve a single playable media item inside a dynamic playlist.
     ///
     /// This is the canonical lookup used when the playback state stores only
-    /// `playlist_id + relative_path` for dynamic playback targets.
+    /// `playlist_id + target` for dynamic playback targets.
     async fn resolve_item(
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        relative_path: &str,
+        target: &[u8],
     ) -> Result<Option<NextPlayItem>, ProviderError>;
 
     /// Get next item for auto-play
@@ -321,7 +321,7 @@ pub trait DynamicFolder: MediaProvider {
     /// - `ctx`: Provider context (includes `user_id`, `room_id`, etc.)
     /// - `playlist`: The dynamic folder (playlist object)
     /// - `playing_media`: Currently playing media object
-    /// - `relative_path`: Current relative path in the dynamic folder
+    /// - `target`: Current provider-facing target payload in the dynamic folder
     /// - `play_mode`: Play mode (sequential, repeat one, repeat all, shuffle)
     ///
     /// # Returns
@@ -341,17 +341,35 @@ pub trait DynamicFolder: MediaProvider {
     /// // Returns item at index 6
     ///
     /// // Alist folder scenario
-    /// // relative_path = "/movies/action/"
-    /// // Returns next video file in the folder
+    /// // target = provider-defined folder cursor
+    /// // Returns next playable item in that dynamic folder
     /// ```
     async fn next(
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
         playing_media: &crate::models::Media,
-        relative_path: &str,
+        target: &[u8],
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError>;
+
+    /// Build provider-specific browse path segments for the current target.
+    ///
+    /// The returned segments are appended after the persisted playlist path.
+    async fn browse_path(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        _playlist: &crate::models::Playlist,
+        _target: Option<&[u8]>,
+    ) -> Result<Vec<DynamicBrowsePathSegment>, ProviderError> {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicBrowsePathSegment {
+    pub name: String,
+    pub target: Vec<u8>,
 }
 
 /// Next play item for auto-play
@@ -376,8 +394,8 @@ pub struct NextPlayItem {
     #[serde(skip_serializing_if = "serde_json::Value::is_null")]
     pub provider_data: serde_json::Value,
 
-    /// Relative path within the dynamic folder
-    pub relative_path: String,
+    /// Provider-facing target payload for this playable item
+    pub target: Vec<u8>,
 }
 
 impl NextPlayItem {

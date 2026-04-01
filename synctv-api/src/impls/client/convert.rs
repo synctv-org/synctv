@@ -153,11 +153,20 @@ pub(super) fn playlist_to_proto(
             .map(|id| id.as_str().to_string())
             .unwrap_or_default(),
         position: playlist.position,
-        is_folder: true, // All playlists are containers for media items
         is_dynamic: playlist.is_dynamic(),
         item_count,
         created_at: playlist.created_at.timestamp(),
         updated_at: playlist.updated_at.timestamp(),
+    }
+}
+
+pub(super) fn playlist_path_node_to_proto(
+    playlist: &synctv_core::models::Playlist,
+) -> crate::proto::client::PlaylistBrowsePathNode {
+    crate::proto::client::PlaylistBrowsePathNode {
+        playlist_id: playlist.id.as_str().to_string(),
+        name: playlist.name.clone(),
+        target: Vec::new(),
     }
 }
 
@@ -181,7 +190,7 @@ pub(super) fn playback_state_to_proto(
             .as_ref()
             .map(|id| id.as_str().to_string())
             .unwrap_or_default(),
-        relative_path: state.relative_path.clone(),
+        target: state.target.clone(),
     }
 }
 

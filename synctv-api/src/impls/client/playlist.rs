@@ -1,6 +1,7 @@
 //! Playlist operations: create, update, delete, list playlists
 
 use synctv_core::models::{PermissionBits, UserId};
+use serde_json::Value as JsonValue;
 
 use super::convert::playlist_to_proto;
 use super::ClientApiImpl;
@@ -29,15 +30,27 @@ impl ClientApiImpl {
                 .map_err(|e| ApiError::InvalidInput(format!("Invalid parent_id: {e}")))?;
             Some(synctv_core::models::PlaylistId::from_string(req.parent_id))
         };
+        let source_provider = (!req.source_provider.is_empty()).then_some(req.source_provider);
+        let source_config = if req.source_config.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_slice::<JsonValue>(&req.source_config).map_err(|e| {
+                    ApiError::InvalidInput(format!("Invalid source_config JSON: {e}"))
+                })?,
+            )
+        };
+        let provider_instance_name =
+            (!req.provider_instance_name.is_empty()).then_some(req.provider_instance_name);
 
         let service_req = synctv_core::service::playlist::CreatePlaylistRequest {
             room_id: rid.clone(),
             name: req.name,
             parent_id,
             position: None,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
+            source_provider,
+            source_config,
+            provider_instance_name,
         };
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 

@@ -14,7 +14,9 @@ use crate::{
     },
     repository::RoomPlaybackStateRepository,
     service::{
-        media::MediaService, notification::NotificationService, permission::PermissionService,
+        media::MediaService,
+        notification::NotificationService,
+        permission::PermissionService,
     },
     Error, Result,
 };
@@ -29,7 +31,7 @@ use tracing::{info, warn};
 pub struct SwitchPlaybackTarget {
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
-    pub relative_path: String,
+    pub target: Vec<u8>,
 }
 
 /// Result of a broadcast operation from `ClusterManager::broadcast`.
@@ -145,14 +147,14 @@ fn validate_switch_target(target: &SwitchPlaybackTarget) -> Result<()> {
         (Some(_), Some(_)) => Err(Error::InvalidInput(
             "media_id and playlist_id cannot both be set".to_string(),
         )),
-        (None, None) if !target.relative_path.is_empty() => Err(Error::InvalidInput(
-            "relative_path must be empty when clearing playback".to_string(),
+        (None, None) if !target.target.is_empty() => Err(Error::InvalidInput(
+            "target must be empty when clearing playback".to_string(),
         )),
-        (Some(_), None) if !target.relative_path.is_empty() => Err(Error::InvalidInput(
-            "relative_path must be empty when switching to a static media item".to_string(),
+        (Some(_), None) if !target.target.is_empty() => Err(Error::InvalidInput(
+            "target must be empty when switching to a static media item".to_string(),
         )),
-        (None, Some(_)) if target.relative_path.is_empty() => Err(Error::InvalidInput(
-            "relative_path is required when switching to a dynamic playlist item".to_string(),
+        (None, Some(_)) if target.target.is_empty() => Err(Error::InvalidInput(
+            "target is required when switching to a dynamic playlist item".to_string(),
         )),
         _ => Ok(()),
     }
@@ -847,14 +849,14 @@ impl PlaybackService {
     ///
     /// Valid targets are mutually exclusive:
     /// - static media: `media_id` only
-    /// - dynamic playlist item: `playlist_id` + `relative_path`
+    /// - dynamic playlist item: `playlist_id` + `target`
     pub async fn switch(
         &self,
         room_id: RoomId,
         user_id: UserId,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
-        relative_path: String,
+        target: Vec<u8>,
     ) -> Result<RoomPlaybackState> {
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::CHANGE_CURRENT_MOVIE)
@@ -862,7 +864,7 @@ impl PlaybackService {
         let target = SwitchPlaybackTarget {
             media_id,
             playlist_id,
-            relative_path,
+            target,
         };
         validate_switch_target(&target)?;
 
@@ -871,7 +873,7 @@ impl PlaybackService {
                 .update_state(room_id.clone(), |state| {
                     state.playing_media_id = None;
                     state.playing_playlist_id = None;
-                    state.relative_path = String::new();
+                    state.target = Vec::new();
                     state.current_time = 0.0;
                     state.speed = 1.0;
                     state.is_playing = false;
@@ -922,7 +924,7 @@ impl PlaybackService {
                     room_id.clone(),
                     user_id.clone(),
                     playlist_id,
-                    &target.relative_path,
+                    &target.target,
                 )
                 .await?;
             if resolved.is_none() {
@@ -936,7 +938,7 @@ impl PlaybackService {
             .update_state(room_id.clone(), |state| {
                 state.playing_media_id = target.media_id.clone();
                 state.playing_playlist_id = target.playlist_id.clone();
-                state.relative_path = target.relative_path.clone();
+                state.target = target.target.clone();
                 state.current_time = 0.0;
                 state.is_playing = true;
                 state.updated_at = chrono::Utc::now();
@@ -983,7 +985,7 @@ impl PlaybackService {
                 Static(crate::models::Media),
                 Dynamic {
                     playlist_id: PlaylistId,
-                    relative_path: String,
+                    target: Vec<u8>,
                 },
             }
 
@@ -997,14 +999,19 @@ impl PlaybackService {
                     .next_dynamic_playlist_item(
                         room_id,
                         playlist_id,
-                        &state.relative_path,
+                        &state.target,
                         mode,
                     )
                     .await
-                    .map(|item| item.map(|item| NextTarget::Dynamic {
-                        playlist_id: playlist.id.clone(),
-                        relative_path: item.relative_path,
-                    }))?
+                    .and_then(|item| {
+                        item.map(|item| {
+                            Ok(NextTarget::Dynamic {
+                                playlist_id: playlist.id.clone(),
+                                target: item.target,
+                            })
+                        })
+                        .transpose()
+                    })?
             } else {
                 let playlist = if let Some(ref current_id) = state.playing_media_id {
                     let current_media = self
@@ -1119,15 +1126,12 @@ impl PlaybackService {
                 NextTarget::Static(next) => {
                     updated_state.playing_media_id = Some(next.id.clone());
                     updated_state.playing_playlist_id = None;
-                    updated_state.relative_path = String::new();
+                    updated_state.target = Vec::new();
                 }
-                NextTarget::Dynamic {
-                    playlist_id,
-                    relative_path,
-                } => {
+                NextTarget::Dynamic { playlist_id, target } => {
                     updated_state.playing_media_id = None;
                     updated_state.playing_playlist_id = Some(playlist_id.clone());
-                    updated_state.relative_path = relative_path.clone();
+                    updated_state.target = target.clone();
                 }
             }
             updated_state.current_time = 0.0;
@@ -1337,7 +1341,7 @@ impl PlaybackService {
                 state.speed = 1.0;
                 state.playing_media_id = None;
                 state.playing_playlist_id = None;
-                state.relative_path = String::new();
+                state.target = Vec::new();
                 state.updated_at = chrono::Utc::now();
                 // version is incremented by the SQL UPDATE, not here
             })
@@ -1669,7 +1673,7 @@ mod tests {
             room_id: room_id.clone(),
             playing_media_id: None,
             playing_playlist_id: None,
-            relative_path: String::new(),
+            target: Vec::new(),
             current_time: 42.0,
             speed: 1.0,
             is_playing: true,
@@ -1709,7 +1713,7 @@ mod tests {
             room_id: room_id.clone(),
             playing_media_id: None,
             playing_playlist_id: None,
-            relative_path: String::new(),
+            target: Vec::new(),
             current_time: 64.0,
             speed: 1.0,
             is_playing: true,
@@ -1765,7 +1769,7 @@ mod tests {
             room_id: room_id.clone(),
             playing_media_id: None,
             playing_playlist_id: None,
-            relative_path: String::new(),
+            target: Vec::new(),
             current_time: 88.0,
             speed: 1.0,
             is_playing: true,
@@ -1968,7 +1972,7 @@ mod tests {
                 room_id: RoomId::from_string(room_id.to_string()),
                 playing_media_id: None,
                 playing_playlist_id: None,
-                relative_path: String::new(),
+                target: Vec::new(),
                 current_time,
                 speed: 1.0,
                 is_playing: false,

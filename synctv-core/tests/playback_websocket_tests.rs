@@ -376,7 +376,7 @@ async fn test_media_switch_triggers_broadcast() {
             owner.id.clone(),
             Some(media.id.clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();

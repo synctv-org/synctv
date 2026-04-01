@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_user_credential_generate_server_id_for_instance_changes_with_instance_name() {
-        let legacy = UserProviderCredential::generate_server_id_for_instance(
+        let unscoped = UserProviderCredential::generate_server_id_for_instance(
             "https://alist.example.com",
             None,
         );
@@ -310,10 +310,10 @@ mod tests {
             Some("alist-backup"),
         );
 
-        assert_eq!(legacy.len(), 64);
+        assert_eq!(unscoped.len(), 64);
         assert_eq!(scoped.len(), 64);
         assert_eq!(scoped, scoped_duplicate);
-        assert_ne!(legacy, scoped);
+        assert_ne!(unscoped, scoped);
         assert_ne!(scoped, scoped_other);
     }
 

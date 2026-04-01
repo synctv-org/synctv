@@ -33,18 +33,18 @@ use crate::proto::client::{
     JoinRoomResponse, KickMemberRequest, KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse,
     ListCreatedRoomsRequest, ListCreatedRoomsResponse, ListParticipatedRoomsRequest,
     ListParticipatedRoomsResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
-    ListPlaylistRequest, ListPlaylistResponse, ListPlaylistsRequest, ListPlaylistsResponse,
-    ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, RefreshTokenRequest,
-    RefreshTokenResponse, RegisterRequest, RegisterResponse, ReorderMediaBatchRequest,
-    ReorderMediaBatchResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
-    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendVerificationEmailRequest,
-    SendVerificationEmailResponse, ServerMessage, SetPasswordRequest, SetPasswordResponse,
-    SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse,
-    StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
-    SwapMediaRequest, SwapMediaResponse, UnbanMemberRequest, UnbanMemberResponse,
-    UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaylistRequest,
-    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    ListPlaylistsRequest, ListPlaylistsResponse, ListRoomStreamsRequest,
+    ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse,
+    LogoutRequest, LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
+    RegisterResponse, ReorderMediaBatchRequest, ReorderMediaBatchResponse,
+    RequestPasswordResetRequest, RequestPasswordResetResponse, ResetRoomSettingsRequest,
+    ResetRoomSettingsResponse, SendVerificationEmailRequest, SendVerificationEmailResponse,
+    ServerMessage, SetPasswordRequest, SetPasswordResponse, SetRoomPasswordRequest,
+    SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse, StartPlaybackRequest,
+    StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, SwapMediaRequest,
+    SwapMediaResponse, UnbanMemberRequest, UnbanMemberResponse, UpdateMemberPermissionsRequest,
+    UpdateMemberPermissionsResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
+    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -912,21 +912,6 @@ impl RoomService for ClientServiceImpl {
         let response = self
             .client_api
             .edit_media(user_id.as_str(), room_id.as_str(), req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn list_playlist(
-        &self,
-        request: Request<ListPlaylistRequest>,
-    ) -> Result<Response<ListPlaylistResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let req = request.into_inner();
-        let response = self
-            .client_api
-            .list_media(user_id.as_str(), room_id.as_str(), req)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))

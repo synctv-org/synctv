@@ -1143,6 +1143,24 @@ mod tests {
     }
 
     #[test]
+    fn run_has_active_lock_detects_live_run_lock() {
+        let run_id = format!("test-run-{}", nanoid::nanoid!(8).to_lowercase());
+        let lock = acquire_run_lock(&run_id);
+
+        assert!(
+            run_has_active_lock(&run_id),
+            "active run lock must prevent orphan cleanup from treating the run as dead"
+        );
+
+        drop(lock);
+
+        assert!(
+            !run_has_active_lock(&run_id),
+            "released run lock must no longer mark the run as active"
+        );
+    }
+
+    #[test]
     fn docker_rm_force_reports_command_failure() {
         let err = docker_rm_force_with_program("false", "synctv-pg-test")
             .expect_err("failed command must surface as an error");

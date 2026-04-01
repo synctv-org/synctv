@@ -233,7 +233,7 @@ async fn test_playback_state_l2_miss_reads_from_db() {
 
     // Verify in PostgreSQL directly
     let db_state: synctv_core::models::RoomPlaybackState = sqlx::query_as(
-        "SELECT room_id, playing_media_id, playing_playlist_id, relative_path, \
+        "SELECT room_id, playing_media_id, playing_playlist_id, target, \
          \"current_time\", speed, is_playing, updated_at, version \
          FROM room_playback_state WHERE room_id = $1",
     )
@@ -294,6 +294,9 @@ async fn test_playback_state_get_state_persists_missing_row() {
         persisted.is_some(),
         "get_state() must create the missing playback row instead of caching an ephemeral default"
     );
+
+    room_service.playback_service().shutdown().await;
+    pool.close().await;
 }
 
 // ============================================================================

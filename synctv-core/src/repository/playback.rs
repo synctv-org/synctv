@@ -41,7 +41,7 @@ impl RoomPlaybackStateRepository {
 
         // Fetch the row (either just inserted or already existing)
         let result = sqlx::query_as::<_, RoomPlaybackState>(
-            "SELECT room_id, playing_media_id, playing_playlist_id, relative_path, \"current_time\", speed, is_playing, updated_at, version
+            "SELECT room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version
              FROM room_playback_state
              WHERE room_id = $1"
         )
@@ -81,7 +81,7 @@ impl RoomPlaybackStateRepository {
         .await?;
 
         let result = sqlx::query_as::<_, RoomPlaybackState>(
-            "SELECT room_id, playing_media_id, playing_playlist_id, relative_path, \"current_time\", speed, is_playing, updated_at, version
+            "SELECT room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version
              FROM room_playback_state
              WHERE room_id = $1"
         )
@@ -95,7 +95,7 @@ impl RoomPlaybackStateRepository {
     /// Get playback state
     pub async fn get(&self, room_id: &RoomId) -> Result<Option<RoomPlaybackState>> {
         let result = sqlx::query_as::<_, RoomPlaybackState>(
-            "SELECT room_id, playing_media_id, playing_playlist_id, relative_path, \"current_time\", speed, is_playing, updated_at, version
+            "SELECT room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version
              FROM room_playback_state
              WHERE room_id = $1",
         )
@@ -119,16 +119,16 @@ impl RoomPlaybackStateRepository {
 
         let result = sqlx::query_as::<_, RoomPlaybackState>(
             "UPDATE room_playback_state
-             SET playing_media_id = $2, playing_playlist_id = $3, relative_path = $4,
+             SET playing_media_id = $2, playing_playlist_id = $3, target = $4,
                  \"current_time\" = $5, speed = $6, is_playing = $7,
                  updated_at = NOW(), version = version + 1
              WHERE room_id = $1 AND version = $8
-             RETURNING room_id, playing_media_id, playing_playlist_id, relative_path, \"current_time\", speed, is_playing, updated_at, version",
+             RETURNING room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version",
         )
         .bind(state.room_id.as_str())
         .bind(media_id_str)
         .bind(playlist_id_str)
-        .bind(&state.relative_path)
+        .bind(&state.target)
         .bind(state.current_time)
         .bind(state.speed)
         .bind(state.is_playing)
@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(state.room_id, room_id);
         assert!(state.playing_media_id.is_none());
         assert!(state.playing_playlist_id.is_none());
-        assert!(state.relative_path.is_empty());
+        assert!(state.target.is_empty());
         assert!((state.current_time - 0.0).abs() < f64::EPSILON);
         assert!((state.speed - 1.0).abs() < f64::EPSILON);
         assert!(!state.is_playing);

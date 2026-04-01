@@ -26,7 +26,7 @@ async fn test_pg_family_revocation_survives_cleanup_until_marker_expires() {
     assert_eq!(
         store.get_family_revoked_at(&key).await,
         Some(timestamp),
-        "cleanup must not delete the family revocation timestamp while the marker is still alive"
+        "cleanup must not delete the family revocation timestamp while the row is still alive"
     );
 }
 
@@ -100,7 +100,7 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
         "forced family revoke write failure must bubble up as an error"
     );
 
-    let marker_exists: bool =
+    let row_exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1)")
             .bind(&key)
             .fetch_one(&pool)
@@ -108,8 +108,8 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
             .unwrap();
 
     assert!(
-        !marker_exists,
-        "family revoke must be atomic: no partial rows should remain after failure"
+        !row_exists,
+        "family revoke must be atomic: no partial row should remain after failure"
     );
 
     sqlx::query("DROP TRIGGER IF EXISTS trg_fail_token_blacklist_family_insert ON token_blacklist")

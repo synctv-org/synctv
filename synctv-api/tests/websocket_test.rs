@@ -61,12 +61,12 @@ mod ws_query {
     }
 
     #[test]
-    fn test_deserialize_ignores_legacy_token_param() {
-        let params = "token=legacy_jwt_value";
+    fn test_deserialize_ignores_removed_token_param() {
+        let params = "token=removed_jwt_value";
         let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
         assert!(
             query.ticket.is_none(),
-            "legacy ?token= must not be treated as a valid websocket credential"
+            "removed ?token= must not be treated as a valid websocket credential"
         );
     }
 }
@@ -222,7 +222,7 @@ mod ticket_types {
         );
         assert!(
             !resp.usage.contains("/ws/room/"),
-            "legacy singular websocket route must not appear in ticket usage"
+            "removed singular websocket route must not appear in ticket usage"
         );
     }
 }

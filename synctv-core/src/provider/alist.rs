@@ -9,8 +9,8 @@ use super::{
         ProviderClientManager,
     },
     store::{ProviderStoreExt, VersionedPlayback},
-    DirectoryItem, DynamicFolder, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
-    PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
+    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider,
+    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
@@ -28,6 +28,11 @@ use std::time::Duration;
 pub struct AlistProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct AlistBrowseTarget {
+    relative_path: String,
 }
 
 impl AlistProvider {
@@ -117,6 +122,33 @@ impl AlistProvider {
     ) -> Result<synctv_media_providers::grpc::alist::MeResp, ProviderError> {
         let client = self.get_client(instance_name).await?;
         client.me(req).await.map_err(std::convert::Into::into)
+    }
+
+    fn encode_target(relative_path: &str) -> Result<Vec<u8>, ProviderError> {
+        serde_json::to_vec(&AlistBrowseTarget {
+            relative_path: relative_path.to_string(),
+        })
+        .map_err(|e| ProviderError::InvalidConfig(format!("Failed to encode Alist target: {e}")))
+    }
+
+    fn decode_target(target: Option<&[u8]>) -> Result<Option<String>, ProviderError> {
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        if target.is_empty() {
+            return Ok(None);
+        }
+
+        let payload: AlistBrowseTarget = serde_json::from_slice(target)
+            .map_err(|e| ProviderError::InvalidConfig(format!("Invalid Alist target: {e}")))?;
+
+        if payload.relative_path.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist target relative_path cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(Some(payload.relative_path))
     }
 }
 
@@ -549,7 +581,7 @@ impl DynamicFolder for AlistProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        relative_path: Option<&str>,
+        target: Option<&[u8]>,
         page: usize,
         page_size: usize,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
@@ -561,14 +593,16 @@ impl DynamicFolder for AlistProvider {
 
         let resolved = self.resolve_config(_ctx, config).await?;
 
+        let relative_path = Self::decode_target(target)?;
+
         // Validate relative_path BEFORE any path concatenation to prevent traversal attacks
-        if let Some(rel) = relative_path {
+        if let Some(rel) = relative_path.as_deref() {
             validate_path_for_traversal(rel)
                 .map_err(|e| ProviderError::InvalidConfig(format!("Invalid relative path: {e}")))?;
         }
 
         // Construct full path: base_path + relative_path
-        let full_path = if let Some(rel) = relative_path {
+        let full_path = if let Some(rel) = relative_path.as_deref() {
             if rel.starts_with('/') {
                 format!("{}{}", resolved.path.trim_end_matches('/'), rel)
             } else {
@@ -621,7 +655,7 @@ impl DynamicFolder for AlistProvider {
                 };
 
                 // Construct relative path for this item
-                let item_relative_path = if let Some(rel) = relative_path {
+                let item_relative_path = if let Some(rel) = relative_path.as_deref() {
                     format!("{}/{}", rel.trim_end_matches('/'), file_item.name)
                 } else {
                     format!("/{}", file_item.name)
@@ -630,7 +664,7 @@ impl DynamicFolder for AlistProvider {
                 Some(DirectoryItem {
                     name: file_item.name,
                     item_type,
-                    path: item_relative_path,
+                    target: Self::encode_target(&item_relative_path).ok()?,
                     size: Some(file_item.size),
                     thumbnail: if file_item.thumb.is_empty() {
                         None
@@ -649,9 +683,12 @@ impl DynamicFolder for AlistProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        relative_path: &str,
+        target: &[u8],
     ) -> Result<Option<NextPlayItem>, ProviderError> {
-        validate_path_for_traversal(relative_path)
+        let relative_path = Self::decode_target(Some(target))?.ok_or_else(|| {
+            ProviderError::InvalidConfig("Alist target is required".to_string())
+        })?;
+        validate_path_for_traversal(&relative_path)
             .map_err(|e| ProviderError::InvalidConfig(format!("Invalid relative path: {e}")))?;
 
         let config = playlist
@@ -683,12 +720,13 @@ impl DynamicFolder for AlistProvider {
                 Some(s)
             }
         });
+        let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
         const PAGE_SIZE: usize = 50;
         let mut page = 0;
         loop {
             let page_items = self
-                .list_playlist(ctx, playlist, parent_path, page, PAGE_SIZE)
+                .list_playlist(ctx, playlist, parent_target.as_deref(), page, PAGE_SIZE)
                 .await?;
             if page_items.is_empty() {
                 return Ok(None);
@@ -696,20 +734,20 @@ impl DynamicFolder for AlistProvider {
 
             if let Some(item) = page_items
                 .iter()
-                .find(|item| item.item_type == ItemType::Media && item.path == relative_path)
+                .find(|item| item.item_type == ItemType::Media && item.target == target)
             {
                 return Ok(Some(
                     NextPlayItem {
                         name: item.name.clone(),
                         item_type: item.item_type,
-                        source_config: build_next_source_config(&build_full_path(&item.path)),
+                        source_config: build_next_source_config(&build_full_path(&relative_path)),
                         metadata: json!({
                             "size": item.size,
                             "thumbnail": item.thumbnail,
                             "modified_at": item.modified_at
                         }),
                         provider_data: json!({}),
-                        relative_path: item.path.clone(),
+                        target: item.target.clone(),
                     }
                     .strip_credentials(),
                 ));
@@ -727,13 +765,16 @@ impl DynamicFolder for AlistProvider {
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
         _playing_media: &crate::models::Media,
-        relative_path: &str,
+        target: &[u8],
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         use crate::models::PlayMode;
+        let relative_path = Self::decode_target(Some(target))?.ok_or_else(|| {
+            ProviderError::InvalidConfig("Alist target is required".to_string())
+        })?;
 
         // Validate relative_path BEFORE any path operations to prevent traversal attacks
-        validate_path_for_traversal(relative_path)
+        validate_path_for_traversal(&relative_path)
             .map_err(|e| ProviderError::InvalidConfig(format!("Invalid relative path: {e}")))?;
 
         // Parse base config and build helper for NextPlayItem source_configs
@@ -769,6 +810,7 @@ impl DynamicFolder for AlistProvider {
                         Some(s)
                     }
                 });
+                let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
                 const PAGE_SIZE: usize = 50;
                 let mut found_current = false;
@@ -776,7 +818,13 @@ impl DynamicFolder for AlistProvider {
 
                 loop {
                     let page_items = self
-                        .list_playlist(ctx, playlist, parent_path, current_page, PAGE_SIZE)
+                        .list_playlist(
+                            ctx,
+                            playlist,
+                            parent_target.as_deref(),
+                            current_page,
+                            PAGE_SIZE,
+                        )
                         .await?;
 
                     if page_items.is_empty() {
@@ -791,15 +839,16 @@ impl DynamicFolder for AlistProvider {
                             return Ok(Some(NextPlayItem {
                                 name: next.name.clone(),
                                 item_type: next.item_type,
-                                source_config: build_next_source_config(&build_full_path(&next.path)),
+                                source_config: build_next_source_config(&build_full_path(
+                                    &Self::decode_target(Some(&next.target))?
+                                        .ok_or_else(|| ProviderError::InvalidConfig("Missing Alist item target".to_string()))?,
+                                )),
                                 metadata: json!({"size": next.size, "thumbnail": next.thumbnail, "modified_at": next.modified_at}),
                                 provider_data: json!({}),
-                                relative_path: next.path.clone(),
+                                target: next.target.clone(),
                             }.strip_credentials()));
                         }
-                    } else if let Some(idx) = page_items
-                        .iter()
-                        .position(|item| item.path == relative_path)
+                    } else if let Some(idx) = page_items.iter().position(|item| item.target == target)
                     {
                         found_current = true;
                         if let Some(next) = page_items
@@ -810,10 +859,13 @@ impl DynamicFolder for AlistProvider {
                             return Ok(Some(NextPlayItem {
                                 name: next.name.clone(),
                                 item_type: next.item_type,
-                                source_config: build_next_source_config(&build_full_path(&next.path)),
+                                source_config: build_next_source_config(&build_full_path(
+                                    &Self::decode_target(Some(&next.target))?
+                                        .ok_or_else(|| ProviderError::InvalidConfig("Missing Alist item target".to_string()))?,
+                                )),
                                 metadata: json!({"size": next.size, "thumbnail": next.thumbnail, "modified_at": next.modified_at}),
                                 provider_data: json!({}),
-                                relative_path: next.path.clone(),
+                                target: next.target.clone(),
                             }.strip_credentials()));
                         }
                     }
@@ -832,8 +884,9 @@ impl DynamicFolder for AlistProvider {
                             Some(s)
                         }
                     });
+                    let parent_target = parent_path.map(Self::encode_target).transpose()?;
                     let first_page = self
-                        .list_playlist(ctx, playlist, parent_path, 0, PAGE_SIZE)
+                        .list_playlist(ctx, playlist, parent_target.as_deref(), 0, PAGE_SIZE)
                         .await?;
                     if let Some(first) = first_page
                         .iter()
@@ -842,10 +895,13 @@ impl DynamicFolder for AlistProvider {
                         return Ok(Some(NextPlayItem {
                             name: first.name.clone(),
                             item_type: first.item_type,
-                            source_config: build_next_source_config(&build_full_path(&first.path)),
+                            source_config: build_next_source_config(&build_full_path(
+                                &Self::decode_target(Some(&first.target))?
+                                    .ok_or_else(|| ProviderError::InvalidConfig("Missing Alist item target".to_string()))?,
+                            )),
                             metadata: json!({"size": first.size, "thumbnail": first.thumbnail, "modified_at": first.modified_at}),
                             provider_data: json!({}),
-                            relative_path: first.path.clone(),
+                            target: first.target.clone(),
                         }.strip_credentials()));
                     }
                 }
@@ -860,6 +916,7 @@ impl DynamicFolder for AlistProvider {
                         Some(s)
                     }
                 });
+                let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
                 const PAGE_SIZE: usize = 50;
                 const MAX_ITEMS: usize = 200;
@@ -867,7 +924,7 @@ impl DynamicFolder for AlistProvider {
                 let mut page = 0;
                 loop {
                     let page_items = self
-                        .list_playlist(ctx, playlist, parent_path, page, PAGE_SIZE)
+                        .list_playlist(ctx, playlist, parent_target.as_deref(), page, PAGE_SIZE)
                         .await?;
                     let is_last_page = page_items.len() < PAGE_SIZE;
                     all_items.extend(page_items);
@@ -892,13 +949,49 @@ impl DynamicFolder for AlistProvider {
                 Ok(Some(NextPlayItem {
                     name: random_item.name.clone(),
                     item_type: random_item.item_type,
-                    source_config: build_next_source_config(&build_full_path(&random_item.path)),
+                    source_config: build_next_source_config(&build_full_path(
+                        &Self::decode_target(Some(&random_item.target))?
+                            .ok_or_else(|| ProviderError::InvalidConfig("Missing Alist item target".to_string()))?,
+                    )),
                     metadata: json!({"size": random_item.size, "thumbnail": random_item.thumbnail, "modified_at": random_item.modified_at}),
                     provider_data: json!({}),
-                    relative_path: random_item.path.clone(),
+                    target: random_item.target.clone(),
                 }.strip_credentials()))
             }
         }
+    }
+
+    async fn browse_path(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        _playlist: &crate::models::Playlist,
+        target: Option<&[u8]>,
+    ) -> Result<Vec<DynamicBrowsePathSegment>, ProviderError> {
+        let Some(relative_path) = Self::decode_target(target)? else {
+            return Ok(Vec::new());
+        };
+
+        let mut segments = Vec::new();
+        for (index, segment) in relative_path
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .enumerate()
+        {
+            let target = Self::encode_target(
+                &relative_path
+                    .split('/')
+                    .filter(|part| !part.is_empty())
+                    .take(index + 1)
+                    .collect::<Vec<_>>()
+                    .join("/"),
+            )?;
+            segments.push(DynamicBrowsePathSegment {
+                name: segment.to_string(),
+                target,
+            });
+        }
+
+        Ok(segments)
     }
 }
 

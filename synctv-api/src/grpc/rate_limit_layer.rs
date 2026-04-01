@@ -252,7 +252,7 @@ fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
         Some(
             "GetRoomSettings" | "GetRoomMembers" | "GetChatHistory" | "GetIceServers"
             | "GetPlaylist" | "GetPlayback" | "GetStreamInfo" | "ListRoomStreams" | "ListPlaylists"
-            | "ListPlaylist" | "ListPlaylistItems",
+            | "ListPlaylistItems",
         ) => GrpcRateLimitTier::Read,
         _ => GrpcRateLimitTier::Write,
     }
@@ -700,10 +700,6 @@ mod tests {
         );
         assert_eq!(
             tier_from_path("/synctv.client.RoomService/ListPlaylists"),
-            Some(GrpcRateLimitTier::Read)
-        );
-        assert_eq!(
-            tier_from_path("/synctv.client.RoomService/ListPlaylist"),
             Some(GrpcRateLimitTier::Read)
         );
         assert_eq!(

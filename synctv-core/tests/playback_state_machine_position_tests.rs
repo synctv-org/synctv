@@ -49,6 +49,9 @@ async fn test_position_preserved_on_pause() {
         .unwrap();
 
     assert!(state.current_time >= 119.0);
+
+    room_service.playback_service().shutdown().await;
+    pool.close().await;
 }
 
 #[tokio::test]
@@ -100,11 +103,14 @@ async fn test_position_reset_on_media_switch() {
             owner.id.clone(),
             Some(media.id.clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();
 
     assert!((state.current_time - 0.0).abs() < f64::EPSILON);
     assert!(state.is_playing);
+
+    room_service.playback_service().shutdown().await;
+    pool.close().await;
 }

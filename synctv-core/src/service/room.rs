@@ -2331,7 +2331,7 @@ impl RoomService {
                     "UPDATE room_playback_state
                      SET playing_media_id = NULL,
                          playing_playlist_id = NULL,
-                         relative_path = '',
+                         target = ''::bytea,
                          \"current_time\" = 0,
                          speed = 1.0,
                          is_playing = false,
@@ -2598,7 +2598,7 @@ impl RoomService {
         media_id: MediaId,
     ) -> Result<RoomPlaybackState> {
         self.playback_service
-            .switch(room_id, user_id, Some(media_id), None, String::new())
+            .switch(room_id, user_id, Some(media_id), None, Vec::new())
             .await
     }
 

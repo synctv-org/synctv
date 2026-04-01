@@ -113,18 +113,15 @@ pub struct Playlist {
     /// Position among sibling playlists
     #[prost(int32, tag = "5")]
     pub position: i32,
-    /// True if this is a folder (can contain other playlists)
-    #[prost(bool, tag = "6")]
-    pub is_folder: bool,
     /// True if this is a dynamic playlist (provider-based)
-    #[prost(bool, tag = "7")]
+    #[prost(bool, tag = "6")]
     pub is_dynamic: bool,
     /// Number of items in this playlist
-    #[prost(int32, tag = "8")]
+    #[prost(int32, tag = "7")]
     pub item_count: i32,
-    #[prost(int64, tag = "9")]
+    #[prost(int64, tag = "8")]
     pub created_at: i64,
-    #[prost(int64, tag = "10")]
+    #[prost(int64, tag = "9")]
     pub updated_at: i64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -149,9 +146,9 @@ pub struct PlaybackState {
     /// Currently playing playlist
     #[prost(string, tag = "8")]
     pub playing_playlist_id: ::prost::alloc::string::String,
-    /// Relative path within dynamic folder (empty for static playlists)
-    #[prost(string, tag = "9")]
-    pub relative_path: ::prost::alloc::string::String,
+    /// Provider-facing playback target payload (empty for static media or cleared state)
+    #[prost(bytes = "vec", tag = "9")]
+    pub target: ::prost::alloc::vec::Vec<u8>,
 }
 /// Authentication Messages
 /// SECURITY: password is transmitted as plaintext. TLS MUST be used.
@@ -494,9 +491,15 @@ pub struct CreatePlaylistRequest {
     /// Optional parent playlist ID for nested playlists
     #[prost(string, tag = "2")]
     pub parent_id: ::prost::alloc::string::String,
-    /// True if creating a folder (can contain other playlists)
-    #[prost(bool, tag = "3")]
-    pub is_folder: bool,
+    /// Optional provider type for dynamic playlists
+    #[prost(string, tag = "3")]
+    pub source_provider: ::prost::alloc::string::String,
+    /// Provider-specific config for dynamic playlists
+    #[prost(bytes = "vec", tag = "4")]
+    pub source_config: ::prost::alloc::vec::Vec<u8>,
+    /// Optional provider instance binding
+    #[prost(string, tag = "5")]
+    pub provider_instance_name: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -582,19 +585,19 @@ pub struct ListPlaylistsResponse {
 /// HTTP API: Start playback of either:
 ///
 /// 1. A concrete media item (`media_id`)
-/// 1. A dynamic playlist item (`playlist_id` + `relative_path`)
+/// 1. A dynamic playlist item (`playlist_id` + `target`)
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StartPlaybackRequest {
     /// Static media ID. Mutually exclusive with playlist_id.
     #[prost(string, tag = "1")]
     pub media_id: ::prost::alloc::string::String,
-    /// Dynamic playlist ID. Requires relative_path. Mutually exclusive with media_id.
+    /// Dynamic playlist ID. Requires target. Mutually exclusive with media_id.
     #[prost(string, tag = "2")]
     pub playlist_id: ::prost::alloc::string::String,
-    /// Relative path within dynamic playlist. Empty for static media playback.
-    #[prost(string, tag = "3")]
-    pub relative_path: ::prost::alloc::string::String,
+    /// Provider-facing playback target payload. Empty for static media playback.
+    #[prost(bytes = "vec", tag = "3")]
+    pub target: ::prost::alloc::vec::Vec<u8>,
 }
 /// Empty: playback started successfully
 /// Use GetPlayback to retrieve current state and info
@@ -668,35 +671,14 @@ pub struct DeleteEntriesResponse {
     pub deleted_media: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListPlaylistRequest {
-    /// Page number (default 1). Validation: >= 1
-    #[prost(int32, tag = "1")]
-    pub page: i32,
-    /// Items per page (default 50). Validation: max 100
-    #[prost(int32, tag = "2")]
-    pub page_size: i32,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ListPlaylistResponse {
-    #[prost(message, optional, tag = "1")]
-    pub playlist: ::core::option::Option<Playlist>,
-    #[prost(message, repeated, tag = "2")]
-    pub media: ::prost::alloc::vec::Vec<Media>,
-    /// Total number of items in playlist
-    #[prost(int32, tag = "3")]
-    pub total: i32,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListPlaylistItemsRequest {
-    /// Playlist ID. Validation: required, max 64 chars
+    /// Empty means room root; otherwise the playlist being browsed
     #[prost(string, tag = "1")]
     pub playlist_id: ::prost::alloc::string::String,
-    /// Relative path within dynamic folder (empty for root, only for dynamic playlists)
-    #[prost(string, tag = "2")]
-    pub relative_path: ::prost::alloc::string::String,
+    /// Provider-facing browse target payload (empty for room root or dynamic root)
+    #[prost(bytes = "vec", tag = "2")]
+    pub target: ::prost::alloc::vec::Vec<u8>,
     /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "3")]
     pub page: i32,
@@ -727,6 +709,9 @@ pub struct ListPlaylistItemsResponse {
     /// Remote provider items (used when browsing dynamic folders)
     #[prost(message, repeated, tag = "6")]
     pub dynamic_items: ::prost::alloc::vec::Vec<PlaylistItem>,
+    /// Breadcrumb path for the current browse location
+    #[prost(message, repeated, tag = "7")]
+    pub current_path: ::prost::alloc::vec::Vec<PlaylistBrowsePathNode>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -737,9 +722,9 @@ pub struct PlaylistItem {
     /// Item type (PLAYLIST or MEDIA)
     #[prost(enumeration = "ItemType", tag = "2")]
     pub item_type: i32,
-    /// Full path from root
-    #[prost(string, tag = "3")]
-    pub path: ::prost::alloc::string::String,
+    /// Provider-facing target payload for this item
+    #[prost(bytes = "vec", tag = "3")]
+    pub target: ::prost::alloc::vec::Vec<u8>,
     /// File size in bytes (for files)
     #[prost(int64, optional, tag = "4")]
     pub size: ::core::option::Option<i64>,
@@ -749,6 +734,19 @@ pub struct PlaylistItem {
     /// Modified time (Unix timestamp)
     #[prost(int64, optional, tag = "6")]
     pub modified_at: ::core::option::Option<i64>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PlaylistBrowsePathNode {
+    /// Present for persisted playlist nodes; empty for provider-only dynamic segments
+    #[prost(string, tag = "1")]
+    pub playlist_id: ::prost::alloc::string::String,
+    /// Display name for the current path segment
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    /// Provider-facing target payload for this segment; empty for static playlist nodes
+    #[prost(bytes = "vec", tag = "3")]
+    pub target: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -4437,30 +4435,6 @@ pub mod room_service_client {
                 .insert(GrpcMethod::new("synctv.client.RoomService", "EditMedia"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn list_playlist(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ListPlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListPlaylistResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/ListPlaylist",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "ListPlaylist"));
-            self.inner.unary(req, path, codec).await
-        }
         pub async fn list_playlist_items(
             &mut self,
             request: impl tonic::IntoRequest<super::ListPlaylistItemsRequest>,
@@ -4916,13 +4890,6 @@ pub mod room_service_server {
             request: tonic::Request<super::EditMediaRequest>,
         ) -> std::result::Result<
             tonic::Response<super::EditMediaResponse>,
-            tonic::Status,
-        >;
-        async fn list_playlist(
-            &self,
-            request: tonic::Request<super::ListPlaylistRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListPlaylistResponse>,
             tonic::Status,
         >;
         async fn list_playlist_items(
@@ -6073,51 +6040,6 @@ pub mod room_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = EditMediaSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/ListPlaylist" => {
-                    #[allow(non_camel_case_types)]
-                    struct ListPlaylistSvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::ListPlaylistRequest>
-                    for ListPlaylistSvc<T> {
-                        type Response = super::ListPlaylistResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ListPlaylistRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::list_playlist(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ListPlaylistSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

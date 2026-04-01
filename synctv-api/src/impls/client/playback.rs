@@ -2,6 +2,7 @@
 //!
 //! Note: Real-time playback control (play/pause/seek/speed) is handled via WebSocket messages
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use synctv_core::models::{MediaId, PlaylistId, UserId};
 use synctv_core::provider::ProviderContext;
 
@@ -88,7 +89,7 @@ impl ClientApiImpl {
         room_id_model: &synctv_core::models::RoomId,
         user_id_model: &UserId,
         playlist_id: &PlaylistId,
-        relative_path: &str,
+        target: &[u8],
     ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
         let item = self
             .room_service
@@ -97,7 +98,7 @@ impl ClientApiImpl {
                 room_id_model.clone(),
                 user_id_model.clone(),
                 playlist_id,
-                relative_path,
+                target,
             )
             .await
             .map_err(ApiError::from)?
@@ -119,9 +120,23 @@ impl ClientApiImpl {
             .providers_manager
             .as_ref()
             .ok_or_else(|| ApiError::Internal("Providers manager not configured".to_string()))?;
-        let provider = providers_manager.get_by_type(provider_name).await.ok_or_else(|| {
-            ApiError::NotFound(format!("Provider '{provider_name}' not found"))
-        })?;
+        let bound_instance = playlist.provider_instance_name.as_deref().and_then(|name| {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+        let provider = if let Some(instance_name) = bound_instance {
+            providers_manager.get(instance_name).await.ok_or_else(|| {
+                ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
+            })?
+        } else {
+            providers_manager.get_by_type(provider_name).await.ok_or_else(|| {
+                ApiError::NotFound(format!("Provider '{provider_name}' not found"))
+            })?
+        };
 
         let ctx = self.build_provider_context(user_id, room_id).await;
         let provider_result = provider
@@ -146,7 +161,10 @@ impl ClientApiImpl {
         }
 
         let full_result = builder
-            .add_metadata("relative_path".to_string(), serde_json::json!(item.relative_path))
+            .add_metadata(
+                "target".to_string(),
+                serde_json::Value::String(BASE64_STANDARD.encode(target)),
+            )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
         Ok(playback_result_to_proto(&full_result))
@@ -184,7 +202,7 @@ impl ClientApiImpl {
                 uid.clone(),
                 media_id,
                 playlist_id,
-                req.relative_path,
+                req.target,
             )
             .await
             .map_err(ApiError::from)?;
@@ -260,7 +278,7 @@ impl ClientApiImpl {
                 &rid,
                 &uid,
                 playlist_id,
-                &state.relative_path,
+                &state.target,
             )
             .await?
         } else {

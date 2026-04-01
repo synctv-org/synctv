@@ -3356,7 +3356,7 @@ async fn test_delete_entries_rejects_currently_playing_media_without_force() {
             owner.id.clone(),
             Some(media.id.clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -3464,7 +3464,7 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
             owner.id.clone(),
             Some(media.id.clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -3536,7 +3536,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_med
             owner.id.clone(),
             Some(media.id.clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -3651,7 +3651,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
             owner.id.clone(),
             Some(media.id.clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();

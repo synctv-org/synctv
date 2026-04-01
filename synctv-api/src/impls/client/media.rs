@@ -4,7 +4,7 @@ use crate::impls::ApiError;
 use std::str::FromStr;
 use synctv_core::models::{ProviderType, UserId};
 
-use super::convert::{media_to_proto, playlist_to_proto};
+use super::convert::{media_to_proto, playlist_path_node_to_proto, playlist_to_proto};
 use super::ClientApiImpl;
 
 /// Sanitize and truncate a title extracted from a URL path segment.
@@ -28,6 +28,25 @@ pub(super) fn sanitize_url_derived_title(raw: &str) -> String {
     } else {
         sanitized.into_owned()
     }
+}
+
+fn resolve_add_media_provider_instance(
+    provider: ProviderType,
+    provider_name: &str,
+    provider_instance_name: String,
+) -> Result<String, ApiError> {
+    if provider == ProviderType::DirectUrl {
+        return Ok(String::new());
+    }
+
+    let trimmed = provider_instance_name.trim();
+    if !trimmed.is_empty() {
+        return Ok(trimmed.to_string());
+    }
+
+    Err(ApiError::InvalidInput(format!(
+        "provider_instance_name is required for provider '{provider_name}'"
+    )))
 }
 
 impl ClientApiImpl {
@@ -105,14 +124,11 @@ impl ClientApiImpl {
         // For other provider types, prefer provider_instance_name (e.g., "bilibili_main")
         // over provider type name (e.g., "bilibili") since the registry stores instances
         // by their instance ID, not by type name.
-        let provider_instance_name = if provider == ProviderType::DirectUrl {
-            String::new()
-        } else if !req.provider_instance_name.is_empty() {
-            req.provider_instance_name
-        } else {
-            // Fallback: use provider type name when client doesn't specify an instance name
-            req.provider
-        };
+        let provider_instance_name = resolve_add_media_provider_instance(
+            provider,
+            &req.provider,
+            req.provider_instance_name,
+        )?;
 
         let media = self
             .room_service
@@ -625,59 +641,11 @@ impl ClientApiImpl {
         Ok(crate::proto::client::ReorderMediaBatchResponse { success: true })
     }
 
-    /// List media items in room's playlist
-    pub async fn list_media(
-        &self,
-        user_id: &str,
-        room_id: &str,
-        req: crate::proto::client::ListPlaylistRequest,
-    ) -> Result<crate::proto::client::ListPlaylistResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
-
-        // Check membership
-        self.room_service
-            .check_membership(&rid, &uid)
-            .await
-            .map_err(Self::map_room_access_error)?;
-
-        // M-7: Use paginated query instead of loading all items into memory.
-        // Default to first page with 50 items, max 200 items per page.
-        let page = req.page.max(1) as u32;
-        let page_size = req.page_size.clamp(1, 200) as u32;
-        let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
-        let (media_list, total_count) = self
-            .room_service
-            .get_room_root_media_paginated(&rid, pagination)
-            .await
-            .map_err(ApiError::from)?;
-
-        let media: Vec<_> = media_list.into_iter().map(|m| media_to_proto(&m)).collect();
-        let total = total_count as i32;
-
-        let playlist = Some(crate::proto::client::Playlist {
-            id: String::new(),
-            room_id: rid.as_str().to_string(),
-            name: String::new(),
-            parent_id: String::new(),
-            position: 0,
-            is_folder: true,
-            is_dynamic: false,
-            item_count: total,
-            created_at: 0,
-            updated_at: 0,
-        });
-
-        Ok(crate::proto::client::ListPlaylistResponse {
-            playlist,
-            media,
-            total,
-        })
-    }
-
     /// List playlist items (supports both static and dynamic playlists)
     ///
-    /// For static playlists: returns child playlists + media from database
+    /// Empty `playlist_id` means the room root.
+    ///
+    /// For room root and static playlists: returns child playlists + media from database
     /// For dynamic playlists: returns remote provider items
     pub async fn list_playlist_items(
         &self,
@@ -685,18 +653,104 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
-        crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
+        if !req.playlist_id.is_empty() {
+            crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
+        }
 
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id.clone());
 
         // Check membership
         self.room_service
             .check_membership(&rid, &uid)
             .await
             .map_err(Self::map_room_access_error)?;
+
+        let page = req.page.max(1) as usize;
+        let page_size = req.page_size.clamp(1, 100) as usize;
+        let Some(playlist_id) = (!req.playlist_id.is_empty())
+            .then(|| synctv_core::models::PlaylistId::from_string(req.playlist_id.clone()))
+        else {
+            if !req.target.is_empty() {
+                return Err(ApiError::InvalidInput(
+                    "target must be empty when browsing the room root".to_string(),
+                ));
+            }
+
+            let folder_count = self
+                .room_service
+                .playlist_service()
+                .count_top_level_playlists(&rid)
+                .await
+                .map_err(ApiError::from)? as usize;
+            let file_count = self
+                .room_service
+                .media_service()
+                .count_room_root_media(&rid)
+                .await
+                .map_err(ApiError::from)? as usize;
+            let total = folder_count + file_count;
+            let skip = (page - 1) * page_size;
+            let mut proto_playlists = Vec::new();
+            let mut proto_media = Vec::new();
+
+            if skip < folder_count {
+                let folder_take = (folder_count - skip).min(page_size);
+                let folders_page = self
+                    .room_service
+                    .playlist_service()
+                    .get_top_level_playlists_paginated(&rid, folder_take as i64, skip as i64)
+                    .await
+                    .map_err(ApiError::from)?;
+                let folder_ids: Vec<&str> = folders_page.iter().map(|pl| pl.id.as_str()).collect();
+                let counts = self
+                    .room_service
+                    .media_service()
+                    .count_playlist_media_batch(&folder_ids)
+                    .await
+                    .unwrap_or_default();
+                proto_playlists = folders_page
+                    .iter()
+                    .map(|pl| {
+                        let item_count = counts.get(pl.id.as_str()).copied().unwrap_or(0) as i32;
+                        playlist_to_proto(pl, item_count)
+                    })
+                    .collect();
+
+                let remaining = page_size - folder_take;
+                if remaining > 0 && file_count > 0 {
+                    let media_page = self
+                        .room_service
+                        .media_service()
+                        .get_room_root_media_offset_limit(&rid, remaining as i64, 0)
+                        .await
+                        .map_err(ApiError::from)?;
+                    proto_media = media_page.into_iter().map(|m| media_to_proto(&m)).collect();
+                }
+            } else {
+                let media_skip = skip - folder_count;
+                if file_count > media_skip {
+                    let media_page = self
+                        .room_service
+                        .media_service()
+                        .get_room_root_media_offset_limit(&rid, page_size as i64, media_skip as i64)
+                        .await
+                        .map_err(ApiError::from)?;
+                    proto_media = media_page.into_iter().map(|m| media_to_proto(&m)).collect();
+                }
+            }
+
+            return Ok(crate::proto::client::ListPlaylistItemsResponse {
+                playlists: proto_playlists,
+                media: proto_media,
+                total: total as i32,
+                folder_count: folder_count as i32,
+                file_count: file_count as i32,
+                dynamic_items: Vec::new(),
+                current_path: Vec::new(),
+            });
+        };
 
         // Get playlist info to determine if static or dynamic
         let playlist = self
@@ -706,22 +760,29 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {} not found", req.playlist_id)))?;
-
-        let page = req.page.max(1) as usize;
-        let page_size = req.page_size.clamp(1, 100) as usize;
+        let static_path = self
+            .room_service
+            .playlist_service()
+            .get_playlist_path(&playlist_id)
+            .await
+            .map_err(ApiError::from)?;
+        let mut current_path: Vec<crate::proto::client::PlaylistBrowsePathNode> = static_path
+            .iter()
+            .map(playlist_path_node_to_proto)
+            .collect();
 
         if playlist.is_dynamic() {
-            // Dynamic playlist: fetch from provider
-            let relative_path = if req.relative_path.is_empty() {
-                None
-            } else {
-                Some(req.relative_path.as_str())
-            };
-
             let items = self
                 .room_service
                 .media_service()
-                .list_dynamic_playlist_items(rid, uid, &playlist_id, relative_path, page, page_size)
+                .list_dynamic_playlist_items(
+                    rid.clone(),
+                    uid.clone(),
+                    &playlist_id,
+                    (!req.target.is_empty()).then_some(req.target.as_slice()),
+                    page,
+                    page_size,
+                )
                 .await
                 .map_err(ApiError::from)?;
 
@@ -735,16 +796,35 @@ impl ClientApiImpl {
                         ItemType::Media => crate::proto::client::ItemType::Media as i32,
                     };
 
-                    crate::proto::client::PlaylistItem {
+                    Ok(crate::proto::client::PlaylistItem {
                         name: item.name,
                         item_type,
-                        path: item.path,
+                        target: item.target,
                         size: item.size.map(|s| s as i64),
                         thumbnail: Some(item.thumbnail.unwrap_or_default()),
                         modified_at: Some(item.modified_at.unwrap_or(0)),
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, ApiError>>()?;
+
+            let browse_path = self
+                .room_service
+                .media_service()
+                .get_dynamic_playlist_browse_path(
+                    rid,
+                    uid,
+                    &playlist_id,
+                    (!req.target.is_empty()).then_some(req.target.as_slice()),
+                )
+                .await
+                .map_err(ApiError::from)?;
+            current_path.extend(browse_path.into_iter().map(|segment| {
+                crate::proto::client::PlaylistBrowsePathNode {
+                    playlist_id: String::new(),
+                    name: segment.name,
+                    target: segment.target,
+                }
+            }));
 
             // Dynamic playlists don't provide a reliable total count since the
             // provider may paginate server-side.  Use -1 to signal "unknown total"
@@ -758,8 +838,15 @@ impl ClientApiImpl {
                 folder_count: 0,
                 file_count: 0,
                 dynamic_items,
+                current_path,
             })
         } else {
+            if !req.target.is_empty() {
+                return Err(ApiError::InvalidInput(
+                    "target must be empty when browsing a static playlist".to_string(),
+                ));
+            }
+
             // Static playlist: list child playlists and media from database
             // Use database pagination to avoid loading all items into memory.
 
@@ -851,6 +938,7 @@ impl ClientApiImpl {
                 folder_count: folder_count as i32,
                 file_count: file_count as i32,
                 dynamic_items: Vec::new(),
+                current_path,
             })
         }
     }
@@ -932,5 +1020,41 @@ impl ClientApiImpl {
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
 
         Ok(media_to_proto(&media))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_add_media_provider_instance;
+    use synctv_core::models::ProviderType;
+
+    #[test]
+    fn test_resolve_add_media_provider_instance_allows_direct_without_binding() {
+        let resolved =
+            resolve_add_media_provider_instance(ProviderType::DirectUrl, "", String::new())
+                .unwrap();
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_add_media_provider_instance_uses_explicit_binding() {
+        let resolved = resolve_add_media_provider_instance(
+            ProviderType::Alist,
+            "alist",
+            "alist_main".to_string(),
+        )
+        .unwrap();
+        assert_eq!(resolved, "alist_main");
+    }
+
+    #[test]
+    fn test_resolve_add_media_provider_instance_rejects_missing_binding_for_remote_provider() {
+        let err =
+            resolve_add_media_provider_instance(ProviderType::Alist, "alist", String::new())
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("provider_instance_name"),
+            "non-direct providers must require explicit provider_instance_name"
+        );
     }
 }

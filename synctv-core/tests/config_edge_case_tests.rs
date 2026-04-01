@@ -152,7 +152,6 @@ fn test_redis_deployment_mode_serde_roundtrip() {
     let modes = vec![
         RedisDeploymentMode::Standalone,
         RedisDeploymentMode::Sentinel,
-        RedisDeploymentMode::Cluster,
     ];
     for mode in modes {
         let json = serde_json::to_string(&mode).unwrap();
@@ -168,8 +167,7 @@ fn test_redis_deployment_mode_rename_all() {
     assert_eq!(json, "\"standalone\"");
     let json = serde_json::to_string(&RedisDeploymentMode::Sentinel).unwrap();
     assert_eq!(json, "\"sentinel\"");
-    let json = serde_json::to_string(&RedisDeploymentMode::Cluster).unwrap();
-    assert_eq!(json, "\"cluster\"");
+    assert!(serde_json::from_str::<RedisDeploymentMode>("\"cluster\"").is_err());
 }
 
 // ============================================================================

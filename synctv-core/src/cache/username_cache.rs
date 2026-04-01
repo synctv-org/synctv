@@ -22,8 +22,8 @@ const L1_TTL_SECONDS: u64 = 5 * 60;
 /// Wrapper around a username string for `TieredCache` serialization.
 ///
 /// `TieredCache` stores values as JSON in Redis. A raw `String` would be
-/// double-quoted (`"\"alice\""`), breaking backward compatibility with
-/// existing Redis data and making debugging harder. This newtype serializes
+/// double-quoted (`"\"alice\""`), making cache values harder to inspect
+/// and less explicit than a structured payload. This newtype serializes
 /// as `{"username":"alice"}` and is transparent to callers via `From`/`Into`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CachedUsername {

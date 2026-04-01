@@ -20,12 +20,12 @@ use crate::proto::client::{
     DeletePlaylistResponse, DeleteRoomResponse, EditMediaRequest, EditMediaResponse,
     GetChatHistoryResponse, GetHotRoomsResponse, GetPlaybackRequest, GetPlaybackResponse,
     GetRoomMembersResponse, GetRoomResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomResponse,
-    ListPlaylistResponse, ListPlaylistsResponse, ListRoomsRequest, ListRoomsResponse,
-    MediaReorderUpdate, ReorderMediaBatchRequest, ReorderMediaBatchResponse,
-    ResetRoomSettingsResponse, SetRoomPasswordRequest, SetRoomPasswordResponse,
-    StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
-    SwapMediaRequest, SwapMediaResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
-    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    ListPlaylistsResponse, ListRoomsRequest, ListRoomsResponse, MediaReorderUpdate,
+    ReorderMediaBatchRequest, ReorderMediaBatchResponse, ResetRoomSettingsResponse,
+    SetRoomPasswordRequest, SetRoomPasswordResponse, StartPlaybackRequest,
+    StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, SwapMediaRequest,
+    SwapMediaResponse, UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
+    UpdateRoomSettingsResponse,
 };
 
 #[derive(serde::Deserialize)]
@@ -58,7 +58,7 @@ pub struct StartPlaybackBody {
     #[serde(default)]
     playlist_id: String,
     #[serde(default)]
-    relative_path: String,
+    target: serde_json::Value,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -91,15 +91,12 @@ fn parse_force_query(params: &std::collections::HashMap<String, String>) -> bool
     params.get("force").is_some_and(|value| value == "true")
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct ListMediaQuery {
-    pub page: Option<i32>,
-    pub page_size: Option<i32>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct ListPlaylistItemsQuery {
-    pub relative_path: Option<String>,
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct ListPlaylistItemsBody {
+    #[serde(default)]
+    pub playlist_id: String,
+    #[serde(default)]
+    pub target: serde_json::Value,
     pub page: Option<i32>,
     pub page_size: Option<i32>,
 }
@@ -135,7 +132,11 @@ pub struct CreatePlaylistBody {
     #[serde(default)]
     parent_id: String,
     #[serde(default)]
-    is_folder: bool,
+    source_provider: String,
+    #[serde(default)]
+    source_config: serde_json::Value,
+    #[serde(default)]
+    provider_instance_name: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -359,42 +360,20 @@ pub async fn reorder_media_batch(
     Ok(Json(response))
 }
 
-/// List media items in room
-pub async fn list_media(
-    auth: AuthUser,
-    State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Query(params): Query<ListMediaQuery>,
-) -> AppResult<Json<ListPlaylistResponse>> {
-    let page_size = super::validation::validate_page_size(params.page_size);
-
-    let req = crate::proto::client::ListPlaylistRequest {
-        page: params.page.unwrap_or(0).max(0), // 0-based page for this endpoint
-        page_size,
-    };
-
-    let response = state
-        .client_api
-        .list_media(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
-
-    Ok(Json(response))
-}
-
-/// List items for a playlist path.
+/// List items for a room root, static playlist, or dynamic playlist target.
 pub async fn list_playlist_items(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path((room_id, playlist_id)): Path<(String, String)>,
-    Query(params): Query<ListPlaylistItemsQuery>,
+    Path(room_id): Path<String>,
+    Json(body): Json<ListPlaylistItemsBody>,
 ) -> AppResult<Json<crate::proto::client::ListPlaylistItemsResponse>> {
-    let page_size = super::validation::validate_page_size(params.page_size);
-    let page = super::validation::validate_page(params.page);
+    let page_size = super::validation::validate_page_size(body.page_size);
+    let page = super::validation::validate_page(body.page);
 
     let req = crate::proto::client::ListPlaylistItemsRequest {
-        playlist_id,
-        relative_path: params.relative_path.unwrap_or_default(),
+        playlist_id: body.playlist_id,
+        target: serde_json::to_vec(&body.target)
+            .map_err(|e| super::AppError::bad_request(format!("Invalid target payload: {e}")))?,
         page,
         page_size,
     };
@@ -441,7 +420,8 @@ pub async fn start_playback(
     let req = StartPlaybackRequest {
         media_id: body.media_id,
         playlist_id: body.playlist_id,
-        relative_path: body.relative_path,
+        target: serde_json::to_vec(&body.target)
+            .map_err(|e| super::AppError::bad_request(format!("Invalid target payload: {e}")))?,
     };
     let response = state
         .client_api
@@ -810,9 +790,9 @@ pub struct UpdatePlaybackRequest {
     /// Switch to dynamic playlist item
     #[serde(default)]
     pub playlist_id: Option<String>,
-    /// Relative path inside the dynamic playlist item space
+    /// Provider-facing playback target payload
     #[serde(default)]
-    pub relative_path: Option<String>,
+    pub target: Option<serde_json::Value>,
     /// Expected version for optimistic locking (CAS).
     /// If provided, the update will only succeed if the current playback state
     /// version matches this value, preventing last-writer-wins conflicts.
@@ -820,11 +800,26 @@ pub struct UpdatePlaybackRequest {
     pub version: Option<i64>,
 }
 
+fn is_switch_request(req: &UpdatePlaybackRequest) -> bool {
+    req.media_id.is_some() || req.playlist_id.is_some() || req.target.is_some()
+}
+
+fn normalize_switch_id(value: Option<&str>) -> Option<String> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 /// Unified handler for updating playback state via PATCH
 /// PATCH /`api/rooms/:room_id/playback`
 /// Supports either:
 /// - play/pause/seek/speed updates
-/// - playback target switch (`media_id` or `playlist_id` + `relative_path`)
+/// - playback target switch (`media_id` or `playlist_id` + `target`)
 ///
 /// Target switches intentionally use `PlaybackService::switch()` and cannot be
 /// mixed with other playback state updates.
@@ -839,12 +834,9 @@ pub async fn update_playback(
     let user_id = auth.user_id.to_string();
 
     // Validate that at least one field is provided
-    if req.state.is_none()
-        && req.position.is_none()
-        && req.speed.is_none()
-        && req.media_id.is_none()
-        && req.playlist_id.is_none()
-    {
+    let target_requested = is_switch_request(&req);
+
+    if req.state.is_none() && req.position.is_none() && req.speed.is_none() && !target_requested {
         return Err(super::AppError::bad_request(
             "No valid playback update field provided (state, position, speed, media_id, or playlist_id)",
         ));
@@ -868,17 +860,15 @@ pub async fn update_playback(
     if let Some(speed) = req.speed {
         validate_playback_speed(speed).map_err(map_validation_error)?;
     }
-    if let Some(media_id) = req.media_id.as_deref() {
-        validate_id(media_id, "media_id").map_err(map_validation_error)?;
+    if let Some(media_id) = normalize_switch_id(req.media_id.as_deref()) {
+        validate_id(&media_id, "media_id").map_err(map_validation_error)?;
     }
-    if let Some(playlist_id) = req.playlist_id.as_deref().filter(|id| !id.is_empty()) {
-        validate_id(playlist_id, "playlist_id").map_err(map_validation_error)?;
+    if let Some(playlist_id) = normalize_switch_id(req.playlist_id.as_deref()) {
+        validate_id(&playlist_id, "playlist_id").map_err(map_validation_error)?;
     }
 
     let rid = RoomId::from_string(room_id.clone());
     let uid = UserId::from_string(user_id.clone());
-
-    let target_requested = req.media_id.is_some() || req.playlist_id.is_some() || req.relative_path.is_some();
 
     if target_requested {
         if req.state.is_some() || req.position.is_some() || req.speed.is_some() || req.version.is_some() {
@@ -887,14 +877,22 @@ pub async fn update_playback(
             ));
         }
 
-        let media_id = req.media_id.map(MediaId::from_string);
-        let playlist_id = req.playlist_id.map(PlaylistId::from_string);
-        let relative_path = req.relative_path.unwrap_or_default();
+        let media_id = normalize_switch_id(req.media_id.as_deref()).map(MediaId::from_string);
+        let playlist_id =
+            normalize_switch_id(req.playlist_id.as_deref()).map(PlaylistId::from_string);
+        let target = req
+            .target
+            .map(|value| {
+                serde_json::to_vec(&value)
+                    .map_err(|e| super::AppError::bad_request(format!("Invalid target payload: {e}")))
+            })
+            .transpose()?
+            .unwrap_or_default();
 
         state
             .room_service
             .playback_service()
-            .switch(rid, uid, media_id, playlist_id, relative_path)
+            .switch(rid, uid, media_id, playlist_id, target)
             .await?;
     } else {
         // Apply all non-target fields atomically in a single DB update.
@@ -1060,7 +1058,10 @@ pub async fn create_playlist(
     let req = CreatePlaylistRequest {
         name: body.name,
         parent_id: body.parent_id,
-        is_folder: body.is_folder,
+        source_provider: body.source_provider,
+        source_config: serde_json::to_vec(&body.source_config)
+            .map_err(|_| super::AppError::bad_request("Invalid source_config"))?,
+        provider_instance_name: body.provider_instance_name,
     };
     let response = state
         .client_api
@@ -1166,8 +1167,9 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        parse_chat_history_request_params, parse_force_query, AddMediaBatchBody, DeleteEntriesBody,
-        UpdateMediaBatchRequest, UpdatePlaybackRequest,
+        is_switch_request, normalize_switch_id, parse_chat_history_request_params,
+        parse_force_query, AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody,
+        ListPlaylistItemsBody, UpdateMediaBatchRequest, UpdatePlaybackRequest,
     };
 
     #[test]
@@ -1209,19 +1211,58 @@ mod tests {
         assert!(req.speed.is_none());
         assert_eq!(req.media_id.as_deref(), Some("media_abc123"));
         assert!(req.playlist_id.is_none());
-        assert!(req.relative_path.is_none());
+        assert!(req.target.is_none());
     }
 
     #[test]
     fn test_update_playback_request_deserialize_dynamic_target() {
-        let json = r#"{"playlist_id": "pl1", "relative_path": "/folder/video.mkv"}"#;
+        let json = r#"{"playlist_id": "pl1", "target": {"item_id": "provider-item-123"}}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.playlist_id.as_deref(), Some("pl1"));
-        assert_eq!(req.relative_path.as_deref(), Some("/folder/video.mkv"));
+        assert_eq!(
+            req.target,
+            Some(serde_json::json!({"item_id": "provider-item-123"}))
+        );
         assert!(req.media_id.is_none());
         assert!(req.state.is_none());
         assert!(req.position.is_none());
         assert!(req.speed.is_none());
+    }
+
+    #[test]
+    fn test_update_playback_empty_switch_ids_are_treated_as_clear_request() {
+        let json = r#"{"media_id":"","playlist_id":""}"#;
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+        assert!(is_switch_request(&req));
+        assert_eq!(normalize_switch_id(req.media_id.as_deref()), None);
+        assert_eq!(normalize_switch_id(req.playlist_id.as_deref()), None);
+    }
+
+    #[test]
+    fn test_update_playback_omitted_switch_fields_are_not_switch_request() {
+        let json = r#"{"state":"paused"}"#;
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+        assert!(!is_switch_request(&req));
+    }
+
+    #[test]
+    fn test_list_playlist_items_body_deserialize_room_root() {
+        let json = r#"{}"#;
+        let req: ListPlaylistItemsBody = serde_json::from_str(json).unwrap();
+        assert!(req.playlist_id.is_empty());
+        assert_eq!(req.target, serde_json::Value::Null);
+        assert!(req.page.is_none());
+        assert!(req.page_size.is_none());
+    }
+
+    #[test]
+    fn test_list_playlist_items_body_deserialize_dynamic_target() {
+        let json = r#"{"playlist_id":"pl1","target":{"cursor":"season-1"},"page":2,"page_size":25}"#;
+        let req: ListPlaylistItemsBody = serde_json::from_str(json).unwrap();
+        assert_eq!(req.playlist_id, "pl1");
+        assert_eq!(req.target, serde_json::json!({"cursor":"season-1"}));
+        assert_eq!(req.page, Some(2));
+        assert_eq!(req.page_size, Some(25));
     }
 
     #[test]
@@ -1359,5 +1400,25 @@ mod tests {
         assert_eq!(body.playlist_ids, vec!["playlist-1"]);
         assert_eq!(body.media_ids, vec!["media-1"]);
         assert!(body.force);
+    }
+
+    #[test]
+    fn test_create_playlist_body_deserializes_dynamic_fields() {
+        let body: CreatePlaylistBody = serde_json::from_str(
+            r#"{
+                "name":"Dynamic Folder",
+                "parent_id":"playlist-root",
+                "source_provider":"alist",
+                "source_config":{"path":"/tv"},
+                "provider_instance_name":"alist-main"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(body.name, "Dynamic Folder");
+        assert_eq!(body.parent_id, "playlist-root");
+        assert_eq!(body.source_provider, "alist");
+        assert_eq!(body.source_config, serde_json::json!({"path":"/tv"}));
+        assert_eq!(body.provider_instance_name, "alist-main");
     }
 }

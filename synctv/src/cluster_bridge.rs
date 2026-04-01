@@ -89,7 +89,7 @@ mod tests {
             room_id: RoomId::from_string("room-1".to_string()),
             playing_media_id: Some(MediaId::from_string("media-1".to_string())),
             playing_playlist_id: Some(PlaylistId::from_string("playlist-1".to_string())),
-            relative_path: String::new(),
+            target: Vec::new(),
             is_playing: true,
             current_time: 42.0,
             speed: 1.0,

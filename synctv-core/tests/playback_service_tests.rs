@@ -280,7 +280,7 @@ async fn test_switch_media_resets_position() {
             owner.id.clone(),
             Some(media.id.clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -300,7 +300,7 @@ async fn test_switch_media_resets_position() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_switch_media_rejects_relative_path() {
+async fn test_switch_media_rejects_target() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -345,7 +345,7 @@ async fn test_switch_media_rejects_relative_path() {
             owner.id.clone(),
             Some(media.id.clone()),
             None,
-            "/unexpected".to_string(),
+            br#"{"relative_path":"/unexpected"}"#.to_vec(),
         )
         .await;
 
@@ -399,7 +399,7 @@ async fn test_switch_with_empty_target_clears_playback_state() {
             owner.id.clone(),
             Some(media.id.clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -414,14 +414,14 @@ async fn test_switch_with_empty_target_clears_playback_state() {
             owner.id.clone(),
             None,
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();
 
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
-    assert!(state.relative_path.is_empty());
+    assert!(state.target.is_empty());
     assert!((state.current_time - 0.0).abs() < f64::EPSILON);
     assert!((state.speed - 1.0).abs() < f64::EPSILON);
     assert!(!state.is_playing);
@@ -640,7 +640,7 @@ async fn test_play_next_concurrent_playlist_modification() {
             owner.id.clone(),
             Some(media_ids[0].clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -729,7 +729,7 @@ async fn test_play_next_at_end_of_playlist() {
             owner.id.clone(),
             Some(media_ids[2].clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -813,7 +813,7 @@ async fn test_play_next_with_loop_enabled() {
             owner.id.clone(),
             Some(media_ids[2].clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -1023,7 +1023,7 @@ async fn test_state_consistency_after_mixed_operations() {
             owner.id.clone(),
             Some(media.id.clone()),
             None,
-            String::new(),
+            Vec::new(),
         )
         .await
         .unwrap();

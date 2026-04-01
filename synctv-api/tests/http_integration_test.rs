@@ -1101,16 +1101,32 @@ mod request_format {
         let req: serde_json::Value = serde_json::from_str(json).unwrap();
         assert_eq!(req["media_id"], "media-123");
         assert!(req.get("playlist_id").is_none());
-        assert!(req.get("relative_path").is_none());
+        assert!(req.get("target").is_none());
     }
 
     #[test]
     fn test_start_playback_request_deserializes_dynamic_playlist_target() {
-        let json = r#"{"playlist_id":"playlist-123","relative_path":"/episode-1.mkv"}"#;
+        let json = r#"{"playlist_id":"playlist-123","target":{"item_id":"provider-item-1"}}"#;
         let req: serde_json::Value = serde_json::from_str(json).unwrap();
         assert!(req.get("media_id").is_none());
         assert_eq!(req["playlist_id"], "playlist-123");
-        assert_eq!(req["relative_path"], "/episode-1.mkv");
+        assert_eq!(req["target"]["item_id"], "provider-item-1");
+    }
+
+    #[test]
+    fn test_create_playlist_request_deserializes_dynamic_fields_without_is_folder() {
+        let json = r#"{
+            "name":"Dynamic Folder",
+            "parent_id":"playlist-root",
+            "source_provider":"alist",
+            "source_config":{"path":"/tv"},
+            "provider_instance_name":"alist-main"
+        }"#;
+        let req: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        assert_eq!(req["source_provider"], "alist");
+        assert_eq!(req["provider_instance_name"], "alist-main");
+        assert!(req.get("is_folder").is_none());
     }
 
     #[test]
@@ -1514,15 +1530,18 @@ mod playback_request {
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.media_id.as_deref(), Some("media_abc"));
         assert!(req.playlist_id.is_none());
-        assert!(req.relative_path.is_none());
+        assert!(req.target.is_none());
     }
 
     #[test]
     fn test_dynamic_target_fields() {
-        let json = r#"{"playlist_id":"pl1","relative_path":"/episode-1.mkv"}"#;
+        let json = r#"{"playlist_id":"pl1","target":{"item_id":"provider-item-1"}}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.playlist_id.as_deref(), Some("pl1"));
-        assert_eq!(req.relative_path.as_deref(), Some("/episode-1.mkv"));
+        assert_eq!(
+            req.target,
+            Some(serde_json::json!({"item_id":"provider-item-1"}))
+        );
         assert!(req.state.is_none());
         assert!(req.position.is_none());
         assert!(req.speed.is_none());

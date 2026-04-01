@@ -3046,7 +3046,7 @@ fn cluster_event_to_server_messages(
                         .as_ref()
                         .map(|id| id.as_str().to_string())
                         .unwrap_or_default(),
-                    relative_path: state.relative_path.clone(),
+                    target: state.target.clone(),
                 }),
             })),
         }],
@@ -4506,7 +4506,7 @@ mod tests {
             room_id: room_id(),
             playing_media_id: Some(media_id()),
             playing_playlist_id: None,
-            relative_path: String::new(),
+            target: Vec::new(),
             current_time: 123.456,
             speed: 1.5,
             is_playing: true,

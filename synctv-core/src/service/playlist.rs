@@ -75,13 +75,16 @@ fn normalize_dynamic_playlist_fields(
                 )
             })?;
 
-            Ok((Some(provider), Some(source_config), Some(provider_instance_name)))
+            Ok((
+                Some(provider),
+                Some(source_config),
+                Some(provider_instance_name),
+            ))
         }
         None => {
             if source_config.is_some() || normalized_instance.is_some() {
                 return Err(Error::InvalidInput(
-                    "source_provider is required when setting dynamic playlist fields"
-                        .to_string(),
+                    "source_provider is required when setting dynamic playlist fields".to_string(),
                 ));
             }
 

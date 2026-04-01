@@ -7,4 +7,6 @@ pub mod livestream;
 pub mod tracker;
 
 // Re-export public types from livestream module
-pub use livestream::{FlvStreamingApi, HlsStreamingApi, LiveStreamingInfrastructure, StreamTracker};
+pub use livestream::{
+    FlvStreamingApi, HlsStreamingApi, LiveStreamingInfrastructure, StreamTracker,
+};

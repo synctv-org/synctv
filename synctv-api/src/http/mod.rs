@@ -595,7 +595,10 @@ fn register_read_routes(state: &AppState) -> Router<AppState> {
             "/api/rooms/{room_id}/playlists/{playlist_id}",
             get(room::get_playlist),
         )
-        .route("/api/rooms/{room_id}/media/list", post(room::list_playlist_items))
+        .route(
+            "/api/rooms/{room_id}/media/list",
+            post(room::list_playlist_items),
+        )
         .route(
             "/api/rooms/{room_id}/media/{media_id}",
             get(room::get_media),

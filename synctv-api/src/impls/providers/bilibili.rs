@@ -441,8 +441,10 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn get_user_info_rejects_empty_server_id() {
         let (_postgres, pool) = create_test_pool().await;
-        let api =
-            BilibiliApiImpl::new(provider(), Arc::new(UserProviderCredentialRepository::new(pool)));
+        let api = BilibiliApiImpl::new(
+            provider(),
+            Arc::new(UserProviderCredentialRepository::new(pool)),
+        );
 
         let err = api
             .get_user_info(
@@ -468,8 +470,10 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn logout_rejects_empty_server_id() {
         let (_postgres, pool) = create_test_pool().await;
-        let api =
-            BilibiliApiImpl::new(provider(), Arc::new(UserProviderCredentialRepository::new(pool)));
+        let api = BilibiliApiImpl::new(
+            provider(),
+            Arc::new(UserProviderCredentialRepository::new(pool)),
+        );
 
         let err = api
             .logout(

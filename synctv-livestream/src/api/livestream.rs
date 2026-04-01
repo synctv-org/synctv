@@ -219,7 +219,9 @@ impl LiveStreamingInfrastructure {
         self.kick_publisher(room_id, media_id)?;
 
         let _ = self.user_stream_tracker.remove_stream(room_id, media_id);
-        self.registry.unregister_publisher(room_id, media_id).await?;
+        self.registry
+            .unregister_publisher(room_id, media_id)
+            .await?;
 
         Ok(())
     }
@@ -255,11 +257,17 @@ impl LiveStreamingInfrastructure {
             if is_local {
                 // LIVE-003 fix: Even for local publishers, validate epoch to detect
                 // stale streams from crashed and restarted publishers
-                match self.registry.validate_epoch(room_id, media_id, publisher_info.epoch).await {
+                match self
+                    .registry
+                    .validate_epoch(room_id, media_id, publisher_info.epoch)
+                    .await
+                {
                     Ok(true) => {
                         tracing::debug!(
                             "Epoch {} validated for local publisher {}/{}",
-                            publisher_info.epoch, room_id, media_id
+                            publisher_info.epoch,
+                            room_id,
+                            media_id
                         );
                         return Ok(StreamSubscriberGuard::new(|| {}));
                     }
@@ -270,7 +278,9 @@ impl LiveStreamingInfrastructure {
                         );
                         return Err(anyhow::anyhow!(
                             "Stale epoch {} for local publisher {}/{}",
-                            publisher_info.epoch, room_id, media_id
+                            publisher_info.epoch,
+                            room_id,
+                            media_id
                         ));
                     }
                     Err(e) => {
@@ -281,7 +291,8 @@ impl LiveStreamingInfrastructure {
                         );
                         return Err(anyhow::anyhow!(
                             "Epoch validation failed for local publisher {}/{}: {e}",
-                            room_id, media_id
+                            room_id,
+                            media_id
                         ));
                     }
                 }
@@ -731,7 +742,9 @@ mod tests {
         )
         .with_local_node_id("node-local".to_string());
 
-        let result = infrastructure.ensure_pull_stream("room1", "media1", None).await;
+        let result = infrastructure
+            .ensure_pull_stream("room1", "media1", None)
+            .await;
         assert!(
             result.is_ok(),
             "Local publisher with valid epoch should succeed, got error: {:?}",
@@ -1072,7 +1085,9 @@ mod tests {
             tracker.clone(),
         );
 
-        infrastructure.kick_user_room_publishers("room1", "user1").await;
+        infrastructure
+            .kick_user_room_publishers("room1", "user1")
+            .await;
 
         let event = event_receiver
             .recv()

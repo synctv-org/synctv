@@ -609,12 +609,7 @@ mod tests {
             let runtime = tokio::runtime::Runtime::new().expect("runtime");
             let guard = runtime.block_on(async {
                 let registry = Arc::new(InMemoryStreamRegistry::new());
-                PublisherGuard::new(
-                    registry,
-                    "room1".to_string(),
-                    "media1".to_string(),
-                    Some(1),
-                )
+                PublisherGuard::new(registry, "room1".to_string(), "media1".to_string(), Some(1))
             });
             drop(runtime);
             drop(guard);
@@ -658,7 +653,10 @@ mod tests {
             )
             .await
             .expect("old publish should authenticate");
-        assert!(result.is_some(), "auth should rewrite to canonical room/media ids");
+        assert!(
+            result.is_some(),
+            "auth should rewrite to canonical room/media ids"
+        );
 
         let original = registry
             .get_publisher(room_id.as_str(), media_id.as_str())
@@ -870,7 +868,8 @@ mod tests {
             "second publish attempt must have a newer epoch"
         );
 
-        auth.on_unpublish(room_id.as_str(), media_id.as_str(), None).await;
+        auth.on_unpublish(room_id.as_str(), media_id.as_str(), None)
+            .await;
         auth.on_publish_rollback(room_id.as_str(), media_id.as_str(), None)
             .await;
 

@@ -19,7 +19,7 @@ use synctv_core::{
             jwt::JwtService, BlacklistEnforcement, Claims, SecurityPipeline,
             SecurityPipelineBuilder,
         },
-        BruteForceProtection, InMemoryTokenBlacklistStore, TokenBlacklistStore, UserService
+        BruteForceProtection, InMemoryTokenBlacklistStore, TokenBlacklistStore, UserService,
     },
     Error, KeyBuilder,
 };

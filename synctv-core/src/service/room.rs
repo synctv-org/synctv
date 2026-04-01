@@ -73,9 +73,9 @@ use std::net::IpAddr;
 use crate::{
     cache::CacheInvalidationService,
     models::{
-        ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits,
-        PlaylistId, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole,
-        RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
+        ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits, PlaylistId, Room,
+        RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole, RoomSettings, RoomStatus,
+        RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
     },
     repository::{
         ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository,
@@ -263,8 +263,9 @@ impl RoomService {
         let provider_instance_repo = Arc::new(crate::repository::ProviderInstanceRepository::new(
             pool.clone(),
         ));
-        let provider_instance_manager =
-            Arc::new(crate::service::RemoteProviderManager::new(provider_instance_repo));
+        let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(
+            provider_instance_repo,
+        ));
         let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
         Self::new_with_providers(pool, user_service, providers_manager)
     }
@@ -355,9 +356,7 @@ impl RoomService {
             brute_force_service: None,
             settings_registry: None,
             user_notification_service: None,
-            password_hasher: Arc::new(
-                crate::service::auth::ProdPasswordHasher::default(),
-            ),
+            password_hasher: Arc::new(crate::service::auth::ProdPasswordHasher::default()),
         }
     }
 
@@ -776,7 +775,11 @@ impl RoomService {
                     Error::Authorization("Password required".to_string())
                 })?;
 
-                if !self.password_hasher.verify_password(provided_password, hash).await? {
+                if !self
+                    .password_hasher
+                    .verify_password(provided_password, hash)
+                    .await?
+                {
                     tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided");
                     return Err(Error::Authorization("Invalid password".to_string()));
                 }
@@ -1669,7 +1672,9 @@ impl RoomService {
         let password_hash = self.room_settings_repo.get_password_hash(room_id).await?;
 
         match password_hash {
-            Some(stored) => self.password_hasher.verify_password(password, &stored)
+            Some(stored) => self
+                .password_hasher
+                .verify_password(password, &stored)
                 .await
                 .internal_with_err("Password verification failed"),
             None => Err(Error::InvalidInput("Room has no password set".to_string())),
@@ -1721,7 +1726,9 @@ impl RoomService {
         // Verify the password
         let password_hash = self.room_settings_repo.get_password_hash(room_id).await?;
         let is_valid = match password_hash {
-            Some(stored) => self.password_hasher.verify_password(password, &stored)
+            Some(stored) => self
+                .password_hasher
+                .verify_password(password, &stored)
                 .await
                 .internal_with_err("Password verification failed"),
             None => Ok(false),
@@ -2210,9 +2217,7 @@ impl RoomService {
             )
             .await?
             {
-                return Err(Error::Authorization(
-                    "Permission denied".to_string(),
-                ));
+                return Err(Error::Authorization("Permission denied".to_string()));
             }
         }
 
@@ -2221,7 +2226,9 @@ impl RoomService {
             .get_by_ids_with_executor(&media_ids, &mut *tx)
             .await?;
         if media_items.len() != media_ids.len() {
-            return Err(Error::NotFound("One or more media items not found".to_string()));
+            return Err(Error::NotFound(
+                "One or more media items not found".to_string(),
+            ));
         }
 
         let mut has_owned_media = false;
@@ -2287,15 +2294,15 @@ impl RoomService {
                     .any(|id| id.as_str() == current_id.as_str())
             });
 
-            let deletes_playing_playlist = if let Some(ref playing_playlist_id) = playing_playlist_id
-            {
-                let targeted_playlist_ids: Vec<&str> =
-                    playlist_ids.iter().map(PlaylistId::as_str).collect();
-                if targeted_playlist_ids.is_empty() {
-                    false
-                } else {
-                    sqlx::query_scalar(
-                        "WITH RECURSIVE target_playlists AS (
+            let deletes_playing_playlist =
+                if let Some(ref playing_playlist_id) = playing_playlist_id {
+                    let targeted_playlist_ids: Vec<&str> =
+                        playlist_ids.iter().map(PlaylistId::as_str).collect();
+                    if targeted_playlist_ids.is_empty() {
+                        false
+                    } else {
+                        sqlx::query_scalar(
+                            "WITH RECURSIVE target_playlists AS (
                             SELECT id
                             FROM playlists
                             WHERE id = ANY($1)
@@ -2309,15 +2316,15 @@ impl RoomService {
                             FROM target_playlists
                             WHERE id = $2
                         )",
-                    )
-                    .bind(&targeted_playlist_ids)
-                    .bind(playing_playlist_id.as_str())
-                    .fetch_one(&mut *tx)
-                    .await?
-                }
-            } else {
-                false
-            };
+                        )
+                        .bind(&targeted_playlist_ids)
+                        .bind(playing_playlist_id.as_str())
+                        .fetch_one(&mut *tx)
+                        .await?
+                    }
+                } else {
+                    false
+                };
 
             if deletes_playing_media || deletes_playing_playlist {
                 if !force {
@@ -2408,7 +2415,9 @@ impl RoomService {
         room_id: &RoomId,
         pagination: PageParams,
     ) -> Result<(Vec<Media>, i64)> {
-        self.media_service.get_room_root_media_paginated(room_id, pagination).await
+        self.media_service
+            .get_room_root_media_paginated(room_id, pagination)
+            .await
     }
 
     /// Get current playing media for a room
@@ -2547,7 +2556,9 @@ impl RoomService {
         }
 
         let playback_state = if playback_reset {
-            self.playback_service.invalidate_playback_cache(&room_id).await;
+            self.playback_service
+                .invalidate_playback_cache(&room_id)
+                .await;
 
             match self.playback_service.get_state(&room_id).await {
                 Ok(state) => {
@@ -2558,7 +2569,10 @@ impl RoomService {
                             state.is_playing,
                             state.current_time,
                             state.speed,
-                            state.playing_media_id.as_ref().map(|id| id.as_str().to_string()),
+                            state
+                                .playing_media_id
+                                .as_ref()
+                                .map(|id| id.as_str().to_string()),
                         )
                         .await
                     {
@@ -3465,7 +3479,8 @@ async fn collect_deleted_media_ids_in_tx(
     }
 
     let playlist_id_strs: Vec<&str> = playlist_ids.iter().map(PlaylistId::as_str).collect();
-    let explicit_media_id_strs: Vec<&str> = explicit_media_ids.iter().map(MediaId::as_str).collect();
+    let explicit_media_id_strs: Vec<&str> =
+        explicit_media_ids.iter().map(MediaId::as_str).collect();
 
     use sqlx::Row;
     let rows = sqlx::query(

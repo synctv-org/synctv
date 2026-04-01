@@ -119,7 +119,10 @@ impl Common {
         let (timestamps, max_fps) = match frame_type {
             FrameType::Video => (&mut self.video_timestamps, MAX_VIDEO_FRAMES_PER_SECOND),
             FrameType::Audio => (&mut self.audio_timestamps, MAX_AUDIO_FRAMES_PER_SECOND),
-            FrameType::Metadata => (&mut self.metadata_timestamps, MAX_METADATA_FRAMES_PER_SECOND),
+            FrameType::Metadata => (
+                &mut self.metadata_timestamps,
+                MAX_METADATA_FRAMES_PER_SECOND,
+            ),
         };
 
         let now = Instant::now();

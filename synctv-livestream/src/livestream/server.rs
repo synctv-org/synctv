@@ -620,11 +620,7 @@ impl LivestreamServer {
                 hub_cycle_tasks_for_hub
                     .lock()
                     .await
-                    .replace(
-                        rtmp_session_token.clone(),
-                        rtmp_handle,
-                        forwarder_handle,
-                    )
+                    .replace(rtmp_session_token.clone(), rtmp_handle, forwarder_handle)
                     .await;
 
                 info!("Starting StreamHub event loop...");

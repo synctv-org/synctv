@@ -289,7 +289,10 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
     let room_repo = RoomRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("media_root_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("media_root_owner"))
+        .await
+        .unwrap();
     let room = room_repo
         .create(&{
             let now = Utc::now();
@@ -838,7 +841,10 @@ async fn test_delete_by_playlist_removes_all() {
         3
     );
 
-    let deleted = media_repo.delete_playlist(&ctx.root_playlist.id).await.unwrap();
+    let deleted = media_repo
+        .delete_playlist(&ctx.root_playlist.id)
+        .await
+        .unwrap();
     assert_eq!(deleted, 3);
 
     assert_eq!(
@@ -891,7 +897,11 @@ async fn test_delete_room_root_only_removes_target_room_media() {
         .await
         .unwrap();
     media_repo
-        .create(&make_room_root_media(&other_room.id, "room-b-root-1.mp4", 0))
+        .create(&make_room_root_media(
+            &other_room.id,
+            "room-b-root-1.mp4",
+            0,
+        ))
         .await
         .unwrap();
 

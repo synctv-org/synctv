@@ -85,7 +85,8 @@ impl ClientApiImpl {
             || req.admin_added_permissions > 0
             || req.admin_removed_permissions > 0;
 
-        if has_permission_changes || req.role != synctv_proto::common::RoomMemberRole::Unspecified as i32
+        if has_permission_changes
+            || req.role != synctv_proto::common::RoomMemberRole::Unspecified as i32
         {
             let target_member = self
                 .room_service
@@ -109,8 +110,7 @@ impl ClientApiImpl {
             };
 
             if has_permission_changes {
-                if effective_is_admin
-                    && (req.added_permissions > 0 || req.removed_permissions > 0)
+                if effective_is_admin && (req.added_permissions > 0 || req.removed_permissions > 0)
                 {
                     return Err(ApiError::Authorization(
                         "Admin members must use admin_added_permissions/admin_removed_permissions"
@@ -157,7 +157,13 @@ impl ClientApiImpl {
                 };
 
                 self.room_service
-                    .set_member_permission(rid.clone(), uid.clone(), target_uid.clone(), added, removed)
+                    .set_member_permission(
+                        rid.clone(),
+                        uid.clone(),
+                        target_uid.clone(),
+                        added,
+                        removed,
+                    )
                     .await
                     .map_err(ApiError::from)?;
             }

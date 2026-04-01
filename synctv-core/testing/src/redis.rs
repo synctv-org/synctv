@@ -167,11 +167,7 @@ pub fn test_redis_key_prefix(label: &str) -> String {
     format!(
         "synctv-test:{}:{}:pid{}:",
         current_test_run_id(),
-        sanitize_key_prefix_component(&format!(
-            "{}-{}",
-            label,
-            current_test_key_namespace()
-        )),
+        sanitize_key_prefix_component(&format!("{}-{}", label, current_test_key_namespace())),
         current_process_id()
     )
 }
@@ -184,15 +180,22 @@ fn named_redis_request(container_name: &str) -> testcontainers::ContainerRequest
         .with_tag("7-alpine")
         .with_cmd([
             // --- Disable persistence (ephemeral test data) ---
-            "--save", "",
-            "--appendonly", "no",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
             // --- Capacity ---
-            "--maxclients", "10000",
-            "--maxmemory", "512mb",
-            "--maxmemory-policy", "noeviction",
+            "--maxclients",
+            "10000",
+            "--maxmemory",
+            "512mb",
+            "--maxmemory-policy",
+            "noeviction",
             // --- Threading ---
-            "--io-threads", "4",
-            "--io-threads-do-reads", "yes",
+            "--io-threads",
+            "4",
+            "--io-threads-do-reads",
+            "yes",
         ])
 }
 
@@ -236,9 +239,7 @@ async fn resolve_host_port(container: &ContainerAsync<Redis>, internal_port: u16
             break eps;
         }
         if std::time::Instant::now() >= deadline {
-            panic!(
-                "Failed to resolve Redis endpoint for host {host} within 30 seconds",
-            );
+            panic!("Failed to resolve Redis endpoint for host {host} within 30 seconds",);
         }
         _last_port_error = format!(
             "no port mapping for internal port {internal_port} (ipv4={:?}, ipv6={:?})",
@@ -688,8 +689,8 @@ async fn init_shared_redis_server() -> SharedRedisServer {
         }
     };
     let (host, port) = resolve_host_port(&container, 6379).await;
-    let client =
-        redis::Client::open(redis_connection_url(&host, port)).expect("Failed to create Redis client");
+    let client = redis::Client::open(redis_connection_url(&host, port))
+        .expect("Failed to create Redis client");
     wait_for_redis_ready(&client).await;
     drop(_active_slot);
 
@@ -787,9 +788,7 @@ pub async fn start_dedicated_redis() -> (RedisContainer, RedisConnectionManager)
 /// Use for tests that terminate or destroy their Redis instance.
 /// The label is used for the container name; each invocation creates a
 /// separate container.
-pub async fn start_dedicated_redis_url_with_label(
-    _label: &str,
-) -> (RedisContainer, String) {
+pub async fn start_dedicated_redis_url_with_label(_label: &str) -> (RedisContainer, String) {
     let (container, _manager) = start_dedicated_redis().await;
     let redis_url = container.connection_url();
     (container, redis_url)
@@ -924,7 +923,10 @@ mod tests {
     fn resolve_host_port_uses_ipv6_port_for_ipv6_hosts() {
         assert_eq!(
             candidate_endpoints_for_host("[::1]", Some(6379), Some(16379)),
-            vec![("[::1]".to_string(), 16379), ("127.0.0.1".to_string(), 6379)]
+            vec![
+                ("[::1]".to_string(), 16379),
+                ("127.0.0.1".to_string(), 6379)
+            ]
         );
     }
 

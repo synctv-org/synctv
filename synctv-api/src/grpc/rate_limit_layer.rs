@@ -278,9 +278,7 @@ fn oauth2_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
             GrpcRateLimitTier::Read
         }
         Some("ExchangeAuthorizationCode") => GrpcRateLimitTier::Auth,
-        Some("GetAuthorizationUrlForBind" | "UnlinkProvider") => {
-            GrpcRateLimitTier::Write
-        }
+        Some("GetAuthorizationUrlForBind" | "UnlinkProvider") => GrpcRateLimitTier::Write,
         _ => GrpcRateLimitTier::Auth,
     }
 }

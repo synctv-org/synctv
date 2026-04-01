@@ -9,8 +9,8 @@
 
 use crate::{
     models::{Media, MediaId, PermissionBits, PlaylistId, RoomId, UserId},
-    repository::UserProviderCredentialRepository,
     provider::{DirectoryItem, ProviderContext},
+    repository::UserProviderCredentialRepository,
     repository::{MediaRepository, PlaylistRepository},
     service::{notification::NotificationService, permission::PermissionService, ProvidersManager},
     Error, Result,
@@ -685,7 +685,9 @@ impl MediaService {
         pagination: crate::models::PageParams,
     ) -> Result<(Vec<Media>, i64)> {
         pagination.validate()?;
-        self.media_repo.get_room_root_paginated(room_id, pagination).await
+        self.media_repo
+            .get_room_root_paginated(room_id, pagination)
+            .await
     }
 
     /// Get media items from a playlist with limit and offset (no count query).
@@ -1128,7 +1130,10 @@ impl MediaService {
     }
 
     /// Get playlist metadata needed by playback/media orchestration.
-    pub async fn get_playlist(&self, playlist_id: &PlaylistId) -> Result<Option<crate::models::Playlist>> {
+    pub async fn get_playlist(
+        &self,
+        playlist_id: &PlaylistId,
+    ) -> Result<Option<crate::models::Playlist>> {
         self.playlist_repo.get_by_id(playlist_id).await
     }
 
@@ -1246,13 +1251,7 @@ impl MediaService {
         }
 
         dynamic_folder
-            .next(
-                &ctx,
-                &playlist,
-                &current_dynamic_media,
-                target,
-                play_mode,
-            )
+            .next(&ctx, &playlist, &current_dynamic_media, target, play_mode)
             .await
             .map_err(Error::from)
     }

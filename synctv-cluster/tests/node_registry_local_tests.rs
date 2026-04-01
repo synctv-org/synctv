@@ -40,10 +40,7 @@ async fn test_local_only_discover_nodes_from_local_cache() {
         .expect("new_local_only should succeed");
 
     // Insert a node into local cache
-    let node_info = NodeInfo::new(
-        "peer-node".to_string(),
-        "localhost:8081".to_string(),
-    );
+    let node_info = NodeInfo::new("peer-node".to_string(), "localhost:8081".to_string());
     registry.test_insert_local(node_info).await;
 
     // get_all_nodes_local should return the cached node
@@ -67,10 +64,7 @@ async fn test_local_only_get_node_from_local_cache() {
         .expect("new_local_only should succeed");
 
     // Insert a node into local cache
-    let node_info = NodeInfo::new(
-        "specific-node".to_string(),
-        "localhost:8082".to_string(),
-    );
+    let node_info = NodeInfo::new("specific-node".to_string(), "localhost:8082".to_string());
     registry.test_insert_local(node_info.clone()).await;
 
     // get_node_local should find it
@@ -119,14 +113,8 @@ async fn test_local_only_merge_dns_peers() {
 
     // Merge some DNS-discovered peers
     let peers = vec![
-        NodeInfo::new(
-            "dns-peer-1".to_string(),
-            "10.0.0.1:8080".to_string(),
-        ),
-        NodeInfo::new(
-            "dns-peer-2".to_string(),
-            "10.0.0.2:8080".to_string(),
-        ),
+        NodeInfo::new("dns-peer-1".to_string(), "10.0.0.1:8080".to_string()),
+        NodeInfo::new("dns-peer-2".to_string(), "10.0.0.2:8080".to_string()),
     ];
     registry.merge_dns_peers(peers).await;
 

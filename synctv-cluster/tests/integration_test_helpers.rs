@@ -258,8 +258,7 @@ async fn broadcast_until_all_clients_receive_with(
 
                 match rx.try_recv() {
                     Ok(synctv_cluster::sync::events::ClusterEvent::ChatMessage {
-                        message,
-                        ..
+                        message, ..
                     }) if message == expected_message => {
                         pending[index] = false;
                         made_progress = true;
@@ -288,8 +287,7 @@ async fn broadcast_until_all_clients_receive_with(
             }
         }
 
-        if pending.iter().any(|is_pending| *is_pending) && tokio::time::Instant::now() >= deadline
-        {
+        if pending.iter().any(|is_pending| *is_pending) && tokio::time::Instant::now() >= deadline {
             let missing = pending.into_iter().filter(|is_pending| *is_pending).count();
             panic!(
                 "timed out waiting for {label}; {missing} clients still missing expected message"
@@ -460,6 +458,9 @@ mod tests {
         );
 
         let join_result = task.await;
-        assert!(join_result.is_err(), "timeout path should panic the helper task");
+        assert!(
+            join_result.is_err(),
+            "timeout path should panic the helper task"
+        );
     }
 }

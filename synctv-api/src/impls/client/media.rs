@@ -508,7 +508,9 @@ impl ClientApiImpl {
         let playlist_id = playlist_targets
             .into_iter()
             .next()
-            .ok_or_else(|| ApiError::InvalidInput("Batch add must target one location".to_string()))?
+            .ok_or_else(|| {
+                ApiError::InvalidInput("Batch add must target one location".to_string())
+            })?
             .map(synctv_core::models::PlaylistId::from_string);
         let existing_count = if let Some(ref playlist_id) = playlist_id {
             self.room_service
@@ -1056,9 +1058,8 @@ mod tests {
 
     #[test]
     fn test_resolve_add_media_provider_instance_rejects_missing_binding_for_remote_provider() {
-        let err =
-            resolve_add_media_provider_instance(ProviderType::Alist, "alist", String::new())
-                .unwrap_err();
+        let err = resolve_add_media_provider_instance(ProviderType::Alist, "alist", String::new())
+            .unwrap_err();
         assert!(
             err.to_string().contains("provider_instance_name"),
             "non-direct providers must require explicit provider_instance_name"

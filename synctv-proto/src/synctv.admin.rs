@@ -34,6 +34,7 @@ pub struct AdminRoom {
     #[prost(enumeration = "super::common::RoomStatus", tag = "5")]
     pub status: i32,
     #[prost(bytes = "vec", tag = "6")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
     #[prost(int32, tag = "7")]
     pub member_count: i32,
@@ -90,6 +91,7 @@ pub struct SettingsGroup {
     pub name: ::prost::alloc::string::String,
     /// JSON settings
     #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -182,6 +184,7 @@ pub struct AddProviderInstanceRequest {
     pub providers: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Additional JSON config (jwt_secret, custom_ca, etc.)
     #[prost(bytes = "vec", tag = "8")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub config: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -216,6 +219,7 @@ pub struct UpdateProviderInstanceRequest {
     pub providers: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Additional config
     #[prost(bytes = "vec", tag = "8")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub config: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -357,12 +361,15 @@ pub struct GetUserResponse {
 pub struct UpdateUserPasswordRequest {
     /// Validation: required
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub user_id: ::prost::alloc::string::String,
     /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars
     #[prost(string, tag = "2")]
+    #[serde(alias = "password")]
     pub new_password: ::prost::alloc::string::String,
     /// Audit trail: why the password was reset. Validation: max 500 chars
     #[prost(string, tag = "3")]
+    #[serde(default)]
     pub reason: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -376,9 +383,11 @@ pub struct UpdateUserPasswordResponse {
 pub struct UpdateUserUsernameRequest {
     /// Validation: required
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub user_id: ::prost::alloc::string::String,
     /// Validation: min 3, max 32 chars, pattern: \[\\p{L}\p{N}\_-\]+
     #[prost(string, tag = "2")]
+    #[serde(alias = "username")]
     pub new_username: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -391,6 +400,7 @@ pub struct UpdateUserUsernameResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserRoleRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub user_id: ::prost::alloc::string::String,
     /// New role
     #[prost(enumeration = "super::common::UserRole", tag = "2")]
@@ -406,9 +416,11 @@ pub struct UpdateUserRoleResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BanUserRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub user_id: ::prost::alloc::string::String,
     /// Optional
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub reason: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -516,15 +528,20 @@ pub struct GetRoomSettingsRequest {
 pub struct GetRoomSettingsResponse {
     /// JSON settings
     #[prost(bytes = "vec", tag = "1")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(from = "crate::http_serde::AdminUpdateRoomSettingsRequestDef")]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateRoomSettingsRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub room_id: ::prost::alloc::string::String,
     /// JSON settings
     #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    #[serde(default)]
     pub settings: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -549,9 +566,12 @@ pub struct ResetRoomSettingsResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateRoomPasswordRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub room_id: ::prost::alloc::string::String,
     /// Empty to remove password. SECURITY: Plaintext - requires TLS.
     #[prost(string, tag = "2")]
+    #[serde(default)]
+    #[serde(alias = "password")]
     pub new_password: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -576,9 +596,11 @@ pub struct DeleteRoomResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BanRoomRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub room_id: ::prost::alloc::string::String,
     /// Optional
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub reason: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -690,6 +712,7 @@ pub struct GetSystemStatsResponse {
     pub provider_instances: i32,
     /// JSON for extensibility
     #[prost(bytes = "vec", tag = "9")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub additional_stats: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -756,6 +779,7 @@ pub struct BatchBanUsersRequest {
     pub user_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Optional reason for the ban
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub reason: ::prost::alloc::string::String,
 }
 /// Batch ban users response
@@ -803,6 +827,7 @@ pub struct BatchBanRoomsRequest {
     pub room_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Optional reason for the ban
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub reason: ::prost::alloc::string::String,
 }
 /// Batch ban rooms response

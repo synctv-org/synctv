@@ -14,9 +14,7 @@ use crate::{
     },
     repository::RoomPlaybackStateRepository,
     service::{
-        media::MediaService,
-        notification::NotificationService,
-        permission::PermissionService,
+        media::MediaService, notification::NotificationService, permission::PermissionService,
     },
     Error, Result,
 };
@@ -320,8 +318,9 @@ impl PlaybackService {
         let mut receiver = invalidation_service.subscribe();
         let listener_cancel = self.invalidation_runtime.cancel.lock().await.child_token();
 
-        let listener_handle =
-            crate::spawn::spawn_monitored("playback_invalidation_listener", async move {
+        let listener_handle = crate::spawn::spawn_monitored(
+            "playback_invalidation_listener",
+            async move {
                 // Rate-limit lag-triggered flushes (consistent with CacheManager)
                 const LAG_FLUSH_MIN_INTERVAL: std::time::Duration =
                     std::time::Duration::from_secs(5);
@@ -454,7 +453,8 @@ impl PlaybackService {
                         }
                     }
                 }
-            });
+            },
+        );
 
         *self.invalidation_runtime.listener_handle.lock().await = Some(listener_handle);
         Ok(())
@@ -651,37 +651,34 @@ impl PlaybackService {
 
         let state = self
             .single_flight
-            .do_work(
-                cache_key,
-                async move {
-                    let state = match repo.get(&room_id_clone).await {
-                        Ok(Some(s)) => s,
-                        Ok(None) => match repo.create_or_get(&room_id_clone).await {
-                            Ok(state) => state,
-                            Err(e) => return Err(e.to_string()),
-                        },
+            .do_work(cache_key, async move {
+                let state = match repo.get(&room_id_clone).await {
+                    Ok(Some(s)) => s,
+                    Ok(None) => match repo.create_or_get(&room_id_clone).await {
+                        Ok(state) => state,
                         Err(e) => return Err(e.to_string()),
-                    };
+                    },
+                    Err(e) => return Err(e.to_string()),
+                };
 
-                    // Populate L1 cache
-                    cache
-                        .insert(state.room_id.as_str().to_string(), state.clone())
-                        .await;
+                // Populate L1 cache
+                cache
+                    .insert(state.room_id.as_str().to_string(), state.clone())
+                    .await;
 
-                    // Populate L2 cache (if configured)
-                    if let Some(ref l2) = l2_cache {
-                        if let Err(e) = l2.set(&state.room_id, state.clone()).await {
-                            tracing::warn!(
-                                room_id = %state.room_id.as_str(),
-                                error = %e,
-                                "Failed to set playback state in L2 cache"
-                            );
-                        }
+                // Populate L2 cache (if configured)
+                if let Some(ref l2) = l2_cache {
+                    if let Err(e) = l2.set(&state.room_id, state.clone()).await {
+                        tracing::warn!(
+                            room_id = %state.room_id.as_str(),
+                            error = %e,
+                            "Failed to set playback state in L2 cache"
+                        );
                     }
+                }
 
-                    Ok(state)
-                },
-            )
+                Ok(state)
+            })
             .await
             .map_err(|error| match error {
                 crate::cache::SingleFlightError::WorkerFailed => Error::Internal(
@@ -996,12 +993,7 @@ impl PlaybackService {
                     .await?
                     .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
                 self.media_service
-                    .next_dynamic_playlist_item(
-                        room_id,
-                        playlist_id,
-                        &state.target,
-                        mode,
-                    )
+                    .next_dynamic_playlist_item(room_id, playlist_id, &state.target, mode)
                     .await
                     .and_then(|item| {
                         item.map(|item| {
@@ -1128,7 +1120,10 @@ impl PlaybackService {
                     updated_state.playing_playlist_id = None;
                     updated_state.target = Vec::new();
                 }
-                NextTarget::Dynamic { playlist_id, target } => {
+                NextTarget::Dynamic {
+                    playlist_id,
+                    target,
+                } => {
                     updated_state.playing_media_id = None;
                     updated_state.playing_playlist_id = Some(playlist_id.clone());
                     updated_state.target = target.clone();
@@ -1393,15 +1388,8 @@ impl PlaybackService {
         current_time: Option<f64>,
         speed: Option<f64>,
     ) -> Result<RoomPlaybackState> {
-        self.update_multiple_with_version(
-            room_id,
-            user_id,
-            playing,
-            current_time,
-            speed,
-            None,
-        )
-        .await
+        self.update_multiple_with_version(room_id, user_id, playing, current_time, speed, None)
+            .await
     }
 
     /// Like `update_multiple`, but accepts an optional `expected_version` for CAS
@@ -1499,15 +1487,15 @@ mod tests {
     use crate::cache::{CacheInvalidationService, CacheL2Backend};
     use crate::models::RoomId;
     use crate::repository::{
-        MediaRepository, PlaylistRepository, ProviderInstanceRepository, RoomPlaybackStateRepository,
-        RoomRepository,
+        MediaRepository, PlaylistRepository, ProviderInstanceRepository,
+        RoomPlaybackStateRepository, RoomRepository,
     };
     use crate::service::permission::PermissionService;
     use crate::service::{MediaService, ProvidersManager, RemoteProviderManager};
     use async_trait::async_trait;
     use sqlx::PgPool;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::Arc;
 
     #[derive(Default)]
     struct CountingL2Backend {
@@ -1566,15 +1554,18 @@ mod tests {
         }
     }
 
-    fn make_playback_service_for_lifecycle_tests() -> (PlaybackService, Arc<CacheInvalidationService>) {
+    fn make_playback_service_for_lifecycle_tests(
+    ) -> (PlaybackService, Arc<CacheInvalidationService>) {
         let pool = PgPool::connect_lazy("postgres://localhost/test")
             .expect("lazy postgres pool for unit tests should build");
         let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
         let room_repo = RoomRepository::new(pool.clone());
         let permission_service = PermissionService::without_cache(member_repo, room_repo, None);
         let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
-        let provider_instance_manager =
-            Arc::new(RemoteProviderManager::new_with_invalidation(provider_repo, None));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
+            provider_repo,
+            None,
+        ));
         let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
         let media_service = MediaService::new(
             MediaRepository::new(pool.clone()),
@@ -1652,7 +1643,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop() {
-        let (mut playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+        let (mut playback_service, invalidation_service) =
+            make_playback_service_for_lifecycle_tests();
         let room_id = RoomId::from_string("room-playback-stop".to_string());
         let cache_key = room_id.as_str().to_string();
 
@@ -1698,7 +1690,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() {
-        let (mut playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+        let (mut playback_service, invalidation_service) =
+            make_playback_service_for_lifecycle_tests();
         let room_id = RoomId::from_string("room-playback-restart".to_string());
         let cache_key = room_id.as_str().to_string();
 
@@ -1747,7 +1740,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_activates_invalidation_listener_after_wiring_service() {
-        let (mut playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+        let (mut playback_service, invalidation_service) =
+            make_playback_service_for_lifecycle_tests();
         let room_id = RoomId::from_string("room-playback-autostart".to_string());
         let cache_key = room_id.as_str().to_string();
 
@@ -1803,7 +1797,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_started_invalidation_listener_uses_l2_cache_wired_after_start() {
-        let (mut playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+        let (mut playback_service, invalidation_service) =
+            make_playback_service_for_lifecycle_tests();
         let backend = Arc::new(CountingL2Backend::default());
         let l2_cache = PlaybackStateCache::new(
             backend.clone(),

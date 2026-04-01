@@ -531,8 +531,8 @@ impl UserRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synctv_core_testing::create_test_pool;
     use crate::models::SignupMethod;
+    use synctv_core_testing::create_test_pool;
 
     #[test]
     fn test_build_user_list_conditions_no_filters() {

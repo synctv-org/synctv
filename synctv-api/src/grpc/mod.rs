@@ -760,7 +760,9 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     let mut routes = tonic::service::Routes::builder();
     routes
         // AuthService (public: register, login, refresh_token)
-        .add_service(AuthServiceServer::new(client_service).with_message_size_limit(max_message_size))
+        .add_service(
+            AuthServiceServer::new(client_service).with_message_size_limit(max_message_size),
+        )
         // UserService - JWT authentication (inject UserContext)
         // Use tonic::codegen::InterceptedService::new to preserve message size limits set on the service
         .add_service(tonic::codegen::InterceptedService::new(
@@ -786,9 +788,10 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
 
     if email_service_registered {
         routes.add_service(
-            EmailServiceServer::new(client_service_clone4).with_message_size_limit(max_message_size),
+            EmailServiceServer::new(client_service_clone4)
+                .with_message_size_limit(max_message_size),
         );
-        }
+    }
 
     // Register NotificationService if notification_service is configured
     if let Some(notif_svc) = notification_service {

@@ -11,10 +11,7 @@ use crate::{
     models::oauth2_client::OAuth2Provider,
     models::{SignupMethod, User, UserId, UserStatus},
     repository::{UserOAuthProviderRepository, UserRepository},
-    service::auth::{
-        BruteForceProtection, JwtService, TokenBlacklistStore,
-        TokenType,
-    },
+    service::auth::{BruteForceProtection, JwtService, TokenBlacklistStore, TokenType},
     service::rate_limit::RateLimiter,
     Error, Result,
 };
@@ -182,9 +179,7 @@ impl UserService {
             refresh_rate_limiter,
             refresh_rate_limit_config: RefreshRateLimitConfig::default(),
             settings_registry: None,
-            password_hasher: Arc::new(
-                crate::service::auth::ProdPasswordHasher::default(),
-            ),
+            password_hasher: Arc::new(crate::service::auth::ProdPasswordHasher::default()),
         }
     }
 
@@ -613,12 +608,18 @@ impl UserService {
         // If the user doesn't exist, verify against a dummy hash so the response
         // time is indistinguishable from a real verification.
         let (is_valid, user) = if let Some(user) = maybe_user {
-            let valid = self.password_hasher.verify_password(&password, &user.password_hash).await?;
+            let valid = self
+                .password_hasher
+                .verify_password(&password, &user.password_hash)
+                .await?;
             (valid, Some(user))
         } else {
             // Dummy Argon2 verification to match timing of real verification.
             // This hash is pre-computed and never matches any real password.
-            let _ = self.password_hasher.verify_password(&password, self.password_hasher.dummy_hash()).await;
+            let _ = self
+                .password_hasher
+                .verify_password(&password, self.password_hasher.dummy_hash())
+                .await;
             (false, None)
         };
 
@@ -993,8 +994,10 @@ impl UserService {
 
         if let Some(new_password) = new_password {
             let provided_old_password = old_password.expect("old_password validated above");
-            let is_valid =
-                self.password_hasher.verify_password(&provided_old_password, &current_user.password_hash).await?;
+            let is_valid = self
+                .password_hasher
+                .verify_password(&provided_old_password, &current_user.password_hash)
+                .await?;
             if !is_valid {
                 return Err(Error::Authentication(
                     "Invalid current password".to_string(),

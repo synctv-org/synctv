@@ -26,6 +26,12 @@ const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SEC
 const DEFAULT_DOCKER_STARTUP_PARALLELISM: usize = 8;
 const MIN_DOCKER_STARTUP_PARALLELISM: usize = 1;
 const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLELISM";
+const DEFAULT_SHARED_ADMIN_POOL_MAX_CONNECTIONS: u32 = 16;
+const MIN_SHARED_ADMIN_POOL_MAX_CONNECTIONS: u32 = 2;
+const SHARED_ADMIN_POOL_MAX_CONNECTIONS_ENV: &str = "SYNCTV_TEST_PG_ADMIN_POOL_MAX_CONNECTIONS";
+const DEFAULT_TEST_POOL_MAX_CONNECTIONS: u32 = 8;
+const MIN_TEST_POOL_MAX_CONNECTIONS: u32 = 1;
+const TEST_POOL_MAX_CONNECTIONS_ENV: &str = "SYNCTV_TEST_PG_POOL_MAX_CONNECTIONS";
 const TEST_RUN_LABEL: &str = "synctv.test.run_id";
 const ADMIN_DATABASE: &str = "postgres";
 const TEMPLATE_DATABASE_PREFIX: &str = "synctv_template";
@@ -215,6 +221,36 @@ fn docker_startup_parallelism_from(value: Option<&str>) -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .map_or(DEFAULT_DOCKER_STARTUP_PARALLELISM, |slots| {
             slots.max(MIN_DOCKER_STARTUP_PARALLELISM)
+        })
+}
+
+fn shared_admin_pool_max_connections() -> u32 {
+    shared_admin_pool_max_connections_from(
+        std::env::var(SHARED_ADMIN_POOL_MAX_CONNECTIONS_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn shared_admin_pool_max_connections_from(value: Option<&str>) -> u32 {
+    value
+        .and_then(|value| value.parse::<u32>().ok())
+        .map_or(DEFAULT_SHARED_ADMIN_POOL_MAX_CONNECTIONS, |connections| {
+            connections.max(MIN_SHARED_ADMIN_POOL_MAX_CONNECTIONS)
+        })
+}
+
+fn default_test_pool_max_connections() -> u32 {
+    default_test_pool_max_connections_from(
+        std::env::var(TEST_POOL_MAX_CONNECTIONS_ENV).ok().as_deref(),
+    )
+}
+
+fn default_test_pool_max_connections_from(value: Option<&str>) -> u32 {
+    value
+        .and_then(|value| value.parse::<u32>().ok())
+        .map_or(DEFAULT_TEST_POOL_MAX_CONNECTIONS, |connections| {
+            connections.max(MIN_TEST_POOL_MAX_CONNECTIONS)
         })
 }
 
@@ -479,20 +515,31 @@ fn named_postgres_request(
         .with_reuse(ReuseDirective::Always)
         .with_cmd([
             // --- Performance (safe for ephemeral test data) ---
-            "-c", "fsync=off",
-            "-c", "synchronous_commit=off",
-            "-c", "full_page_writes=off",
-            "-c", "checkpoint_timeout=1h",
-            "-c", "max_wal_size=4GB",
+            "-c",
+            "fsync=off",
+            "-c",
+            "synchronous_commit=off",
+            "-c",
+            "full_page_writes=off",
+            "-c",
+            "checkpoint_timeout=1h",
+            "-c",
+            "max_wal_size=4GB",
             // --- Capacity ---
-            "-c", "max_connections=500",
+            "-c",
+            "max_connections=500",
             // --- Memory ---
-            "-c", "shared_buffers=256MB",
-            "-c", "work_mem=4MB",
-            "-c", "maintenance_work_mem=128MB",
-            "-c", "effective_cache_size=256MB",
+            "-c",
+            "shared_buffers=256MB",
+            "-c",
+            "work_mem=4MB",
+            "-c",
+            "maintenance_work_mem=128MB",
+            "-c",
+            "effective_cache_size=256MB",
             // --- Planner ---
-            "-c", "random_page_cost=1.0",
+            "-c",
+            "random_page_cost=1.0",
         ])
         .with_ready_conditions(postgres_ready_conditions())
 }
@@ -589,8 +636,7 @@ async fn resolve_host_port(
         "PostgreSQL not ready within {:?} after {retries} retries across endpoints {:?}: {}",
         docker_startup_timeout(),
         "dynamic",
-        last_error
-            .unwrap_or_else(|| "connection attempts did not yield an error".to_string())
+        last_error.unwrap_or_else(|| "connection attempts did not yield an error".to_string())
     );
 }
 
@@ -700,13 +746,11 @@ fn build_test_database_name(requested_db_name: &str, label: &str) -> String {
 
 #[cfg(test)]
 async fn database_exists(admin_pool: &PgPool, database_name: &str) -> bool {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
-    )
-    .bind(database_name)
-    .fetch_one(admin_pool)
-    .await
-    .expect("database existence query should succeed")
+    sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+        .bind(database_name)
+        .fetch_one(admin_pool)
+        .await
+        .expect("database existence query should succeed")
 }
 
 async fn recreate_template_database(
@@ -864,11 +908,12 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
             .enable_all()
             .build()
             .expect("dedicated pool runtime should build");
+        let admin_pool_max_connections = shared_admin_pool_max_connections();
 
         let pool = rt.block_on(async {
             PgPoolOptions::new()
                 .acquire_timeout(Duration::from_secs(30))
-                .max_connections(2)
+                .max_connections(admin_pool_max_connections)
                 .connect_with(admin_connect_options.clone())
                 .await
                 .expect("shared postgres admin pool creation should succeed")
@@ -984,7 +1029,13 @@ pub async fn create_test_pool_with_db_and_label(
     db_name: &str,
     label: &str,
 ) -> (TestContainer, PgPool) {
-    create_test_pool_with_options_and_label(db_name, label, 20, Duration::from_secs(30)).await
+    create_test_pool_with_options_and_label(
+        db_name,
+        label,
+        default_test_pool_max_connections(),
+        Duration::from_secs(30),
+    )
+    .await
 }
 
 /// Creates a `PostgreSQL` test pool with a custom database name
@@ -1079,6 +1130,48 @@ mod tests {
         assert_eq!(
             docker_startup_parallelism_from(Some("0")),
             MIN_DOCKER_STARTUP_PARALLELISM
+        );
+    }
+
+    #[test]
+    fn test_shared_admin_pool_max_connections_defaults_to_higher_concurrency() {
+        assert_eq!(
+            shared_admin_pool_max_connections_from(None),
+            DEFAULT_SHARED_ADMIN_POOL_MAX_CONNECTIONS
+        );
+    }
+
+    #[test]
+    fn test_shared_admin_pool_max_connections_honors_valid_override() {
+        assert_eq!(shared_admin_pool_max_connections_from(Some("24")), 24);
+    }
+
+    #[test]
+    fn test_shared_admin_pool_max_connections_rejects_too_small_override() {
+        assert_eq!(
+            shared_admin_pool_max_connections_from(Some("1")),
+            MIN_SHARED_ADMIN_POOL_MAX_CONNECTIONS
+        );
+    }
+
+    #[test]
+    fn test_default_test_pool_max_connections_defaults_to_reduced_pool_size() {
+        assert_eq!(
+            default_test_pool_max_connections_from(None),
+            DEFAULT_TEST_POOL_MAX_CONNECTIONS
+        );
+    }
+
+    #[test]
+    fn test_default_test_pool_max_connections_honors_valid_override() {
+        assert_eq!(default_test_pool_max_connections_from(Some("12")), 12);
+    }
+
+    #[test]
+    fn test_default_test_pool_max_connections_rejects_zero_override() {
+        assert_eq!(
+            default_test_pool_max_connections_from(Some("0")),
+            MIN_TEST_POOL_MAX_CONNECTIONS
         );
     }
 
@@ -1189,11 +1282,15 @@ mod tests {
         assert!(startup_error_is_retriable(
             "DockerResponseServerError { status_code: 404, message: \"No such container\" }"
         ));
-        assert!(startup_error_is_retriable("container is marked for removal"));
+        assert!(startup_error_is_retriable(
+            "container is marked for removal"
+        ));
         assert!(startup_error_is_retriable(
             "DockerResponseServerError { status_code: 409, message: \"container is marked for removal\" }"
         ));
-        assert!(!startup_error_is_retriable("404 gateway from registry mirror"));
+        assert!(!startup_error_is_retriable(
+            "404 gateway from registry mirror"
+        ));
         assert!(!startup_error_is_retriable("409 conflict during start"));
         assert!(!startup_error_is_retriable("authentication failed"));
     }
@@ -1271,8 +1368,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn create_test_database_url_reuses_shared_container_and_isolates_databases() {
-        let (db_one, url_one) = create_test_database_url_with_label("synctv_test", "shared-a").await;
-        let (db_two, url_two) = create_test_database_url_with_label("synctv_test", "shared-b").await;
+        let (db_one, url_one) =
+            create_test_database_url_with_label("synctv_test", "shared-a").await;
+        let (db_two, url_two) =
+            create_test_database_url_with_label("synctv_test", "shared-b").await;
 
         let shared = shared_postgres_server().await;
         assert_eq!(

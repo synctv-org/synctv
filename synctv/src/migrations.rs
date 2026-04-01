@@ -177,9 +177,10 @@ async fn run_migrations_with_lock(
     // test processes start simultaneously against databases cloned from a
     // pre-migrated template.  Use a short timeout so that pools with lazy
     // connections to unreachable hosts do not block startup.
-    let already_applied = tokio::time::timeout(Duration::from_millis(500), migrations_already_applied(pool))
-        .await
-        .unwrap_or(false);
+    let already_applied =
+        tokio::time::timeout(Duration::from_millis(500), migrations_already_applied(pool))
+            .await
+            .unwrap_or(false);
     if already_applied {
         info!("Migrations already applied, skipping lock acquisition");
         return Ok(());

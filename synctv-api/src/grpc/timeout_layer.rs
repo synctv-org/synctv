@@ -212,17 +212,15 @@ mod tests {
     #[tokio::test]
     async fn test_grpc_request_timeout_layer_maps_unary_timeout_to_deadline_exceeded() {
         let layer = GrpcRequestTimeoutLayer::new(Duration::from_millis(50));
-        let mut svc = layer.layer(service_fn(
-            |_req: http::Request<AxumBody>| async move {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                Ok::<_, Infallible>(
-                    http::Response::builder()
-                        .status(http::StatusCode::OK)
-                        .body(AxumBody::empty())
-                        .expect("response should build"),
-                )
-            },
-        ));
+        let mut svc = layer.layer(service_fn(|_req: http::Request<AxumBody>| async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok::<_, Infallible>(
+                http::Response::builder()
+                    .status(http::StatusCode::OK)
+                    .body(AxumBody::empty())
+                    .expect("response should build"),
+            )
+        }));
 
         let response = svc
             .ready()
@@ -250,8 +248,7 @@ mod tests {
             let called_clone = Arc::clone(&called_clone);
             async move {
                 called_clone.store(true, Ordering::SeqCst);
-                futures::future::pending::<Result<http::Response<AxumBody>, Infallible>>()
-                    .await
+                futures::future::pending::<Result<http::Response<AxumBody>, Infallible>>().await
             }
         }));
 

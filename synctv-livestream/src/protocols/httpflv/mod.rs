@@ -255,15 +255,16 @@ mod tests {
         let state = HttpFlvState::new(registry, event_sender).with_infrastructure(infrastructure);
 
         let streamhub_task = tokio::spawn(async move {
-            let subscribe = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
-                .await
-                .expect("subscribe event should be emitted")
-                .expect("event channel should stay open");
+            let subscribe =
+                tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+                    .await
+                    .expect("subscribe event should be emitted")
+                    .expect("event channel should stay open");
 
             let result_sender = match subscribe {
-                synctv_xiu::streamhub::define::StreamHubEvent::Subscribe { result_sender, .. } => {
-                    result_sender
-                }
+                synctv_xiu::streamhub::define::StreamHubEvent::Subscribe {
+                    result_sender, ..
+                } => result_sender,
                 other => panic!("expected subscribe event, got {other:?}"),
             };
 

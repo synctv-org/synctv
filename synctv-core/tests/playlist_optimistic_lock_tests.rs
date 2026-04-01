@@ -339,7 +339,10 @@ async fn test_optimistic_lock_new_playlist_version_zero() {
         .create(&make_playlist(&room.id, "", None, 0))
         .await
         .unwrap();
-    assert_eq!(root.version, 0, "New top-level playlist should have version 0");
+    assert_eq!(
+        root.version, 0,
+        "New top-level playlist should have version 0"
+    );
 
     let child = playlist_repo
         .create(&make_playlist(&room.id, "Child", Some(&root.id), 0))

@@ -70,7 +70,11 @@ async fn test_shutdown_waits_for_heartbeat_task_completion() {
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
+        .start_heartbeat_loop(
+            registry,
+            "localhost:8080".to_string(),
+            None::<fn() -> usize>,
+        )
         .await;
 
     // Give the heartbeat task a moment to start
@@ -108,7 +112,11 @@ async fn test_shutdown_has_timeout_for_heartbeat_task() {
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
+        .start_heartbeat_loop(
+            registry,
+            "localhost:8080".to_string(),
+            None::<fn() -> usize>,
+        )
         .await;
 
     // Give the heartbeat task a moment to start
@@ -155,7 +163,11 @@ async fn test_shutdown_handles_task_error_gracefully() {
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
+        .start_heartbeat_loop(
+            registry,
+            "localhost:8080".to_string(),
+            None::<fn() -> usize>,
+        )
         .await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -215,7 +227,11 @@ async fn test_shutdown_is_idempotent() {
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
+        .start_heartbeat_loop(
+            registry,
+            "localhost:8080".to_string(),
+            None::<fn() -> usize>,
+        )
         .await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -258,7 +274,11 @@ async fn test_shutdown_completes_within_timeout() {
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
+        .start_heartbeat_loop(
+            registry,
+            "localhost:8080".to_string(),
+            None::<fn() -> usize>,
+        )
         .await;
 
     // Give the heartbeat task a moment to start
@@ -310,7 +330,11 @@ async fn test_shutdown_pattern_matches_publisher_task() {
 
     // Start the heartbeat loop
     manager
-        .start_heartbeat_loop(registry, "localhost:8080".to_string(), None::<fn() -> usize>)
+        .start_heartbeat_loop(
+            registry,
+            "localhost:8080".to_string(),
+            None::<fn() -> usize>,
+        )
         .await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;

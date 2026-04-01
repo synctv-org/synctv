@@ -59,18 +59,12 @@ fn test_node_info_epoch_defaults_and_override() {
     use synctv_cluster::discovery::NodeInfo;
 
     // Default epoch is 1
-    let info = NodeInfo::new(
-        "node1".to_string(),
-        "localhost:8080".to_string(),
-    );
+    let info = NodeInfo::new("node1".to_string(), "localhost:8080".to_string());
     assert_eq!(info.epoch, 1, "NodeInfo::new should default to epoch=1");
 
     // Static discovery should use epoch=0 so it never overwrites self-registered nodes
-    let static_info = NodeInfo::new(
-        "static_node".to_string(),
-        "peer:8080".to_string(),
-    )
-    .with_epoch(0);
+    let static_info =
+        NodeInfo::new("static_node".to_string(), "peer:8080".to_string()).with_epoch(0);
     assert_eq!(
         static_info.epoch, 0,
         "Static discovery peers should use epoch=0"

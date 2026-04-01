@@ -52,6 +52,7 @@ pub struct Room {
     pub status: i32,
     /// JSON settings
     #[prost(bytes = "vec", tag = "5")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
     #[prost(int64, tag = "6")]
     pub created_at: i64,
@@ -82,6 +83,7 @@ pub struct Media {
     pub title: ::prost::alloc::string::String,
     /// JSON metadata
     #[prost(bytes = "vec", tag = "6")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub metadata: ::prost::alloc::vec::Vec<u8>,
     /// Position in playlist
     #[prost(int32, tag = "7")]
@@ -96,6 +98,7 @@ pub struct Media {
     pub provider_instance_name: ::prost::alloc::string::String,
     /// JSON source config (replaces url for flexibility)
     #[prost(bytes = "vec", tag = "11")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub source_config: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -148,6 +151,7 @@ pub struct PlaybackState {
     pub playing_playlist_id: ::prost::alloc::string::String,
     /// Provider-facing playback target payload (empty for static media or cleared state)
     #[prost(bytes = "vec", tag = "9")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub target: ::prost::alloc::vec::Vec<u8>,
 }
 /// Authentication Messages
@@ -263,6 +267,7 @@ pub struct GetRoomResponse {
 pub struct JoinRoomRequest {
     /// Optional room password
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub password: ::prost::alloc::string::String,
     /// Target room, carried in payload because this RPC is outside RoomService context
     #[prost(string, tag = "2")]
@@ -329,10 +334,12 @@ pub struct DeleteRoomResponse {
     pub success: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(from = "crate::http_serde::ClientUpdateRoomSettingsRequestDef")]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateRoomSettingsRequest {
     /// JSON settings (partial or complete update)
     #[prost(bytes = "vec", tag = "1")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -350,6 +357,7 @@ pub struct GetRoomSettingsRequest {}
 pub struct GetRoomSettingsResponse {
     /// JSON settings
     #[prost(bytes = "vec", tag = "1")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
 }
 /// Reset room settings to default
@@ -361,6 +369,7 @@ pub struct ResetRoomSettingsRequest {}
 pub struct ResetRoomSettingsResponse {
     /// Reset settings (default values)
     #[prost(bytes = "vec", tag = "1")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
 }
 /// Room Password Messages
@@ -418,6 +427,7 @@ pub struct GetRoomMembersResponse {
 pub struct UpdateMemberPermissionsRequest {
     /// Target user
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub user_id: ::prost::alloc::string::String,
     /// New role (optional)
     #[prost(enumeration = "super::common::RoomMemberRole", tag = "2")]
@@ -427,12 +437,16 @@ pub struct UpdateMemberPermissionsRequest {
     /// For member role: use added_permissions/removed_permissions
     /// For admin role: use admin_added_permissions/admin_removed_permissions
     #[prost(uint64, tag = "3")]
+    #[serde(default)]
     pub added_permissions: u64,
     #[prost(uint64, tag = "4")]
+    #[serde(default)]
     pub removed_permissions: u64,
     #[prost(uint64, tag = "5")]
+    #[serde(default)]
     pub admin_added_permissions: u64,
     #[prost(uint64, tag = "6")]
+    #[serde(default)]
     pub admin_removed_permissions: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -462,6 +476,7 @@ pub struct BanMemberRequest {
     pub user_id: ::prost::alloc::string::String,
     /// Optional ban reason
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub reason: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -487,18 +502,24 @@ pub struct UnbanMemberResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreatePlaylistRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub name: ::prost::alloc::string::String,
     /// Optional parent playlist ID for nested playlists
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub parent_id: ::prost::alloc::string::String,
     /// Optional provider type for dynamic playlists
     #[prost(string, tag = "3")]
+    #[serde(default)]
     pub source_provider: ::prost::alloc::string::String,
     /// Provider-specific config for dynamic playlists
     #[prost(bytes = "vec", tag = "4")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    #[serde(default)]
     pub source_config: ::prost::alloc::vec::Vec<u8>,
     /// Required when source_provider is set; must bind the dynamic playlist to a concrete provider instance
     #[prost(string, tag = "5")]
+    #[serde(default)]
     pub provider_instance_name: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -511,12 +532,15 @@ pub struct CreatePlaylistResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdatePlaylistRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub playlist_id: ::prost::alloc::string::String,
     /// Optional new name
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub name: ::prost::alloc::string::String,
     /// Optional new position
     #[prost(int32, tag = "3")]
+    #[serde(default = "crate::serde_defaults::update_playlist_position")]
     pub position: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -591,12 +615,16 @@ pub struct ListPlaylistsResponse {
 pub struct StartPlaybackRequest {
     /// Static media ID. Mutually exclusive with playlist_id.
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub media_id: ::prost::alloc::string::String,
     /// Dynamic playlist ID. Requires target. Mutually exclusive with media_id.
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub playlist_id: ::prost::alloc::string::String,
     /// Provider-facing playback target payload. Empty for static media playback.
     #[prost(bytes = "vec", tag = "3")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    #[serde(default)]
     pub target: ::prost::alloc::vec::Vec<u8>,
 }
 /// Empty: playback started successfully
@@ -621,15 +649,19 @@ pub struct AddMediaRequest {
     pub playlist_id: ::core::option::Option<::prost::alloc::string::String>,
     /// Empty means direct_url; otherwise provider type name (e.g., "bilibili", "alist")
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub provider: ::prost::alloc::string::String,
     /// Required for non-direct providers; empty is only valid when provider is empty/direct_url
     #[prost(string, tag = "3")]
+    #[serde(default)]
     pub provider_instance_name: ::prost::alloc::string::String,
     /// JSON source config (e.g., {"url": "...", "path": "..."})
     #[prost(bytes = "vec", tag = "4")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub source_config: ::prost::alloc::vec::Vec<u8>,
     /// Optional media title. Validation: max 500 chars, no HTML tags
     #[prost(string, tag = "5")]
+    #[serde(default)]
     pub title: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -656,10 +688,13 @@ pub struct DeleteMediaResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteEntriesRequest {
     #[prost(string, repeated, tag = "1")]
+    #[serde(default)]
     pub playlist_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(string, repeated, tag = "2")]
+    #[serde(default)]
     pub media_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(bool, tag = "3")]
+    #[serde(default)]
     pub force: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -675,15 +710,20 @@ pub struct DeleteEntriesResponse {
 pub struct ListPlaylistItemsRequest {
     /// Empty means room root; otherwise the playlist being browsed
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub playlist_id: ::prost::alloc::string::String,
     /// Provider-facing browse target payload (empty for room root or dynamic root)
     #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    #[serde(default)]
     pub target: ::prost::alloc::vec::Vec<u8>,
     /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "3")]
+    #[serde(default)]
     pub page: i32,
     /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "4")]
+    #[serde(default)]
     pub page_size: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -724,6 +764,7 @@ pub struct PlaylistItem {
     pub item_type: i32,
     /// Provider-facing target payload for this item
     #[prost(bytes = "vec", tag = "3")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub target: ::prost::alloc::vec::Vec<u8>,
     /// File size in bytes (for files)
     #[prost(int64, optional, tag = "4")]
@@ -746,6 +787,7 @@ pub struct PlaylistBrowsePathNode {
     pub name: ::prost::alloc::string::String,
     /// Provider-facing target payload for this segment; empty for static playlist nodes
     #[prost(bytes = "vec", tag = "3")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub target: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -767,6 +809,7 @@ pub struct SwapMediaResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EditMediaRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub media_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub title: ::prost::alloc::string::String,
@@ -815,6 +858,7 @@ pub struct MediaReorderUpdate {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReorderMediaBatchRequest {
     #[prost(message, repeated, tag = "1")]
+    #[serde(default)]
     pub updates: ::prost::alloc::vec::Vec<MediaReorderUpdate>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]

@@ -1907,7 +1907,10 @@ mod tests {
         let sent = broadcast_task
             .await
             .expect("reliable timeout task should not panic");
-        assert_eq!(sent, 0, "timed out reliable delivery must not count as sent");
+        assert_eq!(
+            sent, 0,
+            "timed out reliable delivery must not count as sent"
+        );
         assert_eq!(
             hub.subscriber_count(&room_id),
             0,
@@ -1998,8 +2001,7 @@ mod tests {
     }
 
     #[test]
-    fn test_broadcast_to_user_counts_deferred_critical_delivery_on_current_thread_runtime()
-    {
+    fn test_broadcast_to_user_counts_deferred_critical_delivery_on_current_thread_runtime() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

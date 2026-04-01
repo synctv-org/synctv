@@ -494,8 +494,7 @@ impl RemoteProviderManager {
 
             if config.insecure_tls && !config.tls {
                 return Err(crate::Error::InvalidInput(
-                    "insecure_tls=true requires tls=true for remote provider instances"
-                        .to_string(),
+                    "insecure_tls=true requires tls=true for remote provider instances".to_string(),
                 ));
             }
 
@@ -1454,7 +1453,8 @@ mod tests {
     #[test]
     fn validate_config_rejects_custom_ca_without_tls() {
         let mut config = remote_instance("http://provider.example.com:50051");
-        config.custom_ca = Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----".to_string());
+        config.custom_ca =
+            Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----".to_string());
 
         let err = RemoteProviderManager::validate_config(&config)
             .expect_err("custom CA must not be accepted for plaintext endpoints");

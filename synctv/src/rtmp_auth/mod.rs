@@ -178,7 +178,8 @@ impl SyncTvRtmpAuth {
         media_id: &str,
         attempt: PendingPublishCleanup,
     ) {
-        let mut deque = self.pending_publish_cleanups
+        let mut deque = self
+            .pending_publish_cleanups
             .entry((room_id.to_string(), media_id.to_string()))
             .or_default();
         if deque.len() >= MAX_PENDING_PUBLISH_CLEANUPS {
@@ -203,15 +204,17 @@ impl SyncTvRtmpAuth {
         media_id: &str,
     ) -> Option<PendingPublishCleanup> {
         let key = (room_id.to_string(), media_id.to_string());
-        self.pending_publish_cleanups.get_mut(&key).and_then(|mut attempts| {
-            let attempt = attempts.pop_front();
-            let empty = attempts.is_empty();
-            drop(attempts);
-            if empty {
-                self.pending_publish_cleanups.remove(&key);
-            }
-            attempt
-        })
+        self.pending_publish_cleanups
+            .get_mut(&key)
+            .and_then(|mut attempts| {
+                let attempt = attempts.pop_front();
+                let empty = attempts.is_empty();
+                drop(attempts);
+                if empty {
+                    self.pending_publish_cleanups.remove(&key);
+                }
+                attempt
+            })
     }
 
     async fn resolve_publish_cleanup(
@@ -624,14 +627,12 @@ impl SyncTvRtmpAuth {
         // is reserved for the media binding and must not be overloaded as a token.
         let token_owned: Option<String> = query.and_then(extract_token_from_query);
         let token = token_owned.as_deref().ok_or_else(|| {
-            "Missing token query parameter; RTMP publish must use ?token=<publish_key>"
-                .to_string()
+            "Missing token query parameter; RTMP publish must use ?token=<publish_key>".to_string()
         })?;
 
         // Validate JWT stream_key
         let expected_room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
-        let expected_media_id =
-            synctv_core::models::MediaId::from_string(stream_name.to_string());
+        let expected_media_id = synctv_core::models::MediaId::from_string(stream_name.to_string());
         let claims = self
             .publish_key_service
             .validate_publish_key_for_stream_claims(token, &expected_room_id, &expected_media_id)
@@ -1078,7 +1079,10 @@ mod tests {
             self.inner.list_streams_for_room(room_id).await
         }
 
-        async fn get_user_publishers(&self, user_id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        async fn get_user_publishers(
+            &self,
+            user_id: &str,
+        ) -> anyhow::Result<Vec<(String, String)>> {
             self.inner.get_user_publishers(user_id).await
         }
 
@@ -1532,9 +1536,13 @@ mod tests {
         let media_id = "media-restarted-unpublish";
         let user_id = "user-restarted";
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, user_id), room_id, media_id)
-            .await
-            .expect("publish registration should succeed");
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, user_id),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("publish registration should succeed");
 
         restarted_auth.on_unpublish(room_id, media_id, None).await;
 
@@ -1564,9 +1572,13 @@ mod tests {
         let media_id = "media-restarted-rollback";
         let user_id = "user-restarted-rollback";
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, user_id), room_id, media_id)
-            .await
-            .expect("publish registration should succeed");
+        auth.register_and_start_ttl(
+            &validated_publish(room_id, media_id, user_id),
+            room_id,
+            media_id,
+        )
+        .await
+        .expect("publish registration should succeed");
 
         restarted_auth
             .on_publish_rollback(room_id, media_id, None)
@@ -1655,9 +1667,7 @@ mod tests {
         make_test_auth_with_registry_dyn(registry)
     }
 
-    fn make_test_auth_with_registry_dyn(
-        registry: Arc<dyn StreamRegistryTrait>,
-    ) -> SyncTvRtmpAuth {
+    fn make_test_auth_with_registry_dyn(registry: Arc<dyn StreamRegistryTrait>) -> SyncTvRtmpAuth {
         let lazy_pool = || {
             sqlx::postgres::PgPoolOptions::new()
                 .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")

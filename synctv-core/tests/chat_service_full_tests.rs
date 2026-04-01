@@ -89,13 +89,8 @@ fn make_chat_service_with_config(
     permission_service.set_room_settings_repo(room_settings_repo.clone());
 
     let notification_service = Arc::new(NotificationService::default());
-    let room_settings_service = RoomSettingsService::new(
-        room_settings_repo,
-        None,
-        notification_service,
-        None,
-        None,
-    );
+    let room_settings_service =
+        RoomSettingsService::new(room_settings_repo, None, notification_service, None, None);
 
     let service = ChatService::new(
         chat_repo,
@@ -313,13 +308,8 @@ async fn test_send_message_rate_limit_triggers() {
     permission_service.set_room_settings_repo(room_settings_repo.clone());
 
     let notification_service = Arc::new(NotificationService::default());
-    let room_settings_service = RoomSettingsService::new(
-        room_settings_repo,
-        None,
-        notification_service,
-        None,
-        None,
-    );
+    let room_settings_service =
+        RoomSettingsService::new(room_settings_repo, None, notification_service, None, None);
 
     let chat_service = ChatService::new(
         chat_repo,

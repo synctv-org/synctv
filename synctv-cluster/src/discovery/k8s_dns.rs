@@ -12,9 +12,9 @@
 //! DNS provides faster detection of newly-scaled pods; Redis provides the
 //! NodeRegistry, HealthMonitor, and LoadBalancer infrastructure.
 
+use futures::future::join_all;
 use std::collections::HashMap;
 use std::sync::Arc;
-use futures::future::join_all;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
@@ -157,8 +157,10 @@ impl K8sDnsDiscovery {
             .iter()
             .map(|(ip, info)| (ip.clone(), info.node_id.clone()))
             .collect();
-        let new_node_ids: std::collections::HashSet<String> =
-            verified_peers.iter().map(|(_, info)| info.node_id.clone()).collect();
+        let new_node_ids: std::collections::HashSet<String> = verified_peers
+            .iter()
+            .map(|(_, info)| info.node_id.clone())
+            .collect();
 
         {
             let mut nodes = registry.local_nodes.write().await;
@@ -335,7 +337,6 @@ impl K8sDnsDiscovery {
     pub fn dns_name(&self) -> &str {
         &self.dns_name
     }
-
 }
 
 #[cfg(test)]
@@ -466,11 +467,8 @@ mod tests {
         )
         .with_node_registry(registry.clone());
 
-        let mut node_info = NodeInfo::new(
-            "peer-node-1".to_string(),
-            "10.0.0.2:8080".to_string(),
-        )
-        .with_epoch(7);
+        let mut node_info =
+            NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:8080".to_string()).with_epoch(7);
         node_info
             .metadata
             .insert("discovery".to_string(), "k8s_dns".to_string());
@@ -501,10 +499,7 @@ mod tests {
         )
         .with_node_registry(registry.clone());
 
-        let mut node_info = NodeInfo::new(
-            "peer-node-1".to_string(),
-            "10.0.0.2:8080".to_string(),
-        );
+        let mut node_info = NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:8080".to_string());
         node_info
             .metadata
             .insert("discovery".to_string(), "k8s_dns".to_string());
@@ -533,10 +528,7 @@ mod tests {
         )
         .with_node_registry(registry.clone());
 
-        let mut dns_node = NodeInfo::new(
-            "peer-node-1".to_string(),
-            "10.0.0.2:8080".to_string(),
-        );
+        let mut dns_node = NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:8080".to_string());
         dns_node
             .metadata
             .insert("discovery".to_string(), "k8s_dns".to_string());
@@ -546,11 +538,7 @@ mod tests {
 
         registry
             .test_insert_local(
-                NodeInfo::new(
-                    "peer-node-1".to_string(),
-                    "10.0.0.2:8080".to_string(),
-                )
-                .with_epoch(9),
+                NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:8080".to_string()).with_epoch(9),
             )
             .await;
 
@@ -574,11 +562,8 @@ mod tests {
         )
         .with_node_registry(registry.clone());
 
-        let mut original = NodeInfo::new(
-            "peer-node-1".to_string(),
-            "10.0.0.2:8080".to_string(),
-        )
-        .with_epoch(7);
+        let mut original =
+            NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:8080".to_string()).with_epoch(7);
         original
             .metadata
             .insert("discovery".to_string(), "k8s_dns".to_string());
@@ -586,11 +571,8 @@ mod tests {
         disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), original)])
             .await;
 
-        let mut restarted = NodeInfo::new(
-            "peer-node-1".to_string(),
-            "10.0.0.9:8080".to_string(),
-        )
-        .with_epoch(8);
+        let mut restarted =
+            NodeInfo::new("peer-node-1".to_string(), "10.0.0.9:8080".to_string()).with_epoch(8);
         restarted
             .metadata
             .insert("discovery".to_string(), "k8s_dns".to_string());

@@ -191,7 +191,10 @@ async fn test_create_room_does_not_create_root_playlist() {
             .await
             .unwrap();
 
-    assert_eq!(playlist_count, 0, "Room creation should not create any playlist rows");
+    assert_eq!(
+        playlist_count, 0,
+        "Room creation should not create any playlist rows"
+    );
 }
 
 // ========== Room Join Tests ==========
@@ -2517,8 +2520,16 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
         .await
         .unwrap()
         .is_none());
-    assert!(media_repo.get_by_id(&root_media.id).await.unwrap().is_none());
-    assert!(media_repo.get_by_id(&child_media.id).await.unwrap().is_none());
+    assert!(media_repo
+        .get_by_id(&root_media.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(media_repo
+        .get_by_id(&child_media.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -2674,7 +2685,11 @@ async fn test_delete_entries_allows_playlist_delete_with_granted_reorder_permiss
         .unwrap();
 
     assert_eq!(result.deleted_playlists, 1);
-    assert!(playlist_repo.get_by_id(&playlist.id).await.unwrap().is_none());
+    assert!(playlist_repo
+        .get_by_id(&playlist.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -2882,13 +2897,11 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
         .await
         .unwrap();
 
-    let (event_room_id, event) = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        event_rx.recv(),
-    )
-    .await
-    .expect("expected local notification")
-    .unwrap();
+    let (event_room_id, event) =
+        tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("expected local notification")
+            .unwrap();
 
     assert_eq!(event_room_id, room.id);
     match event {
@@ -2968,13 +2981,11 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
 
     let mut removed_ids = std::collections::HashSet::new();
     for _ in 0..2 {
-        let (event_room_id, event) = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            event_rx.recv(),
-        )
-        .await
-        .expect("expected local media removed notification")
-        .unwrap();
+        let (event_room_id, event) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("expected local media removed notification")
+                .unwrap();
 
         assert_eq!(event_room_id, room.id);
         match event {
@@ -3069,13 +3080,11 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
 
     let mut saw_playback_reset = false;
     for _ in 0..2 {
-        let (event_room_id, event) = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            event_rx.recv(),
-        )
-        .await
-        .expect("expected local notification after clear_playlist")
-        .unwrap();
+        let (event_room_id, event) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("expected local notification after clear_playlist")
+                .unwrap();
 
         assert_eq!(event_room_id, room.id);
         if let RoomEvent::PlaybackStateChanged {
@@ -3212,8 +3221,16 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
         result.deleted_media, 2,
         "delete_entries must count media removed through playlist cascade"
     );
-    assert!(media_repo.get_by_id(&parent_media.id).await.unwrap().is_none());
-    assert!(media_repo.get_by_id(&child_media.id).await.unwrap().is_none());
+    assert!(media_repo
+        .get_by_id(&parent_media.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(media_repo
+        .get_by_id(&child_media.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -3291,13 +3308,11 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
         .await
         .unwrap();
 
-    let (event_room_id, event) = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        event_rx.recv(),
-    )
-    .await
-    .expect("expected local notification for cascade delete")
-    .unwrap();
+    let (event_room_id, event) =
+        tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("expected local notification for cascade delete")
+            .unwrap();
 
     assert_eq!(event_room_id, room.id);
     match event {
@@ -3925,7 +3940,10 @@ async fn test_room_creation_creates_all_related_records_atomically() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(playlist_count, 0, "Room creation should not create playlist rows");
+    assert_eq!(
+        playlist_count, 0,
+        "Room creation should not create playlist rows"
+    );
 
     // 5. Playback state exists
     let playback_count: i64 =

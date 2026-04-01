@@ -650,9 +650,7 @@ impl Application {
                 .start()
                 .await
                 .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to start RoomSettingsService invalidation runtime: {e}"
-                    )
+                    anyhow::anyhow!("Failed to start RoomSettingsService invalidation runtime: {e}")
                 })?;
             shutdown.register_hook(RoomSettingsServiceShutdownHook {
                 service: synctv_services.chat_service.room_settings_service().clone(),
@@ -1053,16 +1051,15 @@ impl Application {
             redis_publish_tx,
             node_registry: node_registry.clone(),
             health_monitor: health_monitor.clone(),
-            cluster_activation: node_registry
-                .clone()
-                .zip(health_monitor.clone())
-                .map(|(node_registry, health_monitor)| ClusterActivation {
+            cluster_activation: node_registry.clone().zip(health_monitor.clone()).map(
+                |(node_registry, health_monitor)| ClusterActivation {
                     config: infra.config.clone(),
                     cluster_manager: cluster_manager.clone(),
                     connection_manager: connection_manager.clone(),
                     node_registry,
                     health_monitor,
-                }),
+                },
+            ),
         })
     }
 

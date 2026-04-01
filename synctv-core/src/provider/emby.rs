@@ -5,8 +5,8 @@
 use super::{
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
     store::{ProviderStoreExt, VersionedPlayback},
-    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider,
-    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
+    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider, NextPlayItem,
+    PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
 use async_trait::async_trait;
@@ -908,7 +908,8 @@ impl DynamicFolder for EmbyProvider {
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
         let resolved = self.resolve_config(ctx, config).await?;
-        let target_item_id = Self::decode_target(target)?.unwrap_or_else(|| resolved.item_id.clone());
+        let target_item_id =
+            Self::decode_target(target)?.unwrap_or_else(|| resolved.item_id.clone());
         let client = self
             .get_client(resolved.provider_instance_name.as_deref())
             .await?;
@@ -951,9 +952,8 @@ impl DynamicFolder for EmbyProvider {
         playlist: &crate::models::Playlist,
         target: &[u8],
     ) -> Result<Option<NextPlayItem>, ProviderError> {
-        let item_id = Self::decode_target(Some(target))?.ok_or_else(|| {
-            ProviderError::InvalidConfig("Emby target is required".to_string())
-        })?;
+        let item_id = Self::decode_target(Some(target))?
+            .ok_or_else(|| ProviderError::InvalidConfig("Emby target is required".to_string()))?;
         let config = playlist
             .source_config
             .as_ref()
@@ -990,9 +990,8 @@ impl DynamicFolder for EmbyProvider {
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         use crate::models::PlayMode;
-        let item_id = Self::decode_target(Some(target))?.ok_or_else(|| {
-            ProviderError::InvalidConfig("Emby target is required".to_string())
-        })?;
+        let item_id = Self::decode_target(Some(target))?
+            .ok_or_else(|| ProviderError::InvalidConfig("Emby target is required".to_string()))?;
 
         let config = playlist
             .source_config
@@ -1017,7 +1016,13 @@ impl DynamicFolder for EmbyProvider {
 
                 loop {
                     let page_items = self
-                        .list_playlist(ctx, playlist, Some(&sibling_target), current_page, PAGE_SIZE)
+                        .list_playlist(
+                            ctx,
+                            playlist,
+                            Some(&sibling_target),
+                            current_page,
+                            PAGE_SIZE,
+                        )
                         .await?;
 
                     if page_items.is_empty() {
@@ -1035,11 +1040,13 @@ impl DynamicFolder for EmbyProvider {
                                     item_type: next.item_type,
                                     source_config: Self::build_next_source_config(
                                         &base_config,
-                                        &Self::decode_target(Some(&next.target))?.ok_or_else(|| {
-                                            ProviderError::InvalidConfig(
-                                                "Missing Emby item target".to_string(),
-                                            )
-                                        })?,
+                                        &Self::decode_target(Some(&next.target))?.ok_or_else(
+                                            || {
+                                                ProviderError::InvalidConfig(
+                                                    "Missing Emby item target".to_string(),
+                                                )
+                                            },
+                                        )?,
                                     ),
                                     metadata: json!({}),
                                     provider_data: json!({}),
@@ -1063,11 +1070,13 @@ impl DynamicFolder for EmbyProvider {
                                     item_type: next.item_type,
                                     source_config: Self::build_next_source_config(
                                         &base_config,
-                                        &Self::decode_target(Some(&next.target))?.ok_or_else(|| {
-                                            ProviderError::InvalidConfig(
-                                                "Missing Emby item target".to_string(),
-                                            )
-                                        })?,
+                                        &Self::decode_target(Some(&next.target))?.ok_or_else(
+                                            || {
+                                                ProviderError::InvalidConfig(
+                                                    "Missing Emby item target".to_string(),
+                                                )
+                                            },
+                                        )?,
                                     ),
                                     metadata: json!({}),
                                     provider_data: json!({}),
@@ -1099,11 +1108,13 @@ impl DynamicFolder for EmbyProvider {
                                 item_type: first.item_type,
                                 source_config: Self::build_next_source_config(
                                     &base_config,
-                                    &Self::decode_target(Some(&first.target))?.ok_or_else(|| {
-                                        ProviderError::InvalidConfig(
-                                            "Missing Emby item target".to_string(),
-                                        )
-                                    })?,
+                                    &Self::decode_target(Some(&first.target))?.ok_or_else(
+                                        || {
+                                            ProviderError::InvalidConfig(
+                                                "Missing Emby item target".to_string(),
+                                            )
+                                        },
+                                    )?,
                                 ),
                                 metadata: json!({}),
                                 provider_data: json!({}),

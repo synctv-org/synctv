@@ -27,7 +27,8 @@ fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
 
     let json = serde_json::to_value(&request).expect("serialize list request");
     assert_eq!(json["playlist_id"], "");
-    let target_bytes: Vec<u8> = serde_json::from_value(json["target"].clone()).expect("target bytes");
+    let target_bytes: Vec<u8> =
+        serde_json::from_value(json["target"].clone()).expect("target bytes");
     assert!(target_bytes.is_empty());
 }
 
@@ -80,9 +81,10 @@ fn test_start_playback_request_serializes_dynamic_playlist_target() {
     let json = serde_json::to_value(&request).expect("serialize start playback request");
     assert_eq!(json["media_id"], "");
     assert_eq!(json["playlist_id"], "playlist-1");
-    let target_bytes: Vec<u8> = serde_json::from_value(json["target"].clone()).expect("target bytes");
-    let target_json: serde_json::Value = serde_json::from_slice(&target_bytes).expect("target payload json");
-    assert_eq!(target_json, serde_json::json!({"item_id":"provider-item-1"}));
+    assert_eq!(
+        json["target"],
+        serde_json::json!({"item_id":"provider-item-1"})
+    );
 }
 
 #[test]
@@ -99,4 +101,5 @@ fn test_create_playlist_request_serializes_dynamic_fields_without_is_folder() {
     assert!(json.get("is_folder").is_none());
     assert_eq!(json["source_provider"], "alist");
     assert_eq!(json["provider_instance_name"], "alist-main");
+    assert_eq!(json["source_config"], serde_json::json!({"path":"/tv"}));
 }

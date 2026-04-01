@@ -1272,14 +1272,16 @@ mod tests {
     #[test]
     fn test_media_removed_batch_requires_state_resync() {
         let message = ServerMessage {
-            message: Some(crate::proto::client::server_message::Message::MediaRemovedBatch(
-                crate::proto::client::MediaRemovedBatch {
-                    room_id: "room_test".to_string(),
-                    media_ids: vec!["media_a".to_string(), "media_b".to_string()],
-                    removed_by: "frank".to_string(),
-                    removed_by_user_id: "user_test".to_string(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::server_message::Message::MediaRemovedBatch(
+                    crate::proto::client::MediaRemovedBatch {
+                        room_id: "room_test".to_string(),
+                        media_ids: vec!["media_a".to_string(), "media_b".to_string()],
+                        removed_by: "frank".to_string(),
+                        removed_by_user_id: "user_test".to_string(),
+                    },
+                ),
+            ),
         };
 
         assert!(requires_state_resync(&message));

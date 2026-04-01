@@ -1368,10 +1368,7 @@ mod tests {
             .with_name("Executor Room")
             .with_owner(owner.id.clone())
             .build();
-        let created = room_repo
-            .create_with_executor(&room, &pool)
-            .await
-            .unwrap();
+        let created = room_repo.create_with_executor(&room, &pool).await.unwrap();
         assert_eq!(created.name, "Executor Room");
     }
 

@@ -1,10 +1,8 @@
+use argon2::password_hash::PasswordHasher as Argon2PasswordHasher;
 use argon2::{
-    password_hash::{
-        rand_core::OsRng, PasswordHash, PasswordVerifier, SaltString,
-    },
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordVerifier, SaltString},
     Argon2, ParamsBuilder, Version,
 };
-use argon2::password_hash::PasswordHasher as Argon2PasswordHasher;
 use async_trait::async_trait;
 use std::sync::LazyLock;
 use tokio::task;

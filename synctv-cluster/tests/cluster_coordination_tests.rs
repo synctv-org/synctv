@@ -41,10 +41,7 @@ async fn test_node_info_serialization() {
 
 #[tokio::test]
 async fn test_node_info_is_stale() {
-    let mut node = NodeInfo::new(
-        "node-1".to_string(),
-        "localhost:8080".to_string(),
-    );
+    let mut node = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
 
     // Fresh node should not be stale
     assert!(!node.is_stale(30));
@@ -112,10 +109,7 @@ async fn test_node_registry_unregister() {
         ))
         .await;
 
-    let remote = NodeInfo::new(
-        "remote-1".to_string(),
-        "localhost:8081".to_string(),
-    );
+    let remote = NodeInfo::new("remote-1".to_string(), "localhost:8081".to_string());
     registry.test_insert_local(remote).await;
 
     assert_eq!(registry.test_get_all_local().await.len(), 2);
@@ -277,10 +271,7 @@ async fn test_load_balancer_with_health_monitor_no_status() {
         ))
         .await;
 
-    let remote = NodeInfo::new(
-        "node-1".to_string(),
-        "localhost:8081".to_string(),
-    );
+    let remote = NodeInfo::new("node-1".to_string(), "localhost:8081".to_string());
     registry.test_insert_local(remote).await;
 
     // Monitor has no statuses yet -- all nodes should be available

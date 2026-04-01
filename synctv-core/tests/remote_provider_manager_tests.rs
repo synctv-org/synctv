@@ -917,7 +917,10 @@ async fn scenario_health_check_reports_enabled_instance_with_missing_secret_as_u
     );
 
     let mut invalid = make_test_instance("test-instance-7d-missing-secret");
-    invalid.endpoint = format!("http://invalid-health.test.localhost:{}", health_addr.port());
+    invalid.endpoint = format!(
+        "http://invalid-health.test.localhost:{}",
+        health_addr.port()
+    );
     invalid.jwt_secret = None;
     provider_repo(&infra.pool)
         .create(&invalid)
@@ -1561,7 +1564,9 @@ async fn scenario_enable_already_enabled_invalid_remote_instance_without_jwt_sec
     assert!(persisted.enabled, "invalid row should remain enabled");
     assert_eq!(persisted.jwt_secret, None);
 
-    let connection = manager.get("test-instance-13-invalid-already-enabled").await;
+    let connection = manager
+        .get("test-instance-13-invalid-already-enabled")
+        .await;
     assert!(
         connection.is_none(),
         "invalid row without jwt_secret must not resolve to an unusable remote connection"

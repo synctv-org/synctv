@@ -18,8 +18,9 @@ use synctv_core::{
     models::{OAuth2Provider, UserId},
     repository::{UserOAuthProviderRepository, UserRepository},
     service::{
-        auth::{jwt::JwtService, TestPasswordHasher}, BruteForceProtection, InMemoryOAuthStateStore,
-        InMemoryTokenBlacklistStore, OAuth2Service, RateLimiter, TokenBlacklistStore, UserService,
+        auth::{jwt::JwtService, TestPasswordHasher},
+        BruteForceProtection, InMemoryOAuthStateStore, InMemoryTokenBlacklistStore, OAuth2Service,
+        RateLimiter, TokenBlacklistStore, UserService,
     },
     Error,
 };

@@ -4,6 +4,9 @@
 //! This crate contains all protobuf definitions and generated code for `SyncTV`'s
 //! external APIs.
 
+pub mod http_serde;
+pub mod serde_defaults;
+
 /// Encoded file descriptor set for client/admin/oauth2 proto definitions.
 /// Used by tonic-reflection to serve gRPC server reflection.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("descriptor.bin");
@@ -625,14 +628,212 @@ mod tests {
         assert_eq!(decoded.reason, "security incident");
     }
 
+    #[test]
+    fn http_json_start_playback_request_accepts_json_target_blob() {
+        let json = r#"{"playlist_id":"playlist-123","target":{"item_id":"provider-item-1"}}"#;
+
+        let decoded: crate::client::StartPlaybackRequest =
+            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
+
+        assert_eq!(decoded.playlist_id, "playlist-123");
+        let target_json: serde_json::Value =
+            serde_json::from_slice(&decoded.target).expect("target bytes should contain JSON");
+        assert_eq!(
+            target_json,
+            serde_json::json!({"item_id":"provider-item-1"})
+        );
+    }
+
+    #[test]
+    fn http_json_create_playlist_request_accepts_object_source_config() {
+        let json =
+            r#"{"name":"Season 1","source_provider":"alist","source_config":{"path":"/tv"}}"#;
+
+        let decoded: crate::client::CreatePlaylistRequest =
+            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
+
+        assert_eq!(decoded.name, "Season 1");
+        assert_eq!(decoded.source_provider, "alist");
+        let config_json: serde_json::Value = serde_json::from_slice(&decoded.source_config)
+            .expect("source_config bytes should contain JSON");
+        assert_eq!(config_json, serde_json::json!({"path":"/tv"}));
+    }
+
+    #[test]
+    fn http_json_create_playlist_request_preserves_array_source_config() {
+        let json = r#"{"name":"Season 1","source_provider":"alist","source_config":[1,2,3]}"#;
+
+        let decoded: crate::client::CreatePlaylistRequest =
+            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
+
+        assert_eq!(decoded.source_config, br#"[1,2,3]"#.to_vec());
+        let config_json: serde_json::Value = serde_json::from_slice(&decoded.source_config)
+            .expect("source_config bytes should contain JSON");
+        assert_eq!(config_json, serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn http_json_edit_media_request_allows_path_supplied_media_id() {
+        let json = r#"{"title":"Updated title"}"#;
+
+        let decoded: crate::client::EditMediaRequest =
+            serde_json::from_str(json).expect("media_id should be allowed to come from the path");
+
+        assert_eq!(decoded.media_id, "");
+        assert_eq!(decoded.title, "Updated title");
+    }
+
+    #[test]
+    fn http_json_update_user_password_request_accepts_http_alias() {
+        let json = r#"{"password":"new-password-123","reason":"support reset"}"#;
+
+        let decoded: crate::admin::UpdateUserPasswordRequest =
+            serde_json::from_str(json).expect("HTTP alias field should deserialize into proto");
+
+        assert_eq!(decoded.new_password, "new-password-123");
+        assert_eq!(decoded.reason, "support reset");
+    }
+
+    #[test]
+    fn http_json_update_user_username_request_accepts_http_alias() {
+        let json = r#"{"username":"patched-name"}"#;
+
+        let decoded: crate::admin::UpdateUserUsernameRequest =
+            serde_json::from_str(json).expect("HTTP alias field should deserialize into proto");
+
+        assert_eq!(decoded.user_id, "");
+        assert_eq!(decoded.new_username, "patched-name");
+    }
+
+    #[test]
+    fn http_json_ban_user_request_allows_path_supplied_user_id() {
+        let json = r#"{"reason":"spam"}"#;
+
+        let decoded: crate::admin::BanUserRequest =
+            serde_json::from_str(json).expect("user_id should be allowed to come from the path");
+
+        assert_eq!(decoded.user_id, "");
+        assert_eq!(decoded.reason, "spam");
+    }
+
+    #[test]
+    fn http_json_update_room_password_request_accepts_http_alias() {
+        let json = r#"{"password":"new-room-password"}"#;
+
+        let decoded: crate::admin::UpdateRoomPasswordRequest =
+            serde_json::from_str(json).expect("HTTP alias field should deserialize into proto");
+
+        assert_eq!(decoded.room_id, "");
+        assert_eq!(decoded.new_password, "new-room-password");
+    }
+
+    #[test]
+    fn http_json_update_room_settings_request_accepts_json_blob_and_path_default() {
+        let json = r#"{"theme":"dark","guest_enabled":true}"#;
+
+        let decoded: crate::admin::UpdateRoomSettingsRequest =
+            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
+
+        assert_eq!(decoded.room_id, "");
+        let settings_json: serde_json::Value =
+            serde_json::from_slice(&decoded.settings).expect("settings bytes should contain JSON");
+        assert_eq!(
+            settings_json,
+            serde_json::json!({"theme":"dark","guest_enabled":true})
+        );
+    }
+
+    #[test]
+    fn http_json_client_update_room_settings_request_accepts_raw_json_body() {
+        let json = r#"{"theme":"dark","guest_enabled":true}"#;
+
+        let decoded: crate::client::UpdateRoomSettingsRequest =
+            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
+
+        let settings_json: serde_json::Value =
+            serde_json::from_slice(&decoded.settings).expect("settings bytes should contain JSON");
+        assert_eq!(
+            settings_json,
+            serde_json::json!({"theme":"dark","guest_enabled":true})
+        );
+    }
+
+    #[test]
+    fn http_json_client_update_room_settings_request_preserves_array_body() {
+        let json = r#"[1,2,3]"#;
+
+        let decoded: crate::client::UpdateRoomSettingsRequest =
+            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
+
+        assert_eq!(decoded.settings, br#"[1,2,3]"#.to_vec());
+        let settings_json: serde_json::Value =
+            serde_json::from_slice(&decoded.settings).expect("settings bytes should contain JSON");
+        assert_eq!(settings_json, serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn http_json_ban_member_request_defaults_reason() {
+        let json = r#"{"user_id":"user-456"}"#;
+
+        let decoded: crate::client::BanMemberRequest =
+            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
+
+        assert_eq!(decoded.user_id, "user-456");
+        assert_eq!(decoded.reason, "");
+    }
+
+    #[test]
+    fn http_json_update_user_role_request_accepts_numeric_role() {
+        let json = format!(r#"{{"role":{}}}"#, crate::common::UserRole::Admin as i32);
+
+        let decoded: crate::admin::UpdateUserRoleRequest =
+            serde_json::from_str(&json).expect("numeric role should deserialize into proto enum");
+
+        assert_eq!(decoded.user_id, "");
+        assert_eq!(decoded.role, crate::common::UserRole::Admin as i32);
+    }
+
+    #[test]
+    fn http_json_update_user_role_request_rejects_string_role() {
+        let err =
+            serde_json::from_str::<crate::admin::UpdateUserRoleRequest>(r#"{"role":"admin"}"#)
+                .expect_err("string role should be rejected");
+
+        assert!(err.is_data());
+    }
+
+    #[test]
+    fn http_json_update_member_permissions_request_accepts_numeric_role() {
+        let json = format!(
+            r#"{{"role":{},"added_permissions":7}}"#,
+            crate::common::RoomMemberRole::Guest as i32
+        );
+
+        let decoded: crate::client::UpdateMemberPermissionsRequest = serde_json::from_str(&json)
+            .expect("numeric room role should deserialize into proto enum");
+
+        assert_eq!(decoded.user_id, "");
+        assert_eq!(decoded.role, crate::common::RoomMemberRole::Guest as i32);
+        assert_eq!(decoded.added_permissions, 7);
+    }
+
+    #[test]
+    fn http_json_update_member_permissions_request_rejects_string_role() {
+        let err = serde_json::from_str::<crate::client::UpdateMemberPermissionsRequest>(
+            r#"{"role":"guest","added_permissions":7}"#,
+        )
+        .expect_err("string room role should be rejected");
+
+        assert!(err.is_data());
+    }
+
     // === Provider Proto Tests ===
 
     #[test]
     fn roundtrip_bilibili_parse_request() {
         let req = crate::providers::bilibili::ParseRequest {
             url: "https://bilibili.com/video/BV123".into(),
-            server_id:
-                "7dc8643f29f86b5c8e0d26c6d4f1d4648d5d5c2db9c9c18e4f6e7f2b0a6b4891".into(),
+            server_id: "7dc8643f29f86b5c8e0d26c6d4f1d4648d5d5c2db9c9c18e4f6e7f2b0a6b4891".into(),
             instance_name: "bilibili_main".into(),
         };
         let bytes = req.encode_to_vec();

@@ -519,12 +519,10 @@ mod tests {
 
         // Simulate half-open: set was_open and claim a probe
         breaker.was_open.store(true, Ordering::Release);
-        assert!(
-            breaker
-                .probe_in_flight
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-        );
+        assert!(breaker
+            .probe_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok());
 
         // on_success should clear probe_in_flight and probe_started_at
         breaker.on_success();
@@ -534,12 +532,10 @@ mod tests {
 
         // Simulate re-open: claim another probe
         breaker.was_open.store(true, Ordering::Release);
-        assert!(
-            breaker
-                .probe_in_flight
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-        );
+        assert!(breaker
+            .probe_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok());
 
         // on_error should also clear flags
         breaker.on_error();

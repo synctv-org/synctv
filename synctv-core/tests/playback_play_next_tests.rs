@@ -25,12 +25,12 @@ use synctv_core::{
         DirectoryItem, DynamicFolder, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
         PlaybackResult, ProviderContext, ProviderError,
     },
-    service::{ProvidersManager, RemoteProviderManager},
     repository::{MediaRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
+    service::{ProvidersManager, RemoteProviderManager},
 };
 use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
@@ -63,7 +63,10 @@ fn make_room_service(pool: PgPool) -> RoomService {
     svc
 }
 
-fn make_room_service_with_providers(pool: PgPool, providers_manager: Arc<ProvidersManager>) -> RoomService {
+fn make_room_service_with_providers(
+    pool: PgPool,
+    providers_manager: Arc<ProvidersManager>,
+) -> RoomService {
     let user_service = make_user_service(pool.clone());
     let mut svc = RoomService::new_with_providers(pool, user_service, providers_manager);
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
@@ -285,10 +288,17 @@ impl DynamicFolder for FakeDynamicProvider {
         _page: usize,
         _page_size: usize,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
-        let items = match target.map(decode_dynamic_target).as_deref().unwrap_or_default() {
+        let items = match target
+            .map(decode_dynamic_target)
+            .as_deref()
+            .unwrap_or_default()
+        {
             "" => vec![
                 DirectoryItem {
-                    name: self.first_episode_path().trim_start_matches('/').to_string(),
+                    name: self
+                        .first_episode_path()
+                        .trim_start_matches('/')
+                        .to_string(),
                     item_type: ItemType::Media,
                     target: dynamic_target(self.first_episode_path()),
                     size: None,
@@ -296,7 +306,10 @@ impl DynamicFolder for FakeDynamicProvider {
                     modified_at: None,
                 },
                 DirectoryItem {
-                    name: self.second_episode_path().trim_start_matches('/').to_string(),
+                    name: self
+                        .second_episode_path()
+                        .trim_start_matches('/')
+                        .to_string(),
                     item_type: ItemType::Media,
                     target: dynamic_target(self.second_episode_path()),
                     size: None,
@@ -360,11 +373,7 @@ async fn register_fake_dynamic_provider_instance(room_service: &RoomService, ins
     room_service
         .media_service()
         .providers_manager()
-        .create_provider(
-            "fake_dynamic",
-            instance_id,
-            &serde_json::json!({}),
-        )
+        .create_provider("fake_dynamic", instance_id, &serde_json::json!({}))
         .await
         .expect("Failed to register fake dynamic provider");
 }
@@ -992,7 +1001,8 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
         .unwrap();
 
     register_fake_dynamic_provider(&room_service).await;
-    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
+    let playlist =
+        create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
 
     let playback = room_service.playback_service();
     playback
@@ -1013,7 +1023,10 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
     assert!(state.playing_media_id.is_none());
     assert_eq!(state.playing_playlist_id, Some(playlist.id));
     let target: serde_json::Value = serde_json::from_slice(&state.target).unwrap();
-    assert_eq!(target, serde_json::json!({"relative_path":"/episode-2.mp4"}));
+    assert_eq!(
+        target,
+        serde_json::json!({"relative_path":"/episode-2.mp4"})
+    );
     assert!((state.current_time - 0.0).abs() < f64::EPSILON);
     assert!(state.is_playing);
 }
@@ -1052,7 +1065,8 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
         .unwrap();
 
     register_fake_dynamic_provider(&room_service).await;
-    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
+    let playlist =
+        create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
 
     let playback = room_service.playback_service();
     playback
@@ -1073,7 +1087,10 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
     assert!(state.playing_media_id.is_none());
     assert_eq!(state.playing_playlist_id, Some(playlist.id));
     let target: serde_json::Value = serde_json::from_slice(&state.target).unwrap();
-    assert_eq!(target, serde_json::json!({"relative_path":"/episode-1.mp4"}));
+    assert_eq!(
+        target,
+        serde_json::json!({"relative_path":"/episode-1.mp4"})
+    );
 }
 
 #[tokio::test]
@@ -1111,8 +1128,7 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
 
     register_fake_dynamic_provider(&room_service).await;
     register_fake_dynamic_provider_instance(&room_service, "fake_dynamic_alt").await;
-    let playlist =
-        create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_alt").await;
+    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_alt").await;
 
     let playback = room_service.playback_service();
     playback
@@ -1133,5 +1149,8 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
     assert!(state.playing_media_id.is_none());
     assert_eq!(state.playing_playlist_id, Some(playlist.id));
     let target: serde_json::Value = serde_json::from_slice(&state.target).unwrap();
-    assert_eq!(target, serde_json::json!({"relative_path":"/bound-episode-2.mp4"}));
+    assert_eq!(
+        target,
+        serde_json::json!({"relative_path":"/bound-episode-2.mp4"})
+    );
 }

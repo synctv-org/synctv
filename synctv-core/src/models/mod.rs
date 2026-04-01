@@ -14,9 +14,7 @@ pub mod room_settings;
 pub mod settings;
 pub mod user;
 
-pub use chat::{
-    ChatMessage, DanmakuMessage, DanmakuPosition, SendChatRequest, SendDanmakuRequest,
-};
+pub use chat::{ChatMessage, DanmakuMessage, DanmakuPosition, SendChatRequest, SendDanmakuRequest};
 pub use id::{generate_id, MediaId, PlaylistId, RoomId, UserId, ID_LENGTH};
 pub use media::{
     Danmaku, Media, PlaybackInfo, PlaybackResult, PlaybackUrl, PlaybackUrlMetadata, ProviderType,

@@ -639,7 +639,10 @@ async fn test_list_by_room_initial_load_has_partition_lower_bound() {
     chat_repo.create(&msg).await.unwrap();
 
     // Initial load (no cursor) should only return recent messages
-    let (messages, next_cursor) = chat_repo.list_by_room_cursor(&room.id, None, 100).await.unwrap();
+    let (messages, next_cursor) = chat_repo
+        .list_by_room_cursor(&room.id, None, 100)
+        .await
+        .unwrap();
 
     // The old message (>90 days) should NOT be returned due to partition pruning filter
     assert_eq!(

@@ -244,8 +244,7 @@ impl NodeRegistry {
         nodes
             .into_iter()
             .filter(|node| {
-                node
-                    .metadata
+                node.metadata
                     .get("discovery")
                     .is_none_or(|value| value != "k8s_dns")
             })
@@ -257,8 +256,10 @@ impl NodeRegistry {
         redis_nodes: Vec<NodeInfo>,
         local_nodes: &HashMap<String, NodeInfo>,
     ) -> Vec<NodeInfo> {
-        let redis_node_ids: std::collections::HashSet<String> =
-            redis_nodes.iter().map(|node| node.node_id.clone()).collect();
+        let redis_node_ids: std::collections::HashSet<String> = redis_nodes
+            .iter()
+            .map(|node| node.node_id.clone())
+            .collect();
         let mut merged_nodes = redis_nodes;
 
         for node in local_nodes.values() {
@@ -835,7 +836,8 @@ impl NodeRegistry {
                             "Heartbeat: local node cache missing or has an empty api_address, \
                              auto-re-registration may use an empty api_address"
                         );
-                        info_opt.unwrap_or_else(|| NodeInfo::new(self.node_id.clone(), String::new()))
+                        info_opt
+                            .unwrap_or_else(|| NodeInfo::new(self.node_id.clone(), String::new()))
                     }
                 };
                 let api_address = info.api_address.clone();
@@ -1590,7 +1592,10 @@ impl NodeRegistry {
                             .to_string(),
                     ))
                 } else {
-                    Ok((self.filter_routable_nodes(nodes), NodeViewMode::DegradedCache))
+                    Ok((
+                        self.filter_routable_nodes(nodes),
+                        NodeViewMode::DegradedCache,
+                    ))
                 }
             }
             Err(err) => Err(err),
@@ -1868,10 +1873,7 @@ mod tests {
         )
         .unwrap();
 
-        let peer = NodeInfo::new(
-            "dns-peer-1".to_string(),
-            "10.0.0.2:8080".to_string(),
-        );
+        let peer = NodeInfo::new("dns-peer-1".to_string(), "10.0.0.2:8080".to_string());
 
         registry.merge_dns_peers(vec![peer]).await;
 
@@ -1900,10 +1902,7 @@ mod tests {
         }
 
         // Try to merge a DNS peer with the same node_id ("self")
-        let dns_peer = NodeInfo::new(
-            "self".to_string(),
-            "10.0.0.99:8080".to_string(),
-        );
+        let dns_peer = NodeInfo::new("self".to_string(), "10.0.0.99:8080".to_string());
 
         registry.merge_dns_peers(vec![dns_peer]).await;
 
@@ -1923,10 +1922,7 @@ mod tests {
         )];
 
         let mut local_nodes = HashMap::new();
-        let mut dns_peer = NodeInfo::new(
-            "dns-peer-1".to_string(),
-            "10.0.0.2:8080".to_string(),
-        );
+        let mut dns_peer = NodeInfo::new("dns-peer-1".to_string(), "10.0.0.2:8080".to_string());
         dns_peer
             .metadata
             .insert("discovery".to_string(), "k8s_dns".to_string());
@@ -1962,14 +1958,8 @@ mod tests {
         )
         .expect("clustered registry");
 
-        let redis_peer = NodeInfo::new(
-            "redis-peer-1".to_string(),
-            "10.0.0.10:8080".to_string(),
-        );
-        let mut dns_peer = NodeInfo::new(
-            "dns-peer-1".to_string(),
-            "10.0.0.2:8080".to_string(),
-        );
+        let redis_peer = NodeInfo::new("redis-peer-1".to_string(), "10.0.0.10:8080".to_string());
+        let mut dns_peer = NodeInfo::new("dns-peer-1".to_string(), "10.0.0.2:8080".to_string());
         dns_peer
             .metadata
             .insert("discovery".to_string(), "k8s_dns".to_string());
@@ -2102,18 +2092,12 @@ mod tests {
         )
         .unwrap();
 
-        let original = NodeInfo::new(
-            "peer-node".to_string(),
-            "10.0.0.1:8080".to_string(),
-        )
-        .with_epoch(3);
+        let original =
+            NodeInfo::new("peer-node".to_string(), "10.0.0.1:8080".to_string()).with_epoch(3);
         registry.register_remote(original.clone()).await.unwrap();
 
-        let newer = NodeInfo::new(
-            "peer-node".to_string(),
-            "10.0.0.2:8080".to_string(),
-        )
-        .with_epoch(9);
+        let newer =
+            NodeInfo::new("peer-node".to_string(), "10.0.0.2:8080".to_string()).with_epoch(9);
         registry.register_remote(newer.clone()).await.unwrap();
 
         let err = registry

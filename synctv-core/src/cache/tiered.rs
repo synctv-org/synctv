@@ -197,11 +197,9 @@ where
             let global_epoch_arc = self.global_epoch.clone();
             let epoch_key = key.clone();
 
-            let result = self
-                .singleflight
-                .do_work(
-                    sf_key,
-                    {
+            let result =
+                self.singleflight
+                    .do_work(sf_key, {
                         async move {
                             let json = l2.get(&redis_key).await.map_err(|e| {
                                 format!("Failed to get {cache_type} from cache: {e}")
@@ -217,15 +215,14 @@ where
                                 None => Ok(None),
                             }
                         }
-                    },
-                )
-                .await
-                .map_err(|error| match error {
-                    super::SingleFlightError::WorkerFailed => {
-                        Error::Internal("SingleFlight worker failed during L2 cache fetch".to_string())
-                    }
-                    super::SingleFlightError::Inner(message) => Error::Internal(message),
-                })?;
+                    })
+                    .await
+                    .map_err(|error| match error {
+                        super::SingleFlightError::WorkerFailed => Error::Internal(
+                            "SingleFlight worker failed during L2 cache fetch".to_string(),
+                        ),
+                        super::SingleFlightError::Inner(message) => Error::Internal(message),
+                    })?;
 
             if let Some(ref value) = result {
                 let l2 = String::from("l2");
@@ -463,14 +460,11 @@ where
 
             let jsons: Vec<Option<String>> = self
                 .batch_singleflight
-                .do_work(
-                    sf_key,
-                    async move {
-                        l2.get_batch(&full_keys)
-                            .await
-                            .map_err(|e| format!("Failed to batch get {cache_type} from L2: {e}"))
-                    },
-                )
+                .do_work(sf_key, async move {
+                    l2.get_batch(&full_keys)
+                        .await
+                        .map_err(|e| format!("Failed to batch get {cache_type} from L2: {e}"))
+                })
                 .await
                 .map_err(|error| match error {
                     super::SingleFlightError::WorkerFailed => Error::Internal(

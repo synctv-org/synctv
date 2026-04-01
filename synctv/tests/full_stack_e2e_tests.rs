@@ -32,12 +32,7 @@ fn reserve_local_port() -> u16 {
         .port()
 }
 
-fn test_config(
-    database_url: String,
-    redis_url: String,
-    api_port: u16,
-    rtmp_port: u16,
-) -> Config {
+fn test_config(database_url: String, redis_url: String, api_port: u16, rtmp_port: u16) -> Config {
     let mut config = Config::default();
     config.server.host = "127.0.0.1".to_string();
     config.server.port = api_port;
@@ -94,9 +89,8 @@ fn test_config(
 /// Dedicated tokio runtime for the shared server.
 /// Created synchronously via `LazyLock`, lives for the process lifetime.
 /// The server runs here independently of individual `#[tokio::test]` runtimes.
-static DEDICATED_RT: LazyLock<Runtime> = LazyLock::new(|| {
-    Runtime::new().expect("shared test server runtime")
-});
+static DEDICATED_RT: LazyLock<Runtime> =
+    LazyLock::new(|| Runtime::new().expect("shared test server runtime"));
 
 struct SharedServer {
     api_base_url: String,
@@ -114,11 +108,8 @@ static SHARED_SERVER: OnceCell<SharedServer> = OnceCell::const_new();
 async fn shared_server() -> &'static SharedServer {
     SHARED_SERVER
         .get_or_init(|| async {
-            let (postgres, database_url) = create_test_database_url_with_label(
-                "synctv_e2e_shared",
-                "full-stack-shared",
-            )
-            .await;
+            let (postgres, database_url) =
+                create_test_database_url_with_label("synctv_e2e_shared", "full-stack-shared").await;
             let (redis, redis_url) = start_redis_url_with_label("full-stack-shared").await;
             let api_port = reserve_local_port();
             let rtmp_port = reserve_local_port();
@@ -132,8 +123,7 @@ async fn shared_server() -> &'static SharedServer {
                     .await
                     .expect("shared application build");
                 // `pending()` means the server never receives a shutdown signal.
-                app.run_with_shutdown_signal(std::future::pending())
-                    .await
+                app.run_with_shutdown_signal(std::future::pending()).await
             });
 
             let api_base_url = format!("http://127.0.0.1:{api_port}");

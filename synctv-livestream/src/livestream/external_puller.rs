@@ -191,7 +191,9 @@ impl ExternalStreamPuller {
                 // Filter out blocked IPs
                 let safe_addrs: Vec<std::net::SocketAddr> = addrs
                     .into_iter()
-                    .filter(|addr| !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&addr.ip()))
+                    .filter(|addr| {
+                        !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&addr.ip())
+                    })
                     .collect();
 
                 if safe_addrs.is_empty() {

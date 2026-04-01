@@ -89,9 +89,7 @@ async fn test_cross_node_broadcast() {
     let (container, redis_client1, _conn1) = setup_redis().await;
 
     // Create a second Redis connection for node2
-    let redis_host = container.host().await;
-    let redis_port = container.port_ipv4(6379).await;
-    let redis_url = format!("redis://{redis_host}:{redis_port}");
+    let redis_url = container.connection_url();
     let redis_client2 =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client 2");
 
@@ -444,9 +442,7 @@ async fn test_multiple_subscriptions_same_room() {
 async fn test_critical_event_delivery() {
     let (container, redis_client1, conn1) = setup_redis().await;
 
-    let redis_host = container.host().await;
-    let redis_port = container.port_ipv4(6379).await;
-    let redis_url = format!("redis://{redis_host}:{redis_port}");
+    let redis_url = container.connection_url();
     let redis_client2 =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client 2");
     let conn2 = redis::aio::ConnectionManager::new(redis_client2.clone())

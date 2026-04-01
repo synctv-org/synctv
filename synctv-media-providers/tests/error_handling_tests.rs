@@ -227,7 +227,10 @@ Connection: close\r\n\
     match err {
         ProviderClientError::Http { status, body, .. } => {
             assert_eq!(status, reqwest::StatusCode::INTERNAL_SERVER_ERROR);
-            assert!(!body.is_empty(), "should capture a preview of the error body");
+            assert!(
+                !body.is_empty(),
+                "should capture a preview of the error body"
+            );
             assert!(
                 body.len() <= 1040,
                 "body preview should stay bounded, got {} bytes",

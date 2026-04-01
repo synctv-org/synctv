@@ -853,7 +853,10 @@ impl Config {
             .unwrap_or_else(|| self.server.host.clone())
     }
 
-    fn has_explicit_advertise_host_source(&self, get_env: &impl Fn(&str) -> Option<String>) -> bool {
+    fn has_explicit_advertise_host_source(
+        &self,
+        get_env: &impl Fn(&str) -> Option<String>,
+    ) -> bool {
         !self.server.advertise_host.is_empty()
             || get_env("POD_IP").is_some_and(|value| !value.is_empty())
     }
@@ -1973,14 +1976,12 @@ impl Config {
         if !self.server.cluster_secret.is_empty() {
             const MIN_CLUSTER_SECRET_LEN: usize = 16;
             if self.server.cluster_secret.len() < MIN_CLUSTER_SECRET_LEN {
-                errors.push(
-                    format!(
-                        "server.cluster_secret is too short ({} chars, minimum {}). \
+                errors.push(format!(
+                    "server.cluster_secret is too short ({} chars, minimum {}). \
                          Use: openssl rand -hex 16",
-                        self.server.cluster_secret.len(),
-                        MIN_CLUSTER_SECRET_LEN
-                    )
-                );
+                    self.server.cluster_secret.len(),
+                    MIN_CLUSTER_SECRET_LEN
+                ));
             }
         }
 
@@ -2860,9 +2861,7 @@ mod tests {
     fn test_validate_single_api_port_is_allowed() {
         let mut config = valid_prod_config();
         config.server.port = 8080;
-        config
-            .validate()
-            .expect("single API port should be valid");
+        config.validate().expect("single API port should be valid");
     }
 
     #[test]

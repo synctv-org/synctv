@@ -837,9 +837,10 @@ mod tests {
         let registry = make_registry();
         let monitor = HealthMonitor::new(registry, 10);
 
-        monitor
-            .last_successful_refresh_at
-            .store(current_unix_timestamp_secs().saturating_sub(11), Ordering::Relaxed);
+        monitor.last_successful_refresh_at.store(
+            current_unix_timestamp_secs().saturating_sub(11),
+            Ordering::Relaxed,
+        );
 
         assert!(
             monitor.is_snapshot_stale(),

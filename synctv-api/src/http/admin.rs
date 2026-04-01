@@ -167,39 +167,6 @@ where
 }
 
 // ------------------------------------------------------------------
-// Typed request structs for admin endpoints
-// ------------------------------------------------------------------
-
-#[derive(serde::Deserialize)]
-struct SetUserRoleRequest {
-    role: String,
-}
-
-#[derive(serde::Deserialize)]
-struct SetUserPasswordRequest {
-    password: String,
-    #[serde(default)]
-    reason: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct SetUserUsernameRequest {
-    username: String,
-}
-
-#[derive(serde::Deserialize)]
-struct BanRequest {
-    #[serde(default)]
-    reason: String,
-}
-
-#[derive(serde::Deserialize)]
-struct SetRoomPasswordAdminRequest {
-    #[serde(default)]
-    password: String,
-}
-
-// ------------------------------------------------------------------
 // Helper to get admin_api or 503
 // ------------------------------------------------------------------
 
@@ -466,27 +433,13 @@ async fn set_user_role(
     rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-    Json(req): Json<SetUserRoleRequest>,
+    Json(mut req): Json<admin::UpdateUserRoleRequest>,
 ) -> AppResult<Json<admin::UpdateUserRoleResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
-    // Convert string role to proto enum value
-    let role_i32 = match req.role.as_str() {
-        "root" => synctv_proto::common::UserRole::Root as i32,
-        "admin" => synctv_proto::common::UserRole::Admin as i32,
-        "user" => synctv_proto::common::UserRole::User as i32,
-        _ => return Err(AppError::bad_request(format!("Unknown role: {}", req.role))),
-    };
+    req.user_id = user_id;
     let resp = api
-        .update_user_role(
-            admin::UpdateUserRoleRequest {
-                user_id,
-                role: role_i32,
-            },
-            &auth.user_id,
-            auth.role,
-            &rctx.0,
-        )
+        .update_user_role(req, &auth.user_id, auth.role, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -497,24 +450,16 @@ async fn set_user_password(
     rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-    Json(req): Json<SetUserPasswordRequest>,
+    Json(mut req): Json<admin::UpdateUserPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateUserPasswordResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
-    let reason = req
-        .reason
-        .unwrap_or_else(|| "Admin forced password reset".to_string());
+    req.user_id = user_id;
+    if req.reason.is_empty() {
+        req.reason = "Admin forced password reset".to_string();
+    }
     let resp = api
-        .update_user_password(
-            admin::UpdateUserPasswordRequest {
-                user_id,
-                new_password: req.password,
-                reason,
-            },
-            auth.user_id,
-            auth.role,
-            &rctx.0,
-        )
+        .update_user_password(req, auth.user_id, auth.role, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -525,19 +470,13 @@ async fn set_user_username(
     rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-    Json(req): Json<SetUserUsernameRequest>,
+    Json(mut req): Json<admin::UpdateUserUsernameRequest>,
 ) -> AppResult<Json<admin::UpdateUserUsernameResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
+    req.user_id = user_id;
     let resp = api
-        .update_user_username(
-            admin::UpdateUserUsernameRequest {
-                user_id,
-                new_username: req.username,
-            },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .update_user_username(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -548,7 +487,7 @@ async fn ban_user(
     rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-    Json(req): Json<BanRequest>,
+    Json(mut req): Json<admin::BanUserRequest>,
 ) -> AppResult<Json<admin::BanUserResponse>> {
     validate_path_id(&user_id, "user_id")?;
     if req.reason.len() > 500 {
@@ -558,16 +497,9 @@ async fn ban_user(
     }
 
     let api = require_admin_api(&state)?;
+    req.user_id = user_id;
     let resp = api
-        .ban_user(
-            admin::BanUserRequest {
-                user_id,
-                reason: req.reason,
-            },
-            &auth.user_id,
-            auth.role,
-            &rctx.0,
-        )
+        .ban_user(req, &auth.user_id, auth.role, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -632,23 +564,11 @@ async fn get_user_rooms(
 // Batch User Operations
 // ------------------------------------------------------------------
 
-#[derive(serde::Deserialize)]
-struct BatchBanUsersRequest {
-    user_ids: Vec<String>,
-    #[serde(default)]
-    reason: String,
-}
-
-#[derive(serde::Deserialize)]
-struct BatchDeleteUsersRequest {
-    user_ids: Vec<String>,
-}
-
 async fn batch_ban_users(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Json(req): Json<BatchBanUsersRequest>,
+    Json(req): Json<admin::BatchBanUsersRequest>,
 ) -> AppResult<Json<admin::BatchBanUsersResponse>> {
     if req.user_ids.is_empty() {
         return Err(AppError::bad_request("user_ids cannot be empty"));
@@ -664,15 +584,7 @@ async fn batch_ban_users(
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .batch_ban_users(
-            admin::BatchBanUsersRequest {
-                user_ids: req.user_ids,
-                reason: req.reason,
-            },
-            &auth.user_id,
-            auth.role,
-            &rctx.0,
-        )
+        .batch_ban_users(req, &auth.user_id, auth.role, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -682,7 +594,7 @@ async fn batch_delete_users(
     auth: AuthRoot,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Json(req): Json<BatchDeleteUsersRequest>,
+    Json(req): Json<admin::BatchDeleteUsersRequest>,
 ) -> AppResult<Json<admin::BatchDeleteUsersResponse>> {
     if req.user_ids.is_empty() {
         return Err(AppError::bad_request("user_ids cannot be empty"));
@@ -694,11 +606,9 @@ async fn batch_delete_users(
     let api = require_admin_api(&state)?;
     let resp = api
         .batch_delete_users(
-            admin::BatchDeleteUsersRequest {
-                user_ids: req.user_ids,
-            },
+            req,
             &auth.user_id,
-            synctv_core::models::UserRole::Root, // AuthRoot guarantees caller is Root
+            synctv_core::models::UserRole::Root,
             &rctx.0,
         )
         .await
@@ -782,19 +692,13 @@ async fn set_room_password(
     rctx: ReqCtx,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<SetRoomPasswordAdminRequest>,
+    Json(mut req): Json<admin::UpdateRoomPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateRoomPasswordResponse>> {
     validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
+    req.room_id = room_id;
     let resp = api
-        .update_room_password(
-            admin::UpdateRoomPasswordRequest {
-                room_id,
-                new_password: req.password,
-            },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .update_room_password(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -826,7 +730,7 @@ async fn ban_room(
     rctx: ReqCtx,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<BanRequest>,
+    Json(mut req): Json<admin::BanRoomRequest>,
 ) -> AppResult<Json<admin::BanRoomResponse>> {
     validate_path_id(&room_id, "room_id")?;
     if req.reason.len() > 500 {
@@ -836,15 +740,9 @@ async fn ban_room(
     }
 
     let api = require_admin_api(&state)?;
+    req.room_id = room_id;
     let resp = api
-        .ban_room(
-            admin::BanRoomRequest {
-                room_id,
-                reason: req.reason,
-            },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .ban_room(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -902,18 +800,13 @@ async fn set_room_settings(
     auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<serde_json::Value>,
+    Json(mut req): Json<admin::UpdateRoomSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
     validate_path_id(&room_id, "room_id")?;
-    let settings = serde_json::to_vec(&req)
-        .map_err(|e| AppError::bad_request(format!("Invalid settings JSON: {e}")))?;
-
+    req.room_id = room_id;
     let api = require_admin_api(&state)?;
     let resp = api
-        .update_room_settings(
-            admin::UpdateRoomSettingsRequest { room_id, settings },
-            &auth.user_id,
-        )
+        .update_room_settings(req, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -937,23 +830,11 @@ async fn reset_room_settings(
 // Batch Room Operations
 // ------------------------------------------------------------------
 
-#[derive(serde::Deserialize)]
-struct BatchBanRoomsRequest {
-    room_ids: Vec<String>,
-    #[serde(default)]
-    reason: String,
-}
-
-#[derive(serde::Deserialize)]
-struct BatchDeleteRoomsRequest {
-    room_ids: Vec<String>,
-}
-
 async fn batch_ban_rooms(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Json(req): Json<BatchBanRoomsRequest>,
+    Json(req): Json<admin::BatchBanRoomsRequest>,
 ) -> AppResult<Json<admin::BatchBanRoomsResponse>> {
     if req.room_ids.is_empty() {
         return Err(AppError::bad_request("room_ids cannot be empty"));
@@ -969,14 +850,7 @@ async fn batch_ban_rooms(
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .batch_ban_rooms(
-            admin::BatchBanRoomsRequest {
-                room_ids: req.room_ids,
-                reason: req.reason,
-            },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .batch_ban_rooms(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -986,7 +860,7 @@ async fn batch_delete_rooms(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Json(req): Json<BatchDeleteRoomsRequest>,
+    Json(req): Json<admin::BatchDeleteRoomsRequest>,
 ) -> AppResult<Json<admin::BatchDeleteRoomsResponse>> {
     if req.room_ids.is_empty() {
         return Err(AppError::bad_request("room_ids cannot be empty"));
@@ -997,13 +871,7 @@ async fn batch_delete_rooms(
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .batch_delete_rooms(
-            admin::BatchDeleteRoomsRequest {
-                room_ids: req.room_ids,
-            },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .batch_delete_rooms(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1230,65 +1098,143 @@ mod tests {
     };
     use std::net::SocketAddr;
 
-    // ========== Request Struct Tests ==========
+    // ========== HTTP Proto Request Contract Tests ==========
 
     #[test]
-    fn test_set_user_role_request_deserialization() {
-        let json = r#"{"role":"admin"}"#;
-        let req: SetUserRoleRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.role, "admin");
+    fn test_update_user_role_request_deserialization() {
+        let json = format!(
+            r#"{{"role":{}}}"#,
+            synctv_proto::common::UserRole::Admin as i32
+        );
+        let req: admin::UpdateUserRoleRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(req.user_id, "");
+        assert_eq!(req.role, synctv_proto::common::UserRole::Admin as i32);
     }
 
     #[test]
-    fn test_set_user_role_request_all_roles() {
-        for role in &["root", "admin", "user"] {
-            let json = format!(r#"{{"role":"{role}"}}"#);
-            let req: SetUserRoleRequest = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(req.role, *role);
+    fn test_update_user_role_request_all_roles() {
+        let role_mappings = [
+            (synctv_proto::common::UserRole::Root as i32),
+            (synctv_proto::common::UserRole::Admin as i32),
+            (synctv_proto::common::UserRole::User as i32),
+        ];
+
+        for expected in role_mappings {
+            let json = format!(r#"{{"role":{expected}}}"#);
+            let req: admin::UpdateUserRoleRequest =
+                serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(req.role, expected);
         }
     }
 
     #[test]
-    fn test_set_user_password_request_deserialization() {
+    fn test_update_user_role_request_rejects_string_role() {
+        let err = serde_json::from_str::<admin::UpdateUserRoleRequest>(r#"{"role":"admin"}"#)
+            .expect_err("string role should be rejected");
+        assert!(err.is_data());
+    }
+
+    #[test]
+    fn test_update_user_password_request_deserialization() {
         let json = r#"{"password":"newpassword123"}"#;
-        let req: SetUserPasswordRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.password, "newpassword123");
+        let req: admin::UpdateUserPasswordRequest =
+            serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.user_id, "");
+        assert_eq!(req.new_password, "newpassword123");
+        assert_eq!(req.reason, "");
     }
 
     #[test]
-    fn test_set_user_username_request_deserialization() {
+    fn test_update_user_username_request_deserialization() {
         let json = r#"{"username":"newname"}"#;
-        let req: SetUserUsernameRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.username, "newname");
+        let req: admin::UpdateUserUsernameRequest =
+            serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.user_id, "");
+        assert_eq!(req.new_username, "newname");
     }
 
     #[test]
-    fn test_ban_request_with_reason() {
+    fn test_ban_user_request_with_reason() {
         let json = r#"{"reason":"spamming"}"#;
-        let req: BanRequest = serde_json::from_str(json).expect("deserialize");
+        let req: admin::BanUserRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.user_id, "");
         assert_eq!(req.reason, "spamming");
     }
 
     #[test]
-    fn test_ban_request_empty_reason_default() {
+    fn test_ban_user_request_empty_reason_default() {
         let json = r"{}";
-        let req: BanRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.reason, ""); // #[serde(default)]
+        let req: admin::BanUserRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.reason, "");
     }
 
     #[test]
-    fn test_set_room_password_request_deserialization() {
+    fn test_update_room_password_request_deserialization() {
         let json = r#"{"password":"roompass"}"#;
-        let req: SetRoomPasswordAdminRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.password, "roompass");
+        let req: admin::UpdateRoomPasswordRequest =
+            serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.room_id, "");
+        assert_eq!(req.new_password, "roompass");
     }
 
     #[test]
-    fn test_set_room_password_empty_clears_password() {
-        // Empty password means remove password
+    fn test_update_room_password_empty_clears_password() {
         let json = r"{}";
-        let req: SetRoomPasswordAdminRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.password, ""); // #[serde(default)]
+        let req: admin::UpdateRoomPasswordRequest =
+            serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.new_password, "");
+    }
+
+    #[test]
+    fn test_batch_ban_users_request_deserialization() {
+        let json = r#"{"user_ids":["u1","u2"],"reason":"violation"}"#;
+        let req: admin::BatchBanUsersRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.user_ids, vec!["u1", "u2"]);
+        assert_eq!(req.reason, "violation");
+    }
+
+    #[test]
+    fn test_batch_delete_users_request_deserialization() {
+        let json = r#"{"user_ids":["u1","u2"]}"#;
+        let req: admin::BatchDeleteUsersRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.user_ids, vec!["u1", "u2"]);
+    }
+
+    #[test]
+    fn test_ban_room_request_with_reason() {
+        let json = r#"{"reason":"abuse"}"#;
+        let req: admin::BanRoomRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.room_id, "");
+        assert_eq!(req.reason, "abuse");
+    }
+
+    #[test]
+    fn test_batch_ban_rooms_request_deserialization() {
+        let json = r#"{"room_ids":["r1","r2"],"reason":"cleanup"}"#;
+        let req: admin::BatchBanRoomsRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.room_ids, vec!["r1", "r2"]);
+        assert_eq!(req.reason, "cleanup");
+    }
+
+    #[test]
+    fn test_batch_delete_rooms_request_deserialization() {
+        let json = r#"{"room_ids":["r1","r2"]}"#;
+        let req: admin::BatchDeleteRoomsRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.room_ids, vec!["r1", "r2"]);
+    }
+
+    #[test]
+    fn test_update_room_settings_request_accepts_raw_json_body() {
+        let json = r#"{"theme":"dark","guest_enabled":true}"#;
+        let req: admin::UpdateRoomSettingsRequest =
+            serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.room_id, "");
+        let settings_json: serde_json::Value =
+            serde_json::from_slice(&req.settings).expect("settings bytes should contain JSON");
+        assert_eq!(
+            settings_json,
+            serde_json::json!({"theme":"dark","guest_enabled":true})
+        );
     }
 
     // ========== Query Struct Tests ==========
@@ -1437,41 +1383,6 @@ mod tests {
 
         let long_reason = "a".repeat(501);
         assert!(long_reason.len() > 500);
-    }
-
-    // ========== Role Conversion Tests ==========
-
-    #[test]
-    fn test_role_string_to_proto_mapping() {
-        // Verify the mapping logic used in set_user_role handler
-        let role_mappings = vec![
-            ("root", synctv_proto::common::UserRole::Root as i32),
-            ("admin", synctv_proto::common::UserRole::Admin as i32),
-            ("user", synctv_proto::common::UserRole::User as i32),
-        ];
-        for (role_str, expected_i32) in role_mappings {
-            let actual_opt = match role_str {
-                "root" => Some(synctv_proto::common::UserRole::Root as i32),
-                "admin" => Some(synctv_proto::common::UserRole::Admin as i32),
-                "user" => Some(synctv_proto::common::UserRole::User as i32),
-                _ => None,
-            };
-            let actual = actual_opt.expect("Role must be one of root/admin/user");
-            assert_eq!(actual, expected_i32, "Role '{role_str}' mapping mismatch");
-        }
-    }
-
-    #[test]
-    fn test_unknown_role_returns_error() {
-        let role_str = "superuser";
-        let result = match role_str {
-            "root" | "admin" | "user" => Ok(()),
-            _ => Err(AppError::bad_request(format!("Unknown role: {role_str}"))),
-        };
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.message.contains("Unknown role"));
     }
 
     // ========== Status Conversion Tests ==========

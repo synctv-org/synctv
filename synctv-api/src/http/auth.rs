@@ -6,18 +6,9 @@ use axum::{extract::State, Json};
 
 use super::{AppError, AppResult, AppState};
 use crate::proto::client::{
-    LoginRequest, LoginResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
-    RegisterResponse,
+    LoginRequest, LoginResponse, LogoutResponse, RefreshTokenRequest, RefreshTokenResponse,
+    RegisterRequest, RegisterResponse,
 };
-
-/// Simple success response for logout
-#[derive(serde::Serialize)]
-pub struct LogoutResponse {
-    pub success: bool,
-    /// Non-empty when logout succeeded but token invalidation may be delayed
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub message: String,
-}
 
 /// Extract the real client IP from a request.
 ///
@@ -271,8 +262,7 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).expect("serialize");
         assert!(json.contains(r#""success":true"#));
-        // Empty message should be omitted
-        assert!(!json.contains("message"));
+        assert!(json.contains(r#""message":""#));
     }
 
     #[test]

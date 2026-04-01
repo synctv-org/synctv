@@ -21,9 +21,9 @@
 
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -163,8 +163,9 @@ impl RoomSettingsService {
         let mut receiver = inv_service.subscribe();
         let cancel = self.invalidation_runtime.cancel.lock().await.child_token();
 
-        let listener_handle =
-            crate::spawn::spawn_monitored("room_settings_invalidation_listener", async move {
+        let listener_handle = crate::spawn::spawn_monitored(
+            "room_settings_invalidation_listener",
+            async move {
                 const LAG_FLUSH_MIN_INTERVAL: std::time::Duration =
                     std::time::Duration::from_secs(5);
                 let mut last_lag_flush = std::time::Instant::now()
@@ -220,7 +221,8 @@ impl RoomSettingsService {
                         }
                     }
                 }
-            });
+            },
+        );
 
         *self.invalidation_runtime.listener_handle.lock().await = Some(listener_handle);
         Ok(())
@@ -289,23 +291,20 @@ impl RoomSettingsService {
 
         let settings = self
             .single_flight
-            .do_work(
-                sf_key,
-                async move {
-                    // Double-check cache (another task may have populated it)
-                    if let Some(settings) = cache.get(&room_id_clone).await {
-                        return Ok(settings);
-                    }
+            .do_work(sf_key, async move {
+                // Double-check cache (another task may have populated it)
+                if let Some(settings) = cache.get(&room_id_clone).await {
+                    return Ok(settings);
+                }
 
-                    // Load from database
-                    let settings = repo.get(&room_id_clone).await.map_err(|e| e.to_string())?;
+                // Load from database
+                let settings = repo.get(&room_id_clone).await.map_err(|e| e.to_string())?;
 
-                    // Store in cache
-                    cache.insert(room_id_clone, settings.clone()).await;
+                // Store in cache
+                cache.insert(room_id_clone, settings.clone()).await;
 
-                    Ok(settings)
-                },
-            )
+                Ok(settings)
+            })
             .await
             .map_err(|error| match error {
                 crate::cache::SingleFlightError::WorkerFailed => Error::Internal(
@@ -624,7 +623,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalidation_listener_stops_after_shutdown() {
-        let (service, invalidation_service, room_id) = make_room_settings_service_for_lifecycle_tests();
+        let (service, invalidation_service, room_id) =
+            make_room_settings_service_for_lifecycle_tests();
 
         service
             .start()
@@ -658,7 +658,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_can_restart_room_settings_invalidation_listener_after_shutdown() {
-        let (service, invalidation_service, room_id) = make_room_settings_service_for_lifecycle_tests();
+        let (service, invalidation_service, room_id) =
+            make_room_settings_service_for_lifecycle_tests();
 
         service
             .start()

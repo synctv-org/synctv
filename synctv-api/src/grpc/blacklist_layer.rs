@@ -175,9 +175,10 @@ where
                         Ok(claims) => claims,
                         Err(e) => {
                             tracing::warn!("gRPC request rejected: JWT validation failed: {e}");
-                            let response = tonic::Status::unauthenticated("Invalid or expired token")
-                                .into_http::<tonic::body::Body>()
-                                .map(AxumBody::new);
+                            let response =
+                                tonic::Status::unauthenticated("Invalid or expired token")
+                                    .into_http::<tonic::body::Body>()
+                                    .map(AxumBody::new);
                             return Ok(response);
                         }
                     };

@@ -75,7 +75,10 @@ fn make_user(username: &str) -> User {
     }
 }
 
-async fn create_top_level_playlist(pool: &PgPool, room_id: &synctv_core::models::RoomId) -> Playlist {
+async fn create_top_level_playlist(
+    pool: &PgPool,
+    room_id: &synctv_core::models::RoomId,
+) -> Playlist {
     let playlist = Playlist {
         id: synctv_core::models::PlaylistId::new(),
         room_id: room_id.clone(),
@@ -409,13 +412,7 @@ async fn test_switch_with_empty_target_clears_playback_state() {
         .unwrap();
 
     let state = playback_service
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            None,
-            None,
-            Vec::new(),
-        )
+        .switch(room.id.clone(), owner.id.clone(), None, None, Vec::new())
         .await
         .unwrap();
 

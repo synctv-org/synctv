@@ -213,8 +213,13 @@ async fn test_node_epoch_fencing() {
     let redis_client =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client");
 
-    let registry = NodeRegistry::new(redis_client, "fencing_node".to_string(), 30, &redis.key_prefix)
-        .expect("Failed to create registry");
+    let registry = NodeRegistry::new(
+        redis_client,
+        "fencing_node".to_string(),
+        30,
+        &redis.key_prefix,
+    )
+    .expect("Failed to create registry");
 
     // First registration
     registry
@@ -305,12 +310,27 @@ async fn test_leader_election_single_leader() {
         renew_interval_secs: 1,
     };
 
-    let elector_a =
-        LeaderElector::with_config(conn_a, "node_a".to_string(), config_a, &redis.key_prefix, false);
-    let elector_b =
-        LeaderElector::with_config(conn_b, "node_b".to_string(), config_b, &redis.key_prefix, false);
-    let elector_c =
-        LeaderElector::with_config(conn_c, "node_c".to_string(), config_c, &redis.key_prefix, false);
+    let elector_a = LeaderElector::with_config(
+        conn_a,
+        "node_a".to_string(),
+        config_a,
+        &redis.key_prefix,
+        false,
+    );
+    let elector_b = LeaderElector::with_config(
+        conn_b,
+        "node_b".to_string(),
+        config_b,
+        &redis.key_prefix,
+        false,
+    );
+    let elector_c = LeaderElector::with_config(
+        conn_c,
+        "node_c".to_string(),
+        config_c,
+        &redis.key_prefix,
+        false,
+    );
 
     let cancel_a = CancellationToken::new();
     let cancel_b = CancellationToken::new();

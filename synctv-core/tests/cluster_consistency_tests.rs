@@ -258,21 +258,18 @@ async fn test_permission_change_cross_replica_sync() {
 
     // Node B: Query permissions again (should fetch fresh data from DB)
     // Retry a few times to allow for Pub/Sub propagation delays under heavy load
-    let perms_b_after = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        async {
-            loop {
-                let perms = permission_service_b
-                    .get_user_permissions(&room.id, &member_user.id)
-                    .await
-                    .expect("Failed to get updated permissions");
-                if perms != perms_b_initial {
-                    return perms;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let perms_b_after = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let perms = permission_service_b
+                .get_user_permissions(&room.id, &member_user.id)
+                .await
+                .expect("Failed to get updated permissions");
+            if perms != perms_b_initial {
+                return perms;
             }
-        },
-    )
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
     .await
     .expect("timed out waiting for permission change to propagate to node B");
 

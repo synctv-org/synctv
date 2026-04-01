@@ -313,9 +313,9 @@ impl NotificationRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synctv_core_testing::create_test_pool;
     use crate::models::notification::{MarkAllAsReadRequest, MarkAsReadRequest};
     use crate::models::pagination::PageParams;
+    use synctv_core_testing::create_test_pool;
 
     // ========== Unit Tests (No Database Required) ==========
 

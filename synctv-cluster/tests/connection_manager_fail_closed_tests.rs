@@ -8,10 +8,10 @@ mod integration_test_helpers;
 use std::time::Duration;
 
 use integration_test_helpers::TestRedis;
-use synctv_core_testing::test_redis_key_prefix;
 use redis::aio::{ConnectionManager as RedisConnectionManager, ConnectionManagerConfig};
 use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core_testing::test_redis_key_prefix;
 
 fn uid(s: &str) -> UserId {
     UserId::from_string(s.to_string())
@@ -215,8 +215,7 @@ async fn test_join_room_move_removes_old_room_from_distributed_index() {
     let redis = TestRedis::start().await;
     let conn = redis_connection(&redis.redis_url).await;
     let prefix = test_redis_key_prefix("move-room-idx");
-    let manager =
-        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
+    let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     let user = uid("user1");
     let room_a = rid("room_a");

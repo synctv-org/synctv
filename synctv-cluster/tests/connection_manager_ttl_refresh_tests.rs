@@ -154,7 +154,10 @@ async fn test_ttl_refresh_idempotent() {
 
     // Verify counter values are still correct
     let mut test_conn = conn.clone();
-    let total: Option<i64> = test_conn.get(format!("{prefix}connections:total")).await.unwrap();
+    let total: Option<i64> = test_conn
+        .get(format!("{prefix}connections:total"))
+        .await
+        .unwrap();
     assert_eq!(total, Some(5));
 }
 
@@ -173,8 +176,8 @@ async fn test_ttl_refresh_idempotent() {
 async fn test_shutdown_cancels_ttl_refresh_task() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), &prefix);
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), &prefix);
 
     // Register a connection to ensure TTL task has work to do
     let user_id = uid("user_1");
@@ -206,8 +209,8 @@ async fn test_shutdown_cancels_ttl_refresh_task() {
 async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), &prefix);
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), &prefix);
 
     // Register some connections
     for i in 0..5 {
@@ -239,8 +242,7 @@ async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
 async fn test_ttl_shutdown_is_idempotent() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager =
-        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
+    let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     // Call shutdown multiple times
     manager.shutdown().await;
@@ -326,8 +328,8 @@ async fn test_shutdown_during_active_operations() {
 async fn test_shutdown_cancels_disconnect_retry_task() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), &prefix);
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), &prefix);
 
     // Register and then force disconnect signal
     let user_id = uid("disconnect_user");
@@ -359,8 +361,8 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
 async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), &prefix);
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), &prefix);
     let user_id = uid("user_zero");
     let room_id = rid("room_zero");
 

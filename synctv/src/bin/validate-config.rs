@@ -194,10 +194,7 @@ mod tests {
     fn load_config_for_validation_rejects_invalid_env_override() {
         let result = load_config_for_validation_with_env(
             &Some("config.yaml".to_string()),
-            &HashMap::from([(
-                "SYNCTV_SERVER_PORT".to_string(),
-                "invalid-port".to_string(),
-            )]),
+            &HashMap::from([("SYNCTV_SERVER_PORT".to_string(), "invalid-port".to_string())]),
         );
         assert!(
             result.is_err(),

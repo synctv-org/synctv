@@ -183,30 +183,36 @@ impl DynamicFolder for FakeDynamicProvider {
         _page: usize,
         _page_size: usize,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
-        Ok(match target.map(decode_dynamic_target).as_deref().unwrap_or_default() {
-            "" => vec![DirectoryItem {
-                name: self.folder_cursor().to_string(),
-                item_type: ItemType::Playlist,
-                target: dynamic_target(self.folder_cursor()),
-                size: None,
-                thumbnail: None,
-                modified_at: None,
-            }],
-            cursor if cursor == self.folder_cursor() => vec![DirectoryItem {
-                name: self
-                    .first_item_path()
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(self.first_item_path())
-                    .to_string(),
-                item_type: ItemType::Media,
-                target: dynamic_target(self.first_item_path()),
-                size: None,
-                thumbnail: None,
-                modified_at: None,
-            }],
-            _ => Vec::new(),
-        })
+        Ok(
+            match target
+                .map(decode_dynamic_target)
+                .as_deref()
+                .unwrap_or_default()
+            {
+                "" => vec![DirectoryItem {
+                    name: self.folder_cursor().to_string(),
+                    item_type: ItemType::Playlist,
+                    target: dynamic_target(self.folder_cursor()),
+                    size: None,
+                    thumbnail: None,
+                    modified_at: None,
+                }],
+                cursor if cursor == self.folder_cursor() => vec![DirectoryItem {
+                    name: self
+                        .first_item_path()
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(self.first_item_path())
+                        .to_string(),
+                    item_type: ItemType::Media,
+                    target: dynamic_target(self.first_item_path()),
+                    size: None,
+                    thumbnail: None,
+                    modified_at: None,
+                }],
+                _ => Vec::new(),
+            },
+        )
     }
 
     async fn resolve_item(
@@ -336,8 +342,11 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     );
     let providers_manager = Arc::new(providers_manager);
 
-    let mut room_service =
-        RoomService::new_with_providers(pool.clone(), (*user_service).clone(), providers_manager.clone());
+    let mut room_service = RoomService::new_with_providers(
+        pool.clone(),
+        (*user_service).clone(),
+        providers_manager.clone(),
+    );
     room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
@@ -350,7 +359,10 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         .await
         .unwrap();
 
-    let owner = user_repo.create(&make_user("api_dynamic_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("api_dynamic_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
         .create_room(
             "API Dynamic Playback".to_string(),
@@ -362,7 +374,8 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         .await
         .unwrap();
 
-    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
+    let playlist =
+        create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
 
     let client_api = ClientApiImpl::new(
         user_service,
@@ -402,7 +415,10 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     assert_eq!(state.playing_media_id, "");
     assert_eq!(state.playing_playlist_id, playlist.id.as_str());
     let state_target: serde_json::Value = serde_json::from_slice(&state.target).unwrap();
-    assert_eq!(state_target, serde_json::json!({"relative_path":"/episode-1.mp4"}));
+    assert_eq!(
+        state_target,
+        serde_json::json!({"relative_path":"/episode-1.mp4"})
+    );
 
     let playback_result = response.playback_result.unwrap();
     assert_eq!(playback_result.playlist_id, playlist.id.as_str());
@@ -415,7 +431,10 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     );
     let direct = playback_result.playback_infos.get("direct").unwrap();
     assert_eq!(direct.urls.len(), 1);
-    assert_eq!(direct.urls[0].url, "https://fake_dynamic_default.example.com/episode-1.mp4");
+    assert_eq!(
+        direct.urls[0].url,
+        "https://fake_dynamic_default.example.com/episode-1.mp4"
+    );
 }
 
 #[tokio::test]
@@ -437,8 +456,11 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
     );
     let providers_manager = Arc::new(providers_manager);
 
-    let mut room_service =
-        RoomService::new_with_providers(pool.clone(), (*user_service).clone(), providers_manager.clone());
+    let mut room_service = RoomService::new_with_providers(
+        pool.clone(),
+        (*user_service).clone(),
+        providers_manager.clone(),
+    );
     room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
@@ -451,7 +473,10 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
         .await
         .unwrap();
 
-    let owner = user_repo.create(&make_user("api_dynamic_path_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("api_dynamic_path_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
         .create_room(
             "API Dynamic Path".to_string(),
@@ -463,7 +488,8 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
         .await
         .unwrap();
 
-    let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
+    let playlist =
+        create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
 
     let client_api = ClientApiImpl::new(
         user_service,
@@ -495,7 +521,10 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
     assert_eq!(response.dynamic_items[0].name, "episode-1.mp4");
     let item_target: serde_json::Value =
         serde_json::from_slice(&response.dynamic_items[0].target).unwrap();
-    assert_eq!(item_target, serde_json::json!({"relative_path":"season-1/episode-1.mp4"}));
+    assert_eq!(
+        item_target,
+        serde_json::json!({"relative_path":"season-1/episode-1.mp4"})
+    );
 
     assert_eq!(response.current_path.len(), 2);
     assert_eq!(response.current_path[0].playlist_id, playlist.id.as_str());
@@ -527,8 +556,11 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
     );
     let providers_manager = Arc::new(providers_manager);
 
-    let mut room_service =
-        RoomService::new_with_providers(pool.clone(), (*user_service).clone(), providers_manager.clone());
+    let mut room_service = RoomService::new_with_providers(
+        pool.clone(),
+        (*user_service).clone(),
+        providers_manager.clone(),
+    );
     room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
@@ -623,8 +655,11 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
     );
     let providers_manager = Arc::new(providers_manager);
 
-    let mut room_service =
-        RoomService::new_with_providers(pool.clone(), (*user_service).clone(), providers_manager.clone());
+    let mut room_service = RoomService::new_with_providers(
+        pool.clone(),
+        (*user_service).clone(),
+        providers_manager.clone(),
+    );
     room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
@@ -688,7 +723,10 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
     assert_eq!(response.dynamic_items[0].name, "bound-season-1");
     let item_target: serde_json::Value =
         serde_json::from_slice(&response.dynamic_items[0].target).unwrap();
-    assert_eq!(item_target, serde_json::json!({"relative_path":"bound-season-1"}));
+    assert_eq!(
+        item_target,
+        serde_json::json!({"relative_path":"bound-season-1"})
+    );
 }
 
 #[tokio::test]
@@ -708,7 +746,10 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
     room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
-    let owner = user_repo.create(&make_user("api_root_items_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("api_root_items_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
         .create_room(
             "API Root Items".to_string(),

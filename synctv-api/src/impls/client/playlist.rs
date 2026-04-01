@@ -1,7 +1,7 @@
 //! Playlist operations: create, update, delete, list playlists
 
-use synctv_core::models::{PermissionBits, UserId};
 use serde_json::Value as JsonValue;
+use synctv_core::models::{PermissionBits, UserId};
 
 use super::convert::playlist_to_proto;
 use super::ClientApiImpl;

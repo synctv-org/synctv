@@ -1615,9 +1615,7 @@ mod tests {
             .with_position(-1) // Auto-position
             .build();
 
-        let result = playlist_repo
-            .create_with_executor(&child_auto, &pool)
-            .await;
+        let result = playlist_repo.create_with_executor(&child_auto, &pool).await;
         assert!(result.is_err());
 
         // Create with explicit position should succeed

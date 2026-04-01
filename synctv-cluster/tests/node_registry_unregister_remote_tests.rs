@@ -147,11 +147,9 @@ async fn test_remote_writes_invalidate_cached_node_view_immediately() {
         .expect("initial get_all_nodes should succeed");
     assert!(initial.is_empty(), "registry should start empty");
 
-    let remote = synctv_cluster::NodeInfo::new(
-        "peer-node".to_string(),
-        "10.0.0.9:8080".to_string(),
-    )
-    .with_epoch(1);
+    let remote =
+        synctv_cluster::NodeInfo::new("peer-node".to_string(), "10.0.0.9:8080".to_string())
+            .with_epoch(1);
     registry
         .register_remote(remote.clone())
         .await

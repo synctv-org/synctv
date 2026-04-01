@@ -4,16 +4,10 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use serde::Deserialize;
 
 use crate::http::{middleware::AuthUser, AppResult, AppState};
 
-#[derive(Debug, Deserialize)]
-pub struct BanMemberBody {
-    pub user_id: String,
-    #[serde(default)]
-    pub reason: String,
-}
+pub type BanMemberBody = crate::proto::client::BanMemberRequest;
 
 /// Kick a member from a room
 pub async fn kick_member(
@@ -35,47 +29,16 @@ pub async fn kick_member(
     Ok(Json(resp))
 }
 
-/// Set member permissions / role
-#[derive(Debug, Deserialize)]
-pub struct SetMemberPermissionsRequest {
-    #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub added_permissions: u64,
-    #[serde(default)]
-    pub removed_permissions: u64,
-    #[serde(default)]
-    pub admin_added_permissions: u64,
-    #[serde(default)]
-    pub admin_removed_permissions: u64,
-}
-
 pub async fn set_member_permissions(
     auth: AuthUser,
     State(state): State<AppState>,
     Path((room_id, target_user_id)): Path<(String, String)>,
-    Json(req): Json<SetMemberPermissionsRequest>,
+    Json(mut req): Json<crate::proto::client::UpdateMemberPermissionsRequest>,
 ) -> AppResult<Json<crate::proto::client::UpdateMemberPermissionsResponse>> {
+    req.user_id = target_user_id;
     let resp = state
         .client_api
-        .update_member_permissions(
-            auth.user_id.as_str(),
-            &room_id,
-            crate::proto::client::UpdateMemberPermissionsRequest {
-                user_id: target_user_id,
-                role: match req.role.as_str() {
-                    "creator" => synctv_proto::common::RoomMemberRole::Creator as i32,
-                    "admin" => synctv_proto::common::RoomMemberRole::Admin as i32,
-                    "member" => synctv_proto::common::RoomMemberRole::Member as i32,
-                    "guest" => synctv_proto::common::RoomMemberRole::Guest as i32,
-                    _ => synctv_proto::common::RoomMemberRole::Unspecified as i32,
-                },
-                added_permissions: req.added_permissions,
-                removed_permissions: req.removed_permissions,
-                admin_added_permissions: req.admin_added_permissions,
-                admin_removed_permissions: req.admin_removed_permissions,
-            },
-        )
+        .update_member_permissions(auth.user_id.as_str(), &room_id, req)
         .await
         .map_err(crate::http::error::map_api_error)?;
     Ok(Json(resp))
@@ -87,12 +50,8 @@ pub async fn ban_member(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(body): Json<BanMemberBody>,
+    Json(req): Json<BanMemberBody>,
 ) -> AppResult<Json<crate::proto::client::BanMemberResponse>> {
-    let req = crate::proto::client::BanMemberRequest {
-        user_id: body.user_id,
-        reason: body.reason,
-    };
     let resp = state
         .client_api
         .ban_member(auth.user_id.as_str(), &room_id, req)

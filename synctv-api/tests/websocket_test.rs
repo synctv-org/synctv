@@ -648,7 +648,7 @@ mod websocket_e2e {
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
     use synctv_core_testing::{
-        create_test_pool_with_db_and_label, start_redis_url_with_label, test_redis_key_prefix,
+        create_test_pool_with_options_and_label, start_redis_url_with_label, test_redis_key_prefix,
         RedisContainer, TestContainer,
     };
     use synctv_proto::client::{
@@ -659,6 +659,7 @@ mod websocket_e2e {
 
     const TEST_JWT_SECRET: &str =
         "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
+    const TEST_DB_MAX_CONNECTIONS: u32 = 5;
 
     /// Lightweight test infrastructure for E2E tests.
     /// Starts Postgres and Redis containers, runs migrations, and provides connections.
@@ -674,8 +675,13 @@ mod websocket_e2e {
 
     impl TestInfra {
         async fn new() -> Self {
-            let (postgres, pool) =
-                create_test_pool_with_db_and_label("synctv_test", "api-ws-rate-limiter").await;
+            let (postgres, pool) = create_test_pool_with_options_and_label(
+                "synctv_test",
+                "api-ws-rate-limiter",
+                TEST_DB_MAX_CONNECTIONS,
+                std::time::Duration::from_secs(30),
+            )
+            .await;
             let (redis, redis_url) = start_redis_url_with_label("api-ws-rate-limiter").await;
 
             Self {
@@ -913,8 +919,7 @@ mod websocket_e2e {
         let connection_manager_ret = connection_manager.clone();
 
         // Rate limiter (in-memory only for tests)
-        let rate_limiter =
-            RateLimiter::in_memory_only(format!("{redis_key_prefix}ws-rate-limit:"));
+        let rate_limiter = RateLimiter::in_memory_only(format!("{redis_key_prefix}ws-rate-limit:"));
 
         // Build AppState
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
@@ -926,8 +931,9 @@ mod websocket_e2e {
         let provider_instance_repo = Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
         );
-        let provider_instance_manager =
-            Arc::new(synctv_core::service::RemoteProviderManager::new(provider_instance_repo));
+        let provider_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
+            provider_instance_repo,
+        ));
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
         let providers = synctv_core::provider::ProviderSet {
@@ -3697,7 +3703,7 @@ mod websocket_e2e {
     #[ignore = "Requires Docker"]
     async fn test_ws_valid_token_query_auth_succeeds() {
         let infra = TestInfra::new().await;
-        let server = setup_e2e_server(&infra).await;
+        let mut server = setup_e2e_server(&infra).await;
 
         let (user_id, token) =
             register_test_user(&server.user_service, &server.jwt_service, "valid_auth_user").await;
@@ -3726,6 +3732,8 @@ mod websocket_e2e {
         );
 
         ws.close(None).await.expect("close");
+        server.shutdown().await;
+        infra.cleanup().await;
     }
 
     // ========================================================================
@@ -3909,7 +3917,7 @@ mod websocket_connection_limit_timing {
     use synctv_core::service::rate_limit::RateLimiter;
     use synctv_core::service::{RoomService, UserService};
     use synctv_core_testing::{
-        create_test_pool_with_db_and_label, start_redis_url_with_label, test_redis_key_prefix,
+        create_test_pool_with_options_and_label, start_redis_url_with_label, test_redis_key_prefix,
         RedisContainer, TestContainer,
     };
 
@@ -3917,6 +3925,7 @@ mod websocket_connection_limit_timing {
 
     const TEST_JWT_SECRET: &str =
         "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
+    const TEST_DB_MAX_CONNECTIONS: u32 = 5;
 
     /// Create a minimal `ChatService` for tests.
     /// Create a minimal `ChatService` for tests.
@@ -3963,8 +3972,13 @@ mod websocket_connection_limit_timing {
 
     impl TestInfra {
         async fn new() -> Self {
-            let (postgres, pool) =
-                create_test_pool_with_db_and_label("synctv_test", "api-ws-connection-limit").await;
+            let (postgres, pool) = create_test_pool_with_options_and_label(
+                "synctv_test",
+                "api-ws-connection-limit",
+                TEST_DB_MAX_CONNECTIONS,
+                std::time::Duration::from_secs(30),
+            )
+            .await;
             let (redis, redis_url) = start_redis_url_with_label("api-ws-connection-limit").await;
 
             Self {
@@ -4101,8 +4115,7 @@ mod websocket_connection_limit_timing {
         );
         let connection_manager_ret = connection_manager.clone();
 
-        let rate_limiter =
-            RateLimiter::in_memory_only(format!("{redis_key_prefix}ws-rate-limit:"));
+        let rate_limiter = RateLimiter::in_memory_only(format!("{redis_key_prefix}ws-rate-limit:"));
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             jwt_service.clone(),
         )));
@@ -4111,8 +4124,9 @@ mod websocket_connection_limit_timing {
         let provider_instance_repo = Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
         );
-        let provider_instance_manager =
-            Arc::new(synctv_core::service::RemoteProviderManager::new(provider_instance_repo));
+        let provider_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
+            provider_instance_repo,
+        ));
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
         let providers = synctv_core::provider::ProviderSet {

@@ -143,9 +143,12 @@ impl ClientApiImpl {
                 ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
             })?
         } else {
-            providers_manager.get_by_type(provider_name).await.ok_or_else(|| {
-                ApiError::NotFound(format!("Provider '{provider_name}' not found"))
-            })?
+            providers_manager
+                .get_by_type(provider_name)
+                .await
+                .ok_or_else(|| {
+                    ApiError::NotFound(format!("Provider '{provider_name}' not found"))
+                })?
         };
 
         let ctx = self.build_provider_context(user_id, room_id).await;
@@ -207,13 +210,7 @@ impl ClientApiImpl {
 
         self.room_service
             .playback_service()
-            .switch(
-                rid.clone(),
-                uid.clone(),
-                media_id,
-                playlist_id,
-                req.target,
-            )
+            .switch(rid.clone(), uid.clone(), media_id, playlist_id, req.target)
             .await
             .map_err(ApiError::from)?;
 

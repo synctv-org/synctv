@@ -85,7 +85,6 @@ where
                 None => SingleFlightError::WorkerFailed,
             })
     }
-
 }
 
 impl<K, V, E> Default for SingleFlight<K, V, E>

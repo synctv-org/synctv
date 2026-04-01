@@ -1537,7 +1537,10 @@ mod tests {
             .expect("shutdown should cancel heartbeat task promptly");
         // Node is still registered because shutdown awaits heartbeat before unregistering.
         assert!(
-            registry.test_get_local("shutdown-race-node").await.is_some(),
+            registry
+                .test_get_local("shutdown-race-node")
+                .await
+                .is_some(),
             "shutdown should still be waiting for heartbeat, node not yet unregistered"
         );
 
@@ -1550,7 +1553,10 @@ mod tests {
 
         // The late re-registration must be cleaned up by unregister.
         assert!(
-            registry.test_get_local("shutdown-race-node").await.is_none(),
+            registry
+                .test_get_local("shutdown-race-node")
+                .await
+                .is_none(),
             "shutdown must unregister the node even after a late heartbeat re-registration"
         );
     }

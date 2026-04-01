@@ -313,14 +313,19 @@ mod tests {
     fn provider() -> Arc<AlistProvider> {
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        Arc::new(AlistProvider::new(Arc::new(RemoteProviderManager::new(repo))))
+        Arc::new(AlistProvider::new(Arc::new(RemoteProviderManager::new(
+            repo,
+        ))))
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn logout_rejects_empty_server_id() {
         let (_postgres, pool) = create_test_pool().await;
-        let api = AlistApiImpl::new(provider(), Arc::new(UserProviderCredentialRepository::new(pool)));
+        let api = AlistApiImpl::new(
+            provider(),
+            Arc::new(UserProviderCredentialRepository::new(pool)),
+        );
 
         let err = api
             .logout(

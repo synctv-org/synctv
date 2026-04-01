@@ -9,8 +9,8 @@ use super::{
         ProviderClientManager,
     },
     store::{ProviderStoreExt, VersionedPlayback},
-    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider,
-    NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
+    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider, NextPlayItem,
+    PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
@@ -685,9 +685,8 @@ impl DynamicFolder for AlistProvider {
         playlist: &crate::models::Playlist,
         target: &[u8],
     ) -> Result<Option<NextPlayItem>, ProviderError> {
-        let relative_path = Self::decode_target(Some(target))?.ok_or_else(|| {
-            ProviderError::InvalidConfig("Alist target is required".to_string())
-        })?;
+        let relative_path = Self::decode_target(Some(target))?
+            .ok_or_else(|| ProviderError::InvalidConfig("Alist target is required".to_string()))?;
         validate_path_for_traversal(&relative_path)
             .map_err(|e| ProviderError::InvalidConfig(format!("Invalid relative path: {e}")))?;
 
@@ -769,9 +768,8 @@ impl DynamicFolder for AlistProvider {
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         use crate::models::PlayMode;
-        let relative_path = Self::decode_target(Some(target))?.ok_or_else(|| {
-            ProviderError::InvalidConfig("Alist target is required".to_string())
-        })?;
+        let relative_path = Self::decode_target(Some(target))?
+            .ok_or_else(|| ProviderError::InvalidConfig("Alist target is required".to_string()))?;
 
         // Validate relative_path BEFORE any path operations to prevent traversal attacks
         validate_path_for_traversal(&relative_path)
@@ -848,7 +846,8 @@ impl DynamicFolder for AlistProvider {
                                 target: next.target.clone(),
                             }.strip_credentials()));
                         }
-                    } else if let Some(idx) = page_items.iter().position(|item| item.target == target)
+                    } else if let Some(idx) =
+                        page_items.iter().position(|item| item.target == target)
                     {
                         found_current = true;
                         if let Some(next) = page_items

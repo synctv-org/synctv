@@ -76,7 +76,10 @@ fn make_user(username: &str) -> User {
     }
 }
 
-async fn create_top_level_playlist(pool: &PgPool, room_id: &synctv_core::models::RoomId) -> Playlist {
+async fn create_top_level_playlist(
+    pool: &PgPool,
+    room_id: &synctv_core::models::RoomId,
+) -> Playlist {
     let playlist = Playlist {
         id: synctv_core::models::PlaylistId::new(),
         room_id: room_id.clone(),

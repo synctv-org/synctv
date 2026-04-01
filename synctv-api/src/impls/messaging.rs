@@ -3121,7 +3121,10 @@ fn cluster_event_to_server_messages(
         } => vec![ServerMessage {
             message: Some(Message::MediaRemovedBatch(MediaRemovedBatch {
                 room_id: room_id.to_string(),
-                media_ids: media_ids.iter().map(|mid| mid.as_str().to_string()).collect(),
+                media_ids: media_ids
+                    .iter()
+                    .map(|mid| mid.as_str().to_string())
+                    .collect(),
                 removed_by: username.clone(),
                 removed_by_user_id: user_id.as_str().to_string(),
             })),
@@ -3980,7 +3983,9 @@ mod tests {
             test_chat_service(pool.clone()),
             Arc::clone(&cluster_manager),
             connection_manager.clone(),
-            Arc::new(RateLimiter::in_memory_only(format!("test:fixture:{node_id}:"))),
+            Arc::new(RateLimiter::in_memory_only(format!(
+                "test:fixture:{node_id}:"
+            ))),
             Arc::new(RateLimitConfig::default()),
             Arc::new(ContentFilter::new()),
             sender,
@@ -4144,7 +4149,11 @@ mod tests {
     async fn test_start_cancels_and_cleans_up_when_initial_send_fails() {
         let sender = FailingMessageSender::immediate();
         let fixture = create_start_handler_fixture("start_initial_send_fail", sender).await;
-        let StartTestFixture { handler, connection_manager, .. } = &fixture;
+        let StartTestFixture {
+            handler,
+            connection_manager,
+            ..
+        } = &fixture;
 
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
@@ -4157,7 +4166,12 @@ mod tests {
         let sender = FailingMessageSender::immediate();
         let fixture =
             create_start_handler_fixture("start_no_broadcast_on_initial_failure", sender).await;
-        let StartTestFixture { handler, connection_manager, cluster_manager, .. } = &fixture;
+        let StartTestFixture {
+            handler,
+            connection_manager,
+            cluster_manager,
+            ..
+        } = &fixture;
 
         let room = handler.room_id.clone();
         let user = handler.user_id.clone();
@@ -4185,7 +4199,12 @@ mod tests {
         let sender = FailingMessageSender::fail_after(1);
         let sender_for_assert = Arc::clone(&sender);
         let fixture = create_start_handler_fixture("start_event_send_failure", sender).await;
-        let StartTestFixture { handler, connection_manager, cluster_manager, .. } = &fixture;
+        let StartTestFixture {
+            handler,
+            connection_manager,
+            cluster_manager,
+            ..
+        } = &fixture;
 
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
@@ -4225,7 +4244,12 @@ mod tests {
         let sender_for_assert = Arc::clone(&sender);
         let fixture =
             create_start_handler_fixture("start_admin_notification_failure", sender).await;
-        let StartTestFixture { handler, connection_manager, cluster_manager, .. } = &fixture;
+        let StartTestFixture {
+            handler,
+            connection_manager,
+            cluster_manager,
+            ..
+        } = &fixture;
 
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
@@ -5896,11 +5920,9 @@ mod tests {
         // Use dedicated Redis since this test terminates the container
         let (redis, redis_url): (RedisContainer, String) =
             start_dedicated_redis_url_with_label("msg-pre-join-subscription-fail").await;
-        let cluster_manager = test_cluster_manager_with_redis(
-            "test_pre_join_subscription_cache_failure",
-            &redis_url,
-        )
-        .await;
+        let cluster_manager =
+            test_cluster_manager_with_redis("test_pre_join_subscription_cache_failure", &redis_url)
+                .await;
         let connection_manager = test_connection_manager();
         let room_service = test_room_service(pool.clone());
         let user_service = room_service.user_service().clone();

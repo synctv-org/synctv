@@ -265,34 +265,79 @@ impl AlistApiImpl {
         caller_user_id: &str,
         req: LogoutRequest,
     ) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
-        if !req.server_id.is_empty() {
-            if let Some(existing) = self
-                .credential_repo
-                .get_by_provider_and_server(
-                    caller_user_id,
-                    synctv_core::provider::AlistProvider::NAME,
-                    &req.server_id,
-                )
+        if req.server_id.trim().is_empty() {
+            return Err(synctv_core::provider::ProviderError::InvalidConfig(
+                "Alist logout requires an explicit server_id".to_string(),
+            ));
+        }
+
+        if let Some(existing) = self
+            .credential_repo
+            .get_by_provider_and_server(
+                caller_user_id,
+                synctv_core::provider::AlistProvider::NAME,
+                &req.server_id,
+            )
+            .await
+            .map_err(|e| {
+                synctv_core::provider::ProviderError::Internal(format!(
+                    "Failed to query credential: {e}"
+                ))
+            })?
+        {
+            self.credential_repo
+                .delete(&existing.id)
                 .await
                 .map_err(|e| {
                     synctv_core::provider::ProviderError::Internal(format!(
-                        "Failed to query credential: {e}"
+                        "Failed to delete credential: {e}"
                     ))
-                })?
-            {
-                self.credential_repo
-                    .delete(&existing.id)
-                    .await
-                    .map_err(|e| {
-                        synctv_core::provider::ProviderError::Internal(format!(
-                            "Failed to delete credential: {e}"
-                        ))
-                    })?;
-            }
+                })?;
         }
 
         Ok(LogoutResponse {
             message: "Logout successful".to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AlistApiImpl;
+    use std::sync::Arc;
+    use synctv_core::provider::{AlistProvider, ProviderError};
+    use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
+    use synctv_core::service::RemoteProviderManager;
+    use synctv_core_testing::create_test_pool;
+
+    fn provider() -> Arc<AlistProvider> {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        Arc::new(AlistProvider::new(Arc::new(RemoteProviderManager::new(repo))))
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn logout_rejects_empty_server_id() {
+        let (_postgres, pool) = create_test_pool().await;
+        let api = AlistApiImpl::new(provider(), Arc::new(UserProviderCredentialRepository::new(pool)));
+
+        let err = api
+            .logout(
+                "user-1",
+                crate::proto::providers::alist::LogoutRequest {
+                    server_id: String::new(),
+                    instance_name: String::new(),
+                },
+            )
+            .await
+            .expect_err("empty server_id must fail before credential lookup");
+
+        match err {
+            ProviderError::InvalidConfig(message) => {
+                assert!(message.contains("explicit server_id"));
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
     }
 }

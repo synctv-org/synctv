@@ -86,6 +86,10 @@ pub struct ProvidersManager {
 }
 
 impl ProvidersManager {
+    fn default_instance_id(provider_type: &str) -> String {
+        provider_type.to_string()
+    }
+
     /// Create a new `ProvidersManager`
     #[must_use]
     pub fn new(instance_manager: Arc<RemoteProviderManager>) -> Self {
@@ -303,20 +307,8 @@ impl ProvidersManager {
             }
         }
 
-        // If no providers were configured, create default instances for all registered factories
         if count == 0 && !saw_explicit_provider_config {
-            tracing::info!(
-                "No providers configured, creating default instances for {} provider types",
-                self.factories.len()
-            );
-            for provider_type in self.factories.keys() {
-                let instance_id = format!("{provider_type}_default");
-                let provider_config = &serde_json::json!({});
-
-                self.create_provider(provider_type, &instance_id, provider_config)
-                    .await?;
-                count += 1;
-            }
+            tracing::info!("No provider instances configured; ProvidersManager will start empty");
         }
 
         tracing::info!("Loaded {} providers from configuration", count);
@@ -356,6 +348,31 @@ impl ProvidersManager {
         Ok(provider)
     }
 
+    /// Create missing built-in default provider instances.
+    ///
+    /// Default instances are addressable by provider type name directly, e.g.
+    /// `direct_url`, `alist`, `emby`.
+    pub async fn create_builtin_defaults(&self) -> Result<usize> {
+        let mut provider_types = self.list_types();
+        provider_types.sort();
+
+        let default_config = serde_json::json!({});
+        let mut created = 0;
+
+        for provider_type in provider_types {
+            let instance_id = Self::default_instance_id(&provider_type);
+            if self.get(&instance_id).await.is_some() {
+                continue;
+            }
+
+            self.create_provider(&provider_type, &instance_id, &default_config)
+                .await?;
+            created += 1;
+        }
+
+        Ok(created)
+    }
+
     /// Get a provider instance by ID
     pub async fn get(&self, instance_id: &str) -> Option<Arc<dyn MediaProvider>> {
         self.instances.read().await.get(instance_id).cloned()
@@ -363,7 +380,7 @@ impl ProvidersManager {
 
     /// Get provider by type (returns default instance)
     pub async fn get_by_type(&self, provider_type: &str) -> Option<Arc<dyn MediaProvider>> {
-        let instance_id = format!("{provider_type}_default");
+        let instance_id = Self::default_instance_id(provider_type);
         self.get(&instance_id).await
     }
 
@@ -709,7 +726,7 @@ mod tests {
         // Create default instance
         let config = serde_json::json!({});
         manager
-            .create_provider("alist", "alist_default", &config)
+            .create_provider("alist", "alist", &config)
             .await
             .unwrap();
 
@@ -847,7 +864,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_from_config_empty() {
-        // Test loading providers from empty config (creates defaults)
+        // Empty config should keep the manager empty; startup must not invent
+        // implicit *_default instances behind the caller's back.
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let mut manager = ProvidersManager::new(instance_manager);
+
+        let config = crate::Config::default();
+
+        let count = manager.load_from_config(&config).await.unwrap();
+        assert_eq!(count, 0);
+        assert!(manager.get("alist").await.is_none());
+        assert!(manager.get("bilibili").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_load_from_config_explicit_instances() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
@@ -868,7 +901,7 @@ mod tests {
             ..Default::default()
         };
 
-        // Load from config (should create 2 providers from config)
+        // Load from config (should create 2 providers from explicit config)
         let count = manager.load_from_config(&config).await.unwrap();
         assert_eq!(count, 2); // rtmp_default and live_proxy_default
 
@@ -1040,8 +1073,8 @@ mod tests {
             .await
             .expect_err("explicit invalid config must not silently fallback to defaults");
 
-        assert!(manager.get("alist_default").await.is_none());
-        assert!(manager.get("bilibili_default").await.is_none());
+        assert!(manager.get("alist").await.is_none());
+        assert!(manager.get("bilibili").await.is_none());
     }
 
     #[tokio::test]

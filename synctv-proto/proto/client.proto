@@ -409,7 +409,7 @@ message CreatePlaylistRequest {
     string parent_id = 2; // Optional parent playlist ID for nested playlists
     string source_provider = 3; // Optional provider type for dynamic playlists
     bytes source_config = 4; // Provider-specific config for dynamic playlists
-    string provider_instance_name = 5; // Optional provider instance binding
+    string provider_instance_name = 5; // Required when source_provider is set; must bind the dynamic playlist to a concrete provider instance
 }
 
 message CreatePlaylistResponse {
@@ -485,8 +485,8 @@ message StopPlaybackResponse {
 
 message AddMediaRequest {
     optional string playlist_id = 1; // Target playlist ID. Omit for room-root media
-    string provider = 2; // Optional, provider type name (e.g., "bilibili", "alist")
-    string provider_instance_name = 3; // Optional, specific provider instance (e.g., "bilibili_main")
+    string provider = 2; // Empty means direct_url; otherwise provider type name (e.g., "bilibili", "alist")
+    string provider_instance_name = 3; // Required for non-direct providers; empty is only valid when provider is empty/direct_url
     bytes source_config = 4; // JSON source config (e.g., {"url": "...", "path": "..."})
     string title = 5; // Optional media title. Validation: max 500 chars, no HTML tags
 }
@@ -582,7 +582,7 @@ message ClearPlaylistResponse {
 
 // Batch Media Operations
 message AddMediaBatchRequest {
-    repeated AddMediaRequest items = 1; // Validation: max 50 items
+    repeated AddMediaRequest items = 1; // Validation: max 100 items
 }
 message AddMediaBatchResponse {
     repeated AddMediaResponse results = 1;

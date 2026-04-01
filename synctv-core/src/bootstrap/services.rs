@@ -169,13 +169,18 @@ async fn build_providers_manager(
         provider_http_client,
         std::time::Duration::from_secs(config.media_providers.connect_timeout_seconds),
     );
+    let default_provider_count = providers_manager
+        .create_builtin_defaults()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create default media providers: {e}"))?;
     let loaded_provider_count = providers_manager
         .load_from_config(config)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to load media providers from configuration: {e}"))?;
 
     info!(
-        "ProvidersManager loaded {} provider instance(s) from configuration",
+        "ProvidersManager initialized {} default provider instance(s) and loaded {} configured provider instance(s)",
+        default_provider_count,
         loaded_provider_count
     );
 
@@ -1633,7 +1638,7 @@ mod tests {
             .expect("provider manager builder should load default providers");
 
         assert!(
-            providers_manager.get("direct_url_default").await.is_some(),
+            providers_manager.get("direct_url").await.is_some(),
             "default provider instances must be loaded during provider manager initialization"
         );
     }

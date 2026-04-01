@@ -42,6 +42,54 @@ pub trait PlaylistBroadcaster: Send + Sync {
     );
 }
 
+fn normalize_dynamic_playlist_fields(
+    source_provider: Option<String>,
+    source_config: Option<JsonValue>,
+    provider_instance_name: Option<String>,
+) -> Result<(Option<String>, Option<JsonValue>, Option<String>)> {
+    let normalized_provider = source_provider.and_then(|provider| {
+        let trimmed = provider.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    let normalized_instance = provider_instance_name.and_then(|instance| {
+        let trimmed = instance.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    match normalized_provider {
+        Some(provider) => {
+            let source_config = source_config.ok_or_else(|| {
+                Error::InvalidInput("source_config is required for dynamic folders".to_string())
+            })?;
+            let provider_instance_name = normalized_instance.ok_or_else(|| {
+                Error::InvalidInput(
+                    "provider_instance_name is required for dynamic folders".to_string(),
+                )
+            })?;
+
+            Ok((Some(provider), Some(source_config), Some(provider_instance_name)))
+        }
+        None => {
+            if source_config.is_some() || normalized_instance.is_some() {
+                return Err(Error::InvalidInput(
+                    "source_provider is required when setting dynamic playlist fields"
+                        .to_string(),
+                ));
+            }
+
+            Ok((None, None, None))
+        }
+    }
+}
+
 /// Request to create a playlist/folder
 #[derive(Debug, Clone)]
 pub struct CreatePlaylistRequest {
@@ -146,12 +194,12 @@ impl PlaylistService {
         // to let the repository compute it atomically in the INSERT query
         let position = request.position.unwrap_or(-1);
 
-        // Validate dynamic folder requirements
-        if request.source_provider.is_some() && request.source_config.is_none() {
-            return Err(Error::InvalidInput(
-                "source_config is required for dynamic folders".to_string(),
-            ));
-        }
+        let (source_provider, source_config, provider_instance_name) =
+            normalize_dynamic_playlist_fields(
+                request.source_provider,
+                request.source_config,
+                request.provider_instance_name,
+            )?;
 
         // Create playlist
         let playlist = Playlist {
@@ -161,9 +209,9 @@ impl PlaylistService {
             name: request.name,
             parent_id: request.parent_id,
             position,
-            source_provider: request.source_provider,
-            source_config: request.source_config,
-            provider_instance_name: request.provider_instance_name,
+            source_provider,
+            source_config,
+            provider_instance_name,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -661,6 +709,52 @@ mod tests {
 
         assert!(has_provider_no_config.source_provider.is_some());
         assert!(has_provider_no_config.source_config.is_none());
+    }
+
+    #[test]
+    fn test_dynamic_folder_requires_provider_instance_name() {
+        let err = normalize_dynamic_playlist_fields(
+            Some("alist".to_string()),
+            Some(serde_json::json!({"path": "/movies"})),
+            None,
+        )
+        .unwrap_err();
+        match err {
+            Error::InvalidInput(message) => {
+                assert!(message.contains("provider_instance_name"));
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_static_folder_rejects_dynamic_fields_without_provider() {
+        let err = normalize_dynamic_playlist_fields(
+            None,
+            Some(serde_json::json!({"path": "/movies"})),
+            Some("alist-main".to_string()),
+        )
+        .unwrap_err();
+        match err {
+            Error::InvalidInput(message) => {
+                assert!(message.contains("source_provider"));
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dynamic_folder_fields_are_trimmed() {
+        let (source_provider, source_config, provider_instance_name) =
+            normalize_dynamic_playlist_fields(
+                Some("  emby  ".to_string()),
+                Some(serde_json::json!({"library_id": "abc123"})),
+                Some("  emby-main  ".to_string()),
+            )
+            .unwrap();
+        assert_eq!(source_provider.as_deref(), Some("emby"));
+        assert!(source_config.is_some());
+        assert_eq!(provider_instance_name.as_deref(), Some("emby-main"));
     }
 
     #[test]

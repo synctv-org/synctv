@@ -36,7 +36,7 @@ fn resolve_add_media_provider_instance(
     provider_instance_name: String,
 ) -> Result<String, ApiError> {
     if provider == ProviderType::DirectUrl {
-        return Ok(String::new());
+        return Ok("direct_url".to_string());
     }
 
     let trimmed = provider_instance_name.trim();
@@ -47,6 +47,15 @@ fn resolve_add_media_provider_instance(
     Err(ApiError::InvalidInput(format!(
         "provider_instance_name is required for provider '{provider_name}'"
     )))
+}
+
+fn parse_add_media_provider(provider_name: &str) -> Result<ProviderType, ApiError> {
+    if provider_name.is_empty() {
+        return Ok(ProviderType::DirectUrl);
+    }
+
+    ProviderType::from_str(provider_name)
+        .map_err(|_| ApiError::InvalidInput(format!("Unknown provider type: '{provider_name}'")))
 }
 
 impl ClientApiImpl {
@@ -68,13 +77,7 @@ impl ClientApiImpl {
             None
         };
 
-        let provider = if req.provider.is_empty() {
-            ProviderType::DirectUrl
-        } else {
-            ProviderType::from_str(&req.provider).map_err(|_| {
-                ApiError::InvalidInput(format!("Unknown provider type: '{}'", req.provider))
-            })?
-        };
+        let provider = parse_add_media_provider(&req.provider)?;
 
         // Parse source config from request bytes
         let source_config: serde_json::Value = if req.source_config.is_empty() {
@@ -119,11 +122,9 @@ impl ClientApiImpl {
             )));
         }
 
-        // Use the explicit provider_instance_name from the request for registry lookup.
-        // For DirectUrl, this is empty (no remote provider).
-        // For other provider types, prefer provider_instance_name (e.g., "bilibili_main")
-        // over provider type name (e.g., "bilibili") since the registry stores instances
-        // by their instance ID, not by type name.
+        // Normalize the request into the concrete provider instance name used by the registry.
+        // DirectUrl maps to the built-in "direct_url" instance; other providers must bind
+        // explicitly to a configured provider instance.
         let provider_instance_name = resolve_add_media_provider_instance(
             provider,
             &req.provider,
@@ -484,10 +485,16 @@ impl ClientApiImpl {
                 crate::http::validation::validate_media_title(&item.title)
                     .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
             };
+            let provider = parse_add_media_provider(&item.provider)?;
+            let provider_instance_name = resolve_add_media_provider_instance(
+                provider,
+                &item.provider,
+                item.provider_instance_name.clone(),
+            )?;
             items.push(synctv_core::service::media::AddMediaRequest {
                 playlist_id,
                 name: title,
-                provider_instance_name: item.provider_instance_name.clone(),
+                provider_instance_name,
                 source_config,
             });
         }
@@ -1025,15 +1032,15 @@ impl ClientApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_add_media_provider_instance;
+    use super::{parse_add_media_provider, resolve_add_media_provider_instance};
     use synctv_core::models::ProviderType;
 
     #[test]
-    fn test_resolve_add_media_provider_instance_allows_direct_without_binding() {
+    fn test_resolve_add_media_provider_instance_maps_direct_to_builtin_instance() {
         let resolved =
             resolve_add_media_provider_instance(ProviderType::DirectUrl, "", String::new())
                 .unwrap();
-        assert!(resolved.is_empty());
+        assert_eq!(resolved, "direct_url");
     }
 
     #[test]
@@ -1056,5 +1063,17 @@ mod tests {
             err.to_string().contains("provider_instance_name"),
             "non-direct providers must require explicit provider_instance_name"
         );
+    }
+
+    #[test]
+    fn test_parse_add_media_provider_defaults_empty_to_direct_url() {
+        let provider = parse_add_media_provider("").unwrap();
+        assert_eq!(provider, ProviderType::DirectUrl);
+    }
+
+    #[test]
+    fn test_parse_add_media_provider_rejects_unknown_type() {
+        let err = parse_add_media_provider("unknown-provider").unwrap_err();
+        assert!(err.to_string().contains("Unknown provider type"));
     }
 }

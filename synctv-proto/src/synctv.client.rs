@@ -497,7 +497,7 @@ pub struct CreatePlaylistRequest {
     /// Provider-specific config for dynamic playlists
     #[prost(bytes = "vec", tag = "4")]
     pub source_config: ::prost::alloc::vec::Vec<u8>,
-    /// Optional provider instance binding
+    /// Required when source_provider is set; must bind the dynamic playlist to a concrete provider instance
     #[prost(string, tag = "5")]
     pub provider_instance_name: ::prost::alloc::string::String,
 }
@@ -619,10 +619,10 @@ pub struct AddMediaRequest {
     /// Target playlist ID. Omit for room-root media
     #[prost(string, optional, tag = "1")]
     pub playlist_id: ::core::option::Option<::prost::alloc::string::String>,
-    /// Optional, provider type name (e.g., "bilibili", "alist")
+    /// Empty means direct_url; otherwise provider type name (e.g., "bilibili", "alist")
     #[prost(string, tag = "2")]
     pub provider: ::prost::alloc::string::String,
-    /// Optional, specific provider instance (e.g., "bilibili_main")
+    /// Required for non-direct providers; empty is only valid when provider is empty/direct_url
     #[prost(string, tag = "3")]
     pub provider_instance_name: ::prost::alloc::string::String,
     /// JSON source config (e.g., {"url": "...", "path": "..."})
@@ -793,7 +793,7 @@ pub struct ClearPlaylistResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AddMediaBatchRequest {
-    /// Validation: max 50 items
+    /// Validation: max 100 items
     #[prost(message, repeated, tag = "1")]
     pub items: ::prost::alloc::vec::Vec<AddMediaRequest>,
 }

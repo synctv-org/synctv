@@ -28,39 +28,37 @@ A production-grade real-time synchronized video watching platform built in Rust.
 - Redis 7+
 - OpenSSL
 
-### 1. Set Environment Variables
+### 1. Start with Docker Compose
 
-**Option A: Quick Setup (Recommended)**
-
-Use the interactive setup script to create your `.env` file:
+Development build from the local source tree:
 
 ```bash
-./scripts/setup-env.sh
+docker compose -f docker-compose.dev.yml up -d
 ```
 
-This script will:
-- Generate a secure JWT secret automatically
-- Prompt for database and Redis configuration
-- Create a `.env` file from `.env.example`
-- Optionally validate your configuration
+This variant builds with the local [Dockerfile](/Volumes/workspace/rust/synctv/Dockerfile) and ships fixed working development defaults for JWT and cluster secrets.
 
-**Option B: Manual Setup**
+Prebuilt image deployment:
 
 ```bash
-# Database (Required)
+export SYNCTV_JWT_SECRET="your-secure-random-string-at-least-32-chars"
+docker compose up -d
+```
+
+This variant uses `synctvorg/synctv:v1` from [docker-compose.yml](/Volumes/workspace/rust/synctv/docker-compose.yml) and intentionally keeps the environment surface small.
+
+### 2. Manual Environment Variables
+
+```bash
 export SYNCTV_DATABASE_URL="postgresql://synctv:synctv@localhost:5432/synctv"
-
-# JWT Secret (Required, min 256-bit entropy)
-export SYNCTV_JWT_SECRET="your-secure-RANDOM-string-WITH-mixed-CASE-123-and-SPECIAL!@#$%"
-
-# Redis (Recommended for production)
 export SYNCTV_REDIS_URL="redis://localhost:6379"
-
-# Server (Optional, default API port)
+export SYNCTV_JWT_SECRET="your-secure-RANDOM-string-WITH-mixed-CASE-123-and-SPECIAL!@#$%"
 export SYNCTV_SERVER_PORT=8080
 ```
 
-📚 **See [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md) for complete reference** including all available options, examples for different environments, and troubleshooting.
+Optional diagnostics:
+- `SYNCTV_LOGGING_FILTER` for target-specific tracing filters
+- `SYNCTV_LOGGING_BACKTRACE=true` for panic backtraces
 
 ### 3. Validate Configuration (Optional but Recommended)
 
@@ -92,6 +90,16 @@ HTTP/REST and gRPC share a single API port, defaulting to `0.0.0.0:8080`.
 
 ## Development
 
+### Docker Compose
+
+```bash
+# Local development build with fixed working defaults
+docker compose -f docker-compose.dev.yml up -d
+
+# Prebuilt image deployment
+docker compose up -d
+```
+
 ### Run Tests
 
 ```bash
@@ -101,7 +109,13 @@ cargo test --workspace
 ### Run with Logging
 
 ```bash
-RUST_LOG=debug cargo run --bin synctv
+SYNCTV_LOGGING_LEVEL=debug cargo run --bin synctv
+```
+
+For fine-grained target filters:
+
+```bash
+SYNCTV_LOGGING_FILTER=info,synctv=debug,synctv_core::service=trace cargo run --bin synctv
 ```
 
 ### Build Release
@@ -180,6 +194,8 @@ jwt:
 logging:
   level: "info"
   format: "pretty"  # Use "json" in production
+  # filter: "info,synctv=debug"
+  backtrace: false
 ```
 
 📚 **See [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md)** for environment variable reference

@@ -230,6 +230,10 @@ fn test_bootstrap_config_default_username_is_root() {
     // Username can still be "root" as it's not sensitive
     let config = BootstrapConfig::default();
     assert_eq!(config.root_username, "root");
+    assert!(
+        config.root_email.is_empty(),
+        "root_email should default to empty string"
+    );
 }
 
 #[test]

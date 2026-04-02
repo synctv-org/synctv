@@ -537,14 +537,15 @@ mod tests {
     #[test]
     fn test_is_retry_exhausted_rejects_partial_internal_match() {
         let error = Error::Internal("wrapper: operation failed after retries".to_string());
-        assert!(!is_retry_exhausted(&error, "operation failed after retries"));
+        assert!(!is_retry_exhausted(
+            &error,
+            "operation failed after retries"
+        ));
     }
 
     #[test]
     fn test_is_retry_exhausted_matches_timeout_prefix() {
-        let error = Error::Timeout(
-            "operation failed after retries (timeout after 5s)".to_string(),
-        );
+        let error = Error::Timeout("operation failed after retries (timeout after 5s)".to_string());
         assert!(is_retry_exhausted(&error, "operation failed after retries"));
     }
 }

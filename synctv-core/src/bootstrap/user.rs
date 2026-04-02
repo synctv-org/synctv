@@ -62,7 +62,7 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
     // Create user with root role and active status
     let mut user = User::new(
         config.root_username.clone(),
-        None, // No email required for root
+        (!config.root_email.is_empty()).then(|| config.root_email.clone()),
         password_hash,
         SignupMethod::AdminCreated, // Root user created via bootstrap config
     );
@@ -134,6 +134,7 @@ mod tests {
         // Default is false for security - operators must explicitly enable root creation
         assert!(!config.create_root_user);
         assert_eq!(config.root_username, "root");
+        assert!(config.root_email.is_empty());
         // Default password is empty for security
         assert!(config.root_password.is_empty());
     }

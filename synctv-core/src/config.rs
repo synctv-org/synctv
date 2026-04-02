@@ -407,6 +407,8 @@ impl Default for JwtConfig {
 pub struct LoggingConfig {
     pub level: String,
     pub format: String, // "json" or "pretty"
+    pub filter: Option<String>,
+    pub backtrace: bool,
     pub file_path: Option<String>,
 }
 
@@ -415,6 +417,8 @@ impl Default for LoggingConfig {
         Self {
             level: "info".to_string(),
             format: "pretty".to_string(),
+            filter: None,
+            backtrace: false,
             file_path: None,
         }
     }
@@ -744,7 +748,7 @@ impl Config {
         // cannot distinguish nesting from underscores within field names.
         // Instead, every SYNCTV_ env var is mapped explicitly here.
         config.apply_env_overrides_with(&get_env)?;
-        Self::reject_unknown_synctv_env_vars(env, &seen_env_keys.into_inner())?;
+        Self::reject_unknown_synctv_env_vars(env, &seen_env_keys.into_inner());
 
         Ok(config)
     }
@@ -752,7 +756,7 @@ impl Config {
     fn reject_unknown_synctv_env_vars(
         env: &HashMap<String, String>,
         seen_env_keys: &std::collections::HashSet<String>,
-    ) -> Result<(), ConfigError> {
+    ) {
         let mut unknown_keys: Vec<&str> = env
             .keys()
             .filter_map(|key| {
@@ -765,13 +769,11 @@ impl Config {
             .collect();
         unknown_keys.sort_unstable();
 
-        if unknown_keys.is_empty() {
-            Ok(())
-        } else {
-            Err(ConfigError::Message(format!(
-                "Unsupported environment variable(s): {}",
-                unknown_keys.join(", ")
-            )))
+        if !unknown_keys.is_empty() {
+            tracing::warn!(
+                unsupported = %unknown_keys.join(", "),
+                "Ignoring unsupported SYNCTV_ environment variable(s)"
+            );
         }
     }
 
@@ -1091,6 +1093,8 @@ impl Config {
         // -- Logging --
         env_override_str("SYNCTV_LOGGING_LEVEL", &mut self.logging.level);
         env_override_str("SYNCTV_LOGGING_FORMAT", &mut self.logging.format);
+        env_override_opt_str("SYNCTV_LOGGING_FILTER", &mut self.logging.filter);
+        env_override_bool("SYNCTV_LOGGING_BACKTRACE", &mut self.logging.backtrace)?;
         env_override_opt_str("SYNCTV_LOGGING_FILE_PATH", &mut self.logging.file_path);
 
         // -- Livestream --
@@ -1267,6 +1271,10 @@ impl Config {
         env_override_str(
             "SYNCTV_BOOTSTRAP_ROOT_USERNAME",
             &mut self.bootstrap.root_username,
+        );
+        env_override_str(
+            "SYNCTV_BOOTSTRAP_ROOT_EMAIL",
+            &mut self.bootstrap.root_email,
         );
         env_override_str(
             "SYNCTV_BOOTSTRAP_ROOT_PASSWORD",
@@ -1532,6 +1540,26 @@ impl Config {
             );
         }
 
+        if crate::logging::parse_log_level(&self.logging.level).is_err() {
+            errors.push(format!(
+                "logging.level '{}' must be one of: trace, debug, info, warn, error",
+                self.logging.level
+            ));
+        }
+        if !matches!(self.logging.format.as_str(), "pretty" | "json") {
+            errors.push(format!(
+                "logging.format '{}' must be either 'pretty' or 'json'",
+                self.logging.format
+            ));
+        }
+        if let Some(filter) = self.logging.filter.as_deref().map(str::trim) {
+            if !filter.is_empty() && tracing_subscriber::EnvFilter::try_new(filter).is_err() {
+                errors.push(format!(
+                    "logging.filter '{filter}' is not a valid tracing filter specification"
+                ));
+            }
+        }
+
         // Validate JWT secret
         if self.jwt.secret.is_empty() {
             errors.push("JWT secret is empty".to_string());
@@ -1549,27 +1577,41 @@ impl Config {
 
         // Validate root credentials
         if self.bootstrap.create_root_user {
-            if self.bootstrap.root_password.is_empty() {
+            let pwd = &self.bootstrap.root_password;
+            if pwd.is_empty() {
                 errors.push("Root password is empty. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable".to_string());
-            } else if self.bootstrap.root_password == "root" {
+            } else if pwd == "root" {
                 errors.push("Root password is set to default value 'root'. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable".to_string());
+            } else {
+                // Only run complexity checks once a non-empty, non-placeholder
+                // password is present; otherwise a single root cause fans out
+                // into multiple derivative errors.
+                if pwd.len() < 12 {
+                    errors.push("Root password must be at least 12 characters".to_string());
+                }
+                if !pwd.chars().any(char::is_uppercase) {
+                    errors.push(
+                        "Root password must contain at least one uppercase letter".to_string(),
+                    );
+                }
+                if !pwd.chars().any(char::is_lowercase) {
+                    errors.push(
+                        "Root password must contain at least one lowercase letter".to_string(),
+                    );
+                }
+                if !pwd.chars().any(|c| c.is_ascii_digit()) {
+                    errors.push("Root password must contain at least one digit".to_string());
+                }
             }
             if self.bootstrap.root_username.len() < 3 {
                 errors.push("Root username must be at least 3 characters".to_string());
             }
-            // H-02: Enforce 12-char minimum and complexity for root password
-            let pwd = &self.bootstrap.root_password;
-            if pwd.len() < 12 {
-                errors.push("Root password must be at least 12 characters".to_string());
-            }
-            if !pwd.chars().any(char::is_uppercase) {
-                errors.push("Root password must contain at least one uppercase letter".to_string());
-            }
-            if !pwd.chars().any(char::is_lowercase) {
-                errors.push("Root password must contain at least one lowercase letter".to_string());
-            }
-            if !pwd.chars().any(|c| c.is_ascii_digit()) {
-                errors.push("Root password must contain at least one digit".to_string());
+            if !self.bootstrap.root_email.is_empty()
+                && crate::validation::EmailValidator::new()
+                    .validate(&self.bootstrap.root_email)
+                    .is_err()
+            {
+                errors.push("Root email must be a valid email address".to_string());
             }
         }
 
@@ -2113,6 +2155,8 @@ pub struct BootstrapConfig {
     pub create_root_user: bool,
     /// Root username (default: "root")
     pub root_username: String,
+    /// Optional email for the bootstrapped root user.
+    pub root_email: String,
     /// Root password (IMPORTANT: Change this in production!)
     pub root_password: String,
 }
@@ -2122,6 +2166,7 @@ impl Default for BootstrapConfig {
         Self {
             create_root_user: false,
             root_username: "root".to_string(),
+            root_email: String::new(),
             root_password: String::new(),
         }
     }
@@ -2700,17 +2745,15 @@ mod tests {
     }
 
     #[test]
-    fn test_from_env_rejects_unknown_server_port_env_vars() {
-        let error = Config::from_env_map(&env_map(&[
+    fn test_from_env_ignores_unknown_server_port_env_vars() {
+        let config = Config::from_env_map(&env_map(&[
             ("SYNCTV_SERVER_GRPC_PORT", "50051"),
             ("SYNCTV_SERVER_HTTP_PORT", "8080"),
+            ("SYNCTV_SERVER_PORT", "18080"),
         ]))
-        .expect_err("unknown split-port env vars must fail closed");
+        .expect("unknown split-port env vars should be ignored with a warning");
 
-        let message = error.to_string();
-        assert!(message.contains("Unsupported environment variable"));
-        assert!(message.contains("SYNCTV_SERVER_GRPC_PORT"));
-        assert!(message.contains("SYNCTV_SERVER_HTTP_PORT"));
+        assert_eq!(config.server.port, 18080);
     }
 
     /// Helper to create a valid production config for validation tests
@@ -2759,6 +2802,7 @@ mod tests {
             bootstrap: BootstrapConfig {
                 create_root_user: true,
                 root_username: "admin".to_string(),
+                root_email: "admin@example.com".to_string(),
                 root_password: "StrongPwd12345!".to_string(),
             },
             cluster: ClusterChannelConfig::default(),
@@ -2959,6 +3003,8 @@ jwt:
             JwtConfig::default().access_token_duration_hours
         );
         assert_eq!(config.logging.level, LoggingConfig::default().level);
+        assert_eq!(config.logging.filter, LoggingConfig::default().filter);
+        assert_eq!(config.logging.backtrace, LoggingConfig::default().backtrace);
     }
 
     #[test]
@@ -3026,6 +3072,49 @@ jwt:
         assert!(errors
             .iter()
             .any(|e| e.contains("Root password") && e.contains("default")));
+    }
+
+    #[test]
+    fn test_validate_empty_root_password_reports_single_root_cause() {
+        let mut config = valid_prod_config();
+        config.bootstrap.root_password.clear();
+        let errors = config.validate().unwrap_err();
+
+        assert!(
+            errors.iter().any(|e| e.contains("Root password is empty")),
+            "empty password should still report the required-value error: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|e| e.contains("12 characters")),
+            "empty password should not duplicate into length errors: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|e| e.contains("uppercase")),
+            "empty password should not duplicate into uppercase errors: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|e| e.contains("lowercase")),
+            "empty password should not duplicate into lowercase errors: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|e| e.contains("digit")),
+            "empty password should not duplicate into digit errors: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_root_email_must_be_valid_when_provided() {
+        let mut config = valid_prod_config();
+        config.bootstrap.root_email = "not-an-email".to_string();
+
+        let errors = config.validate().unwrap_err();
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Root email must be a valid email address")),
+            "invalid bootstrap email should be rejected: {errors:?}"
+        );
     }
 
     #[test]
@@ -3182,6 +3271,31 @@ jwt:
         assert_eq!(config.messaging_rate_limits.chat_per_second, 17);
         assert_eq!(config.messaging_rate_limits.danmaku_per_second, 9);
         assert_eq!(config.messaging_rate_limits.window_seconds, 4);
+    }
+
+    #[test]
+    fn test_from_env_overrides_logging_filter_and_backtrace() {
+        let config = Config::from_env_map(&env_map(&[
+            ("SYNCTV_LOGGING_FILTER", "info,synctv=debug"),
+            ("SYNCTV_LOGGING_BACKTRACE", "true"),
+        ]))
+        .expect("logging env overrides should parse");
+
+        assert_eq!(config.logging.filter.as_deref(), Some("info,synctv=debug"));
+        assert!(config.logging.backtrace);
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_logging_filter() {
+        let mut config = Config::default();
+        config.jwt.secret = "12345678901234567890123456789012".to_string();
+        config.logging.filter = Some("not a valid filter ==".to_string());
+
+        let errors = config
+            .validate()
+            .expect_err("invalid logging.filter must fail validation");
+
+        assert!(errors.iter().any(|error| error.contains("logging.filter")));
     }
 
     #[test]

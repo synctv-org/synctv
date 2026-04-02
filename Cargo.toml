@@ -170,6 +170,7 @@ tracing-subscriber = { version = "0.3", features = [
     "fmt",
 ] }
 tracing-appender = "0.2"
+dotenvy = "0.15"
 
 # Configuration
 config = "0.15"

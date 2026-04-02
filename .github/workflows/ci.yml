@@ -11,7 +11,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+  SYNCTV_LOGGING_BACKTRACE: true
 
 jobs:
   # Check code formatting
@@ -86,7 +86,7 @@ jobs:
           - 5432:5432
 
       redis:
-        image: redis:7-alpine
+        image: redis:7
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s

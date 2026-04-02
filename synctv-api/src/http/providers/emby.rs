@@ -10,7 +10,9 @@ use axum::{
     Json, Router,
 };
 
-use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppResult, AppState};
+use crate::http::{
+    middleware::AuthUser, provider_common::InstanceQuery, AppError, AppResult, AppState,
+};
 
 use crate::impls::providers::get_provider_binds;
 
@@ -173,10 +175,13 @@ pub(crate) async fn logout(
     tracing::info!("Emby logout request");
 
     let api = &state.emby_api;
-    let resp = api.logout(&auth.user_id.to_string(), req).await.map_err(|e| {
-        tracing::error!("Emby logout failed: {}", e);
-        AppError::from(e)
-    })?;
+    let resp = api
+        .logout(&auth.user_id.to_string(), req)
+        .await
+        .map_err(|e| {
+            tracing::error!("Emby logout failed: {}", e);
+            AppError::from(e)
+        })?;
     Ok(Json(resp))
 }
 

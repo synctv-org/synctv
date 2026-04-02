@@ -547,8 +547,7 @@ async fn test_concurrent_mixed_operations() {
     assert!(state.speed > 0.0, "Speed should be positive");
     assert!(state.current_time >= 0.0, "Position should be non-negative");
     assert_eq!(
-        state.version,
-        successful_writes,
+        state.version, successful_writes,
         "Each successful playback write should advance the version exactly once"
     );
 }

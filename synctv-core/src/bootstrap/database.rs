@@ -6,6 +6,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, PgPool, Postgres};
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use tracing::Level;
 use tracing::{error, info};
 
 use crate::resilience::timeout::DB_QUERY_TIMEOUT;
@@ -45,6 +46,8 @@ pub async fn init_database_with_cancel(
     info!("Connecting to database: {}", masked_url);
 
     let statement_timeout_ms = DB_QUERY_TIMEOUT.as_millis();
+    let pg_client_min_messages =
+        pg_client_min_messages_for_level(crate::logging::effective_log_level(&config.logging)?);
 
     let pool: PgPool = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
@@ -53,16 +56,16 @@ pub async fn init_database_with_cancel(
         .idle_timeout(Duration::from_secs(config.database.idle_timeout_seconds))
         .max_lifetime(Duration::from_secs(config.database.max_lifetime_seconds))
         .after_connect(move |conn, _meta| {
+            let pg_client_min_messages = pg_client_min_messages;
             Box::pin(async move {
-                conn.execute(format!("SET statement_timeout = {statement_timeout_ms}").as_str())
-                    .await?;
+                apply_session_settings(conn, statement_timeout_ms, pg_client_min_messages).await?;
                 Ok(())
             })
         })
         .after_release(move |conn, _meta| {
+            let pg_client_min_messages = pg_client_min_messages;
             Box::pin(async move {
-                conn.execute(format!("SET statement_timeout = {statement_timeout_ms}").as_str())
-                    .await?;
+                apply_session_settings(conn, statement_timeout_ms, pg_client_min_messages).await?;
                 Ok(true)
             })
         })
@@ -109,6 +112,26 @@ pub async fn init_database_with_cancel(
     info!("Database connected successfully");
 
     Ok(DatabaseInit { pool, metrics_task })
+}
+
+async fn apply_session_settings(
+    conn: &mut sqlx::PgConnection,
+    statement_timeout_ms: u128,
+    client_min_messages: &'static str,
+) -> std::result::Result<(), sqlx::Error> {
+    conn.execute(format!("SET statement_timeout = {statement_timeout_ms}").as_str())
+        .await?;
+    conn.execute(format!("SET client_min_messages = '{client_min_messages}'").as_str())
+        .await?;
+    Ok(())
+}
+
+fn pg_client_min_messages_for_level(level: Level) -> &'static str {
+    match level {
+        Level::TRACE | Level::DEBUG => "notice",
+        Level::INFO | Level::WARN => "warning",
+        Level::ERROR => "error",
+    }
 }
 
 /// Acquire a dedicated connection for migration/DDL style work with
@@ -170,10 +193,37 @@ fn mask_database_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::LoggingConfig;
     use sqlx::postgres::PgRow;
     use sqlx::Row;
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn pg_client_min_messages_matches_application_log_level_policy() {
+        assert_eq!(pg_client_min_messages_for_level(Level::TRACE), "notice");
+        assert_eq!(pg_client_min_messages_for_level(Level::DEBUG), "notice");
+        assert_eq!(pg_client_min_messages_for_level(Level::INFO), "warning");
+        assert_eq!(pg_client_min_messages_for_level(Level::WARN), "warning");
+        assert_eq!(pg_client_min_messages_for_level(Level::ERROR), "error");
+    }
+
+    #[test]
+    fn effective_log_level_uses_synctv_config_for_database_policy() {
+        let config = crate::Config {
+            logging: LoggingConfig {
+                level: "debug".to_string(),
+                ..LoggingConfig::default()
+            },
+            ..crate::Config::default()
+        };
+
+        let effective = crate::logging::effective_log_level(&config.logging)
+            .expect("effective log level should resolve");
+
+        assert_eq!(effective, Level::DEBUG);
+        assert_eq!(pg_client_min_messages_for_level(effective), "notice");
+    }
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
@@ -246,6 +296,110 @@ mod tests {
         assert_ne!(
             timeout, "0",
             "connections returned to the OLTP pool must not retain unlimited statement_timeout"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn init_database_sets_client_min_messages_from_info_log_level() {
+        let (_postgres, database_url) = synctv_core_testing::create_test_database_url_with_label(
+            "synctv_test",
+            "client-min-messages-info",
+        )
+        .await;
+
+        let config = crate::Config {
+            database: crate::config::DatabaseConfig {
+                url: database_url,
+                max_connections: 5,
+                min_connections: 1,
+                connect_timeout_seconds: 5,
+                idle_timeout_seconds: 600,
+                max_lifetime_seconds: 1800,
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                ..LoggingConfig::default()
+            },
+            ..crate::Config::default()
+        };
+        let pool = init_database_with_cancel(&config, None)
+            .await
+            .expect("database init should succeed")
+            .pool;
+
+        let mut conn = pool
+            .acquire()
+            .await
+            .expect("should acquire pooled connection");
+        let row: PgRow = sqlx::query("SHOW client_min_messages")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("should query session client_min_messages");
+        let level: String = row
+            .try_get(0)
+            .expect("SHOW client_min_messages should return a string");
+
+        assert_eq!(
+            level, "warning",
+            "info-level app logging should suppress PostgreSQL NOTICE output at the session level"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn ddl_connection_client_min_messages_is_reset_when_returned_to_pool() {
+        let (_postgres, database_url) = synctv_core_testing::create_test_database_url_with_label(
+            "synctv_test",
+            "client-min-reset",
+        )
+        .await;
+
+        let config = crate::Config {
+            database: crate::config::DatabaseConfig {
+                url: database_url,
+                max_connections: 5,
+                min_connections: 1,
+                connect_timeout_seconds: 5,
+                idle_timeout_seconds: 600,
+                max_lifetime_seconds: 1800,
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                ..LoggingConfig::default()
+            },
+            ..crate::Config::default()
+        };
+        let pool = init_database_with_cancel(&config, None)
+            .await
+            .expect("database init should succeed")
+            .pool;
+
+        {
+            let mut conn = acquire_unbounded_ddl_connection(&pool)
+                .await
+                .expect("should acquire dedicated ddl connection");
+            sqlx::query("SET client_min_messages = 'notice'")
+                .execute(&mut *conn)
+                .await
+                .expect("ddl connection should allow session-level override during migration work");
+        }
+
+        let mut conn = pool
+            .acquire()
+            .await
+            .expect("should reacquire pooled connection");
+        let row: PgRow = sqlx::query("SHOW client_min_messages")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("should query reset client_min_messages");
+        let level: String = row
+            .try_get(0)
+            .expect("SHOW client_min_messages should return a string");
+
+        assert_eq!(
+            level, "warning",
+            "connections returned to the OLTP pool must restore the configured PostgreSQL message threshold"
         );
     }
 

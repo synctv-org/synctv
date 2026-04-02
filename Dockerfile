@@ -69,8 +69,8 @@ USER synctv
 EXPOSE 8080 50051 1935 3478/udp
 
 # Set environment variables
-ENV RUST_LOG=info
-ENV RUST_BACKTRACE=1
+ENV SYNCTV_LOGGING_LEVEL=info
+ENV SYNCTV_LOGGING_BACKTRACE=true
 
 # Health check against the HTTP health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

@@ -1,8 +1,20 @@
 //! Configuration loading
 
 use anyhow::Result;
+use std::io::ErrorKind;
 
 use crate::Config;
+
+pub fn load_dotenv() -> Result<()> {
+    match dotenvy::dotenv() {
+        Ok(path) => {
+            eprintln!("Loaded environment from {}", path.display());
+            Ok(())
+        }
+        Err(dotenvy::Error::Io(err)) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(anyhow::anyhow!("Failed to load .env: {err}")),
+    }
+}
 
 /// Load configuration from config file or environment variables
 ///
@@ -12,6 +24,8 @@ use crate::Config;
 /// 3. /config/config.yaml (Kubernetes mount path)
 /// 4. Fall back to environment variables only
 pub fn load_config() -> Result<Config> {
+    load_dotenv()?;
+
     // Check if SYNCTV_CONFIG_PATH was explicitly set (even if file doesn't exist)
     let explicit_config_path = std::env::var("SYNCTV_CONFIG_PATH").ok();
 
@@ -94,7 +108,7 @@ mod tests {
         CONFIG_TEST_SERIAL_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("config test lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     struct EnvVarGuard {
@@ -191,6 +205,7 @@ mod tests {
     fn test_load_config_accepts_valid_explicit_file_when_synctv_config_path_is_set() {
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().expect("temp dir should be created");
+        let _cwd = CurrentDirGuard::change_to(dir.path());
         let config_path = dir.path().join("explicit-config.yaml");
         std::fs::write(
             &config_path,
@@ -208,5 +223,25 @@ jwt:
         let config = load_config().expect("valid explicit config path should load successfully");
 
         assert_eq!(config.jwt.secret, "12345678901234567890123456789012");
+    }
+
+    #[test]
+    fn test_load_config_reads_dotenv_before_resolving_config() {
+        let _lock = acquire_process_config_test_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let _cwd = CurrentDirGuard::change_to(dir.path());
+        let _config_path = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
+        let _jwt = EnvVarGuard::remove("SYNCTV_JWT_SECRET");
+        let _port = EnvVarGuard::remove("SYNCTV_SERVER_PORT");
+        std::fs::write(
+            dir.path().join(".env"),
+            "SYNCTV_JWT_SECRET=12345678901234567890123456789012\nSYNCTV_SERVER_PORT=50061\n",
+        )
+        .expect(".env should be written");
+
+        let config = load_config().expect(".env-backed config should load successfully");
+
+        assert_eq!(config.jwt.secret, "12345678901234567890123456789012");
+        assert_eq!(config.server.port, 50061);
     }
 }

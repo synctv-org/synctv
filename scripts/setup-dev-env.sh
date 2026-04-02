@@ -34,16 +34,17 @@ fi
 # Start Docker services (PostgreSQL, Redis)
 echo "Starting Docker services (PostgreSQL, Redis)..."
 cd "$PROJECT_ROOT"
+DEV_COMPOSE_FILE="docker-compose.dev.yml"
 
-if [ -f "docker-compose.yml" ]; then
-    docker-compose up -d postgres redis
+if [ -f "$DEV_COMPOSE_FILE" ]; then
+    docker-compose -f "$DEV_COMPOSE_FILE" up -d postgres redis
     echo "✓ Docker services started"
     echo ""
 
     # Wait for PostgreSQL to be ready
     echo "Waiting for PostgreSQL to be ready..."
     for i in {1..30}; do
-        if docker-compose exec -T postgres pg_isready -U synctv >/dev/null 2>&1; then
+        if docker-compose -f "$DEV_COMPOSE_FILE" exec -T postgres pg_isready -U synctv >/dev/null 2>&1; then
             echo "✓ PostgreSQL is ready"
             break
         fi
@@ -63,46 +64,9 @@ if [ -f "docker-compose.yml" ]; then
     echo "✓ Database migrations completed"
     echo ""
 else
-    echo "⚠️  docker-compose.yml not found. Creating one..."
-    cat > docker-compose.yml <<'EOF'
-version: '3.8'
-
-services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: synctv
-      POSTGRES_PASSWORD: synctv
-      POSTGRES_DB: synctv
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U synctv"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-volumes:
-  postgres_data:
-  redis_data:
-EOF
-    echo "✓ Created docker-compose.yml"
-    docker-compose up -d
-    echo ""
+    echo "❌ $DEV_COMPOSE_FILE not found."
+    echo "   Restore it from the repository and rerun this script."
+    exit 1
 fi
 
 # Create .env file if it doesn't exist
@@ -115,8 +79,9 @@ SYNCTV_DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv
 # Redis
 SYNCTV_REDIS_URL=redis://localhost:6379
 
-# JWT (min 32 chars for production)
-SYNCTV_JWT_SECRET=dev-secret-change-me-in-production-at-least-32-chars
+# JWT (fixed working development default)
+SYNCTV_JWT_SECRET=dev-jwt-secret-please-change-in-production-1234567890
+SYNCTV_SERVER_CLUSTER_SECRET=dev-cluster-secret-please-change-in-production-1234567890
 SYNCTV_JWT_ACCESS_TOKEN_DURATION_HOURS=1
 SYNCTV_JWT_REFRESH_TOKEN_DURATION_DAYS=30
 
@@ -132,7 +97,8 @@ MAX_GOPS=2
 MAX_GOP_CACHE_SIZE_MB=100
 
 # Logging
-RUST_LOG=info,synctv=debug
+SYNCTV_LOGGING_FILTER=info,synctv=debug
+SYNCTV_LOGGING_BACKTRACE=true
 EOF
     echo "✓ Created .env file"
     echo ""
@@ -152,5 +118,5 @@ echo "Services running:"
 echo "  PostgreSQL: localhost:5432 (user: synctv, password: synctv, db: synctv)"
 echo "  Redis:      localhost:6379"
 echo ""
-echo "To stop services:  docker-compose down"
-echo "To view logs:      docker-compose logs -f"
+echo "To stop services:  docker-compose -f $DEV_COMPOSE_FILE down"
+echo "To view logs:      docker-compose -f $DEV_COMPOSE_FILE logs -f"

@@ -16,17 +16,23 @@ cd "$PROJECT_ROOT"
 echo "🚀 Starting SyncTV services in development mode..."
 echo ""
 
+DEV_COMPOSE_FILE="docker-compose.dev.yml"
+
 # Check if Docker services are running
-if ! docker-compose ps postgres 2>/dev/null | grep -q "Up"; then
-    echo "⚠️  PostgreSQL is not running. Starting with docker-compose up -d..."
-    docker-compose up -d postgres redis
+if ! docker-compose -f "$DEV_COMPOSE_FILE" ps postgres 2>/dev/null | grep -q "Up"; then
+    echo "⚠️  PostgreSQL is not running. Starting with docker-compose -f $DEV_COMPOSE_FILE up -d..."
+    docker-compose -f "$DEV_COMPOSE_FILE" up -d postgres redis
     sleep 3
 fi
 
 # Ensure JWT secret is set
 if [ -z "$SYNCTV_JWT_SECRET" ]; then
-    export SYNCTV_JWT_SECRET="dev-secret-$(hostname)-$$"
+    export SYNCTV_JWT_SECRET="dev-jwt-secret-please-change-in-production-1234567890"
     echo "⚠️  Using development JWT secret (do NOT use in production)"
+fi
+
+if [ -z "$SYNCTV_SERVER_CLUSTER_SECRET" ]; then
+    export SYNCTV_SERVER_CLUSTER_SECRET="dev-cluster-secret-please-change-in-production-1234567890"
 fi
 
 echo "Starting synctv server..."

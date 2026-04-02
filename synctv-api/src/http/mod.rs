@@ -713,7 +713,10 @@ fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, 
                 "/api/oauth2/{provider}/authorize",
                 get(oauth2::get_authorize_url),
             )
-            .route("/api/oauth2/providers", get(oauth2::list_available_providers))
+            .route(
+                "/api/oauth2/providers",
+                get(oauth2::list_available_providers),
+            )
             .route_layer(axum_middleware::from_fn_with_state(
                 state.clone(),
                 middleware::read_rate_limit,
@@ -1860,11 +1863,14 @@ mod tests {
             ["content"]["application/json"]["schema"]["$ref"]
             .as_str()
             .expect("auth login schema ref");
-        let emby_login_ref = json["paths"]["/api/providers/emby/login"]["post"]["responses"]
-            ["200"]["content"]["application/json"]["schema"]["$ref"]
+        let emby_login_ref = json["paths"]["/api/providers/emby/login"]["post"]["responses"]["200"]
+            ["content"]["application/json"]["schema"]["$ref"]
             .as_str()
             .expect("emby login schema ref");
-        assert_eq!(auth_login_ref, "#/components/schemas/synctv_client_LoginResponse");
+        assert_eq!(
+            auth_login_ref,
+            "#/components/schemas/synctv_client_LoginResponse"
+        );
         assert_ne!(
             auth_login_ref, alist_login_ref,
             "client login and provider login must use distinct OpenAPI components"

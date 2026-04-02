@@ -319,11 +319,11 @@ impl AlistApiImpl {
 mod tests {
     use super::AlistApiImpl;
     use std::sync::Arc;
-    use synctv_proto::providers::alist::LoginRequest;
     use synctv_core::provider::{AlistProvider, ProviderError};
     use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
     use synctv_core::service::RemoteProviderManager;
     use synctv_core_testing::create_test_pool;
+    use synctv_proto::providers::alist::LoginRequest;
 
     fn provider() -> Arc<AlistProvider> {
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");

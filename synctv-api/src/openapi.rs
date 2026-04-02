@@ -2,11 +2,11 @@ use axum::Router;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+use crate::http::providers::{alist, bilibili, emby, live};
 use crate::http::{
     admin, auth, email_verification, health, notifications, oauth2, provider_common, public,
     publish_key, room, room_extra, ticket, user, webrtc, AppState,
 };
-use crate::http::providers::{alist, bilibili, emby, live};
 use crate::proto::client;
 
 #[derive(utoipa::ToSchema)]
@@ -449,9 +449,8 @@ impl utoipa::Modify for SecurityAddon {
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new().merge(
-        SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()),
-    )
+    Router::new()
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
 }
 
 #[cfg(test)]
@@ -504,8 +503,7 @@ mod tests {
             "mark-all-as-read should still document its request body schema"
         );
 
-        let required = request_body["required"]
-            .as_bool();
+        let required = request_body["required"].as_bool();
 
         assert_ne!(
             required,

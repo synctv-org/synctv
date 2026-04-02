@@ -33,7 +33,7 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 
-const POSTGRES_VERSION: &str = "16-alpine";
+const POSTGRES_VERSION: &str = "16";
 
 struct BenchmarkDatabase {
     container: ContainerAsync<Postgres>,

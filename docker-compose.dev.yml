@@ -1,15 +1,15 @@
 services:
   postgres:
     image: postgres:16
-    container_name: synctv-postgres
+    container_name: synctv-postgres-dev
     environment:
       POSTGRES_USER: synctv
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-synctv}
+      POSTGRES_PASSWORD: synctv
       POSTGRES_DB: synctv
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_dev_data:/var/lib/postgresql/data
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U synctv" ]
       interval: 5s
@@ -17,16 +17,16 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - synctv
+      - synctv-dev
     restart: unless-stopped
 
   redis:
     image: redis:7
-    container_name: synctv-redis
+    container_name: synctv-redis-dev
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      - redis_dev_data:/data
     command: redis-server --appendonly yes
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
@@ -34,31 +34,35 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - synctv
+      - synctv-dev
     restart: unless-stopped
 
   synctv:
-    image: synctvorg/synctv:v1
-    container_name: synctv-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: synctv-app-dev
     ports:
       - "8080:8080"
       - "1935:1935"
       - "3478:3478/udp"
     environment:
-      SYNCTV_DATABASE_URL: postgresql://synctv:${POSTGRES_PASSWORD:-synctv}@postgres:5432/synctv
+      SYNCTV_DATABASE_URL: postgresql://synctv:synctv@postgres:5432/synctv
       SYNCTV_REDIS_URL: redis://redis:6379
       SYNCTV_SERVER_HOST: 0.0.0.0
       SYNCTV_SERVER_PORT: 8080
-      SYNCTV_JWT_SECRET: ${SYNCTV_JWT_SECRET:?SYNCTV_JWT_SECRET must be set (min 32 chars)}
-      SYNCTV_SERVER_CLUSTER_SECRET: ${SYNCTV_SERVER_CLUSTER_SECRET:-changeme-generate-a-random-secret}
-      SYNCTV_LOGGING_LEVEL: ${SYNCTV_LOGGING_LEVEL:-info}
+      SYNCTV_JWT_SECRET: dev-jwt-secret-please-change-in-production-1234567890
+      SYNCTV_SERVER_CLUSTER_SECRET: dev-cluster-secret-please-change-in-production-1234567890
+      SYNCTV_LOGGING_LEVEL: debug
+      SYNCTV_LOGGING_FILTER: info,synctv=debug
+      SYNCTV_LOGGING_BACKTRACE: true
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - synctv
+      - synctv-dev
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8080/health/ready" ]
@@ -68,11 +72,11 @@ services:
       retries: 3
 
 volumes:
-  postgres_data:
+  postgres_dev_data:
     driver: local
-  redis_data:
+  redis_dev_data:
     driver: local
 
 networks:
-  synctv:
+  synctv-dev:
     driver: bridge

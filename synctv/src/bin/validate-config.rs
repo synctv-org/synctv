@@ -27,8 +27,10 @@ use synctv_core::Config;
 
 fn main() {
     // Set up basic console logging for validation output without mutating the
-    // process environment (Rust 2024 treats env writes as unsafe).
-    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".to_string());
+    // process environment (Rust 2024 treats env writes as unsafe). The validator
+    // follows SyncTV's own environment variable namespace.
+    let _ = synctv_core::bootstrap::load_dotenv();
+    let log_level = std::env::var("SYNCTV_LOGGING_LEVEL").unwrap_or_else(|_| "warn".to_string());
     let filter = tracing_subscriber::EnvFilter::try_new(log_level)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
@@ -99,6 +101,7 @@ fn main() {
 
 /// Load configuration without starting the server
 fn load_config_for_validation(config_path: &Option<String>) -> Result<Config, String> {
+    synctv_core::bootstrap::load_dotenv().map_err(|e| e.to_string())?;
     let env: std::collections::HashMap<String, String> = std::env::vars().collect();
     load_config_for_validation_with_env(config_path, &env)
 }
@@ -190,6 +193,16 @@ fn mask_sensitive(url: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static VALIDATION_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn acquire_validation_test_lock() -> MutexGuard<'static, ()> {
+        VALIDATION_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     struct EnvVarGuard {
         key: &'static str,
@@ -204,6 +217,33 @@ mod tests {
                 key,
                 value: previous,
             }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self {
+                key,
+                value: previous,
+            }
+        }
+    }
+
+    struct CurrentDirGuard {
+        previous: std::path::PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn change_to(path: &std::path::Path) -> Self {
+            let previous = std::env::current_dir().expect("current dir should be readable");
+            std::env::set_current_dir(path).expect("current dir should be settable");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.previous).expect("current dir should be restored");
         }
     }
 
@@ -287,6 +327,7 @@ jwt:
 
     #[test]
     fn load_config_for_validation_reads_process_env_overrides() {
+        let _lock = acquire_validation_test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.yaml");
         std::fs::write(
@@ -305,5 +346,24 @@ jwt:
             .expect("config loader should honor process env overrides");
 
         assert_eq!(result.server.port, 50061);
+    }
+
+    #[test]
+    fn load_config_for_validation_reads_dotenv() {
+        let _lock = acquire_validation_test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _cwd = CurrentDirGuard::change_to(dir.path());
+        let _jwt = EnvVarGuard::remove("SYNCTV_JWT_SECRET");
+        let _port = EnvVarGuard::remove("SYNCTV_SERVER_PORT");
+        std::fs::write(
+            dir.path().join(".env"),
+            "SYNCTV_JWT_SECRET=12345678901234567890123456789012\nSYNCTV_SERVER_PORT=50071\n",
+        )
+        .expect("write .env");
+
+        let result = load_config_for_validation(&None).expect("config loader should honor .env");
+
+        assert_eq!(result.jwt.secret, "12345678901234567890123456789012");
+        assert_eq!(result.server.port, 50071);
     }
 }

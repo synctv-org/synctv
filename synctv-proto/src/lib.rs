@@ -823,7 +823,10 @@ mod tests {
             serde_json::from_str(r#"{"added_permissions":7}"#)
                 .expect("missing role should default to unspecified");
 
-        assert_eq!(decoded.role, crate::common::RoomMemberRole::Unspecified as i32);
+        assert_eq!(
+            decoded.role,
+            crate::common::RoomMemberRole::Unspecified as i32
+        );
         assert_eq!(decoded.added_permissions, 7);
     }
 

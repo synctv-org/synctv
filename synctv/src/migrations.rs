@@ -102,8 +102,25 @@ async fn run_migrate_with_connection(
         .await
         .map_err(|e| {
             error!("Failed to run migrations: {}", e);
-            anyhow::anyhow!("Migration failed: {e}")
+            anyhow::anyhow!("{}", describe_migration_error(&e))
         })
+}
+
+fn describe_migration_error(err: &sqlx::migrate::MigrateError) -> String {
+    match err {
+        sqlx::migrate::MigrateError::VersionMismatch(version) => format!(
+            "Migration failed: migration {version} was previously applied but has been modified. \
+             This database was initialized from a different migration history than the one embedded \
+             in the current binary. For disposable local/dev databases, recreate the database or \
+             Docker volumes from scratch instead of editing _sqlx_migrations by hand. For persistent \
+             environments, restore the original migration file and add a new forward-only corrective migration."
+        ),
+        sqlx::migrate::MigrateError::Dirty(version) => format!(
+            "Migration failed: migration {version} is marked dirty. Resolve the partial migration \
+             state before retrying startup."
+        ),
+        _ => format!("Migration failed: {err}"),
+    }
 }
 
 /// Check whether all known migrations have already been applied by comparing
@@ -543,8 +560,9 @@ async fn release_lock(lock: &dyn MigrationLock, lock_key: &str, lock_value: &str
 #[cfg(test)]
 mod tests {
     use super::{
-        migrations_match_applied_set, run_migrations_with_mode, run_migrations_with_runner,
-        MIGRATION_LOCK_TTL, MIGRATION_MAX_WAIT, PG_ADVISORY_LOCK_MAX_WAIT,
+        describe_migration_error, migrations_match_applied_set, run_migrations_with_mode,
+        run_migrations_with_runner, MIGRATION_LOCK_TTL, MIGRATION_MAX_WAIT,
+        PG_ADVISORY_LOCK_MAX_WAIT,
     };
     use anyhow::anyhow;
     use sqlx::Row;
@@ -830,6 +848,17 @@ mod tests {
             !migrations_match_applied_set(expected, applied),
             "changed SQL checksum must force migrations to run again instead of being treated as already applied"
         );
+    }
+
+    #[test]
+    fn version_mismatch_error_includes_rebuild_guidance() {
+        let message = describe_migration_error(&sqlx::migrate::MigrateError::VersionMismatch(
+            20240101000004,
+        ));
+
+        assert!(message.contains("20240101000004"));
+        assert!(message.contains("recreate the database or Docker volumes"));
+        assert!(message.contains("forward-only corrective migration"));
     }
 
     #[test]

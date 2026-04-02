@@ -12,7 +12,7 @@ pub mod redis;
 pub mod services;
 pub mod user;
 
-pub use config::load_config;
+pub use config::{load_config, load_dotenv};
 pub use database::{acquire_unbounded_ddl_connection, init_database, DatabaseInit};
 pub use redis::{init_redis, RedisHandles, RedisInit};
 pub use services::init_services;

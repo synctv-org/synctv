@@ -139,6 +139,9 @@ jwt:
 logging:
   level: "info"
   format: "pretty"
+  # Optional fine-grained tracing filter. When set, this takes precedence over level.
+  # filter: "info,synctv=debug,synctv_core::service=trace"
+  backtrace: false
   # file_path: "/var/log/synctv/app.log"
 
 livestream:

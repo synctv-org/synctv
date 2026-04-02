@@ -51,6 +51,7 @@ redis.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
+dotenvy.workspace = true
 hostname.workspace = true
 nanoid.workspace = true
 parking_lot.workspace = true

@@ -25,12 +25,7 @@ use crate::config::LoggingConfig;
 pub fn init_logging(
     config: &LoggingConfig,
 ) -> anyhow::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
-    let log_level = parse_log_level(&config.level)?;
-
-    // Create env filter from config level
-    let env_filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(&config.level))
-        .unwrap_or_else(|_| EnvFilter::new(log_level.to_string()));
+    let env_filter = build_env_filter(config)?;
 
     let registry = tracing_subscriber::registry().with(env_filter);
 
@@ -66,9 +61,10 @@ pub fn init_logging(
         }
         registry.with(json_layer).init();
     } else {
-        // Pretty format for development (human-readable)
+        // Compact human-readable format for development. `pretty()` inserts
+        // extra blank lines between events, which is too noisy for daemon logs.
         let pretty_layer = fmt::layer()
-            .pretty()
+            .compact()
             .with_span_events(FmtSpan::CLOSE)
             .with_target(true)
             .with_line_number(true)
@@ -99,8 +95,24 @@ pub fn init_logging(
     Ok(None)
 }
 
+fn build_env_filter(config: &LoggingConfig) -> anyhow::Result<EnvFilter> {
+    let filter_spec = build_env_filter_spec(config)?;
+    EnvFilter::try_new(filter_spec)
+        .map_err(|e| anyhow::anyhow!("Invalid log filter specification: {e}"))
+}
+
+fn build_env_filter_spec(config: &LoggingConfig) -> anyhow::Result<String> {
+    if let Some(filter) = config.filter.as_deref().map(str::trim) {
+        if !filter.is_empty() {
+            return Ok(filter.to_string());
+        }
+    }
+
+    Ok(parse_log_level(&config.level)?.to_string())
+}
+
 /// Parse log level string to tracing Level
-fn parse_log_level(level: &str) -> anyhow::Result<Level> {
+pub(crate) fn parse_log_level(level: &str) -> anyhow::Result<Level> {
     match level.to_lowercase().as_str() {
         "trace" => Ok(Level::TRACE),
         "debug" => Ok(Level::DEBUG),
@@ -109,6 +121,21 @@ fn parse_log_level(level: &str) -> anyhow::Result<Level> {
         "error" => Ok(Level::ERROR),
         _ => Err(anyhow::anyhow!("Invalid log level: {level}")),
     }
+}
+
+pub(crate) fn effective_log_level(config: &LoggingConfig) -> anyhow::Result<Level> {
+    if let Some(filter) = config.filter.as_deref().map(str::trim) {
+        if !filter.is_empty() {
+            for directive in filter.split(',').map(str::trim).filter(|d| !d.is_empty()) {
+                if directive.contains('=') {
+                    continue;
+                }
+                return parse_log_level(directive);
+            }
+        }
+    }
+
+    parse_log_level(&config.level)
 }
 
 /// Generate a trace ID for request tracing
@@ -142,5 +169,67 @@ mod tests {
         assert_eq!(trace_id1.len(), 32);
         assert_eq!(trace_id2.len(), 32);
         assert_ne!(trace_id1, trace_id2);
+    }
+
+    #[test]
+    fn test_build_env_filter_spec_uses_config_level_by_default() {
+        let config = LoggingConfig {
+            level: "info".to_string(),
+            ..LoggingConfig::default()
+        };
+
+        let spec = build_env_filter_spec(&config).expect("filter spec should build");
+
+        assert_eq!(spec.to_lowercase(), "info");
+    }
+
+    #[test]
+    fn test_build_env_filter_spec_uses_config_level_without_env_override() {
+        let config = LoggingConfig {
+            level: "debug".to_string(),
+            ..LoggingConfig::default()
+        };
+
+        let spec = build_env_filter_spec(&config).expect("filter spec should build");
+
+        assert_eq!(spec.to_lowercase(), "debug");
+    }
+
+    #[test]
+    fn test_build_env_filter_spec_prefers_explicit_logging_filter() {
+        let config = LoggingConfig {
+            level: "info".to_string(),
+            filter: Some("warn,synctv=debug".to_string()),
+            ..LoggingConfig::default()
+        };
+
+        let spec = build_env_filter_spec(&config).expect("filter spec should build");
+
+        assert_eq!(spec, "warn,synctv=debug");
+    }
+
+    #[test]
+    fn test_effective_log_level_uses_config_level_only() {
+        let config = LoggingConfig {
+            level: "debug".to_string(),
+            ..LoggingConfig::default()
+        };
+
+        let level = effective_log_level(&config).expect("effective log level should resolve");
+
+        assert_eq!(level, Level::DEBUG);
+    }
+
+    #[test]
+    fn test_effective_log_level_prefers_global_directive_from_logging_filter() {
+        let config = LoggingConfig {
+            level: "info".to_string(),
+            filter: Some("warn,synctv=debug".to_string()),
+            ..LoggingConfig::default()
+        };
+
+        let level = effective_log_level(&config).expect("effective log level should resolve");
+
+        assert_eq!(level, Level::WARN);
     }
 }

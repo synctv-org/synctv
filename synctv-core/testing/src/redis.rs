@@ -177,7 +177,7 @@ fn named_redis_request(container_name: &str) -> testcontainers::ContainerRequest
         .with_container_name(container_name.to_string())
         .with_label(TEST_RUN_LABEL, current_test_run_id())
         .with_reuse(ReuseDirective::Always)
-        .with_tag("7-alpine")
+        .with_tag("7")
         .with_cmd([
             // --- Disable persistence (ephemeral test data) ---
             "--save",

@@ -1305,6 +1305,7 @@ mod tests {
             bootstrap: BootstrapConfig {
                 create_root_user: false,
                 root_username: String::new(),
+                root_email: String::new(),
                 root_password: String::new(),
             },
             cluster: ClusterChannelConfig::default(),
@@ -1463,6 +1464,7 @@ mod tests {
             &BootstrapConfig {
                 create_root_user: false,
                 root_username: "root".to_string(),
+                root_email: String::new(),
                 root_password: String::new(),
             },
         )
@@ -1508,6 +1510,7 @@ mod tests {
             &BootstrapConfig {
                 create_root_user: false,
                 root_username: "root".to_string(),
+                root_email: String::new(),
                 root_password: String::new(),
             },
         )

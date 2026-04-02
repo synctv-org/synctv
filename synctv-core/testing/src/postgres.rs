@@ -19,7 +19,7 @@ use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 
 /// Default `PostgreSQL` version for test containers
-pub const POSTGRES_VERSION: &str = "16-alpine";
+pub const POSTGRES_VERSION: &str = "16";
 const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 300;
 const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";

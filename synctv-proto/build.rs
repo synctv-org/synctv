@@ -171,7 +171,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     prost_config.field_attribute(".synctv.admin.BanUserRequest.reason", "#[serde(default)]");
     prost_config.field_attribute(".synctv.admin.BanRoomRequest.reason", "#[serde(default)]");
-    prost_config.field_attribute(".synctv.admin.KickStreamRequest.reason", "#[serde(default)]");
+    prost_config.field_attribute(
+        ".synctv.admin.KickStreamRequest.reason",
+        "#[serde(default)]",
+    );
     prost_config.field_attribute(
         ".synctv.admin.BatchBanUsersRequest.reason",
         "#[serde(default)]",
@@ -271,15 +274,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (path, attr) in &provider_schema_aliases {
         provider_builder = provider_builder.type_attribute(path, attr);
     }
-    provider_builder.out_dir("src/providers").compile_with_config(
-        provider_prost_config,
-        &[
-            "proto/providers/bilibili.proto",
-            "proto/providers/alist.proto",
-            "proto/providers/emby.proto",
-        ],
-        &["."],
-    )?;
+    provider_builder
+        .out_dir("src/providers")
+        .compile_with_config(
+            provider_prost_config,
+            &[
+                "proto/providers/bilibili.proto",
+                "proto/providers/alist.proto",
+                "proto/providers/emby.proto",
+            ],
+            &["."],
+        )?;
 
     Ok(())
 }

@@ -14,14 +14,15 @@
 //! - Single-use (consumed on first use)
 //! - Does not expose the actual JWT token
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
 use super::middleware::AuthUser;
-use super::{AppError, AppState};
+use super::{AppError, AppResult, AppState};
 
 /// Request to create a WebSocket ticket (Issue #65: now room-scoped)
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateTicketRequest {
     /// The room ID the ticket is bound to.
     ///
@@ -33,6 +34,7 @@ pub struct CreateTicketRequest {
 
 /// Response containing the WebSocket ticket
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TicketResponse {
     /// The ticket string to use in WebSocket URL
     pub ticket: String,
@@ -84,11 +86,31 @@ fn map_ticket_creation_error(err: synctv_core::Error) -> AppError {
 ///   "usage": "Use in WebSocket URL: ws://host/ws/rooms/abc123?ticket=xxx"
 /// }
 /// ```
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/tickets",
+        tag = "WebSocket",
+        request_body = CreateTicketRequest,
+        responses(
+            (status = 200, description = "WebSocket ticket created", body = TicketResponse),
+            (status = 400, description = "Invalid room_id", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Caller cannot create a ticket for this room", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Ticket backend unavailable", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn create_ticket(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<CreateTicketRequest>,
-) -> Result<impl IntoResponse, AppError> {
+) -> AppResult<Json<TicketResponse>> {
     super::websocket::validate_websocket_runtime_dependencies(&state)?;
 
     // Validate room_id is non-empty
@@ -143,7 +165,7 @@ pub async fn create_ticket(
         ),
     };
 
-    Ok((StatusCode::OK, Json(response)))
+    Ok(Json(response))
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ use crate::proto::client::{
 
 /// Typed request for PATCH /api/user
 #[derive(serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateUserRequest {
     #[serde(default)]
     pub username: Option<String>,
@@ -23,7 +24,30 @@ pub struct UpdateUserRequest {
     pub old_password: Option<String>,
 }
 
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct UpdateUserResponseDoc {
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
 /// Get current user info
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/user",
+        tag = "User",
+        responses(
+            (status = 200, description = "Current user profile", body = GetProfileResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_me(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -38,11 +62,28 @@ pub async fn get_me(
 }
 
 /// Update user (unified endpoint for username and password via PATCH)
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/user",
+        tag = "User",
+        request_body = UpdateUserRequest,
+        responses(
+            (status = 200, description = "User profile updated", body = UpdateUserResponseDoc),
+            (status = 400, description = "Invalid update request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn update_user(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<UpdateUserRequest>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<UpdateUserResponseDoc>> {
     let UpdateUserRequest {
         username,
         password,
@@ -73,26 +114,37 @@ pub async fn update_user(
         .await
         .map_err(super::error::map_api_error)?;
 
-    let mut result = serde_json::Map::new();
-    if let Some(user) = response.user {
-        result.insert(
-            "username".to_string(),
-            serde_json::Value::String(user.username),
-        );
-    } else if let Some(username) = username {
-        result.insert("username".to_string(), serde_json::Value::String(username));
-    }
-    result.insert(
-        "message".to_string(),
-        serde_json::Value::String(format!(
-            "{} updated successfully",
-            updated_fields.join(" and ")
-        )),
-    );
-    Ok(Json(serde_json::Value::Object(result)))
+    let username = if let Some(user) = response.user {
+        Some(user.username)
+    } else {
+        username
+    };
+    Ok(Json(UpdateUserResponseDoc {
+        message: format!("{} updated successfully", updated_fields.join(" and ")),
+        username,
+    }))
 }
 
 /// Get user's joined rooms (paginated)
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/user/rooms",
+        tag = "User",
+        params(
+            ("page" = Option<i32>, Query, description = "Page number"),
+            ("page_size" = Option<i32>, Query, description = "Page size")
+        ),
+        responses(
+            (status = 200, description = "Joined rooms", body = ListParticipatedRoomsResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_joined_rooms(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -112,6 +164,26 @@ pub async fn get_joined_rooms(
 }
 
 /// Delete a room (user's own room)
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/user/rooms/{room_id}",
+        tag = "User",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Room deleted", body = DeleteRoomResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn delete_my_room(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -133,6 +205,21 @@ pub async fn delete_my_room(
 /// Sets `deleted_at = NOW()` on the user row and cleans up `OAuth2` mappings.
 /// The current token will return 401 on the next request because the security
 /// pipeline checks for deleted users.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/user/me",
+        tag = "User",
+        responses(
+            (status = 204, description = "Current user deleted"),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn delete_me(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -148,6 +235,25 @@ pub async fn delete_me(
 
 /// List rooms created by this user
 /// GET /api/user/rooms/created
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/user/rooms/created",
+        tag = "User",
+        params(
+            ("page" = Option<i32>, Query, description = "Page number"),
+            ("page_size" = Option<i32>, Query, description = "Page size")
+        ),
+        responses(
+            (status = 200, description = "Rooms created by the current user", body = ListCreatedRoomsResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn list_created_rooms(
     auth: AuthUser,
     State(state): State<AppState>,

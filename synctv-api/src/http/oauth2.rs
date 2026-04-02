@@ -38,12 +38,14 @@ use super::{error::map_api_error, middleware::AuthUser, validation, AppResult, A
 
 /// Query params for get authorization URL (converted to proto request)
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct GetAuthUrlQuery {
     pub redirect_url: Option<String>,
 }
 
 /// Query params for unlink provider (converted to proto request)
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct UnlinkProviderQuery {
     pub provider_user_id: Option<String>,
 }
@@ -51,6 +53,22 @@ pub struct UnlinkProviderQuery {
 /// Get `OAuth2` authorization URL for login flow
 ///
 /// GET /`api/oauth2/:provider/authorize?redirect_url`=<url>
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/oauth2/{provider}/authorize",
+        tag = "OAuth2",
+        params(
+            ("provider" = String, Path, description = "OAuth2 provider instance name"),
+            GetAuthUrlQuery
+        ),
+        responses(
+            (status = 200, description = "OAuth2 authorization URL", body = GetAuthorizationUrlResponse),
+            (status = 400, description = "Invalid OAuth2 request", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn get_authorize_url(
     State(state): State<AppState>,
     Path(provider): Path<String>,
@@ -92,6 +110,23 @@ pub async fn get_authorize_url(
 /// For bind flows (where the `OAuth2` state contains a `bind_user_id`), the caller
 /// must be authenticated and the authenticated user must match the `bind_user_id`
 /// stored in the state. For login flows, no authentication is required.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/oauth2/{provider}/exchange",
+        tag = "OAuth2",
+        params(
+            ("provider" = String, Path, description = "OAuth2 provider instance name")
+        ),
+        request_body = ExchangeAuthorizationCodeRequest,
+        responses(
+            (status = 200, description = "Authorization code exchanged", body = ExchangeAuthorizationCodeResponse),
+            (status = 400, description = "Invalid OAuth2 exchange request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required for bind flow", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn exchange_authorization_code(
     maybe_auth: Option<super::middleware::AuthUser>,
     State(state): State<AppState>,
@@ -158,6 +193,26 @@ pub async fn exchange_authorization_code(
 ///
 /// Requires authentication. The frontend then redirects to the `OAuth2` provider,
 /// receives code/state, and calls exchange endpoint which will bind the provider.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/oauth2/{provider}/bind",
+        tag = "OAuth2",
+        params(
+            ("provider" = String, Path, description = "OAuth2 provider instance name"),
+            GetAuthUrlQuery
+        ),
+        responses(
+            (status = 200, description = "OAuth2 bind authorization URL", body = GetAuthorizationUrlForBindResponse),
+            (status = 400, description = "Invalid OAuth2 bind request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_bind_authorize_url(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -196,6 +251,26 @@ pub async fn get_bind_authorize_url(
 /// Unlink `OAuth2` provider from authenticated user
 ///
 /// DELETE /`api/oauth2/:provider/unlink?provider_user_id`=<optional>
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/oauth2/{provider}/unlink",
+        tag = "OAuth2",
+        params(
+            ("provider" = String, Path, description = "OAuth2 provider instance name"),
+            UnlinkProviderQuery
+        ),
+        responses(
+            (status = 200, description = "OAuth2 provider unlinked", body = UnlinkProviderResponse),
+            (status = 400, description = "Invalid unlink request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn unlink_provider(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -238,6 +313,18 @@ pub async fn unlink_provider(
 ///
 /// Returns the configured `OAuth2` provider instances that clients can use
 /// for login or account binding. No authentication required.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/oauth2/providers",
+        tag = "OAuth2",
+        responses(
+            (status = 200, description = "Available OAuth2 providers", body = ListAvailableProvidersResponse),
+            (status = 400, description = "OAuth2 is not configured", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn list_available_providers(
     State(state): State<AppState>,
 ) -> AppResult<Json<ListAvailableProvidersResponse>> {
@@ -266,6 +353,21 @@ pub async fn list_available_providers(
 /// GET /api/oauth2/linked
 ///
 /// Requires authentication.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/oauth2/linked",
+        tag = "OAuth2",
+        responses(
+            (status = 200, description = "Linked OAuth2 providers", body = GetLinkedProvidersResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_linked_providers(
     auth: AuthUser,
     State(state): State<AppState>,

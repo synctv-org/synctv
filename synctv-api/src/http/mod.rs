@@ -547,18 +547,16 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
             )),
     );
 
-    if state.oauth2_api.is_some() {
-        router = router
-            .route(
-                "/api/oauth2/{provider}/bind",
-                get(oauth2::get_bind_authorize_url),
-            )
-            .route(
-                "/api/oauth2/{provider}/unlink",
-                axum::routing::delete(oauth2::unlink_provider),
-            )
-            .route("/api/oauth2/linked", get(oauth2::get_linked_providers));
-    }
+    router = router
+        .route(
+            "/api/oauth2/{provider}/bind",
+            get(oauth2::get_bind_authorize_url),
+        )
+        .route(
+            "/api/oauth2/{provider}/unlink",
+            axum::routing::delete(oauth2::unlink_provider),
+        )
+        .route("/api/oauth2/linked", get(oauth2::get_linked_providers));
 
     router
         // Room/user write bodies should be small (room metadata, settings, passwords)
@@ -644,6 +642,7 @@ fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, 
 
     let mut timeout_router = Router::new()
         .merge(health_router)
+        .merge(openapi_router())
         .merge(public::create_public_router())
         .merge(publish_key::create_publish_key_router().route_layer(
             axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
@@ -691,47 +690,35 @@ fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, 
 
     let no_timeout_router = register_provider_streaming_routes(&state);
 
-    if state.notification_api.is_some() {
-        timeout_router = timeout_router
-            .merge(
-                notifications::create_notification_read_router().route_layer(
-                    axum_middleware::from_fn_with_state(state.clone(), middleware::read_rate_limit),
-                ),
+    timeout_router = timeout_router
+        .merge(
+            notifications::create_notification_read_router().route_layer(
+                axum_middleware::from_fn_with_state(state.clone(), middleware::read_rate_limit),
+            ),
+        )
+        .merge(
+            notifications::create_notification_write_router().route_layer(
+                axum_middleware::from_fn_with_state(state.clone(), middleware::write_rate_limit),
+            ),
+        );
+
+    let email_routes = email_verification::create_email_router().route_layer(
+        axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
+    );
+    timeout_router = timeout_router.merge(email_routes);
+
+    timeout_router = timeout_router.merge(
+        Router::new()
+            .route(
+                "/api/oauth2/{provider}/authorize",
+                get(oauth2::get_authorize_url),
             )
-            .merge(
-                notifications::create_notification_write_router().route_layer(
-                    axum_middleware::from_fn_with_state(
-                        state.clone(),
-                        middleware::write_rate_limit,
-                    ),
-                ),
-            );
-    }
-
-    if state.email_service.is_some() && state.email_token_service.is_some() {
-        let email_routes = email_verification::create_email_router().route_layer(
-            axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
-        );
-        timeout_router = timeout_router.merge(email_routes);
-    }
-
-    if state.oauth2_api.is_some() {
-        timeout_router = timeout_router.merge(
-            Router::new()
-                .route(
-                    "/api/oauth2/{provider}/authorize",
-                    get(oauth2::get_authorize_url),
-                )
-                .route(
-                    "/api/oauth2/providers",
-                    get(oauth2::list_available_providers),
-                )
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::read_rate_limit,
-                )),
-        );
-    }
+            .route("/api/oauth2/providers", get(oauth2::list_available_providers))
+            .route_layer(axum_middleware::from_fn_with_state(
+                state.clone(),
+                middleware::read_rate_limit,
+            )),
+    );
 
     let upgrade_router = register_websocket_routes(&state);
 
@@ -751,6 +738,16 @@ fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, 
     }
 
     (timeout_router, no_timeout_router, upgrade_router)
+}
+
+#[cfg(feature = "openapi")]
+fn openapi_router() -> Router<AppState> {
+    crate::openapi::router()
+}
+
+#[cfg(not(feature = "openapi"))]
+fn openapi_router() -> Router<AppState> {
+    Router::new()
 }
 
 fn register_provider_management_routes(state: &AppState) -> Router<AppState> {
@@ -1785,6 +1782,161 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "openapi")]
+    #[tokio::test]
+    async fn test_openapi_json_route_is_available() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api-docs/openapi.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("valid openapi json");
+        assert_eq!(json["openapi"], "3.1.0");
+        assert!(json["paths"]["/api/auth/login"].is_object());
+        assert!(json["paths"]["/api/tickets"].is_object());
+        assert!(json["paths"]["/api/user"].is_object());
+        assert!(json["paths"]["/api/rooms/{room_id}/media"].is_object());
+        assert!(json["paths"]["/api/admin/users"].is_object());
+        assert!(json["paths"]["/api/rooms/{room_id}/webrtc/ice-servers"].is_object());
+        assert!(json["paths"]["/api/oauth2/{provider}/exchange"].is_object());
+        assert!(json["paths"]["/api/oauth2/providers"].is_object());
+        assert!(json["paths"]["/api/oauth2/{provider}/authorize"].is_object());
+        assert!(json["paths"]["/api/notifications"].is_object());
+        assert!(json["paths"]["/api/email/verify/send"].is_object());
+        assert!(json["paths"]["/api/providers/bilibili/parse"].is_object());
+        assert!(json["paths"]["/api/providers/alist/login"].is_object());
+        assert!(json["paths"]["/api/providers/rtmp/streams"].is_object());
+        assert!(json["paths"]["/api/providers/live_proxy/streams"].is_object());
+        assert!(json["paths"]["/api/providers/live_proxy/info/{media_id}"].is_object());
+        assert_eq!(
+            json["paths"]["/api/providers/alist/login"]["post"]["responses"]["200"]["content"]
+                ["application/json"]["schema"]["$ref"],
+            "#/components/schemas/synctv_provider_alist_LoginResponse"
+        );
+        assert_eq!(
+            json["paths"]["/api/providers/emby/list"]["post"]["responses"]["200"]["content"]
+                ["application/json"]["schema"]["$ref"],
+            "#/components/schemas/synctv_provider_emby_ListResponse"
+        );
+        assert_eq!(
+            json["paths"]["/api/providers/bilibili/login/qr/check"]["post"]["responses"]["200"]
+                ["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/synctv_provider_bilibili_QRStatusResponse"
+        );
+        assert_eq!(
+            json["paths"]["/api/user"]["patch"]["responses"]["200"]["content"]["application/json"]
+                ["schema"]["$ref"],
+            "#/components/schemas/UpdateUserResponseDoc"
+        );
+        assert_eq!(
+            json["paths"]["/api/tickets"]["post"]["responses"]["200"]["content"]
+                ["application/json"]["schema"]["$ref"],
+            "#/components/schemas/TicketResponse"
+        );
+        assert_eq!(
+            json["paths"]["/api/rooms/{room_id}/webrtc/ice-servers"]["get"]["responses"]["200"]
+                ["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/synctv_client_GetIceServersResponse"
+        );
+
+        let alist_login_ref = json["paths"]["/api/providers/alist/login"]["post"]["responses"]
+            ["200"]["content"]["application/json"]["schema"]["$ref"]
+            .as_str()
+            .expect("alist login schema ref");
+        let auth_login_ref = json["paths"]["/api/auth/login"]["post"]["responses"]["200"]
+            ["content"]["application/json"]["schema"]["$ref"]
+            .as_str()
+            .expect("auth login schema ref");
+        let emby_login_ref = json["paths"]["/api/providers/emby/login"]["post"]["responses"]
+            ["200"]["content"]["application/json"]["schema"]["$ref"]
+            .as_str()
+            .expect("emby login schema ref");
+        assert_eq!(auth_login_ref, "#/components/schemas/synctv_client_LoginResponse");
+        assert_ne!(
+            auth_login_ref, alist_login_ref,
+            "client login and provider login must use distinct OpenAPI components"
+        );
+        assert_ne!(
+            alist_login_ref, emby_login_ref,
+            "distinct provider response types must not collapse onto the same OpenAPI component"
+        );
+
+        let alist_login_schema_name = alist_login_ref
+            .rsplit('/')
+            .next()
+            .expect("alist login schema name");
+        let emby_login_schema_name = emby_login_ref
+            .rsplit('/')
+            .next()
+            .expect("emby login schema name");
+
+        let alist_login_properties =
+            &json["components"]["schemas"][alist_login_schema_name]["properties"];
+        assert!(
+            alist_login_properties["token"].is_object(),
+            "alist login schema should expose token"
+        );
+        assert!(
+            alist_login_properties["server_id"].is_object(),
+            "alist login schema should expose server_id"
+        );
+        assert!(
+            alist_login_properties["user_id"].is_null(),
+            "alist login schema must not be overwritten by emby login response"
+        );
+
+        let emby_login_properties =
+            &json["components"]["schemas"][emby_login_schema_name]["properties"];
+        assert!(
+            emby_login_properties["user_id"].is_object(),
+            "emby login schema should expose user_id"
+        );
+        assert!(
+            emby_login_properties["username"].is_object(),
+            "emby login schema should expose username"
+        );
+        assert!(
+            emby_login_properties["is_admin"].is_object(),
+            "emby login schema should expose is_admin"
+        );
+        assert!(
+            emby_login_properties["token"].is_null(),
+            "emby login schema must not be overwritten by alist login response"
+        );
+    }
+
+    #[cfg(feature = "openapi")]
+    #[tokio::test]
+    async fn test_swagger_ui_route_is_available() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/swagger-ui/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     #[test]
     fn test_build_cors_layer_rejects_invalid_configured_origin() {
         let mut config = synctv_core::Config::default();
@@ -2104,7 +2256,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_oauth2_routes_are_not_registered_when_service_missing() {
+    async fn test_oauth2_routes_fail_closed_when_service_missing() {
         let state = test_app_state();
         let app = register_all_routes_for_test(state.clone()).with_state(state);
 
@@ -2119,11 +2271,11 @@ mod tests {
             .await
             .expect("response");
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
-    async fn test_email_routes_are_not_registered_when_services_missing() {
+    async fn test_email_routes_fail_closed_when_services_missing() {
         let state = test_app_state();
         let app = register_all_routes_for_test(state.clone()).with_state(state);
 
@@ -2139,11 +2291,11 @@ mod tests {
             .await
             .expect("response");
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
-    async fn test_notification_routes_are_not_registered_when_service_missing() {
+    async fn test_notification_routes_fail_closed_when_service_missing() {
         let state = test_app_state();
         let app = register_all_routes_for_test(state.clone()).with_state(state);
 
@@ -2158,7 +2310,7 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(read_response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(read_response.status(), StatusCode::UNAUTHORIZED);
 
         let write_response = app
             .oneshot(
@@ -2170,7 +2322,7 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(write_response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(write_response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

@@ -8,6 +8,8 @@ pub mod grpc;
 pub mod http;
 pub mod impls;
 pub mod observability;
+#[cfg(feature = "openapi")]
+pub mod openapi;
 pub mod proto;
 
 // Shared validation utilities

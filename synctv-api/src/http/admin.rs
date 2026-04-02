@@ -137,7 +137,7 @@ where
 // ------------------------------------------------------------------
 
 /// Extracts client IP address and User-Agent from HTTP request for audit logging.
-struct ReqCtx(crate::impls::admin::RequestContext);
+pub(crate) struct ReqCtx(crate::impls::admin::RequestContext);
 
 impl<S> FromRequestParts<S> for ReqCtx
 where
@@ -260,7 +260,20 @@ pub fn create_admin_router() -> Router<AppState> {
 // System Stats
 // ------------------------------------------------------------------
 
-async fn get_system_stats(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/stats",
+        tag = "Admin",
+        responses(
+            (status = 200, description = "System stats", body = admin::GetSystemStatsResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_system_stats(
     _auth: AuthAdmin,
     State(state): State<AppState>,
 ) -> AppResult<Json<admin::GetSystemStatsResponse>> {
@@ -276,7 +289,20 @@ async fn get_system_stats(
 // Settings
 // ------------------------------------------------------------------
 
-async fn get_settings(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/settings",
+        tag = "Admin",
+        responses(
+            (status = 200, description = "All settings groups", body = admin::GetSettingsResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_settings(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -289,7 +315,21 @@ async fn get_settings(
     Ok(Json(resp))
 }
 
-async fn get_settings_group(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/settings/{group}",
+        tag = "Admin",
+        params(("group" = String, Path, description = "Settings group key")),
+        responses(
+            (status = 200, description = "Single settings group", body = admin::GetSettingsGroupResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_settings_group(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -307,7 +347,22 @@ async fn get_settings_group(
     Ok(Json(resp))
 }
 
-async fn set_settings(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/settings",
+        tag = "Admin",
+        request_body = admin::UpdateSettingsRequest,
+        responses(
+            (status = 200, description = "Settings updated", body = admin::UpdateSettingsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn set_settings(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -325,7 +380,22 @@ async fn set_settings(
 // Email
 // ------------------------------------------------------------------
 
-async fn send_test_email(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/email/test",
+        tag = "Admin",
+        request_body = admin::SendTestEmailRequest,
+        responses(
+            (status = 200, description = "Test email sent", body = admin::SendTestEmailResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn send_test_email(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Json(req): Json<admin::SendTestEmailRequest>,
@@ -343,6 +413,7 @@ async fn send_test_email(
 // ------------------------------------------------------------------
 
 #[derive(serde::Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct ListUsersQuery {
     pub page: Option<i32>,
     pub page_size: Option<i32>,
@@ -351,7 +422,21 @@ pub struct ListUsersQuery {
     pub search: Option<String>,
 }
 
-async fn list_users(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/users",
+        tag = "Admin",
+        params(ListUsersQuery),
+        responses(
+            (status = 200, description = "Users list", body = admin::ListUsersResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_users(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Query(q): Query<ListUsersQuery>,
@@ -385,7 +470,22 @@ async fn list_users(
     Ok(Json(resp))
 }
 
-async fn get_user(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/users/{user_id}",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        responses(
+            (status = 200, description = "User detail", body = admin::GetUserResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "User not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_user(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
@@ -399,7 +499,22 @@ async fn get_user(
     Ok(Json(resp))
 }
 
-async fn create_user(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/users",
+        tag = "Admin",
+        request_body = admin::CreateUserRequest,
+        responses(
+            (status = 200, description = "User created", body = admin::CreateUserResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn create_user(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -413,7 +528,21 @@ async fn create_user(
     Ok(Json(resp))
 }
 
-async fn delete_user(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/admin/users/{user_id}",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        responses(
+            (status = 200, description = "User deleted", body = admin::DeleteUserResponse),
+            (status = 401, description = "Root authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn delete_user(
     auth: AuthRoot,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -428,7 +557,23 @@ async fn delete_user(
     Ok(Json(resp))
 }
 
-async fn set_user_role(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/users/{user_id}/role",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        request_body = admin::UpdateUserRoleRequest,
+        responses(
+            (status = 200, description = "User role updated", body = admin::UpdateUserRoleResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn set_user_role(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -445,7 +590,23 @@ async fn set_user_role(
     Ok(Json(resp))
 }
 
-async fn set_user_password(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/users/{user_id}/password",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        request_body = admin::UpdateUserPasswordRequest,
+        responses(
+            (status = 200, description = "User password updated", body = admin::UpdateUserPasswordResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn set_user_password(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -465,7 +626,23 @@ async fn set_user_password(
     Ok(Json(resp))
 }
 
-async fn set_user_username(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/users/{user_id}/username",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        request_body = admin::UpdateUserUsernameRequest,
+        responses(
+            (status = 200, description = "Username updated", body = admin::UpdateUserUsernameResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn set_user_username(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -482,7 +659,23 @@ async fn set_user_username(
     Ok(Json(resp))
 }
 
-async fn ban_user(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/users/{user_id}/ban",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        request_body = admin::BanUserRequest,
+        responses(
+            (status = 200, description = "User banned", body = admin::BanUserResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn ban_user(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -505,7 +698,21 @@ async fn ban_user(
     Ok(Json(resp))
 }
 
-async fn unban_user(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/users/{user_id}/unban",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        responses(
+            (status = 200, description = "User unbanned", body = admin::UnbanUserResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn unban_user(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -520,7 +727,21 @@ async fn unban_user(
     Ok(Json(resp))
 }
 
-async fn approve_user(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/users/{user_id}/approve",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        responses(
+            (status = 200, description = "User approved", body = admin::ApproveUserResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn approve_user(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -539,7 +760,24 @@ async fn approve_user(
     Ok(Json(resp))
 }
 
-async fn get_user_rooms(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/users/{user_id}/rooms",
+        tag = "Admin",
+        params(
+            ("user_id" = String, Path, description = "User ID"),
+            PaginationQuery
+        ),
+        responses(
+            (status = 200, description = "Rooms belonging to user", body = admin::GetUserRoomsResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_user_rooms(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
@@ -564,7 +802,22 @@ async fn get_user_rooms(
 // Batch User Operations
 // ------------------------------------------------------------------
 
-async fn batch_ban_users(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/users/batch/ban",
+        tag = "Admin",
+        request_body = admin::BatchBanUsersRequest,
+        responses(
+            (status = 200, description = "Users batch banned", body = admin::BatchBanUsersResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn batch_ban_users(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -590,7 +843,22 @@ async fn batch_ban_users(
     Ok(Json(resp))
 }
 
-async fn batch_delete_users(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/users/batch/delete",
+        tag = "Admin",
+        request_body = admin::BatchDeleteUsersRequest,
+        responses(
+            (status = 200, description = "Users batch deleted", body = admin::BatchDeleteUsersResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Root authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn batch_delete_users(
     auth: AuthRoot,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -621,12 +889,14 @@ async fn batch_delete_users(
 // ------------------------------------------------------------------
 
 #[derive(serde::Deserialize, Default)]
-struct PaginationQuery {
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct PaginationQuery {
     page: Option<i32>,
     page_size: Option<i32>,
 }
 
 #[derive(serde::Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct ListRoomsQuery {
     pub page: Option<i32>,
     pub page_size: Option<i32>,
@@ -636,7 +906,21 @@ pub struct ListRoomsQuery {
     pub is_banned: Option<bool>,
 }
 
-async fn list_rooms(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/rooms",
+        tag = "Admin",
+        params(ListRoomsQuery),
+        responses(
+            (status = 200, description = "Admin room list", body = admin::ListRoomsResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_rooms(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Query(q): Query<ListRoomsQuery>,
@@ -658,7 +942,21 @@ async fn list_rooms(
     Ok(Json(resp))
 }
 
-async fn get_room(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/rooms/{room_id}",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        responses(
+            (status = 200, description = "Admin room detail", body = admin::GetRoomResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_room(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
@@ -672,7 +970,21 @@ async fn get_room(
     Ok(Json(resp))
 }
 
-async fn delete_room(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/admin/rooms/{room_id}",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        responses(
+            (status = 200, description = "Room deleted", body = admin::DeleteRoomResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn delete_room(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -687,7 +999,23 @@ async fn delete_room(
     Ok(Json(resp))
 }
 
-async fn set_room_password(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/{room_id}/password",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        request_body = admin::UpdateRoomPasswordRequest,
+        responses(
+            (status = 200, description = "Room password updated", body = admin::UpdateRoomPasswordResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn set_room_password(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -704,7 +1032,24 @@ async fn set_room_password(
     Ok(Json(resp))
 }
 
-async fn get_room_members(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/rooms/{room_id}/members",
+        tag = "Admin",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            PaginationQuery
+        ),
+        responses(
+            (status = 200, description = "Room members", body = admin::GetRoomMembersResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_room_members(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
@@ -725,7 +1070,23 @@ async fn get_room_members(
     Ok(Json(resp))
 }
 
-async fn ban_room(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/{room_id}/ban",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        request_body = admin::BanRoomRequest,
+        responses(
+            (status = 200, description = "Room banned", body = admin::BanRoomResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn ban_room(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -748,7 +1109,21 @@ async fn ban_room(
     Ok(Json(resp))
 }
 
-async fn unban_room(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/{room_id}/unban",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        responses(
+            (status = 200, description = "Room unbanned", body = admin::UnbanRoomResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn unban_room(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -763,7 +1138,21 @@ async fn unban_room(
     Ok(Json(resp))
 }
 
-async fn approve_room(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/{room_id}/approve",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        responses(
+            (status = 200, description = "Room approved", body = admin::ApproveRoomResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn approve_room(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -782,7 +1171,21 @@ async fn approve_room(
     Ok(Json(resp))
 }
 
-async fn get_room_settings(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/rooms/{room_id}/settings",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        responses(
+            (status = 200, description = "Room settings", body = admin::GetRoomSettingsResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_room_settings(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
@@ -796,7 +1199,23 @@ async fn get_room_settings(
     Ok(Json(resp))
 }
 
-async fn set_room_settings(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/{room_id}/settings",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        request_body = admin::UpdateRoomSettingsRequest,
+        responses(
+            (status = 200, description = "Room settings updated", body = admin::UpdateRoomSettingsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn set_room_settings(
     auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
@@ -812,7 +1231,21 @@ async fn set_room_settings(
     Ok(Json(resp))
 }
 
-async fn reset_room_settings(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/{room_id}/settings/reset",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        responses(
+            (status = 200, description = "Room settings reset", body = admin::ResetRoomSettingsResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn reset_room_settings(
     auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
@@ -830,7 +1263,22 @@ async fn reset_room_settings(
 // Batch Room Operations
 // ------------------------------------------------------------------
 
-async fn batch_ban_rooms(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/batch/ban",
+        tag = "Admin",
+        request_body = admin::BatchBanRoomsRequest,
+        responses(
+            (status = 200, description = "Rooms batch banned", body = admin::BatchBanRoomsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn batch_ban_rooms(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -856,7 +1304,22 @@ async fn batch_ban_rooms(
     Ok(Json(resp))
 }
 
-async fn batch_delete_rooms(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/batch/delete",
+        tag = "Admin",
+        request_body = admin::BatchDeleteRoomsRequest,
+        responses(
+            (status = 200, description = "Rooms batch deleted", body = admin::BatchDeleteRoomsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn batch_delete_rooms(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -881,7 +1344,20 @@ async fn batch_delete_rooms(
 // Provider Instances
 // ------------------------------------------------------------------
 
-async fn list_providers(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/providers",
+        tag = "Admin",
+        responses(
+            (status = 200, description = "Provider instances", body = admin::ListProviderInstancesResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_providers(
     _auth: AuthAdmin,
     State(state): State<AppState>,
 ) -> AppResult<Json<admin::ListProviderInstancesResponse>> {
@@ -895,7 +1371,22 @@ async fn list_providers(
     Ok(Json(resp))
 }
 
-async fn add_provider(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/providers",
+        tag = "Admin",
+        request_body = admin::AddProviderInstanceRequest,
+        responses(
+            (status = 200, description = "Provider instance added", body = admin::AddProviderInstanceResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn add_provider(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -910,7 +1401,23 @@ async fn add_provider(
     Ok(Json(resp))
 }
 
-async fn update_provider(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        put,
+        path = "/api/admin/providers/{name}",
+        tag = "Admin",
+        params(("name" = String, Path, description = "Provider instance name")),
+        request_body = admin::UpdateProviderInstanceRequest,
+        responses(
+            (status = 200, description = "Provider instance updated", body = admin::UpdateProviderInstanceResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn update_provider(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -927,7 +1434,21 @@ async fn update_provider(
     Ok(Json(resp))
 }
 
-async fn delete_provider(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/admin/providers/{name}",
+        tag = "Admin",
+        params(("name" = String, Path, description = "Provider instance name")),
+        responses(
+            (status = 200, description = "Provider instance deleted", body = admin::DeleteProviderInstanceResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn delete_provider(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -946,7 +1467,21 @@ async fn delete_provider(
     Ok(Json(resp))
 }
 
-async fn reconnect_provider(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/providers/{name}/reconnect",
+        tag = "Admin",
+        params(("name" = String, Path, description = "Provider instance name")),
+        responses(
+            (status = 200, description = "Provider instance reconnected", body = admin::ReconnectProviderInstanceResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn reconnect_provider(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -965,7 +1500,21 @@ async fn reconnect_provider(
     Ok(Json(resp))
 }
 
-async fn enable_provider(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/providers/{name}/enable",
+        tag = "Admin",
+        params(("name" = String, Path, description = "Provider instance name")),
+        responses(
+            (status = 200, description = "Provider instance enabled", body = admin::EnableProviderInstanceResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn enable_provider(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -979,7 +1528,21 @@ async fn enable_provider(
     Ok(Json(resp))
 }
 
-async fn disable_provider(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/providers/{name}/disable",
+        tag = "Admin",
+        params(("name" = String, Path, description = "Provider instance name")),
+        responses(
+            (status = 200, description = "Provider instance disabled", body = admin::DisableProviderInstanceResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn disable_provider(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -998,11 +1561,26 @@ async fn disable_provider(
 // ------------------------------------------------------------------
 
 #[derive(serde::Deserialize, Default)]
-struct ListStreamsQuery {
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct ListStreamsQuery {
     room_id: Option<String>,
 }
 
-async fn list_streams(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/streams",
+        tag = "Admin",
+        params(ListStreamsQuery),
+        responses(
+            (status = 200, description = "Active streams", body = admin::ListActiveStreamsResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_streams(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Query(q): Query<ListStreamsQuery>,
@@ -1016,7 +1594,22 @@ async fn list_streams(
     Ok(Json(admin::ListActiveStreamsResponse { streams }))
 }
 
-async fn kick_stream(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/streams/kick",
+        tag = "Admin",
+        request_body = admin::KickStreamRequest,
+        responses(
+            (status = 200, description = "Stream kicked", body = admin::KickStreamResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn kick_stream(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -1043,7 +1636,20 @@ async fn kick_stream(
 // Admin Management (Root Only)
 // ------------------------------------------------------------------
 
-async fn list_admins(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/admins",
+        tag = "Admin",
+        responses(
+            (status = 200, description = "Admins list", body = admin::ListAdminsResponse),
+            (status = 401, description = "Root authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_admins(
     _auth: AuthRoot,
     State(state): State<AppState>,
 ) -> AppResult<Json<admin::ListAdminsResponse>> {
@@ -1055,7 +1661,21 @@ async fn list_admins(
     Ok(Json(resp))
 }
 
-async fn add_admin(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/admins/{user_id}",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        responses(
+            (status = 200, description = "Admin added", body = admin::AddAdminResponse),
+            (status = 401, description = "Root authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn add_admin(
     auth: AuthRoot,
     rctx: ReqCtx,
     State(state): State<AppState>,
@@ -1070,7 +1690,21 @@ async fn add_admin(
     Ok(Json(resp))
 }
 
-async fn remove_admin(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/admin/admins/{user_id}",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        responses(
+            (status = 200, description = "Admin removed", body = admin::RemoveAdminResponse),
+            (status = 401, description = "Root authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn remove_admin(
     auth: AuthRoot,
     rctx: ReqCtx,
     State(state): State<AppState>,

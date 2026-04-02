@@ -793,7 +793,12 @@ impl PlaybackService {
                 self.broadcast_state_change(&state).await;
                 Ok(SeekResponse::success(state))
             }
-            Err(Error::Internal(ref msg)) if msg.contains("maximum retry attempts") => {
+            Err(error)
+                if crate::service::optimistic_retry::is_retry_exhausted(
+                    &error,
+                    Self::UPDATE_STATE_RETRY_EXHAUSTED,
+                ) =>
+            {
                 // Degraded response: seek failed due to contention, but return
                 // the latest state so the client can display the current position.
                 tracing::warn!(
@@ -1237,11 +1242,16 @@ impl PlaybackService {
         }
     }
 
-    /// Maximum retry attempts for optimistic lock conflicts
-    /// Matches `optimistic_retry::DEFAULT_MAX_RETRIES`
-    const MAX_RETRIES: u32 = 3;
+    /// Maximum retry attempts for optimistic lock conflicts.
+    ///
+    /// Playback writes are bursty and user-driven, so this budget is slightly
+    /// higher than the generic default to absorb short-lived write storms
+    /// without leaking avoidable failures back to callers.
+    const MAX_RETRIES: u32 = 5;
     /// Base delay for exponential backoff (milliseconds)
     const BACKOFF_BASE_MS: u64 = 5;
+    const UPDATE_STATE_RETRY_EXHAUSTED: &str =
+        "Playback state update failed after maximum retry attempts";
 
     /// Update playback state with generic update function.
     ///
@@ -1251,19 +1261,25 @@ impl PlaybackService {
     where
         F: Fn(&mut RoomPlaybackState),
     {
-        for attempt in 0..Self::MAX_RETRIES {
-            // Get current state (lazy-init: only INSERT if row doesn't exist yet)
-            let mut state = match self.playback_repo.get(&room_id).await? {
-                Some(s) => s,
-                None => self.playback_repo.create_or_get(&room_id).await?,
-            };
+        crate::service::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            Self::UPDATE_STATE_RETRY_EXHAUSTED,
+            || {
+                let room_id = room_id.clone();
+                let update_fn = &update_fn;
+                async move {
+                    // Get current state (lazy-init: only INSERT if row doesn't exist yet)
+                    let mut state = match self.playback_repo.get(&room_id).await? {
+                        Some(s) => s,
+                        None => self.playback_repo.create_or_get(&room_id).await?,
+                    };
 
-            // Apply update
-            update_fn(&mut state);
+                    // Apply update
+                    update_fn(&mut state);
 
-            // Save with optimistic locking
-            match self.playback_repo.update(&state).await {
-                Ok(updated_state) => {
+                    let updated_state = self.playback_repo.update(&state).await?;
+
                     // Invalidate local L1 cache so the next read fetches fresh data.
                     // This avoids write-through which would self-invalidate when the
                     // Redis Pub/Sub bounce-back arrives.
@@ -1293,34 +1309,11 @@ impl PlaybackService {
                     )
                     .await;
 
-                    return Ok(updated_state);
+                    Ok(updated_state)
                 }
-                Err(Error::OptimisticLockConflict) => {
-                    if attempt + 1 < Self::MAX_RETRIES {
-                        // Exponential backoff with jitter: base * 2^attempt + random(0..base)
-                        let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                        let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                        let delay = backoff + jitter;
-                        tracing::debug!(
-                            room_id = %room_id.as_str(),
-                            attempt = attempt + 1,
-                            delay_ms = delay,
-                            "Playback state version conflict, retrying with backoff"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                        continue;
-                    }
-                    return Err(Error::Internal(
-                        "Playback state update failed after maximum retry attempts".to_string(),
-                    ));
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        Err(Error::Internal(
-            "Playback state update failed after maximum retry attempts".to_string(),
-        ))
+            },
+        )
+        .await
     }
 
     /// Reset playback to initial state
@@ -1636,8 +1629,7 @@ mod tests {
 
     #[test]
     fn test_update_state_constants() {
-        // MAX_RETRIES = 3 to match optimistic_retry::DEFAULT_MAX_RETRIES
-        assert_eq!(PlaybackService::MAX_RETRIES, 3);
+        assert_eq!(PlaybackService::MAX_RETRIES, 5);
         assert_eq!(PlaybackService::BACKOFF_BASE_MS, 5);
     }
 
@@ -1850,10 +1842,10 @@ mod tests {
 
         #[test]
         fn test_retry_succeeds_within_max_attempts() {
-            // With MAX_RETRIES = 3, we have 3 attempts total
-            // If conflicts happen on attempts 0 and 1, attempt 2 should succeed
-            let conflicts = 2;
-            let attempts_needed = conflicts + 1; // 3 attempts
+            // Playback writes run under bursty contention and need a slightly
+            // larger budget than the generic optimistic-lock default.
+            let conflicts = 4;
+            let attempts_needed = conflicts + 1; // 5 attempts
             assert!(
                 attempts_needed <= PlaybackService::MAX_RETRIES,
                 "Need {} attempts but MAX_RETRIES is {}",
@@ -1863,18 +1855,16 @@ mod tests {
         }
 
         #[test]
-        fn test_max_attempts_is_three() {
-            // Verify MAX_RETRIES = 3 for consistency with optimistic_retry module
-            assert_eq!(PlaybackService::MAX_RETRIES, 3, "MAX_RETRIES should be 3");
+        fn test_max_attempts_is_five() {
+            assert_eq!(PlaybackService::MAX_RETRIES, 5, "MAX_RETRIES should be 5");
         }
 
         #[test]
-        fn test_max_retries_matches_optimistic_retry_default() {
-            // Ensure PlaybackService uses the same default as optimistic_retry module
+        fn test_max_retries_exceeds_generic_default() {
             assert_eq!(
                 PlaybackService::MAX_RETRIES,
-                crate::service::optimistic_retry::DEFAULT_MAX_RETRIES,
-                "PlaybackService::MAX_RETRIES should match optimistic_retry::DEFAULT_MAX_RETRIES"
+                crate::service::optimistic_retry::DEFAULT_MAX_RETRIES + 2,
+                "PlaybackService retries should reserve extra budget for bursty playback contention"
             );
         }
 
@@ -2230,7 +2220,7 @@ mod tests {
     /// Tests for update_state retry mechanism boundary conditions.
     ///
     /// These tests verify the retry logic in PlaybackService::update_state:
-    /// - MAX_RETRIES = 3
+    /// - MAX_RETRIES = 5
     /// - On OptimisticLockConflict, retry with exponential backoff + jitter
     /// - After MAX_RETRIES, return Internal error with "maximum retry attempts" message
     mod update_state_retry_boundary_tests {
@@ -2280,7 +2270,7 @@ mod tests {
             );
         }
 
-        /// Test: With 2 conflicts, update succeeds on third attempt (exactly MAX_RETRIES)
+        /// Test: With 2 conflicts, update succeeds on third attempt
         #[test]
         fn test_retry_succeeds_after_two_conflicts() {
             let result = simulate_retry_loop(2, PlaybackService::MAX_RETRIES);
@@ -2291,13 +2281,24 @@ mod tests {
             );
         }
 
-        /// Test: With 3 conflicts (equal to MAX_RETRIES), update fails
+        /// Test: With 4 conflicts, update still succeeds on the fifth attempt.
         #[test]
-        fn test_retry_fails_after_three_conflicts() {
-            let result = simulate_retry_loop(3, PlaybackService::MAX_RETRIES);
+        fn test_retry_succeeds_after_four_conflicts() {
+            let result = simulate_retry_loop(4, PlaybackService::MAX_RETRIES);
+            assert_eq!(
+                result,
+                Ok(5),
+                "Should succeed on fifth attempt after 4 conflicts"
+            );
+        }
+
+        /// Test: With 5 conflicts (equal to MAX_RETRIES), update fails.
+        #[test]
+        fn test_retry_fails_after_five_conflicts() {
+            let result = simulate_retry_loop(5, PlaybackService::MAX_RETRIES);
             assert!(
                 result.is_err(),
-                "Should fail after 3 conflicts (equal to MAX_RETRIES)"
+                "Should fail after 5 conflicts (equal to MAX_RETRIES)"
             );
             assert_eq!(result, Err("maximum retry attempts"));
         }
@@ -2329,29 +2330,32 @@ mod tests {
             // Attempt 2: backoff = 5 * 4 = 20ms, jitter = 0..5
             let backoff_2 = base_ms * (1 << 2); // 20
             assert_eq!(backoff_2, 20);
+
+            // Attempt 3: backoff = 5 * 8 = 40ms, jitter = 0..5
+            let backoff_3 = base_ms * (1 << 3); // 40
+            assert_eq!(backoff_3, 40);
         }
 
         /// Test: Total possible delay before exhaustion
-        /// With 3 retries and backoffs of ~5, ~10, ~20 ms (+ jitter),
-        /// total delay is approximately 35-50ms
+        /// With 5 retries and backoffs of ~5, ~10, ~20, ~40 ms (+ jitter),
+        /// total delay is approximately 75-95ms.
         #[test]
         fn test_total_delay_before_exhaustion() {
             let base_ms = PlaybackService::BACKOFF_BASE_MS;
 
-            // Calculate total backoff (without jitter) for attempts 0, 1, 2
+            // Calculate total backoff (without jitter) before the final attempt.
             let total_backoff: u64 = (0..PlaybackService::MAX_RETRIES - 1)
                 .map(|attempt| base_ms * (1 << attempt))
                 .sum();
 
-            // Total backoff = 5 + 10 = 15ms (only 2 backoffs before final attempt)
             assert_eq!(
-                total_backoff, 15,
-                "Total backoff before exhaustion should be ~15ms"
+                total_backoff, 75,
+                "Total backoff before exhaustion should be ~75ms"
             );
 
-            // With max jitter (5ms per backoff), total could be up to 25ms
+            // With max jitter (5ms per backoff), total could be up to 95ms.
             let max_total = total_backoff + (base_ms * u64::from(PlaybackService::MAX_RETRIES - 1));
-            assert_eq!(max_total, 25, "Max total with jitter should be ~25ms");
+            assert_eq!(max_total, 95, "Max total with jitter should be ~95ms");
         }
 
         /// Test: Jitter range is correct (0 to BACKOFF_BASE_MS exclusive)
@@ -2366,37 +2370,47 @@ mod tests {
         /// Test: Verify the error message on exhaustion contains "maximum retry attempts"
         #[test]
         fn test_exhaustion_error_message_format() {
-            // The error message in update_state is:
-            // "Playback state update failed after maximum retry attempts"
-            let expected_substring = "maximum retry attempts";
-            let error_msg = "Playback state update failed after maximum retry attempts";
+            let error_msg = PlaybackService::UPDATE_STATE_RETRY_EXHAUSTED;
             assert!(
-                error_msg.contains(expected_substring),
-                "Error message should contain '{expected_substring}'"
+                crate::service::optimistic_retry::is_retry_exhausted(
+                    &Error::Internal(error_msg.to_string()),
+                    error_msg,
+                ),
+                "Exact playback exhaustion error should be detected"
             );
         }
 
         /// Test: Seek operation returns degraded response on retry exhaustion
-        /// The seek() method catches Internal errors with "maximum retry attempts"
-        /// and returns a SeekResponse with seek_applied=false
+        /// The seek() method should only degrade on the exact retry exhaustion
+        /// error produced by the playback update path.
         #[test]
         fn test_seek_returns_degraded_response_on_exhaustion() {
-            use crate::Error;
-
-            // Simulate the error matching logic in seek()
-            let error = Error::Internal(
-                "Playback state update failed after maximum retry attempts".to_string(),
-            );
-
-            // Check if the error matches the degradation condition
-            let is_degraded = matches!(
-                &error,
-                Error::Internal(ref msg) if msg.contains("maximum retry attempts")
+            let is_degraded = crate::service::optimistic_retry::is_retry_exhausted(
+                &Error::Internal(PlaybackService::UPDATE_STATE_RETRY_EXHAUSTED.to_string()),
+                PlaybackService::UPDATE_STATE_RETRY_EXHAUSTED,
             );
 
             assert!(
                 is_degraded,
-                "Internal error with 'maximum retry attempts' should trigger degraded response"
+                "Exact retry exhaustion error should trigger degraded response"
+            );
+        }
+
+        /// Test: unrelated Internal errors that merely contain the same phrase
+        /// must not trigger degraded seek handling.
+        #[test]
+        fn test_seek_does_not_degrade_on_partial_message_match() {
+            let noisy_error = Error::Internal(format!(
+                "unexpected wrapper: {} while doing something else",
+                PlaybackService::UPDATE_STATE_RETRY_EXHAUSTED
+            ));
+
+            assert!(
+                !crate::service::optimistic_retry::is_retry_exhausted(
+                    &noisy_error,
+                    PlaybackService::UPDATE_STATE_RETRY_EXHAUSTED,
+                ),
+                "Partial message matches should not trigger degraded response"
             );
         }
 

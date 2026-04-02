@@ -1,7 +1,65 @@
+use std::fs;
+use std::path::Path;
+
+fn collect_openapi_schema_aliases(
+    proto_file: impl AsRef<Path>,
+) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    let proto_file = proto_file.as_ref();
+    let source = fs::read_to_string(proto_file)?;
+
+    let package = source
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            line.strip_prefix("package ")
+                .and_then(|rest| rest.strip_suffix(';'))
+        })
+        .ok_or_else(|| format!("missing package declaration in {}", proto_file.display()))?;
+
+    let package_alias = package.replace('.', "_");
+    let mut depth = 0_i32;
+    let mut aliases = Vec::new();
+
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if depth == 0 {
+            let type_name = line
+                .strip_prefix("message ")
+                .or_else(|| line.strip_prefix("enum "))
+                .and_then(|rest| rest.split_whitespace().next());
+
+            if let Some(type_name) = type_name {
+                let fq_proto_type = format!(".{package}.{type_name}");
+                let schema_alias = format!("{package_alias}_{type_name}");
+                aliases.push((
+                    fq_proto_type,
+                    format!("#[cfg_attr(feature = \"openapi\", schema(as = {schema_alias}))]"),
+                ));
+            }
+        }
+
+        depth += raw_line.matches('{').count() as i32;
+        depth -= raw_line.matches('}').count() as i32;
+    }
+
+    Ok(aliases)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let mut prost_config = tonic_prost_build::Config::new();
     prost_config.protoc_executable(protoc.clone());
+    let main_schema_aliases = [
+        "proto/client.proto",
+        "proto/admin.proto",
+        "proto/oauth2.proto",
+    ]
+    .into_iter()
+    .map(collect_openapi_schema_aliases)
+    .collect::<Result<Vec<_>, _>>()?
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
     for field in [
         ".synctv.client.GetRoomRequest.room_id",
         ".synctv.client.JoinRoomRequest.room_id",
@@ -13,10 +71,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     for field in [
         ".synctv.client.JoinRoomRequest.password",
+        ".synctv.client.CreateRoomRequest.password",
+        ".synctv.client.CreateRoomRequest.description",
         ".synctv.client.AddMediaRequest.provider",
         ".synctv.client.AddMediaRequest.provider_instance_name",
         ".synctv.client.AddMediaRequest.title",
         ".synctv.client.BanMemberRequest.reason",
+        ".synctv.client.KickMemberRequest.user_id",
         ".synctv.client.StartPlaybackRequest.media_id",
         ".synctv.client.StartPlaybackRequest.playlist_id",
         ".synctv.client.CreatePlaylistRequest.name",
@@ -34,6 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.UpdatePlaylistRequest.playlist_id",
         ".synctv.client.UpdatePlaylistRequest.name",
         ".synctv.client.UpdateMemberPermissionsRequest.user_id",
+        ".synctv.client.UpdateMemberPermissionsRequest.role",
         ".synctv.client.UpdateMemberPermissionsRequest.added_permissions",
         ".synctv.client.UpdateMemberPermissionsRequest.removed_permissions",
         ".synctv.client.UpdateMemberPermissionsRequest.admin_added_permissions",
@@ -43,6 +105,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.admin.UpdateUserUsernameRequest.user_id",
         ".synctv.admin.UpdateUserRoleRequest.user_id",
         ".synctv.admin.BanUserRequest.user_id",
+        ".synctv.admin.AddProviderInstanceRequest.comment",
+        ".synctv.admin.AddProviderInstanceRequest.timeout_seconds",
+        ".synctv.admin.AddProviderInstanceRequest.tls",
+        ".synctv.admin.AddProviderInstanceRequest.insecure_tls",
+        ".synctv.admin.AddProviderInstanceRequest.providers",
         ".synctv.admin.UpdateRoomPasswordRequest.room_id",
         ".synctv.admin.UpdateRoomPasswordRequest.new_password",
         ".synctv.admin.UpdateRoomSettingsRequest.room_id",
@@ -51,6 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         prost_config.field_attribute(field, "#[serde(default)]");
     }
     for field in [
+        ".synctv.client.CreateRoomRequest.settings",
         ".synctv.client.Room.settings",
         ".synctv.client.Media.metadata",
         ".synctv.client.Media.source_config",
@@ -75,9 +143,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         prost_config.field_attribute(field, "#[serde(with = \"crate::http_serde::json_bytes\")]");
     }
     for field in [
+        ".synctv.client.CreateRoomRequest.settings",
         ".synctv.client.StartPlaybackRequest.target",
         ".synctv.client.ListPlaylistItemsRequest.target",
         ".synctv.client.CreatePlaylistRequest.source_config",
+        ".synctv.admin.AddProviderInstanceRequest.config",
+        ".synctv.admin.UpdateProviderInstanceRequest.config",
         ".synctv.admin.UpdateRoomSettingsRequest.settings",
     ] {
         prost_config.field_attribute(field, "#[serde(default)]");
@@ -100,6 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     prost_config.field_attribute(".synctv.admin.BanUserRequest.reason", "#[serde(default)]");
     prost_config.field_attribute(".synctv.admin.BanRoomRequest.reason", "#[serde(default)]");
+    prost_config.field_attribute(".synctv.admin.KickStreamRequest.reason", "#[serde(default)]");
     prost_config.field_attribute(
         ".synctv.admin.BatchBanUsersRequest.reason",
         "#[serde(default)]",
@@ -108,11 +180,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.admin.BatchBanRoomsRequest.reason",
         "#[serde(default)]",
     );
-    tonic_prost_build::configure()
+    let mut main_builder = tonic_prost_build::configure();
+    main_builder = main_builder
         .build_server(true)
         .build_client(true)
         .file_descriptor_set_path("src/descriptor.bin")
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(
+            ".",
+            "#[cfg_attr(feature = \"openapi\", derive(utoipa::ToSchema))]",
+        )
         .type_attribute(
             ".synctv.client.UpdateRoomSettingsRequest",
             "#[serde(from = \"crate::http_serde::ClientUpdateRoomSettingsRequestDef\")]",
@@ -120,35 +197,89 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(
             ".synctv.admin.UpdateRoomSettingsRequest",
             "#[serde(from = \"crate::http_serde::AdminUpdateRoomSettingsRequestDef\")]",
-        )
-        .out_dir("src")
-        .compile_with_config(
-            prost_config,
-            &[
-                "proto/client.proto",
-                "proto/admin.proto",
-                "proto/oauth2.proto",
-            ],
-            &["."],
-        )?;
+        );
+    for (path, attr) in &main_schema_aliases {
+        main_builder = main_builder.type_attribute(path, attr);
+    }
+    main_builder.out_dir("src").compile_with_config(
+        prost_config,
+        &[
+            "proto/client.proto",
+            "proto/admin.proto",
+            "proto/oauth2.proto",
+        ],
+        &["."],
+    )?;
 
     let mut provider_prost_config = tonic_prost_build::Config::new();
     provider_prost_config.protoc_executable(protoc);
-    tonic_prost_build::configure()
+    let provider_schema_aliases = [
+        "proto/providers/bilibili.proto",
+        "proto/providers/alist.proto",
+        "proto/providers/emby.proto",
+    ]
+    .into_iter()
+    .map(collect_openapi_schema_aliases)
+    .collect::<Result<Vec<_>, _>>()?
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let mut provider_builder = tonic_prost_build::configure();
+    provider_builder = provider_builder
         .build_server(true)
         .build_client(true)
         .file_descriptor_set_path("src/providers/descriptor.bin")
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .out_dir("src/providers")
-        .compile_with_config(
-            provider_prost_config,
-            &[
-                "proto/providers/bilibili.proto",
-                "proto/providers/alist.proto",
-                "proto/providers/emby.proto",
-            ],
-            &["."],
-        )?;
+        .type_attribute(
+            ".",
+            "#[cfg_attr(feature = \"openapi\", derive(utoipa::ToSchema))]",
+        );
+
+    for field in [
+        ".synctv.provider.bilibili.ParseRequest.instance_name",
+        ".synctv.provider.bilibili.LoginQRRequest.instance_name",
+        ".synctv.provider.bilibili.CheckQRRequest.instance_name",
+        ".synctv.provider.bilibili.GetCaptchaRequest.instance_name",
+        ".synctv.provider.bilibili.SendSMSRequest.instance_name",
+        ".synctv.provider.bilibili.LoginSMSRequest.instance_name",
+        ".synctv.provider.bilibili.UserInfoRequest.instance_name",
+        ".synctv.provider.bilibili.LogoutRequest.instance_name",
+        ".synctv.provider.alist.LoginRequest.password",
+        ".synctv.provider.alist.LoginRequest.hashed_password",
+        ".synctv.provider.alist.LoginRequest.instance_name",
+        ".synctv.provider.alist.ListRequest.path",
+        ".synctv.provider.alist.ListRequest.password",
+        ".synctv.provider.alist.ListRequest.page",
+        ".synctv.provider.alist.ListRequest.per_page",
+        ".synctv.provider.alist.ListRequest.refresh",
+        ".synctv.provider.alist.ListRequest.instance_name",
+        ".synctv.provider.alist.GetMeRequest.instance_name",
+        ".synctv.provider.alist.LogoutRequest.instance_name",
+        ".synctv.provider.alist.GetBindsRequest.instance_name",
+        ".synctv.provider.emby.LoginRequest.instance_name",
+        ".synctv.provider.emby.ListRequest.path",
+        ".synctv.provider.emby.ListRequest.start_index",
+        ".synctv.provider.emby.ListRequest.limit",
+        ".synctv.provider.emby.ListRequest.search_term",
+        ".synctv.provider.emby.ListRequest.instance_name",
+        ".synctv.provider.emby.GetMeRequest.instance_name",
+        ".synctv.provider.emby.LogoutRequest.instance_name",
+        ".synctv.provider.emby.GetBindsRequest.instance_name",
+    ] {
+        provider_builder = provider_builder.field_attribute(field, "#[serde(default)]");
+    }
+    for (path, attr) in &provider_schema_aliases {
+        provider_builder = provider_builder.type_attribute(path, attr);
+    }
+    provider_builder.out_dir("src/providers").compile_with_config(
+        provider_prost_config,
+        &[
+            "proto/providers/bilibili.proto",
+            "proto/providers/alist.proto",
+            "proto/providers/emby.proto",
+        ],
+        &["."],
+    )?;
 
     Ok(())
 }

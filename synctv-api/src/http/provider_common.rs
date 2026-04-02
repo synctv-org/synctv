@@ -8,10 +8,21 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use serde_json::json;
 
 use super::middleware::AuthUser;
 use super::AppState;
+
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub(crate) struct ProviderInstancesResponseDoc {
+    instances: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub(crate) struct ProviderBackendsResponseDoc {
+    backends: Vec<String>,
+}
 
 fn provider_registry_unavailable_error(
     context: &str,
@@ -33,27 +44,60 @@ pub fn register_common_routes() -> Router<AppState> {
 }
 
 /// List all available provider instances
-async fn list_instances(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/provider/instances",
+        tag = "Provider",
+        responses(
+            (status = 200, description = "Available provider instances", body = ProviderInstancesResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn list_instances(
     _auth: AuthUser,
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, super::AppError> {
+) -> Result<Json<ProviderInstancesResponseDoc>, super::AppError> {
     let instances = state
         .provider_instance_manager
         .list()
         .await
         .map_err(|e| provider_registry_unavailable_error("list_instances", &e))?;
 
-    Ok(Json(json!({
-        "instances": instances
-    })))
+    Ok(Json(ProviderInstancesResponseDoc { instances }))
 }
 
 /// List available backends for a given provider type (bilibili/alist/emby)
-async fn list_backends(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/provider/backends/{provider_type}",
+        tag = "Provider",
+        params(
+            ("provider_type" = String, Path, description = "Provider type, such as bilibili, alist, or emby")
+        ),
+        responses(
+            (status = 200, description = "Enabled backends for the provider type", body = ProviderBackendsResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn list_backends(
     _auth: AuthUser,
     State(state): State<AppState>,
     Path(provider_type): Path<String>,
-) -> Result<Json<serde_json::Value>, super::AppError> {
+) -> Result<Json<ProviderBackendsResponseDoc>, super::AppError> {
     let instances = state
         .provider_instance_manager
         .get_all_instances()
@@ -67,13 +111,14 @@ async fn list_backends(
         .map(|i| i.name)
         .collect::<Vec<_>>();
 
-    Ok(Json(json!({
-        "backends": instances
-    })))
+    Ok(Json(ProviderBackendsResponseDoc {
+        backends: instances,
+    }))
 }
 
 /// Extract `instance_name` from query parameter
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams, utoipa::ToSchema))]
 pub struct InstanceQuery {
     #[serde(default)]
     pub instance_name: Option<String>,

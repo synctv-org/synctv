@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = []
+openapi = ["dep:utoipa"]
+
 [lints]
 workspace = true
 
@@ -18,6 +22,7 @@ prost-types.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+utoipa = { workspace = true, optional = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

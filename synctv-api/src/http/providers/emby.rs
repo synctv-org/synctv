@@ -6,14 +6,11 @@
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-use serde_json::json;
 
-use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
+use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppResult, AppState};
 
 use crate::impls::providers::get_provider_binds;
 
@@ -37,98 +34,188 @@ pub fn emby_read_routes() -> Router<AppState> {
 // ------------------------------------------------------------------
 
 /// Login to Emby/Jellyfin (validate API key and persist credential)
-async fn login(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/emby/login",
+        tag = "Provider",
+        params(InstanceQuery),
+        request_body = crate::proto::providers::emby::LoginRequest,
+        responses(
+            (status = 200, description = "Emby login succeeded", body = crate::proto::providers::emby::LoginResponse),
+            (status = 400, description = "Invalid login request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn login(
     auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::LoginRequest>,
-) -> impl IntoResponse {
+) -> AppResult<Json<crate::proto::providers::emby::LoginResponse>> {
     tracing::info!("Emby login request");
 
     let api = &state.emby_api;
-
-    match api
+    let resp = api
         .login(&auth.user_id.to_string(), req, query.as_deref())
         .await
-    {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
+        .map_err(|e| {
             tracing::error!("Emby login failed: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+            AppError::from(e)
+        })?;
+    Ok(Json(resp))
 }
 
 /// List Emby library items
-async fn list(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/emby/list",
+        tag = "Provider",
+        params(InstanceQuery),
+        request_body = crate::proto::providers::emby::ListRequest,
+        responses(
+            (status = 200, description = "Emby library listing", body = crate::proto::providers::emby::ListResponse),
+            (status = 400, description = "Invalid list request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::ListRequest>,
-) -> impl IntoResponse {
+) -> AppResult<Json<crate::proto::providers::emby::ListResponse>> {
     tracing::info!("Emby list request");
 
     let api = &state.emby_api;
-
-    match api
+    let resp = api
         .list(&auth.user_id.to_string(), req, query.as_deref())
         .await
-    {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
+        .map_err(|e| {
             tracing::error!("Emby list failed: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+            AppError::from(e)
+        })?;
+    Ok(Json(resp))
 }
 
 /// Get Emby user info
-async fn me(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/emby/me",
+        tag = "Provider",
+        params(InstanceQuery),
+        request_body = crate::proto::providers::emby::GetMeRequest,
+        responses(
+            (status = 200, description = "Emby account info", body = crate::proto::providers::emby::GetMeResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn me(
     auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::GetMeRequest>,
-) -> impl IntoResponse {
+) -> AppResult<Json<crate::proto::providers::emby::GetMeResponse>> {
     tracing::info!("Emby me request");
 
     let api = &state.emby_api;
-
-    match api
+    let resp = api
         .get_me(&auth.user_id.to_string(), req, query.as_deref())
         .await
-    {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
+        .map_err(|e| {
             tracing::error!("Emby me failed: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+            AppError::from(e)
+        })?;
+    Ok(Json(resp))
 }
 
 /// Logout from Emby (delete stored credential)
-async fn logout(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/emby/logout",
+        tag = "Provider",
+        request_body = crate::proto::providers::emby::LogoutRequest,
+        responses(
+            (status = 200, description = "Emby credential removed", body = crate::proto::providers::emby::LogoutResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn logout(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<crate::proto::providers::emby::LogoutRequest>,
-) -> impl IntoResponse {
+) -> AppResult<Json<crate::proto::providers::emby::LogoutResponse>> {
     tracing::info!("Emby logout request");
 
     let api = &state.emby_api;
-
-    match api.logout(&auth.user_id.to_string(), req).await {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
-            tracing::error!("Emby logout failed: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+    let resp = api.logout(&auth.user_id.to_string(), req).await.map_err(|e| {
+        tracing::error!("Emby logout failed: {}", e);
+        AppError::from(e)
+    })?;
+    Ok(Json(resp))
 }
 
 /// Get Emby binds (saved credentials)
-async fn binds(
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub(crate) struct EmbyBindInfoDoc {
+    id: String,
+    host: String,
+    user_id: String,
+    created_at: String,
+}
+
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub(crate) struct EmbyBindsResponseDoc {
+    binds: Vec<EmbyBindInfoDoc>,
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/providers/emby/binds",
+        tag = "Provider",
+        responses(
+            (status = 200, description = "Saved Emby credentials", body = EmbyBindsResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 500, description = "Credential query failed", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn binds(
     auth: crate::http::middleware::AuthUser,
     State(state): State<AppState>,
-) -> Result<impl IntoResponse, AppError> {
+) -> AppResult<Json<EmbyBindsResponseDoc>> {
     tracing::info!("Emby binds request for user: {}", auth.user_id);
 
     let provider_binds = get_provider_binds(
@@ -145,15 +232,13 @@ async fn binds(
 
     let emby_binds: Vec<_> = provider_binds
         .into_iter()
-        .map(|b| {
-            json!({
-                "id": b.id,
-                "host": b.host,
-                "user_id": b.label_value,
-                "created_at": b.created_at_str,
-            })
+        .map(|b| EmbyBindInfoDoc {
+            id: b.id,
+            host: b.host,
+            user_id: b.label_value,
+            created_at: b.created_at_str,
         })
         .collect();
 
-    Ok((StatusCode::OK, Json(json!({"binds": emby_binds}))).into_response())
+    Ok(Json(EmbyBindsResponseDoc { binds: emby_binds }))
 }

@@ -10,6 +10,27 @@ use crate::http::{middleware::AuthUser, AppResult, AppState};
 pub type BanMemberBody = crate::proto::client::BanMemberRequest;
 
 /// Kick a member from a room
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/members/{user_id}",
+        tag = "Room Member",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("user_id" = String, Path, description = "Target user ID")
+        ),
+        responses(
+            (status = 200, description = "Member kicked", body = crate::proto::client::KickMemberResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Member not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn kick_member(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -29,6 +50,28 @@ pub async fn kick_member(
     Ok(Json(resp))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{room_id}/members/{user_id}",
+        tag = "Room Member",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("user_id" = String, Path, description = "Target user ID")
+        ),
+        request_body = crate::proto::client::UpdateMemberPermissionsRequest,
+        responses(
+            (status = 200, description = "Member permissions updated", body = crate::proto::client::UpdateMemberPermissionsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn set_member_permissions(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -46,6 +89,27 @@ pub async fn set_member_permissions(
 
 /// Ban a member from a room
 /// POST /`api/rooms/:room_id/bans` with body: {`user_id`, reason}
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/bans",
+        tag = "Room Member",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = crate::proto::client::BanMemberRequest,
+        responses(
+            (status = 200, description = "Member banned", body = crate::proto::client::BanMemberResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn ban_member(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -62,6 +126,26 @@ pub async fn ban_member(
 }
 
 /// Unban a member from a room
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/bans/{user_id}",
+        tag = "Room Member",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("user_id" = String, Path, description = "Target user ID")
+        ),
+        responses(
+            (status = 200, description = "Member unbanned", body = crate::proto::client::UnbanMemberResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn unban_member(
     auth: AuthUser,
     State(state): State<AppState>,

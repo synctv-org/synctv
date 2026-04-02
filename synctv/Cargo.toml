@@ -10,7 +10,7 @@ name = "synctv"
 path = "src/main.rs"
 
 [features]
-default = ["k8s", "mimalloc"]
+default = ["k8s", "mimalloc", "openapi"]
 # Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
 # Disable to reduce binary size for non-K8s deployments:
 #   cargo build --no-default-features
@@ -20,6 +20,7 @@ k8s = ["synctv-cluster/k8s", "synctv-core/k8s"]
 #   jemalloc           — excellent for long-running servers, unix only
 mimalloc = ["dep:mimalloc"]
 jemalloc = ["dep:tikv-jemallocator"]
+openapi = ["synctv-api/openapi"]
 
 [lints]
 workspace = true

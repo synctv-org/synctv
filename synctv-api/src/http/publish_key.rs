@@ -37,6 +37,27 @@ pub fn create_publish_key_router() -> Router<AppState> {
 /// - Multiple concurrent streams per room (one per media item)
 /// - Each media item can have independent RTMP stream
 #[axum::debug_handler]
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/movies/{media_id}/live/publish-key",
+        tag = "Streaming",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("media_id" = String, Path, description = "Media ID")
+        ),
+        responses(
+            (status = 200, description = "Publish key generated", body = CreatePublishKeyResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room or media not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn generate_publish_key(
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,

@@ -818,6 +818,16 @@ mod tests {
     }
 
     #[test]
+    fn http_json_update_member_permissions_request_defaults_missing_role() {
+        let decoded: crate::client::UpdateMemberPermissionsRequest =
+            serde_json::from_str(r#"{"added_permissions":7}"#)
+                .expect("missing role should default to unspecified");
+
+        assert_eq!(decoded.role, crate::common::RoomMemberRole::Unspecified as i32);
+        assert_eq!(decoded.added_permissions, 7);
+    }
+
+    #[test]
     fn http_json_update_member_permissions_request_rejects_string_role() {
         let err = serde_json::from_str::<crate::client::UpdateMemberPermissionsRequest>(
             r#"{"role":"guest","added_permissions":7}"#,
@@ -825,6 +835,79 @@ mod tests {
         .expect_err("string room role should be rejected");
 
         assert!(err.is_data());
+    }
+
+    #[test]
+    fn http_json_kick_member_request_defaults_user_id() {
+        let decoded: crate::client::KickMemberRequest =
+            serde_json::from_str("{}").expect("path-populated user_id should default");
+
+        assert_eq!(decoded.user_id, "");
+    }
+
+    #[test]
+    fn http_json_admin_kick_stream_request_defaults_reason() {
+        let json = r#"{"room_id":"room-1","media_id":"media-1"}"#;
+
+        let decoded: crate::admin::KickStreamRequest =
+            serde_json::from_str(json).expect("optional reason should default");
+
+        assert_eq!(decoded.room_id, "room-1");
+        assert_eq!(decoded.media_id, "media-1");
+        assert_eq!(decoded.reason, "");
+    }
+
+    #[test]
+    fn http_json_admin_add_provider_instance_request_defaults_optional_scalars() {
+        let json = r#"{"name":"emby-main","endpoint":"https://provider.example.com"}"#;
+
+        let decoded: crate::admin::AddProviderInstanceRequest =
+            serde_json::from_str(json).expect("optional provider fields should default");
+
+        assert_eq!(decoded.name, "emby-main");
+        assert_eq!(decoded.endpoint, "https://provider.example.com");
+        assert_eq!(decoded.comment, "");
+        assert_eq!(decoded.timeout_seconds, 0);
+        assert!(!decoded.tls);
+        assert!(!decoded.insecure_tls);
+        assert!(decoded.providers.is_empty());
+        assert!(decoded.config.is_empty());
+    }
+
+    #[test]
+    fn http_json_set_room_password_request_requires_password_field() {
+        let err = serde_json::from_str::<crate::client::SetRoomPasswordRequest>("{}")
+            .expect_err("missing password should be rejected");
+
+        assert!(err.is_data());
+    }
+
+    #[test]
+    fn http_json_create_room_request_defaults_optional_fields() {
+        let decoded: crate::client::CreateRoomRequest =
+            serde_json::from_str(r#"{"name":"Movie Night"}"#)
+                .expect("missing create-room optional fields should default");
+
+        assert_eq!(decoded.name, "Movie Night");
+        assert_eq!(decoded.password, "");
+        assert!(decoded.settings.is_empty());
+        assert_eq!(decoded.description, "");
+    }
+
+    #[test]
+    fn http_json_create_room_request_preserves_json_settings_body() {
+        let decoded: crate::client::CreateRoomRequest = serde_json::from_str(
+            r#"{"name":"Movie Night","password":"","description":"","settings":{"allowGuests":true,"maxUsers":8}}"#,
+        )
+        .expect("room settings JSON should serialize into proto bytes");
+
+        let settings_json: serde_json::Value = serde_json::from_slice(&decoded.settings)
+            .expect("settings bytes should contain encoded JSON");
+
+        assert_eq!(
+            settings_json,
+            serde_json::json!({"allowGuests": true, "maxUsers": 8})
+        );
     }
 
     // === Provider Proto Tests ===
@@ -869,5 +952,70 @@ mod tests {
         let decoded = crate::providers::emby::LoginRequest::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.host, req.host);
         assert_eq!(decoded.api_key, "secret-api-key");
+    }
+
+    #[test]
+    fn http_json_alist_login_request_defaults_optional_fields() {
+        let json = r#"{"host":"https://alist.example.com","username":"user","password":"pass"}"#;
+
+        let decoded: crate::providers::alist::LoginRequest =
+            serde_json::from_str(json).expect("missing optional provider fields should default");
+
+        assert_eq!(decoded.host, "https://alist.example.com");
+        assert_eq!(decoded.username, "user");
+        assert_eq!(decoded.password, "pass");
+        assert_eq!(decoded.hashed_password, "");
+        assert_eq!(decoded.instance_name, "");
+    }
+
+    #[test]
+    fn http_json_alist_list_request_defaults_optional_query_like_fields() {
+        let json = r#"{"server_id":"server-1","path":"/tv"}"#;
+
+        let decoded: crate::providers::alist::ListRequest =
+            serde_json::from_str(json).expect("missing optional provider fields should default");
+
+        assert_eq!(decoded.server_id, "server-1");
+        assert_eq!(decoded.path, "/tv");
+        assert_eq!(decoded.password, "");
+        assert_eq!(decoded.page, 0);
+        assert_eq!(decoded.per_page, 0);
+        assert!(!decoded.refresh);
+        assert_eq!(decoded.instance_name, "");
+    }
+
+    #[test]
+    fn http_json_bilibili_login_qr_request_defaults_instance_name() {
+        let decoded: crate::providers::bilibili::LoginQrRequest =
+            serde_json::from_str("{}").expect("missing optional instance_name should default");
+
+        assert_eq!(decoded.instance_name, "");
+    }
+
+    #[test]
+    fn http_json_emby_login_request_defaults_instance_name() {
+        let json = r#"{"host":"https://emby.example.com","api_key":"secret-api-key"}"#;
+
+        let decoded: crate::providers::emby::LoginRequest =
+            serde_json::from_str(json).expect("missing optional instance_name should default");
+
+        assert_eq!(decoded.host, "https://emby.example.com");
+        assert_eq!(decoded.api_key, "secret-api-key");
+        assert_eq!(decoded.instance_name, "");
+    }
+
+    #[test]
+    fn http_json_provider_requests_reject_missing_required_fields() {
+        let emby_err = serde_json::from_str::<crate::providers::emby::GetMeRequest>("{}")
+            .expect_err("missing server_id should fail");
+        assert!(emby_err.is_data());
+
+        let alist_err = serde_json::from_str::<crate::providers::alist::LoginRequest>("{}")
+            .expect_err("missing host and username should fail");
+        assert!(alist_err.is_data());
+
+        let bilibili_err = serde_json::from_str::<crate::providers::bilibili::CheckQrRequest>("{}")
+            .expect_err("missing QR key should fail");
+        assert!(bilibili_err.is_data());
     }
 }

@@ -73,6 +73,23 @@ fn map_validation_error(err: ValidationError) -> super::AppError {
 // ==================== Room Management Endpoints ====================
 
 /// Create a new room
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms",
+        tag = "Room",
+        request_body = CreateRoomRequest,
+        responses(
+            (status = 200, description = "Room created", body = CreateRoomResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 #[tracing::instrument(name = "http_create_room", skip(state), fields(user_id = %auth.user_id))]
 pub async fn create_room(
     auth: AuthUser,
@@ -96,6 +113,25 @@ pub async fn create_room(
 }
 
 /// Get room information
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Room details", body = GetRoomResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_room(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -111,6 +147,28 @@ pub async fn get_room(
 }
 
 /// Join a room
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        put,
+        path = "/api/rooms/{room_id}/members/@me",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = JoinRoomRequest,
+        responses(
+            (status = 200, description = "Joined room", body = JoinRoomResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn join_room(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -128,6 +186,25 @@ pub async fn join_room(
 }
 
 /// Leave a room
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/members/@me",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Left room", body = LeaveRoomResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn leave_room(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -143,6 +220,26 @@ pub async fn leave_room(
 }
 
 /// Delete a room
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Room deleted", body = DeleteRoomResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 #[tracing::instrument(name = "http_delete_room", skip(state), fields(user_id = %auth.user_id, room_id = %room_id))]
 pub async fn delete_room(
     auth: AuthUser,
@@ -167,6 +264,26 @@ pub async fn delete_room(
 // ==================== Media Management Endpoints ====================
 
 /// Add media to playlist
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/media",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = AddMediaRequest,
+        responses(
+            (status = 200, description = "Media added", body = AddMediaResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn add_media(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -183,6 +300,27 @@ pub async fn add_media(
 }
 
 /// Delete media from playlist
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/media/{media_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("media_id" = String, Path, description = "Media ID"),
+            ("force" = Option<bool>, Query, description = "Force delete")
+        ),
+        responses(
+            (status = 200, description = "Media deleted", body = DeleteMediaResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Media not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn delete_media(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -201,6 +339,26 @@ pub async fn delete_media(
 }
 
 /// Delete a mixed set of playlist and media entries.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/entries",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = DeleteEntriesRequest,
+        responses(
+            (status = 200, description = "Entries deleted", body = DeleteEntriesResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 #[tracing::instrument(name = "http_delete_entries", skip(state, req), fields(user_id = %auth.user_id, room_id = %room_id))]
 pub async fn delete_entries(
     auth: AuthUser,
@@ -221,6 +379,26 @@ pub async fn delete_entries(
 }
 
 /// Bulk reorder media items in playlist
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/media/reorder",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = ReorderMediaBatchRequest,
+        responses(
+            (status = 200, description = "Media reordered", body = ReorderMediaBatchResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 #[tracing::instrument(name = "http_reorder_media_batch", skip(state, req), fields(user_id = %auth.user_id, room_id = %room_id))]
 pub async fn reorder_media_batch(
     auth: AuthUser,
@@ -241,6 +419,26 @@ pub async fn reorder_media_batch(
 }
 
 /// List items for a room root, static playlist, or dynamic playlist target.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/media/list",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = crate::proto::client::ListPlaylistItemsRequest,
+        responses(
+            (status = 200, description = "Playlist items", body = crate::proto::client::ListPlaylistItemsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn list_playlist_items(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -261,6 +459,26 @@ pub async fn list_playlist_items(
 }
 
 /// Swap media items
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/media/swap",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = SwapMediaRequest,
+        responses(
+            (status = 200, description = "Media swapped", body = SwapMediaResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn swap_media_items(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -280,6 +498,26 @@ pub async fn swap_media_items(
 
 /// Play (resume playback)
 /// POST /`api/rooms/{room_id}/playback/start` - Start playback of a specific media
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/playback/start",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = StartPlaybackRequest,
+        responses(
+            (status = 200, description = "Playback started", body = StartPlaybackResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn start_playback(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -296,6 +534,26 @@ pub async fn start_playback(
 }
 
 /// POST /`api/rooms/{room_id}/playback/stop` - Stop current playback
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/playback/stop",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = StopPlaybackRequest,
+        responses(
+            (status = 200, description = "Playback stopped", body = StopPlaybackResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn stop_playback(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -312,6 +570,25 @@ pub async fn stop_playback(
 }
 
 /// GET /`api/rooms/{room_id}/playback` - Get current playback state and complete playback information
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/playback",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Current playback state", body = GetPlaybackResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_playback(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -330,12 +607,33 @@ pub async fn get_playback(
 
 /// Pagination query for room members.
 #[derive(serde::Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct MembersPaginationQuery {
     page: Option<i32>,
     page_size: Option<i32>,
 }
 
 /// Get room members (E8: with pagination)
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/members",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            MembersPaginationQuery
+        ),
+        responses(
+            (status = 200, description = "Room members", body = GetRoomMembersResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_room_members(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -359,6 +657,21 @@ pub async fn get_room_members(
 // ==================== Room Discovery & Public Endpoints ====================
 
 /// Check if room exists (public endpoint)
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/check",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Room availability and status", body = CheckRoomResponse),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn check_room(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
@@ -375,6 +688,14 @@ pub async fn check_room(
 
 /// Maximum allowed search query length to prevent abuse.
 const LIST_ROOMS_MAX_SEARCH_LENGTH: usize = 100;
+
+#[derive(serde::Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct ListRoomsQueryParams {
+    pub search: Option<String>,
+    pub limit: Option<i32>,
+    pub offset: Option<i32>,
+}
 
 /// List rooms (requires authentication to prevent anonymous enumeration)
 pub async fn list_rooms(
@@ -412,6 +733,26 @@ pub async fn list_rooms(
 // ==================== Room Settings Endpoints ====================
 
 /// Set room password
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{room_id}/password",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = SetRoomPasswordRequest,
+        responses(
+            (status = 200, description = "Room password updated", body = SetRoomPasswordResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn set_room_password(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -428,6 +769,26 @@ pub async fn set_room_password(
 }
 
 /// Check room password (requires authentication to prevent brute force)
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/password/verify",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = CheckRoomPasswordRequest,
+        responses(
+            (status = 200, description = "Password verification result", body = CheckRoomPasswordResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn check_password(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -450,6 +811,25 @@ pub async fn check_password(
 }
 
 /// Get room settings (requires authentication and room membership)
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/settings",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Room settings", body = crate::proto::client::GetRoomSettingsResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_room_settings(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -465,6 +845,26 @@ pub async fn get_room_settings(
 }
 
 /// Push multiple media items to playlist
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/media/batch",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = AddMediaBatchRequest,
+        responses(
+            (status = 200, description = "Batch media added", body = crate::proto::client::AddMediaBatchResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn push_media_batch(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -481,6 +881,27 @@ pub async fn push_media_batch(
 }
 
 /// Edit media
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{room_id}/media/{media_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("media_id" = String, Path, description = "Media ID")
+        ),
+        request_body = EditMediaRequest,
+        responses(
+            (status = 200, description = "Media updated", body = EditMediaResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn edit_media(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -498,6 +919,24 @@ pub async fn edit_media(
 }
 
 /// Clear playlist
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/media",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Playlist cleared", body = ClearPlaylistResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn clear_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -513,6 +952,26 @@ pub async fn clear_playlist(
 }
 
 /// GET /`api/rooms/:room_id/media/:media_id` - Get media record from database
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/media/{media_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("media_id" = String, Path, description = "Media ID")
+        ),
+        responses(
+            (status = 200, description = "Media details", body = crate::proto::client::Media),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Media not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_media(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -528,6 +987,26 @@ pub async fn get_media(
 }
 
 /// GET /`api/rooms/:room_id/playlists/:playlist_id` - Get single playlist info
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/playlists/{playlist_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("playlist_id" = String, Path, description = "Playlist ID")
+        ),
+        responses(
+            (status = 200, description = "Playlist details", body = crate::proto::client::GetPlaylistResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Playlist not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -546,6 +1025,23 @@ pub async fn get_playlist(
 
 /// Unified handler for listing rooms (with query params) or getting single room by ID
 /// GET /api/rooms (list) or GET /api/rooms?id=xxx (single)
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms",
+        tag = "Room",
+        params(ListRoomsQueryParams),
+        responses(
+            (status = 200, description = "Rooms list", body = ListRoomsResponse),
+            (status = 400, description = "Invalid query", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn list_or_get_rooms(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -593,6 +1089,26 @@ pub async fn list_or_get_rooms(
 ///
 /// PATCH semantics: only specified fields are updated; unspecified fields retain
 /// their current values. Current settings are fetched first, then merged.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{room_id}/settings",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = UpdateRoomSettingsRequest,
+        responses(
+            (status = 200, description = "Room settings updated", body = UpdateRoomSettingsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn update_room_settings(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -611,6 +1127,7 @@ pub async fn update_room_settings(
 /// HTTP-specific: Update playback request for PATCH endpoint
 /// Dispatches to individual proto operations (play/pause/seek/speed/switch)
 #[derive(serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdatePlaybackRequest {
     /// "playing" or "paused"
     #[serde(default)]
@@ -660,6 +1177,26 @@ fn normalize_switch_id(value: Option<&str>) -> Option<String> {
 ///
 /// Target switches intentionally use `PlaybackService::switch()` and cannot be
 /// mixed with other playback state updates.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{room_id}/playback",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = UpdatePlaybackRequest,
+        responses(
+            (status = 200, description = "Playback updated", body = GetPlaybackResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn update_playback(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -759,6 +1296,7 @@ pub async fn update_playback(
 /// HTTP-specific: Media batch update request for PATCH endpoint
 /// Dispatches to reorder or swap proto operations
 #[derive(serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateMediaBatchRequest {
     /// Reorder operations: list of {`media_id`, position}
     #[serde(default)]
@@ -770,6 +1308,7 @@ pub struct UpdateMediaBatchRequest {
 
 /// HTTP-specific: batch operation response
 #[derive(serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BatchOperationResponse {
     pub success: bool,
 }
@@ -777,6 +1316,26 @@ pub struct BatchOperationResponse {
 /// Unified handler for media batch operations via PATCH
 /// PATCH /`api/rooms/:room_id/media`
 /// Supports: reorder, swap operations
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{room_id}/media",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = UpdateMediaBatchRequest,
+        responses(
+            (status = 200, description = "Batch media operation applied", body = BatchOperationResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn update_media_batch(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -825,6 +1384,24 @@ pub async fn update_media_batch(
 
 /// Reset room settings to defaults
 /// POST /`api/rooms/:room_id/settings/reset`
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/settings/reset",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "Room settings reset", body = ResetRoomSettingsResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn reset_room_settings(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -841,8 +1418,35 @@ pub async fn reset_room_settings(
 
 // ==================== Chat History ====================
 
+#[derive(serde::Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct ChatHistoryQueryParams {
+    pub limit: Option<i32>,
+    pub cursor: Option<String>,
+}
+
 /// Get chat history for a room
 /// GET /`api/rooms/:room_id/chat/history`
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/chat/history",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ChatHistoryQueryParams
+        ),
+        responses(
+            (status = 200, description = "Chat history", body = GetChatHistoryResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_chat_history(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -884,6 +1488,26 @@ fn parse_chat_history_request_params(
 
 /// Create a playlist
 /// POST /`api/rooms/:room_id/playlists`
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/playlists",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = CreatePlaylistRequest,
+        responses(
+            (status = 200, description = "Playlist created", body = CreatePlaylistResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn create_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -901,6 +1525,27 @@ pub async fn create_playlist(
 
 /// Update a playlist
 /// PATCH /`api/rooms/:room_id/playlists/:playlist_id`
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{room_id}/playlists/{playlist_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("playlist_id" = String, Path, description = "Playlist ID")
+        ),
+        request_body = UpdatePlaylistRequest,
+        responses(
+            (status = 200, description = "Playlist updated", body = UpdatePlaylistResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn update_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -919,6 +1564,27 @@ pub async fn update_playlist(
 
 /// Delete a playlist
 /// DELETE /`api/rooms/:room_id/playlists/:playlist_id`
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/playlists/{playlist_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("playlist_id" = String, Path, description = "Playlist ID"),
+            ("force" = Option<bool>, Query, description = "Force delete")
+        ),
+        responses(
+            (status = 200, description = "Playlist deleted", body = DeletePlaylistResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Playlist not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn delete_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -938,6 +1604,33 @@ pub async fn delete_playlist(
 
 /// List playlists in a room
 /// GET /`api/rooms/:room_id/playlists`
+#[derive(serde::Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct ListPlaylistsQueryParams {
+    pub parent_id: Option<String>,
+    pub page: Option<i32>,
+    pub page_size: Option<i32>,
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/playlists",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ListPlaylistsQueryParams
+        ),
+        responses(
+            (status = 200, description = "Playlists in room", body = ListPlaylistsResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn list_playlists(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -964,8 +1657,26 @@ pub async fn list_playlists(
 
 // ==================== Public: Hot Rooms ====================
 
+#[derive(serde::Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct HotRoomsQueryParams {
+    pub limit: Option<i32>,
+}
+
 /// Get hot rooms (sorted by online count)
 /// GET /api/rooms/hot
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/hot",
+        tag = "Room",
+        params(HotRoomsQueryParams),
+        responses(
+            (status = 200, description = "Hot rooms", body = GetHotRoomsResponse)
+        )
+    )
+)]
 pub async fn get_hot_rooms(
     State(state): State<AppState>,
     Query(params): Query<std::collections::HashMap<String, String>>,

@@ -26,6 +26,7 @@ use synctv_livestream::api::{FlvStreamingApi, HlsStreamingApi};
 use synctv_livestream::error::StreamError;
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct RoomQuery {
     room_id: String,
 }
@@ -93,7 +94,28 @@ fn map_livestream_error(context: &str, error: &(dyn std::error::Error + 'static)
     AppError::internal_server_error(format!("{context}: {error}"))
 }
 
-async fn handle_stream_info(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/providers/rtmp/info/{media_id}",
+        tag = "Provider",
+        params(
+            ("media_id" = String, Path, description = "Media ID"),
+            RoomQuery
+        ),
+        responses(
+            (status = 200, description = "Live stream information", body = crate::proto::client::GetStreamInfoResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Stream not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn handle_stream_info(
     auth: AuthUser,
     Path(media_id): Path<String>,
     Query(params): Query<RoomQuery>,
@@ -108,7 +130,24 @@ async fn handle_stream_info(
     Ok(Json(resp))
 }
 
-async fn handle_room_streams(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/providers/rtmp/streams",
+        tag = "Provider",
+        params(RoomQuery),
+        responses(
+            (status = 200, description = "Room live streams", body = crate::proto::client::ListRoomStreamsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn handle_room_streams(
     auth: AuthUser,
     Query(params): Query<RoomQuery>,
     State(state): State<AppState>,

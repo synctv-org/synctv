@@ -47,6 +47,7 @@ pub fn create_health_router_with_metrics() -> Router<AppState> {
 
 /// Health check response structure
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct HealthResponse {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,6 +56,7 @@ pub struct HealthResponse {
 
 /// Detailed health check information
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct HealthDetails {
     pub database: String,
     pub redis: String,
@@ -75,6 +77,7 @@ pub struct HealthDetails {
 
 /// Memory health information
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MemoryHealth {
     /// Memory usage percentage (0-100)
     pub usage_percent: f64,
@@ -89,6 +92,17 @@ pub struct MemoryHealth {
 ///
 /// Returns:
 /// - 200 OK: Application is alive
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/health/live",
+        tag = "Health",
+        responses(
+            (status = 200, description = "Application is alive", body = HealthResponse)
+        )
+    )
+)]
 pub async fn liveness_check() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -112,6 +126,18 @@ pub async fn liveness_check() -> impl IntoResponse {
 /// Returns:
 /// - 200 OK: All dependencies are healthy
 /// - 503 Service Unavailable: One or more dependencies are unhealthy
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/health/ready",
+        tag = "Health",
+        responses(
+            (status = 200, description = "Dependencies are healthy", body = HealthResponse),
+            (status = 503, description = "One or more dependencies are unhealthy", body = HealthResponse)
+        )
+    )
+)]
 pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse {
     let mut is_healthy = true;
     let mut error_messages = Vec::new();

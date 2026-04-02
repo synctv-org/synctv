@@ -416,8 +416,8 @@ async fn test_retry_exhaustion_returns_degraded_response() {
 
 /// Test: Concurrent mixed operations (seek, play, speed)
 ///
-/// Multiple concurrent operations of different types should all
-/// eventually succeed through the retry mechanism.
+/// Multiple concurrent operations of different types should preserve a valid
+/// final state without leaking raw optimistic-lock conflicts.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_mixed_operations() {
@@ -491,11 +491,17 @@ async fn test_concurrent_mixed_operations() {
     let play_results: Vec<_> = futures::future::join_all(play_handles).await;
     let speed_results: Vec<_> = futures::future::join_all(speed_handles).await;
 
-    // All operations should succeed (with retries)
-    let mut success_count = 0;
+    // Track successful writes rather than assuming a fixed success ratio.
+    // Under bounded retries, some operations may still exhaust their budget,
+    // but every successful write must advance the playback version exactly once.
+    let mut successful_writes = 0;
     for result in &seek_results {
         match result {
-            Ok(Ok(_)) => success_count += 1,
+            Ok(Ok(response)) => {
+                if response.seek_applied {
+                    successful_writes += 1;
+                }
+            }
             Ok(Err(e)) => {
                 assert!(
                     !matches!(e, Error::OptimisticLockConflict),
@@ -507,7 +513,7 @@ async fn test_concurrent_mixed_operations() {
     }
     for result in &play_results {
         match result {
-            Ok(Ok(_)) => success_count += 1,
+            Ok(Ok(_)) => successful_writes += 1,
             Ok(Err(e)) => {
                 assert!(
                     !matches!(e, Error::OptimisticLockConflict),
@@ -519,7 +525,7 @@ async fn test_concurrent_mixed_operations() {
     }
     for result in &speed_results {
         match result {
-            Ok(Ok(_)) => success_count += 1,
+            Ok(Ok(_)) => successful_writes += 1,
             Ok(Err(e)) => {
                 assert!(
                     !matches!(e, Error::OptimisticLockConflict),
@@ -531,8 +537,8 @@ async fn test_concurrent_mixed_operations() {
     }
 
     assert!(
-        success_count >= 5,
-        "Most operations should succeed, got: {success_count}"
+        successful_writes >= 1,
+        "At least one write should succeed, got: {successful_writes}"
     );
 
     // Final state should be consistent
@@ -540,6 +546,11 @@ async fn test_concurrent_mixed_operations() {
     let state = playback_service.get_state(&room.id).await.unwrap();
     assert!(state.speed > 0.0, "Speed should be positive");
     assert!(state.current_time >= 0.0, "Position should be non-negative");
+    assert_eq!(
+        state.version,
+        successful_writes,
+        "Each successful playback write should advance the version exactly once"
+    );
 }
 
 // ============================================================================

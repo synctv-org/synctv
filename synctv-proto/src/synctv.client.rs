@@ -2,6 +2,8 @@
 /// Full user profile - only returned to the authenticated user themselves (e.g., GetProfile, Register, Login).
 /// SECURITY: Contains PII (email). Never return this message for other users.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_User))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct User {
     #[prost(string, tag = "1")]
@@ -26,6 +28,8 @@ pub struct User {
 /// Public user view - safe to return in any context (room member lists, chat, etc.).
 /// Does not contain email or other PII.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UserPublicView))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UserPublicView {
     #[prost(string, tag = "1")]
@@ -39,6 +43,8 @@ pub struct UserPublicView {
     pub created_at: i64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_Room))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Room {
     #[prost(string, tag = "1")]
@@ -69,6 +75,8 @@ pub struct Room {
     pub is_banned: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_Media))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Media {
     #[prost(string, tag = "1")]
@@ -102,6 +110,8 @@ pub struct Media {
     pub source_config: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_Playlist))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Playlist {
     #[prost(string, tag = "1")]
@@ -128,6 +138,8 @@ pub struct Playlist {
     pub updated_at: i64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackState))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaybackState {
     #[prost(string, tag = "1")]
@@ -157,6 +169,8 @@ pub struct PlaybackState {
 /// Authentication Messages
 /// SECURITY: password is transmitted as plaintext. TLS MUST be used.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RegisterRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RegisterRequest {
     /// Validation: min 3, max 32 chars, pattern: \[\\p{L}\p{N}\_-\]+
@@ -170,6 +184,8 @@ pub struct RegisterRequest {
     pub email: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RegisterResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RegisterResponse {
     #[prost(message, optional, tag = "1")]
@@ -181,6 +197,8 @@ pub struct RegisterResponse {
 }
 /// SECURITY: password is transmitted as plaintext. TLS MUST be used.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_LoginRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LoginRequest {
     /// Validation: min 3, max 32 chars
@@ -191,6 +209,8 @@ pub struct LoginRequest {
     pub password: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_LoginResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LoginResponse {
     #[prost(message, optional, tag = "1")]
@@ -201,12 +221,16 @@ pub struct LoginResponse {
     pub refresh_token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RefreshTokenRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RefreshTokenRequest {
     #[prost(string, tag = "1")]
     pub refresh_token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RefreshTokenResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RefreshTokenResponse {
     #[prost(string, tag = "1")]
@@ -215,9 +239,13 @@ pub struct RefreshTokenResponse {
     pub refresh_token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetProfileRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetProfileRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetProfileResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetProfileResponse {
     #[prost(message, optional, tag = "1")]
@@ -225,6 +253,8 @@ pub struct GetProfileResponse {
 }
 /// Room Management Messages
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_CreateRoomRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateRoomRequest {
     /// Validation: max 100 chars, no HTML tags
@@ -232,15 +262,21 @@ pub struct CreateRoomRequest {
     pub name: ::prost::alloc::string::String,
     /// Optional room password
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub password: ::prost::alloc::string::String,
     /// JSON settings
     #[prost(bytes = "vec", tag = "3")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    #[serde(default)]
     pub settings: ::prost::alloc::vec::Vec<u8>,
     /// Validation: max 500 chars, no HTML tags
     #[prost(string, tag = "4")]
+    #[serde(default)]
     pub description: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_CreateRoomResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateRoomResponse {
     #[prost(message, optional, tag = "1")]
@@ -248,6 +284,8 @@ pub struct CreateRoomResponse {
 }
 /// Note: UserService room-scoped resource request; room_id is carried in payload.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetRoomRequest {
     #[prost(string, tag = "1")]
@@ -255,6 +293,8 @@ pub struct GetRoomRequest {
     pub room_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetRoomResponse {
     #[prost(message, optional, tag = "1")]
@@ -263,6 +303,8 @@ pub struct GetRoomResponse {
     pub playback_state: ::core::option::Option<PlaybackState>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_JoinRoomRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct JoinRoomRequest {
     /// Optional room password
@@ -275,6 +317,8 @@ pub struct JoinRoomRequest {
     pub room_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_JoinRoomResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct JoinRoomResponse {
     #[prost(message, optional, tag = "1")]
@@ -285,6 +329,8 @@ pub struct JoinRoomResponse {
     pub members: ::prost::alloc::vec::Vec<super::common::RoomMember>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_LeaveRoomRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LeaveRoomRequest {
     /// Target room, carried in payload because this RPC is outside RoomService context
@@ -293,12 +339,16 @@ pub struct LeaveRoomRequest {
     pub room_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_LeaveRoomResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LeaveRoomResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomsRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListRoomsRequest {
     /// Validation: >= 1
@@ -312,6 +362,8 @@ pub struct ListRoomsRequest {
     pub search: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListRoomsResponse {
     #[prost(message, repeated, tag = "1")]
@@ -320,6 +372,8 @@ pub struct ListRoomsResponse {
     pub total: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteRoomRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteRoomRequest {
     /// Target room, carried in payload because this RPC is outside RoomService context
@@ -328,13 +382,17 @@ pub struct DeleteRoomRequest {
     pub room_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteRoomResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteRoomResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(from = "crate::http_serde::ClientUpdateRoomSettingsRequestDef")]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdateRoomSettingsRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateRoomSettingsRequest {
     /// JSON settings (partial or complete update)
@@ -343,6 +401,8 @@ pub struct UpdateRoomSettingsRequest {
     pub settings: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdateRoomSettingsResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateRoomSettingsResponse {
     #[prost(message, optional, tag = "1")]
@@ -350,9 +410,13 @@ pub struct UpdateRoomSettingsResponse {
 }
 /// Get room settings
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomSettingsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetRoomSettingsRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomSettingsResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetRoomSettingsResponse {
     /// JSON settings
@@ -362,9 +426,13 @@ pub struct GetRoomSettingsResponse {
 }
 /// Reset room settings to default
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ResetRoomSettingsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResetRoomSettingsRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ResetRoomSettingsResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResetRoomSettingsResponse {
     /// Reset settings (default values)
@@ -374,6 +442,8 @@ pub struct ResetRoomSettingsResponse {
 }
 /// Room Password Messages
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SetRoomPasswordRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetRoomPasswordRequest {
     /// empty = remove password
@@ -381,12 +451,16 @@ pub struct SetRoomPasswordRequest {
     pub password: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SetRoomPasswordResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetRoomPasswordResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_CheckRoomPasswordRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CheckRoomPasswordRequest {
     #[prost(string, tag = "1")]
@@ -397,6 +471,8 @@ pub struct CheckRoomPasswordRequest {
     pub room_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_CheckRoomPasswordResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CheckRoomPasswordResponse {
     #[prost(bool, tag = "1")]
@@ -405,6 +481,8 @@ pub struct CheckRoomPasswordResponse {
 /// Room Members Messages
 /// Note: room_id extracted from x-room-id metadata
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomMembersRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetRoomMembersRequest {
     /// Page number (default 1). Validation: >= 1
@@ -415,6 +493,8 @@ pub struct GetRoomMembersRequest {
     pub page_size: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomMembersResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetRoomMembersResponse {
     #[prost(message, repeated, tag = "1")]
@@ -423,6 +503,11 @@ pub struct GetRoomMembersResponse {
     pub total: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_UpdateMemberPermissionsRequest)
+)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateMemberPermissionsRequest {
     /// Target user
@@ -431,6 +516,7 @@ pub struct UpdateMemberPermissionsRequest {
     pub user_id: ::prost::alloc::string::String,
     /// New role (optional)
     #[prost(enumeration = "super::common::RoomMemberRole", tag = "2")]
+    #[serde(default)]
     pub role: i32,
     /// Allow/Deny permission pattern fields
     /// Only set the fields you want to update
@@ -450,25 +536,37 @@ pub struct UpdateMemberPermissionsRequest {
     pub admin_removed_permissions: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_UpdateMemberPermissionsResponse)
+)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateMemberPermissionsResponse {
     #[prost(message, optional, tag = "1")]
     pub member: ::core::option::Option<super::common::RoomMember>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_KickMemberRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct KickMemberRequest {
     /// Target user to kick
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_KickMemberResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct KickMemberResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_BanMemberRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BanMemberRequest {
     /// Target user to ban
@@ -480,12 +578,16 @@ pub struct BanMemberRequest {
     pub reason: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_BanMemberResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BanMemberResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UnbanMemberRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UnbanMemberRequest {
     /// Target user to unban
@@ -493,12 +595,16 @@ pub struct UnbanMemberRequest {
     pub user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UnbanMemberResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UnbanMemberResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePlaylistRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreatePlaylistRequest {
     #[prost(string, tag = "1")]
@@ -523,12 +629,16 @@ pub struct CreatePlaylistRequest {
     pub provider_instance_name: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePlaylistResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreatePlaylistResponse {
     #[prost(message, optional, tag = "1")]
     pub playlist: ::core::option::Option<Playlist>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdatePlaylistRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdatePlaylistRequest {
     #[prost(string, tag = "1")]
@@ -544,12 +654,16 @@ pub struct UpdatePlaylistRequest {
     pub position: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdatePlaylistResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdatePlaylistResponse {
     #[prost(message, optional, tag = "1")]
     pub playlist: ::core::option::Option<Playlist>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeletePlaylistRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeletePlaylistRequest {
     #[prost(string, tag = "1")]
@@ -558,6 +672,8 @@ pub struct DeletePlaylistRequest {
     pub force: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeletePlaylistResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeletePlaylistResponse {
     #[prost(bool, tag = "1")]
@@ -565,6 +681,8 @@ pub struct DeletePlaylistResponse {
 }
 /// Get single playlist info
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPlaylistRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetPlaylistRequest {
     /// Playlist ID. Validation: required, max 64 chars
@@ -572,6 +690,8 @@ pub struct GetPlaylistRequest {
     pub playlist_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPlaylistResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetPlaylistResponse {
     #[prost(message, optional, tag = "1")]
@@ -585,6 +705,8 @@ pub struct GetPlaylistResponse {
 }
 /// List playlists (folders) in a room or under a parent
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListPlaylistsRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListPlaylistsRequest {
     /// Optional parent ID to get children of specific playlist
@@ -598,6 +720,8 @@ pub struct ListPlaylistsRequest {
     pub page_size: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListPlaylistsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListPlaylistsResponse {
     #[prost(message, repeated, tag = "1")]
@@ -611,6 +735,8 @@ pub struct ListPlaylistsResponse {
 /// 1. A concrete media item (`media_id`)
 /// 1. A dynamic playlist item (`playlist_id` + `target`)
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StartPlaybackRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StartPlaybackRequest {
     /// Static media ID. Mutually exclusive with playlist_id.
@@ -630,18 +756,26 @@ pub struct StartPlaybackRequest {
 /// Empty: playback started successfully
 /// Use GetPlayback to retrieve current state and info
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StartPlaybackResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StartPlaybackResponse {}
 /// HTTP API: Stop current playback
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StopPlaybackRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StopPlaybackRequest {}
 /// Empty: playback stopped successfully
 /// Use GetPlayback to retrieve updated state
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StopPlaybackResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StopPlaybackResponse {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMediaRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AddMediaRequest {
     /// Target playlist ID. Omit for room-root media
@@ -665,12 +799,16 @@ pub struct AddMediaRequest {
     pub title: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMediaResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AddMediaResponse {
     #[prost(message, optional, tag = "1")]
     pub media: ::core::option::Option<Media>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteMediaRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteMediaRequest {
     #[prost(string, tag = "1")]
@@ -679,12 +817,16 @@ pub struct DeleteMediaRequest {
     pub force: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteMediaResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteMediaResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteEntriesRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteEntriesRequest {
     #[prost(string, repeated, tag = "1")]
@@ -698,6 +840,8 @@ pub struct DeleteEntriesRequest {
     pub force: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteEntriesResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteEntriesResponse {
     #[prost(int32, tag = "1")]
@@ -706,6 +850,8 @@ pub struct DeleteEntriesResponse {
     pub deleted_media: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListPlaylistItemsRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListPlaylistItemsRequest {
     /// Empty means room root; otherwise the playlist being browsed
@@ -727,6 +873,8 @@ pub struct ListPlaylistItemsRequest {
     pub page_size: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListPlaylistItemsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListPlaylistItemsResponse {
     /// Child playlists (folders, listed first)
@@ -754,6 +902,8 @@ pub struct ListPlaylistItemsResponse {
     pub current_path: ::prost::alloc::vec::Vec<PlaylistBrowsePathNode>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistItem))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PlaylistItem {
     /// Item name
@@ -777,6 +927,8 @@ pub struct PlaylistItem {
     pub modified_at: ::core::option::Option<i64>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistBrowsePathNode))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PlaylistBrowsePathNode {
     /// Present for persisted playlist nodes; empty for provider-only dynamic segments
@@ -791,6 +943,8 @@ pub struct PlaylistBrowsePathNode {
     pub target: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SwapMediaRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SwapMediaRequest {
     #[prost(string, tag = "1")]
@@ -799,6 +953,8 @@ pub struct SwapMediaRequest {
     pub media_id2: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SwapMediaResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SwapMediaResponse {
     #[prost(bool, tag = "1")]
@@ -806,6 +962,8 @@ pub struct SwapMediaResponse {
 }
 /// Edit Media
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_EditMediaRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EditMediaRequest {
     #[prost(string, tag = "1")]
@@ -815,6 +973,8 @@ pub struct EditMediaRequest {
     pub title: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_EditMediaResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EditMediaResponse {
     #[prost(message, optional, tag = "1")]
@@ -822,9 +982,13 @@ pub struct EditMediaResponse {
 }
 /// Clear Playlist
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ClearPlaylistRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ClearPlaylistRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ClearPlaylistResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ClearPlaylistResponse {
     #[prost(bool, tag = "1")]
@@ -834,6 +998,8 @@ pub struct ClearPlaylistResponse {
 }
 /// Batch Media Operations
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMediaBatchRequest))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AddMediaBatchRequest {
     /// Validation: max 100 items
@@ -841,12 +1007,16 @@ pub struct AddMediaBatchRequest {
     pub items: ::prost::alloc::vec::Vec<AddMediaRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMediaBatchResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AddMediaBatchResponse {
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<AddMediaResponse>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaReorderUpdate))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MediaReorderUpdate {
     #[prost(string, tag = "1")]
@@ -855,6 +1025,8 @@ pub struct MediaReorderUpdate {
     pub position: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ReorderMediaBatchRequest))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReorderMediaBatchRequest {
     #[prost(message, repeated, tag = "1")]
@@ -862,6 +1034,8 @@ pub struct ReorderMediaBatchRequest {
     pub updates: ::prost::alloc::vec::Vec<MediaReorderUpdate>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ReorderMediaBatchResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReorderMediaBatchResponse {
     #[prost(bool, tag = "1")]
@@ -869,13 +1043,19 @@ pub struct ReorderMediaBatchResponse {
 }
 /// Empty: just resume playback
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlayCommand))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PlayCommand {}
 /// Empty: just pause playback
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PauseCommand))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PauseCommand {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SeekCommand))]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SeekCommand {
     /// Playback position in seconds. Validation: >= 0, max 86400, must be finite
@@ -883,6 +1063,8 @@ pub struct SeekCommand {
     pub current_time: f64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SetPlaybackSpeedCommand))]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SetPlaybackSpeedCommand {
     /// Validation: 0.25 to 4.0, must be finite
@@ -890,9 +1072,13 @@ pub struct SetPlaybackSpeedCommand {
     pub speed: f64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPlaybackRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetPlaybackRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPlaybackResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetPlaybackResponse {
     /// Playback state (current time, speed, is_playing, etc.)
@@ -905,6 +1091,8 @@ pub struct GetPlaybackResponse {
 }
 /// Complete playback information (returned by provider's generate_playback)
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackResult))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaybackResult {
     /// Media ID
@@ -941,6 +1129,8 @@ pub struct PlaybackResult {
 }
 /// Playback information for a single mode
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackInfo))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaybackInfo {
     /// List of playback URLs (different qualities, codecs)
@@ -964,6 +1154,8 @@ pub struct PlaybackInfo {
 }
 /// Playback URL (represents a quality/codec option)
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackUrl))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaybackUrl {
     /// Display name (e.g., "1080P", "HEVC 4K", "720P")
@@ -987,6 +1179,8 @@ pub struct PlaybackUrl {
 }
 /// URL-level metadata
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackUrlMetadata))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaybackUrlMetadata {
     /// Resolution (e.g., "1920x1080", "1280x720")
@@ -1010,6 +1204,8 @@ pub struct PlaybackUrlMetadata {
 }
 /// Subtitle information
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_Subtitle))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Subtitle {
     /// Display name (e.g., "简体中文", "English")
@@ -1027,6 +1223,8 @@ pub struct Subtitle {
 }
 /// Subtitle URL
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SubtitleUrl))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SubtitleUrl {
     /// Display name (e.g., "原始", "AI翻译")
@@ -1047,6 +1245,8 @@ pub struct SubtitleUrl {
 }
 /// Danmaku (bullet comments) information
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_Danmaku))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Danmaku {
     /// Display name (e.g., "Bilibili弹幕", "本地弹幕")
@@ -1067,6 +1267,8 @@ pub struct Danmaku {
 }
 /// Real-time Messaging
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ClientMessage))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientMessage {
     #[prost(
@@ -1078,6 +1280,8 @@ pub struct ClientMessage {
 /// Nested message and enum types in `ClientMessage`.
 pub mod client_message {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+    #[cfg_attr(feature = "openapi", schema(as = synctv_client_ClientMessage))]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
         #[prost(message, tag = "1")]
@@ -1117,6 +1321,8 @@ pub mod client_message {
 /// The server uses these reports to track actual client playback positions,
 /// detect drift between clients, and provide accurate positions to new joiners.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackProgressReport))]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct PlaybackProgressReport {
     /// Current playback position in seconds
@@ -1127,6 +1333,8 @@ pub struct PlaybackProgressReport {
     pub is_playing: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ServerMessage))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerMessage {
     #[prost(
@@ -1138,6 +1346,8 @@ pub struct ServerMessage {
 /// Nested message and enum types in `ServerMessage`.
 pub mod server_message {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+    #[cfg_attr(feature = "openapi", schema(as = synctv_client_ServerMessage))]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
         #[prost(message, tag = "1")]
@@ -1198,6 +1408,8 @@ pub mod server_message {
 /// Note: room_id extracted from x-room-id metadata in MessageStream context
 /// If position is set, client may display this as a danmaku (bullet comment)
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ChatMessageSend))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChatMessageSend {
     /// Validation: required, max 5000 chars, HTML tags stripped
@@ -1211,6 +1423,8 @@ pub struct ChatMessageSend {
     pub color: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ChatMessageReceive))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChatMessageReceive {
     #[prost(string, tag = "1")]
@@ -1234,6 +1448,8 @@ pub struct ChatMessageReceive {
     pub color: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_HeartbeatMessage))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HeartbeatMessage {
     /// Unix timestamp (seconds)
@@ -1241,6 +1457,8 @@ pub struct HeartbeatMessage {
     pub timestamp: i64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_HeartbeatAck))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HeartbeatAck {
     /// Unix timestamp (seconds)
@@ -1248,6 +1466,8 @@ pub struct HeartbeatAck {
     pub timestamp: i64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackStateChanged))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaybackStateChanged {
     #[prost(string, tag = "1")]
@@ -1256,6 +1476,8 @@ pub struct PlaybackStateChanged {
     pub state: ::core::option::Option<PlaybackState>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UserJoinedRoom))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UserJoinedRoom {
     #[prost(string, tag = "1")]
@@ -1264,6 +1486,8 @@ pub struct UserJoinedRoom {
     pub member: ::core::option::Option<super::common::RoomMember>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UserLeftRoom))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UserLeftRoom {
     #[prost(string, tag = "1")]
@@ -1272,6 +1496,8 @@ pub struct UserLeftRoom {
     pub user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomSettingsChanged))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RoomSettingsChanged {
     #[prost(string, tag = "1")]
@@ -1281,6 +1507,8 @@ pub struct RoomSettingsChanged {
     pub settings: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ErrorMessage))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ErrorMessage {
     #[prost(string, tag = "1")]
@@ -1309,6 +1537,8 @@ pub struct ErrorMessage {
 /// * "system": System-wide announcement
 /// * "room_event": Room-specific event (e.g., room closed, settings changed)
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UserNotification))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UserNotification {
     /// Unique notification ID (UUID string) for client-side deduplication
@@ -1333,6 +1563,8 @@ pub struct UserNotification {
 /// Chat History
 /// Note: room_id extracted from x-room-id metadata
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetChatHistoryRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetChatHistoryRequest {
     /// Max page size (clamped to 100 server-side). Default: 50.
@@ -1343,6 +1575,8 @@ pub struct GetChatHistoryRequest {
     pub cursor: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetChatHistoryResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetChatHistoryResponse {
     #[prost(message, repeated, tag = "1")]
@@ -1353,9 +1587,13 @@ pub struct GetChatHistoryResponse {
 }
 /// User Profile Management
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_LogoutRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogoutRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_LogoutResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogoutResponse {
     #[prost(bool, tag = "1")]
@@ -1365,6 +1603,8 @@ pub struct LogoutResponse {
     pub message: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SetUsernameRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetUsernameRequest {
     /// Validation: min 3, max 32 chars, pattern: \[\\p{L}\p{N}\_-\]+
@@ -1372,6 +1612,8 @@ pub struct SetUsernameRequest {
     pub new_username: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SetUsernameResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetUsernameResponse {
     #[prost(message, optional, tag = "1")]
@@ -1379,6 +1621,8 @@ pub struct SetUsernameResponse {
 }
 /// SECURITY: passwords are transmitted as plaintext. TLS MUST be used.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SetPasswordRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetPasswordRequest {
     /// SECURITY: Plaintext credential - requires TLS in transit. Validation: required
@@ -1389,12 +1633,16 @@ pub struct SetPasswordRequest {
     pub new_password: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SetPasswordResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetPasswordResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListCreatedRoomsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListCreatedRoomsRequest {
     /// Validation: >= 1
@@ -1405,6 +1653,8 @@ pub struct ListCreatedRoomsRequest {
     pub page_size: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListCreatedRoomsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListCreatedRoomsResponse {
     #[prost(message, repeated, tag = "1")]
@@ -1413,6 +1663,8 @@ pub struct ListCreatedRoomsResponse {
     pub total: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListParticipatedRoomsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListParticipatedRoomsRequest {
     /// Validation: >= 1
@@ -1423,6 +1675,11 @@ pub struct ListParticipatedRoomsRequest {
     pub page_size: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_ListParticipatedRoomsResponse)
+)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListParticipatedRoomsResponse {
     #[prost(message, repeated, tag = "1")]
@@ -1431,6 +1688,8 @@ pub struct ListParticipatedRoomsResponse {
     pub total: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomWithRole))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RoomWithRole {
     #[prost(message, optional, tag = "1")]
@@ -1444,12 +1703,16 @@ pub struct RoomWithRole {
 }
 /// Room Discovery
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_CheckRoomRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CheckRoomRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_CheckRoomResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CheckRoomResponse {
     #[prost(bool, tag = "1")]
@@ -1460,6 +1723,8 @@ pub struct CheckRoomResponse {
     pub name: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetHotRoomsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetHotRoomsRequest {
     /// Validation: default 10, max 50
@@ -1467,12 +1732,16 @@ pub struct GetHotRoomsRequest {
     pub limit: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetHotRoomsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetHotRoomsResponse {
     #[prost(message, repeated, tag = "1")]
     pub rooms: ::prost::alloc::vec::Vec<RoomWithStats>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomWithStats))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RoomWithStats {
     #[prost(message, optional, tag = "1")]
@@ -1487,6 +1756,8 @@ pub struct RoomWithStats {
 /// Note: room_id should be extracted from metadata/context by interceptor
 /// Note: user_id should be extracted from JWT Authorization header
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePublishKeyRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreatePublishKeyRequest {
     /// Media ID to publish (matches Go's IDReq pattern)
@@ -1494,6 +1765,8 @@ pub struct CreatePublishKeyRequest {
     pub id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePublishKeyResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreatePublishKeyResponse {
     /// JWT token for RTMP authentication
@@ -1511,12 +1784,16 @@ pub struct CreatePublishKeyResponse {
 }
 /// GetStreamInfo - Query whether a specific stream is active
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetStreamInfoRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetStreamInfoRequest {
     #[prost(string, tag = "1")]
     pub media_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StreamPublisherInfo))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StreamPublisherInfo {
     #[prost(string, tag = "1")]
@@ -1526,6 +1803,8 @@ pub struct StreamPublisherInfo {
     pub started_at: i64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetStreamInfoResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetStreamInfoResponse {
     #[prost(bool, tag = "1")]
@@ -1536,6 +1815,8 @@ pub struct GetStreamInfoResponse {
 }
 /// ListRoomStreams - List all active streams in the room
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomStreamsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListRoomStreamsRequest {
     /// Page number (default 1)
@@ -1546,6 +1827,8 @@ pub struct ListRoomStreamsRequest {
     pub page_size: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StreamEntry))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StreamEntry {
     #[prost(string, tag = "1")]
@@ -1554,6 +1837,8 @@ pub struct StreamEntry {
     pub active: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomStreamsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListRoomStreamsResponse {
     #[prost(message, repeated, tag = "1")]
@@ -1563,9 +1848,13 @@ pub struct ListRoomStreamsResponse {
     pub total: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPublicSettingsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetPublicSettingsRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPublicSettingsResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetPublicSettingsResponse {
     #[prost(bool, tag = "1")]
@@ -1607,6 +1896,8 @@ pub struct GetPublicSettingsResponse {
     pub email_whitelist_enabled: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SendVerificationEmailRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SendVerificationEmailRequest {
     /// Validation: required, max 254 chars, email format
@@ -1614,12 +1905,19 @@ pub struct SendVerificationEmailRequest {
     pub email: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_SendVerificationEmailResponse)
+)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SendVerificationEmailResponse {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ConfirmEmailRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConfirmEmailRequest {
     #[prost(string, tag = "1")]
@@ -1629,6 +1927,8 @@ pub struct ConfirmEmailRequest {
     pub token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ConfirmEmailResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConfirmEmailResponse {
     #[prost(string, tag = "1")]
@@ -1637,12 +1937,16 @@ pub struct ConfirmEmailResponse {
     pub user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RequestPasswordResetRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RequestPasswordResetRequest {
     #[prost(string, tag = "1")]
     pub email: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RequestPasswordResetResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RequestPasswordResetResponse {
     #[prost(string, tag = "1")]
@@ -1650,6 +1954,8 @@ pub struct RequestPasswordResetResponse {
 }
 /// SECURITY: new_password is transmitted as plaintext. TLS MUST be used.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ConfirmPasswordResetRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConfirmPasswordResetRequest {
     /// Validation: required, email format
@@ -1663,6 +1969,8 @@ pub struct ConfirmPasswordResetRequest {
     pub new_password: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ConfirmPasswordResetResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConfirmPasswordResetResponse {
     #[prost(string, tag = "1")]
@@ -1671,6 +1979,8 @@ pub struct ConfirmPasswordResetResponse {
     pub user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaAdded))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MediaAdded {
     #[prost(string, tag = "1")]
@@ -1687,6 +1997,8 @@ pub struct MediaAdded {
     pub added_by_user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaRemoved))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MediaRemoved {
     #[prost(string, tag = "1")]
@@ -1701,6 +2013,8 @@ pub struct MediaRemoved {
     pub removed_by_user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaRemovedBatch))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MediaRemovedBatch {
     #[prost(string, tag = "1")]
@@ -1715,6 +2029,8 @@ pub struct MediaRemovedBatch {
     pub removed_by_user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaUpdated))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MediaUpdated {
     #[prost(string, tag = "1")]
@@ -1731,6 +2047,8 @@ pub struct MediaUpdated {
     pub updated_by_user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PermissionChanged))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PermissionChanged {
     #[prost(string, tag = "1")]
@@ -1758,6 +2076,8 @@ pub struct PermissionChanged {
     pub updated_by: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistCreated))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PlaylistCreated {
     #[prost(string, tag = "1")]
@@ -1766,6 +2086,8 @@ pub struct PlaylistCreated {
     pub playlist: ::core::option::Option<Playlist>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistUpdated))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PlaylistUpdated {
     #[prost(string, tag = "1")]
@@ -1774,6 +2096,8 @@ pub struct PlaylistUpdated {
     pub playlist: ::core::option::Option<Playlist>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistDeleted))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PlaylistDeleted {
     #[prost(string, tag = "1")]
@@ -1782,6 +2106,8 @@ pub struct PlaylistDeleted {
     pub playlist_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistReordered))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PlaylistReordered {
     #[prost(string, tag = "1")]
@@ -1796,6 +2122,8 @@ pub struct PlaylistReordered {
     pub reordered_by_user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlayingChanged))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PlayingChanged {
     #[prost(string, tag = "1")]
@@ -1809,6 +2137,8 @@ pub struct PlayingChanged {
 /// WebRTC Offer (SDP offer from initiator)
 /// Client sends this to another specific peer through the server
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCOffer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WebRtcOffer {
     /// Target: "user_id" or "user_id:conn_id"
@@ -1824,6 +2154,8 @@ pub struct WebRtcOffer {
 /// WebRTC Answer (SDP answer from receiver)
 /// Response to an offer
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCAnswer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WebRtcAnswer {
     /// Target: "user_id" or "user_id:conn_id"
@@ -1839,6 +2171,8 @@ pub struct WebRtcAnswer {
 /// WebRTC ICE Candidate
 /// Sent repeatedly during ICE negotiation
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCIceCandidate))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WebRtcIceCandidate {
     /// Target: "user_id" or "user_id:conn_id"
@@ -1854,6 +2188,8 @@ pub struct WebRtcIceCandidate {
 /// WebRTC Join (user joins WebRTC session)
 /// Broadcast to all users who already joined RTC in the room
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCJoin))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WebRtcJoin {
     /// Joiner's user ID
@@ -1869,6 +2205,8 @@ pub struct WebRtcJoin {
 /// WebRTC Leave (user leaves WebRTC session)
 /// Broadcast to all users in the WebRTC session
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCLeave))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WebRtcLeave {
     /// Leaver's user ID
@@ -1882,6 +2220,8 @@ pub struct WebRtcLeave {
 /// The server creates a server-side PeerConnection and sends an SDP offer
 /// so the client can renegotiate its media routing through the SFU.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationOffer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SfuMigrationOffer {
     /// Unique ID for this migration batch
@@ -1894,6 +2234,8 @@ pub struct SfuMigrationOffer {
 /// Client -> Server: SFU migration answer from peer
 /// The client responds with an SDP answer to complete the renegotiation.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationAnswer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SfuMigrationAnswer {
     /// Must match the migration_id from the offer
@@ -1905,6 +2247,8 @@ pub struct SfuMigrationAnswer {
 }
 /// Server -> Client: Broadcast migration status to all peers in the room
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationStatus))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SfuMigrationStatus {
     /// Migration batch ID
@@ -1927,12 +2271,16 @@ pub struct SfuMigrationStatus {
 /// Server sends this to client upon request or connection
 /// Contains STUN/TURN server URLs for NAT traversal
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_IceServersConfig))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct IceServersConfig {
     #[prost(message, repeated, tag = "1")]
     pub servers: ::prost::alloc::vec::Vec<IceServer>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_IceServer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct IceServer {
     /// \["stun:stun.example.com:3478", "turn:turn.example.com:3478"\]
@@ -1950,18 +2298,26 @@ pub struct IceServer {
 }
 /// Request/Response for GetIceServers RPC
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetIceServersRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetIceServersRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetIceServersResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetIceServersResponse {
     #[prost(message, repeated, tag = "1")]
     pub servers: ::prost::alloc::vec::Vec<IceServer>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNetworkQualityRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetNetworkQualityRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNetworkQualityResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetNetworkQualityResponse {
     /// Quality stats for each peer in the room
@@ -1969,6 +2325,8 @@ pub struct GetNetworkQualityResponse {
     pub peers: ::prost::alloc::vec::Vec<PeerNetworkQuality>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PeerNetworkQuality))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PeerNetworkQuality {
     #[prost(string, tag = "1")]
@@ -1993,6 +2351,8 @@ pub struct PeerNetworkQuality {
     pub quality_action: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_NotificationProto))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NotificationProto {
     #[prost(string, tag = "1")]
@@ -2016,6 +2376,8 @@ pub struct NotificationProto {
     pub updated_at: i64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListNotificationsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListNotificationsRequest {
     /// Page number (default 1). Validation: >= 1
@@ -2032,6 +2394,8 @@ pub struct ListNotificationsRequest {
     pub notification_type: ::core::option::Option<i32>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListNotificationsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListNotificationsResponse {
     #[prost(message, repeated, tag = "1")]
@@ -2042,27 +2406,37 @@ pub struct ListNotificationsResponse {
     pub unread_count: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNotificationRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetNotificationRequest {
     #[prost(string, tag = "1")]
     pub notification_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNotificationResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetNotificationResponse {
     #[prost(message, optional, tag = "1")]
     pub notification: ::core::option::Option<NotificationProto>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MarkAsReadRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MarkAsReadRequest {
     #[prost(string, repeated, tag = "1")]
     pub notification_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MarkAsReadResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MarkAsReadResponse {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MarkAllAsReadRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MarkAllAsReadRequest {
     /// Mark all as read before this timestamp
@@ -2070,24 +2444,36 @@ pub struct MarkAllAsReadRequest {
     pub before: ::core::option::Option<i64>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MarkAllAsReadResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MarkAllAsReadResponse {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteNotificationRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteNotificationRequest {
     #[prost(string, tag = "1")]
     pub notification_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteNotificationResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteNotificationResponse {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteAllReadRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteAllReadRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteAllReadResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteAllReadResponse {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ItemType))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ItemType {
@@ -2121,6 +2507,8 @@ impl ItemType {
 }
 /// Migration state for status updates
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationState))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum SfuMigrationState {
@@ -2158,6 +2546,8 @@ impl SfuMigrationState {
 }
 /// Suggested action based on network quality assessment
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_QualityAction))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum QualityAction {
@@ -2198,6 +2588,8 @@ impl QualityAction {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_NotificationType))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum NotificationType {
@@ -8450,6 +8842,8 @@ pub mod notification_service_server {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetAuthorizationUrlRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetAuthorizationUrlRequest {
     /// OAuth2 provider instance name (e.g., "github", "google", "logto1")
@@ -8466,6 +8860,8 @@ pub struct GetAuthorizationUrlRequest {
     pub redirect_url: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetAuthorizationUrlResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetAuthorizationUrlResponse {
     /// Authorization URL to redirect user to
@@ -8479,6 +8875,11 @@ pub struct GetAuthorizationUrlResponse {
     pub state: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_GetAuthorizationUrlForBindRequest)
+)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetAuthorizationUrlForBindRequest {
     /// OAuth2 provider instance name (e.g., "github", "google", "logto1")
@@ -8489,6 +8890,11 @@ pub struct GetAuthorizationUrlForBindRequest {
     pub redirect_url: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_GetAuthorizationUrlForBindResponse)
+)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetAuthorizationUrlForBindResponse {
     /// Authorization URL to redirect user to
@@ -8499,6 +8905,11 @@ pub struct GetAuthorizationUrlForBindResponse {
     pub state: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_ExchangeAuthorizationCodeRequest)
+)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExchangeAuthorizationCodeRequest {
     /// OAuth2 provider instance name (must match the provider used in GetAuthorizationUrl)
@@ -8520,6 +8931,11 @@ pub struct ExchangeAuthorizationCodeRequest {
     pub state: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_ExchangeAuthorizationCodeResponse)
+)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExchangeAuthorizationCodeResponse {
     /// JWT access token (if login flow)
@@ -8545,9 +8961,19 @@ pub struct ExchangeAuthorizationCodeResponse {
 }
 /// Empty request
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_ListAvailableProvidersRequest)
+)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListAvailableProvidersRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_ListAvailableProvidersResponse)
+)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListAvailableProvidersResponse {
     /// List of available OAuth2 provider instances
@@ -8555,6 +8981,8 @@ pub struct ListAvailableProvidersResponse {
     pub providers: ::prost::alloc::vec::Vec<OAuth2ProviderInstance>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_OAuth2ProviderInstance))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OAuth2ProviderInstance {
     /// Instance name (e.g., "github", "google", "logto1")
@@ -8565,6 +8993,8 @@ pub struct OAuth2ProviderInstance {
     pub r#type: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UnlinkProviderRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UnlinkProviderRequest {
     /// Provider type to unlink (e.g., "github", "google")
@@ -8576,6 +9006,8 @@ pub struct UnlinkProviderRequest {
     pub provider_user_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UnlinkProviderResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UnlinkProviderResponse {
     /// Whether any provider was unlinked
@@ -8587,9 +9019,13 @@ pub struct UnlinkProviderResponse {
 }
 /// Empty request (user_id comes from JWT)
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetLinkedProvidersRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetLinkedProvidersRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetLinkedProvidersResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetLinkedProvidersResponse {
     /// List of linked OAuth2 providers
@@ -8597,6 +9033,8 @@ pub struct GetLinkedProvidersResponse {
     pub providers: ::prost::alloc::vec::Vec<LinkedProvider>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_LinkedProvider))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LinkedProvider {
     /// Provider type (e.g., "github", "google", "oidc")
@@ -8611,6 +9049,8 @@ pub struct LinkedProvider {
     pub linked_at: i64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_OAuth2UserInfo))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OAuth2UserInfo {
     /// User ID

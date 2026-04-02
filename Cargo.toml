@@ -238,6 +238,8 @@ async_singleflight = "0.6"
 
 # HTTP Body
 http-body-util = "0.1"
+utoipa = { version = "5.4.0", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 
 # Testing
 mockall = "0.14"

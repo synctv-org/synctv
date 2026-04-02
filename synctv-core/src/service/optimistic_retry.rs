@@ -20,6 +20,17 @@ pub const DEFAULT_BACKOFF_BASE_MS: u64 = 5;
 /// Default total timeout for retry operations (seconds)
 pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
 
+/// Check whether an error is the exact retry-exhaustion outcome for the
+/// provided optimistic-retry operation.
+#[must_use]
+pub fn is_retry_exhausted(error: &Error, error_msg: &str) -> bool {
+    match error {
+        Error::Internal(msg) => msg == error_msg,
+        Error::Timeout(msg) => msg.starts_with(error_msg),
+        _ => false,
+    }
+}
+
 /// Retry an async operation that may fail with `OptimisticLockConflict`.
 ///
 /// Uses exponential backoff with jitter to avoid thundering herd:
@@ -515,5 +526,25 @@ mod tests {
             elapsed.as_millis() < 100,
             "Expected fast completion, got {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn test_is_retry_exhausted_matches_exact_internal_message() {
+        let error = Error::Internal("operation failed after retries".to_string());
+        assert!(is_retry_exhausted(&error, "operation failed after retries"));
+    }
+
+    #[test]
+    fn test_is_retry_exhausted_rejects_partial_internal_match() {
+        let error = Error::Internal("wrapper: operation failed after retries".to_string());
+        assert!(!is_retry_exhausted(&error, "operation failed after retries"));
+    }
+
+    #[test]
+    fn test_is_retry_exhausted_matches_timeout_prefix() {
+        let error = Error::Timeout(
+            "operation failed after retries (timeout after 5s)".to_string(),
+        );
+        assert!(is_retry_exhausted(&error, "operation failed after retries"));
     }
 }

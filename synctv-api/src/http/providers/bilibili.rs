@@ -6,14 +6,11 @@
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
     routing::post,
     Json, Router,
 };
-use serde_json::json;
 
-use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
+use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppResult, AppState};
 
 /// Bilibili endpoints that authenticate, issue challenges, or mutate stored credentials.
 pub fn bilibili_auth_routes() -> Router<AppState> {
@@ -38,174 +35,296 @@ pub fn bilibili_read_routes() -> Router<AppState> {
 // ------------------------------------------------------------------
 
 /// Parse Bilibili URL (uses stored cookies)
-async fn parse(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/parse",
+        tag = "Provider",
+        params(InstanceQuery),
+        request_body = crate::proto::providers::bilibili::ParseRequest,
+        responses(
+            (status = 200, description = "Bilibili media parsed", body = crate::proto::providers::bilibili::ParseResponse),
+            (status = 400, description = "Invalid parse request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn parse(
     auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::ParseRequest>,
-) -> axum::response::Response {
+) -> AppResult<Json<crate::proto::providers::bilibili::ParseResponse>> {
     tracing::info!("Bilibili parse request");
 
     let api = &state.bilibili_api;
-
-    match api
+    let resp = api
         .parse(&auth.user_id.to_string(), req, query.as_deref())
         .await
-    {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
+        .map_err(|e| {
             tracing::error!("Bilibili parse failed: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+            AppError::from(e)
+        })?;
+    Ok(Json(resp))
 }
 
 /// Generate Bilibili QR code for login
-async fn login_qr(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/login/qr/generate",
+        tag = "Provider",
+        params(InstanceQuery),
+        responses(
+            (status = 200, description = "Bilibili login QR code generated", body = crate::proto::providers::bilibili::QrCodeResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn login_qr(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
-) -> axum::response::Response {
+) -> AppResult<Json<crate::proto::providers::bilibili::QrCodeResponse>> {
     tracing::info!("Bilibili login QR request");
 
     let api = &state.bilibili_api;
     let req = crate::proto::providers::bilibili::LoginQrRequest::default();
 
-    match api.login_qr(req, query.as_deref()).await {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
-            tracing::error!("Failed to generate QR code: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+    let resp = api.login_qr(req, query.as_deref()).await.map_err(|e| {
+        tracing::error!("Failed to generate QR code: {}", e);
+        AppError::from(e)
+    })?;
+    Ok(Json(resp))
 }
 
 /// Check Bilibili QR code login status (persists cookies on success)
-async fn qr_check(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/login/qr/check",
+        tag = "Provider",
+        params(InstanceQuery),
+        request_body = crate::proto::providers::bilibili::CheckQrRequest,
+        responses(
+            (status = 200, description = "Bilibili QR login status", body = crate::proto::providers::bilibili::QrStatusResponse),
+            (status = 400, description = "Invalid QR check request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn qr_check(
     auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::CheckQrRequest>,
-) -> axum::response::Response {
+) -> AppResult<Json<crate::proto::providers::bilibili::QrStatusResponse>> {
     tracing::info!("Bilibili QR check");
 
     let api = &state.bilibili_api;
 
-    match api
+    let resp = api
         .check_qr(&auth.user_id.to_string(), req, query.as_deref())
         .await
-    {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
+        .map_err(|e| {
             tracing::error!("Failed to check QR status: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+            AppError::from(e)
+        })?;
+    Ok(Json(resp))
 }
 
 /// Get captcha for SMS login
-async fn new_captcha(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/login/captcha",
+        tag = "Provider",
+        params(InstanceQuery),
+        responses(
+            (status = 200, description = "Bilibili captcha challenge", body = crate::proto::providers::bilibili::CaptchaResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn new_captcha(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
-) -> axum::response::Response {
+) -> AppResult<Json<crate::proto::providers::bilibili::CaptchaResponse>> {
     tracing::info!("Bilibili new captcha request");
 
     let api = &state.bilibili_api;
     let req = crate::proto::providers::bilibili::GetCaptchaRequest::default();
 
-    match api.get_captcha(req, query.as_deref()).await {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
-            tracing::error!("Failed to get captcha: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+    let resp = api.get_captcha(req, query.as_deref()).await.map_err(|e| {
+        tracing::error!("Failed to get captcha: {}", e);
+        AppError::from(e)
+    })?;
+    Ok(Json(resp))
 }
 
 /// Send SMS verification code
-async fn sms_send(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/login/sms/send",
+        tag = "Provider",
+        params(InstanceQuery),
+        request_body = crate::proto::providers::bilibili::SendSmsRequest,
+        responses(
+            (status = 200, description = "Bilibili SMS sent", body = crate::proto::providers::bilibili::SendSmsResponse),
+            (status = 400, description = "Invalid SMS request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn sms_send(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::SendSmsRequest>,
-) -> axum::response::Response {
+) -> AppResult<Json<crate::proto::providers::bilibili::SendSmsResponse>> {
     tracing::info!("Bilibili SMS send request");
 
     let api = &state.bilibili_api;
 
-    match api.send_sms(req, query.as_deref()).await {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
-            tracing::error!("Failed to send SMS: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+    let resp = api.send_sms(req, query.as_deref()).await.map_err(|e| {
+        tracing::error!("Failed to send SMS: {}", e);
+        AppError::from(e)
+    })?;
+    Ok(Json(resp))
 }
 
 /// Login with SMS code (persists cookies on success)
-async fn sms_login(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/login/sms/login",
+        tag = "Provider",
+        params(InstanceQuery),
+        request_body = crate::proto::providers::bilibili::LoginSmsRequest,
+        responses(
+            (status = 200, description = "Bilibili SMS login succeeded", body = crate::proto::providers::bilibili::LoginSmsResponse),
+            (status = 400, description = "Invalid SMS login request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn sms_login(
     auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::LoginSmsRequest>,
-) -> axum::response::Response {
+) -> AppResult<Json<crate::proto::providers::bilibili::LoginSmsResponse>> {
     tracing::info!("Bilibili SMS login request");
 
     let api = &state.bilibili_api;
 
-    match api
+    let resp = api
         .login_sms(&auth.user_id.to_string(), req, query.as_deref())
         .await
-    {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
+        .map_err(|e| {
             tracing::error!("Failed to login with SMS: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+            AppError::from(e)
+        })?;
+    Ok(Json(resp))
 }
 
 /// Get Bilibili user info (uses stored cookies)
-async fn user_info(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/me",
+        tag = "Provider",
+        params(InstanceQuery),
+        request_body = crate::proto::providers::bilibili::UserInfoRequest,
+        responses(
+            (status = 200, description = "Bilibili account info", body = crate::proto::providers::bilibili::UserInfoResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn user_info(
     auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::UserInfoRequest>,
-) -> impl IntoResponse {
+) -> AppResult<Json<crate::proto::providers::bilibili::UserInfoResponse>> {
     tracing::info!("Bilibili user info request");
 
     let api = &state.bilibili_api;
 
-    match api
+    let resp = api
         .get_user_info(&auth.user_id.to_string(), req, query.as_deref())
         .await
-    {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
+        .map_err(|e| {
             tracing::error!("Failed to get user info: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+            AppError::from(e)
+        })?;
+    Ok(Json(resp))
 }
 
 /// Logout (delete stored credential)
-async fn logout(
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/logout",
+        tag = "Provider",
+        request_body = crate::proto::providers::bilibili::LogoutRequest,
+        responses(
+            (status = 200, description = "Bilibili credential removed", body = crate::proto::providers::bilibili::LogoutResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn logout(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<crate::proto::providers::bilibili::LogoutRequest>,
-) -> impl IntoResponse {
+) -> AppResult<Json<crate::proto::providers::bilibili::LogoutResponse>> {
     tracing::info!("Bilibili logout request");
 
     let api = &state.bilibili_api;
 
-    match api.logout(&auth.user_id.to_string(), req).await {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err(e) => {
-            tracing::error!("Bilibili logout failed: {}", e);
-            AppError::from(e).into_response()
-        }
-    }
+    let resp = api.logout(&auth.user_id.to_string(), req).await.map_err(|e| {
+        tracing::error!("Bilibili logout failed: {}", e);
+        AppError::from(e)
+    })?;
+    Ok(Json(resp))
 }
 
 #[cfg(test)]

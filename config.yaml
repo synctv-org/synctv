@@ -1,412 +1,486 @@
-# SyncTV Configuration File
+# SyncTV Configuration Example
 #
-# This is a comprehensive example configuration file for SyncTV.
-# Copy this file to your deployment directory and customize as needed.
+# Copy this file to config.yaml and modify as needed
 #
-# SECURITY NOTE: Sensitive values (JWT secret, database password, etc.) should
-# be provided via environment variables instead of this file. See:
-# docs/ENVIRONMENT_VARIABLES.md for complete reference.
+# Configuration priority: defaults < config file < environment variables
 #
-# Configuration priority:
-# 1. Environment variables (SYNCTV_SECTION_KEY) - Highest priority
-# 2. This config file (config.yaml)
-# 3. Default values - Lowest priority
+# Environment variables use SYNCTV_ prefix with single underscore separator:
+#   SYNCTV_SERVER_HOST=0.0.0.0
+#   SYNCTV_DATABASE_URL=postgresql://...
+#   SYNCTV_OAUTH2_REDIRECT_SCHEME=https
 
-# ============================================================================
-# SERVER CONFIGURATION
-# ============================================================================
 server:
-  # Server bind address (use "0.0.0.0" to accept connections from all interfaces)
   host: "0.0.0.0"
-
-  # gRPC server port
-  grpc_port: 50051
-
-  # HTTP/WebSocket server port
-  http_port: 8080
-
-  # Enable gRPC reflection (useful for grpcurl and development)
-  # Set to false in production
+  port: 8080
   enable_reflection: false
-
-  # Development mode (disables some security checks)
-  # WARNING: Never enable in production! Only for local development.
-  development_mode: false
-
-  # Enable Prometheus metrics endpoint at /metrics
-  # Independent of development_mode
+  # Maximum gRPC message size in bytes (both incoming and outgoing).
+  # Prevents OOM attacks from oversized messages. Default: 16MB (16777216 bytes).
+  # Minimum: 1MB (1048576 bytes), Maximum: 1GB (1073741824 bytes).
+  # Environment variable: SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES
+  # grpc_max_message_size_bytes: 16777216
+  # Enable the /metrics Prometheus endpoint
   metrics_enabled: false
-
-  # Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation
-  # When set, X-Forwarded-For headers are only trusted from these addresses
-  # Example: ["10.0.0.0/8", "192.168.0.0/16"] for internal load balancers
-  # If empty, X-Forwarded-For headers are NOT trusted (socket address is used)
+  # Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation.
+  # If empty, X-Forwarded-For headers are NOT trusted (socket address is used).
+  # Example: ["10.0.0.0/8", "192.168.0.0/16"]
   trusted_proxies: []
-
-  # CORS allowed origins (required in production for web clients)
-  # In development mode, all origins are allowed
-  # Example: ["https://app.example.com", "https://admin.example.com"]
+  # CORS allowed origins for cross-origin requests from web frontends.
+  #
+  # You MUST set this to your frontend URL(s) or cross-origin
+  # requests (fetch, WebSocket upgrades from browsers) will be rejected.
+  #
+  # Examples:
+  #   cors_allowed_origins: ["https://app.example.com"]
+  #   cors_allowed_origins: ["https://app.example.com", "https://admin.example.com"]
+  #
+  # Environment variable:
+  #   SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+  #
+  # WARNING: An empty list in production means ALL cross-origin requests are denied.
   cors_allowed_origins: []
-
-  # Shared secret for authenticating inter-node gRPC calls in cluster mode
-  # REQUIRED for multi-replica deployments
-  # Generate with: openssl rand -base64 32
-  # Set via SYNCTV_SERVER_CLUSTER_SECRET environment variable
+  # Shared secret for authenticating cluster gRPC calls between nodes.
+  # REQUIRED when cluster.enabled is true — startup fails if this is empty in cluster mode.
+  # This prevents unauthorized inter-node gRPC calls in multi-replica deployments.
+  # Not required in standalone mode even when Redis is configured.
+  # Generate a secret with: openssl rand -hex 32
+  # Environment variable: SYNCTV_SERVER_CLUSTER_SECRET
   cluster_secret: ""
-
-  # Advertise host for cluster node registration
-  # This is the address other nodes use to reach this instance
-  # In Kubernetes, set this to the pod IP via downward API (status.podIP)
-  # If empty, falls back to POD_IP env var, then auto-detected IP, then hostname
+  # Advertise host for cluster node registration (address other nodes use to reach this instance).
+  # Falls back to POD_IP env var, then system hostname if empty.
+  # In Kubernetes, set via SYNCTV_SERVER_ADVERTISE_HOST or downward API (status.podIP).
   advertise_host: ""
-
-  # Graceful shutdown timeout (seconds)
-  # Maximum time to wait for active connections to drain during shutdown
+  # Maximum time in seconds to wait for active connections to drain during shutdown.
+  # Defaults to 30 seconds. Increase for deployments with many long-lived connections.
   shutdown_drain_timeout_seconds: 30
 
-
-# ============================================================================
-# DATABASE CONFIGURATION
-# ============================================================================
 database:
-  # PostgreSQL connection string
-  # Format: postgresql://[user[:password]@][host][:port][/dbname][?param=value]
-  # SECURITY: Provide via SYNCTV_DATABASE_URL environment variable
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
-
-  # Connection pool settings
-  max_connections: 100  # Increased from default 20 for better performance
+  max_connections: 20
   min_connections: 5
-
-  # Timeouts (seconds)
-  connect_timeout_seconds: 30
-  idle_timeout_seconds: 600    # 10 minutes
-  max_lifetime_seconds: 1800   # 30 minutes
+  connect_timeout_seconds: 10
+  idle_timeout_seconds: 600
+  # Maximum lifetime of a connection in seconds before it is closed and replaced.
+  # Defaults to 1800 (30 minutes).
+  max_lifetime_seconds: 1800
 
 # ============================================================================
-# REDIS CONFIGURATION
+# Redis Configuration
 # ============================================================================
+#
+# Redis is OPTIONAL in standalone mode (cluster.enabled=false) and MANDATORY
+# in cluster mode (cluster.enabled=true).
+#
+# When Redis is not configured (url is empty), all features still work using
+# in-memory fallbacks:
+#   - Token blacklist → in-memory cache (lost on restart)
+#   - Rate limiting → in-memory counters (lost on restart)
+#   - Brute-force protection → in-memory tracking (lost on restart)
+#   - Username/user/room caches → in-memory only
+#   - OAuth2 state → in-memory store
+#   - Livestream registry → in-memory publisher tracking
+#   - Migration locking → PostgreSQL advisory locks
+#   - Leader election → single node is always the leader
+#
+# When Redis IS configured in standalone mode, it enhances features with
+# persistence across restarts and shared state.
+#
+# Redis provides critical infrastructure for:
+#   - Token blacklist (JWT revocation across replicas)
+#   - Rate limiting
+#   - Username cache
+#   - Cache invalidation (Redis Streams with per-node consumer groups)
+#   - Cluster coordination (pub/sub for room events, kicks, etc.)
+#
+# Deployment Modes:
+#   - standalone: Single Redis instance (default, OK for development)
+#   - sentinel: Redis Sentinel for high availability (recommended for production)
+#   - cluster: Redis Cluster (not yet fully supported - requires refactoring)
+#
+# IMPORTANT: Standalone Redis is a single point of failure (SPOF). For production
+# deployments, use sentinel mode with 3+ sentinel nodes monitoring a master-replica setup.
+
 redis:
-  # Redis connection string
-  # Format: redis://[username:password@]host[:port][/database]
-  # Required for: OAuth2, multi-replica cluster coordination
-  # Set via SYNCTV_REDIS_URL environment variable
+  # Leave empty to run without Redis in standalone mode.
+  # Environment variable: SYNCTV_REDIS_URL
   url: "redis://localhost:6379"
-
-  # Pool size (currently unused, kept for compatibility)
-  # The Redis client uses a single multiplexed ConnectionManager
-  pool_size: 10
-
-  # Connection timeout (seconds)
   connect_timeout_seconds: 5
-
-  # Key prefix (useful for shared Redis instances)
   key_prefix: "synctv:"
 
   # Deployment mode: standalone, sentinel, or cluster
-  # Note: "cluster" mode is not yet supported (will fail at startup)
   deployment_mode: "standalone"
 
-  # Sentinel configuration (only for deployment_mode: sentinel)
+  # --- Sentinel Mode Configuration (for high availability) ---
+  # When deployment_mode is "sentinel", these fields are required:
   # sentinel_master_name: "mymaster"
   # sentinel_addresses:
   #   - "redis://sentinel1:26379"
   #   - "redis://sentinel2:26379"
   #   - "redis://sentinel3:26379"
 
-  # Cluster configuration (only for deployment_mode: cluster)
-  # NOT YET SUPPORTED - will fail at startup
+  # --- Cluster Mode Configuration (experimental) ---
+  # Cluster mode is not yet fully supported and will fail at startup.
+  # Future implementation will require switching from ConnectionManager to ClusterConnection.
   # cluster_nodes:
   #   - "redis://node1:6379"
   #   - "redis://node2:6379"
   #   - "redis://node3:6379"
 
-# ============================================================================
-# JWT CONFIGURATION
-# ============================================================================
 jwt:
-  # JWT signing secret
-  # SECURITY: MUST be provided via SYNCTV_JWT_SECRET environment variable
-  # Minimum 32 characters with mixed case, numbers, and special characters
-  # Generate with: openssl rand -base64 48
+  # REQUIRED in production. Generate with: openssl rand -base64 32
+  # Minimum 32 characters with high entropy (at least 16 unique characters).
   secret: ""
-
-  # Access token validity (hours)
-  access_token_duration_hours: 24
-
-  # Refresh token validity (days)
+  access_token_duration_hours: 1
   refresh_token_duration_days: 30
+  # Duration for guest (anonymous) access tokens
+  guest_token_duration_hours: 4
+  # Clock skew leeway for token validation (seconds)
+  clock_skew_leeway_secs: 60
 
-  # Guest token validity (hours)
-  guest_token_duration_hours: 1
-
-  # Clock skew tolerance (seconds)
-  clock_skew_leeway_secs: 30
-
-# ============================================================================
-# LOGGING CONFIGURATION
-# ============================================================================
 logging:
-  # Log level: trace, debug, info, warn, error
   level: "info"
-
-  # Log format: "pretty" (human-readable) or "json" (structured)
-  # Use "json" in production for log aggregation
   format: "pretty"
-
-  # Optional log file path (if not set, logs to stdout)
   # file_path: "/var/log/synctv/app.log"
 
-# ============================================================================
-# LIVESTREAM CONFIGURATION (RTMP/HLS/FLV)
-# ============================================================================
 livestream:
-  # RTMP server port
   rtmp_port: 1935
-
-  # GOP (Group of Pictures) cache size for instant playback
-  # Larger values = faster join but more memory
-  gop_cache_size: 5
-
-  # GOP cache maximum memory per stream (megabytes)
-  # When exceeded, oldest GOP is evicted even if gop_cache_size not reached
-  # Set to 0 to use built-in default (50 MB)
+  gop_cache_size: 2
+  stream_timeout_seconds: 300
+  # How often to check for idle streams (seconds)
+  cleanup_check_interval_seconds: 60
+  # Max retries for pull stream connections
+  pull_max_retries: 10
+  # Initial backoff for pull retries (milliseconds)
+  pull_initial_backoff_ms: 1000
+  # Max backoff for pull retries (milliseconds)
+  pull_max_backoff_ms: 30000
+  # Max FLV tag size to accept in bytes (prevents OOM). Default: 10MB
+  max_flv_tag_size_bytes: 10485760
+  # Maximum memory (in megabytes) for the GOP cache across all GOPs per stream.
+  # When exceeded, the oldest GOP is evicted even if gop_cache_size hasn't
+  # been reached. Default: 100 MB. Set to 0 to use the built-in default (50 MB).
   gop_cache_max_memory_mb: 100
 
-  # Stream idle timeout (seconds)
-  # Streams with no activity for this duration are automatically stopped
-  stream_timeout_seconds: 300
-
-  # Cleanup check interval (seconds)
-  # How often to check for idle streams
-  cleanup_check_interval_seconds: 60
-
-  # Pull stream retry configuration
-  pull_max_retries: 3
-  pull_initial_backoff_ms: 1000
-  pull_max_backoff_ms: 30000
-
-  # Maximum FLV tag size (bytes)
-  # Prevents OOM attacks from malformed streams
-  max_flv_tag_size_bytes: 10485760  # 10 MB
-
 # ============================================================================
-# WEBRTC CONFIGURATION (Audio/Video Calls)
+# Email Configuration (SMTP)
 # ============================================================================
-webrtc:
-  # WebRTC operation mode
-  # Options:
-  #   - "signaling_only": Pure P2P, no STUN/TURN (~70-75% success rate)
-  #   - "peer_to_peer": P2P with STUN/TURN support (~99% success rate, recommended)
-  mode: "peer_to_peer"
+#
+# Configure SMTP to enable email features (verification, notifications).
+# Leave smtp_host empty to disable email functionality.
 
-  # Built-in STUN server (powered by turn-rs)
-  enable_builtin_stun: true
-  stun_port: 3478
-  stun_host: "0.0.0.0"
-
-  # STUN server external address for reflexive candidates
-  # REQUIRED in cluster/Kubernetes/NAT environments
-  # Set to your server's public IP:port
-  # Example: "203.0.113.1:3478"
-  # If empty, falls back to advertise_host:stun_port
-  stun_external_addr: ""
-
-  # TURN server configuration (optional)
-  # When turn_shared_secret is set, the server generates ephemeral credentials
-  # compatible with coturn's use-auth-secret mode (RFC 5389)
-  # turn_shared_secret: ""  # Generate with: openssl rand -base64 32
-  # turn_server_urls:
-  #   - "turn:turn.example.com:3478"
-  #   - "turns:turn.example.com:5349"
-  # turn_credential_ttl_seconds: 86400  # 24 hours
-
-  # Filter private/internal ICE candidates before sending to clients
-  # When true, host candidates with private IPs are stripped
-  # Set to false in development or when clients are on the same private network
-  filter_private_ice_candidates: true
-
-# ============================================================================
-# OAUTH2 CONFIGURATION
-# ============================================================================
-oauth2:
-  # URL scheme for OAuth2 redirect URLs
-  # Options: "http" or "https"
-  # Set to "https" when behind a reverse proxy terminating TLS
-  redirect_scheme: "http"
-
-  # OAuth2 providers (GitHub, Google, OIDC, etc.)
-  # NOTE: OAuth2 REQUIRES Redis to be configured
-  providers:
-    # GitHub OAuth2 example
-    # github:
-    #   client_id: "your-github-client-id"
-    #   client_secret: "your-github-client-secret"
-    #   scopes:
-    #     - "read:user"
-    #     - "user:email"
-
-    # Google OAuth2 example
-    # google:
-    #   client_id: "your-google-client-id.apps.googleusercontent.com"
-    #   client_secret: "your-google-client-secret"
-    #   scopes:
-    #     - "openid"
-    #     - "profile"
-    #     - "email"
-
-    # Generic OIDC provider example (e.g., Logto, Keycloak, Authelia)
-    # logto:
-    #   issuer_url: "https://auth.example.com/oidc"
-    #   client_id: "your-oidc-client-id"
-    #   client_secret: "your-oidc-client-secret"
-    #   scopes:
-    #     - "openid"
-    #     - "profile"
-    #     - "email"
-
-# ============================================================================
-# EMAIL CONFIGURATION (SMTP)
-# ============================================================================
 email:
-  # SMTP server settings (leave empty to disable email)
   smtp_host: ""
   smtp_port: 587
   smtp_username: ""
-  smtp_password: ""  # Provide via SYNCTV_EMAIL_SMTP_PASSWORD env var
-
-  # Sender information
-  from_email: "noreply@synctv.local"
+  smtp_password: ""  # Set via SYNCTV_EMAIL_SMTP_PASSWORD env var
+  from_email: ""
   from_name: "SyncTV"
-
-  # Use TLS/STARTTLS
   use_tls: true
 
 # ============================================================================
-# MEDIA PROVIDERS CONFIGURATION
+# Password Complexity Requirements
 # ============================================================================
-media_providers:
-  # Timeout for external provider HTTP requests (seconds)
-  # Prevents hanging on slow/unresponsive provider APIs
-  request_timeout_seconds: 30
+#
+# Controls password strength validation for user account passwords.
+# These settings do NOT apply to room passwords (which have simpler requirements).
 
-  # Connection timeout for provider API connections (seconds)
-  connect_timeout_seconds: 10
-
-  # Provider configurations (Alist, Emby, Bilibili, etc.)
-  providers:
-    # Alist example
-    # alist:
-    #   base_url: "https://alist.example.com"
-    #   token: "your-alist-token"
-
-    # Emby example
-    # emby:
-    #   base_url: "https://emby.example.com"
-    #   api_key: "your-emby-api-key"
-
-    # Bilibili example (uses public API, no auth needed)
-    # bilibili:
-    #   enabled: true
-
-# ============================================================================
-# CONNECTION LIMITS
-# ============================================================================
-connection_limits:
-  # Maximum concurrent connections per user
-  max_per_user: 10
-
-  # Maximum concurrent connections per room
-  max_per_room: 1000
-
-  # Maximum total concurrent connections across all rooms
-  max_total: 10000
-
-  # Idle timeout (seconds) - disconnect if no activity
-  idle_timeout_seconds: 300  # 5 minutes
-
-  # Maximum connection duration (seconds)
-  max_duration_seconds: 86400  # 24 hours
-
-# ============================================================================
-# BOOTSTRAP CONFIGURATION (Initial Setup)
-# ============================================================================
-bootstrap:
-  # Whether to create root user on first startup
-  create_root_user: true
-
-  # Root user credentials
-  # SECURITY: Provide via environment variables in production
-  root_username: "root"
-  root_password: "root"  # CHANGE THIS! Set via SYNCTV_BOOTSTRAP_ROOT_PASSWORD
-  # root_email: "root@localhost"  # Optional
-
-# ============================================================================
-# CLUSTER CONFIGURATION (Multi-Replica Deployments)
-# ============================================================================
-cluster:
-  # Discovery mode for cluster node registration
-  # Options:
-  #   - "redis": Use Redis-based node registry (default, works everywhere)
-  #   - "k8s_dns": Use Kubernetes headless service DNS
-  #     (requires HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars)
-  #     Note: Still requires Redis for health monitoring and pub/sub
-  discovery_mode: "redis"
-
-  # Leader election mode for singleton operations
-  # Options:
-  #   - "redis": Use Redis-based distributed locks (default)
-  #   - "k8s_lease": Use Kubernetes coordination.k8s.io/v1 Lease
-  #     (requires POD_NAME and POD_NAMESPACE env vars + RBAC permissions)
-  leader_election_mode: "redis"
-
-  # Channel buffer sizes for cluster event distribution
-  # Larger values provide more resilience during traffic spikes
-  critical_channel_capacity: 1000   # High-priority events (never dropped)
-  publish_channel_capacity: 10000   # Normal-priority events (dropped when full)
-
-# ============================================================================
-# PASSWORD COMPLEXITY REQUIREMENTS
-# ============================================================================
 password_complexity:
   # Minimum password length
   min_length: 8
-
-  # Complexity requirements
+  # Require at least one uppercase letter
   require_uppercase: true
+  # Require at least one lowercase letter
   require_lowercase: true
+  # Require at least one digit
   require_digit: true
+  # Require at least one special character (e.g., !@#$%^&*)
   require_special: false
-
-  # Maximum consecutive repeated characters
+  # Maximum consecutive repeated characters allowed (prevents "aaaaaa").
+  # Set to 0 to disable this check.
   max_repeated_chars: 3
 
 # ============================================================================
-# BUFFER SIZES (Internal Channels)
+# Connection Limits
 # ============================================================================
-buffer_sizes:
-  # Per-connection WebSocket outbound message queue size
-  # Larger values prevent message drops during traffic bursts
-  websocket_outbound: 256
-
-  # Audit log event buffer size
-  audit_buffer: 10000
-
-# ============================================================================
-# VALIDATION
-# ============================================================================
-# After configuring, validate with:
-#   cargo run --bin validate-config
-# Or:
-#   ./scripts/validate-config.sh config.yaml
 #
-# See docs/config-validation.md for details.
+# Controls concurrent WebSocket/streaming connection limits.
+
+connection_limits:
+  # Maximum concurrent connections per user
+  max_per_user: 5
+  # Maximum concurrent connections per room
+  max_per_room: 200
+  # Maximum total concurrent connections
+  max_total: 10000
+  # Idle timeout in seconds (disconnect if no activity)
+  idle_timeout_seconds: 300
+  # Maximum connection duration in seconds (24 hours)
+  max_duration_seconds: 86400
+  # Global per-connection WebSocket message rate limit (messages per second).
+  # Prevents abuse from flooding the server with rapid messages.
+  ws_message_rate_limit_per_second: 50
 
 # ============================================================================
-# DOCUMENTATION
+# Messaging Rate Limits
 # ============================================================================
-# Complete reference:
-#   - Environment variables: docs/ENVIRONMENT_VARIABLES.md
-#   - Configuration validation: docs/config-validation.md
-#   - Deployment guide: README.md
-#   - API documentation: Use gRPC reflection (grpcurl)
+#
+# Domain-level chat and danmaku limits enforced by the shared messaging logic.
+
+messaging_rate_limits:
+  # Maximum chat messages per sliding window.
+  chat_per_second: 10
+  # Maximum danmaku messages per sliding window.
+  danmaku_per_second: 3
+  # Sliding-window size in seconds.
+  window_seconds: 1
+
+# ============================================================================
+# Bootstrap Configuration
+# ============================================================================
+#
+# Initial setup options for first startup.
+# IMPORTANT: Change root_password in production!
+
+bootstrap:
+  # Whether to create root user on first startup
+  create_root_user: true
+  root_username: "root"
+  # REQUIRED for production: set a strong password (>= 12 chars, must contain
+  # uppercase, lowercase, and digits). Do NOT use any default value in production.
+  # Set via SYNCTV_BOOTSTRAP_ROOT_PASSWORD env var.
+  # root_password: ""
+
+# ============================================================================
+# Cluster Configuration
+# ============================================================================
+#
+# Controls multi-node cluster mode and internal channel buffer sizes.
+#
+# When enabled=true, Redis is MANDATORY and cluster_secret must be set.
+# When enabled=false (default), this is a standalone single-node deployment
+# and Redis is optional.
+
+cluster:
+  # Enable cluster mode for multi-node deployments.
+  # When true, Redis is required and cluster_secret must be set.
+  # When false (default), runs as a standalone single-node instance.
+  # Environment variable: SYNCTV_CLUSTER_ENABLED
+  enabled: false
+  # Capacity for high-priority critical event channel (KickPublisher, KickUser, etc.)
+  # Critical events are never dropped; senders block when full.
+  critical_channel_capacity: 1000
+  # Capacity for normal-priority Redis publish channel.
+  # Normal events are dropped with a warning when full.
+  publish_channel_capacity: 10000
+  # Discovery mode: "redis" (default) or "k8s_dns" (requires HEADLESS_SERVICE_NAME
+  # and POD_NAMESPACE env vars).
+  #
+  # IMPORTANT: "k8s_dns" mode still requires Redis for health monitoring, load
+  # balancing, and cluster pub/sub. DNS only supplements peer discovery by detecting
+  # new pods faster. Without Redis, k8s_dns provides DNS resolution only -- no
+  # NodeRegistry, HealthMonitor, or LoadBalancer will be created.
+  discovery_mode: "redis"
+
+  # --- Static Discovery Configuration ---
+  # When discovery_mode is "static", list peers explicitly.
+  # Each peer is a single shared API address. The same port serves gRPC over h2
+  # and REST over h1.
+  # If a peer omits its port, SyncTV probes it on server.port.
+  #
+  # peers:
+  #   - "node2.example.com:8080"
+  #   - "node3.example.com"
+
+  # Leader election mode for singleton operations.
+  # - "redis": Use Redis-based distributed locks (default, works everywhere)
+  # - "k8s_lease": Use Kubernetes coordination.k8s.io/v1 Lease resource
+  #   (requires POD_NAME and POD_NAMESPACE env vars, RBAC permissions)
+  leader_election_mode: "redis"
+
+  # How far back (in seconds) to replay Redis Stream events when a new node
+  # first connects to the cluster.  Replaying recent history prevents events
+  # published just before this node subscribed from being silently missed.
+  # Increase in clusters with high event rates; decrease to shorten startup
+  # replay time.  Default: 300 (5 minutes).
+  catchup_window_secs: 300
+  # Maximum number of entries per Redis Stream (approximate, uses MAXLEN ~).
+  # Controls how many events are retained in each per-room stream for catch-up
+  # after reconnection. In high-throughput scenarios, increase this to avoid
+  # trimming events that disconnected nodes still need to catch up on.
+  # Default: 10000
+  stream_max_length: 10000
+
+# ============================================================================
+# Media Providers Configuration
+# ============================================================================
+#
+# Stores media provider configurations (Alist, Emby, Jellyfin, Bilibili, etc.)
+
+media_providers:
+  # Provider configurations as a dynamic JSON/YAML value.
+  # Example:
+  # providers:
+  #   alist:
+  #     base_url: "https://alist.example.com"
+  #     token: "your_token"
+  #   emby:
+  #     base_url: "https://emby.example.com"
+  #     api_key: "your_api_key"
+  providers: {}
+
+# ============================================================================
+# OAuth2/OIDC Configuration
+# ============================================================================
+#
+# Providers are configured as a YAML string that is parsed separately
+# to support dynamic provider-specific fields.
+#
+# Supported Providers:
+#   - github:  GitHub OAuth2
+#   - google:  Google OAuth2
+#   - oidc:    Generic OIDC provider with .well-known discovery
+#              Supports issuer, auth_url, token_url, userinfo_url fields
+#   - qq, gitee, feishu, wechat: Chinese OAuth2 Providers (not yet implemented)
+#   - Any OIDC-compliant provider (Casdoor, Keycloak, Authelia, etc.)
+#     requires 'type: oidc' field
+#
+# Common fields (all providers):
+#   client_id: OAuth2 client ID
+#   client_secret: OAuth2 client secret
+#   redirect_url: (required) frontend/client callback URI
+#
+# Provider-specific fields:
+#   logto:
+#     endpoint: Logto server URL (e.g., "https://logto.example.com")
+#   oidc:
+#     issuer: Issuer URL for .well-known discovery
+#     auth_url: (optional) Custom authorization endpoint
+#     token_url: (optional) Custom token endpoint
+#     userinfo_url: (optional) Custom userinfo endpoint
+#
+# Multiple Provider Instances:
+#   Use different instance names (e.g., logto1, logto2) and add 'type' field
+#   to specify the provider type.
+#
+# Callback URLs must point to your frontend or native client, because SyncTV
+# uses a frontend-driven OAuth2 flow:
+#   1. Provider redirects to your frontend/client callback URI with code+state
+#   2. Frontend/client calls POST /api/oauth2/<instance_name>/exchange
+# Examples:
+#   https://app.example.com/oauth2/callback
+#   synctv://oauth2/callback
+#
+# Security Notes:
+#   - OAuth2 tokens are only used temporarily during login and then discarded
+#   - Only provider-user mappings are stored (for future logins)
+#   - Always use HTTPS in production for OAuth2 callbacks
+
+oauth2:
+  # URL scheme for OAuth2 redirect URLs ("http" or "https").
+  # When behind a reverse proxy terminating TLS, set to "https".
+  redirect_scheme: "http"
+  # Example configuration (uncomment and modify):
+  # providers: |
+  #   # Standard OAuth2 Providers
+  #   github:
+  #     client_id: "your_github_client_id"
+  #     client_secret: "your_github_client_secret"
+  #     redirect_url: "https://app.example.com/oauth2/callback"
+  #
+  #   google:
+  #     client_id: "your_google_client_id"
+  #     client_secret: "your_google_client_secret"
+  #     redirect_url: "https://app.example.com/oauth2/callback"
+  #
+  #   # Multiple instances of same provider (requires 'type' field)
+  #   logto1:
+  #     type: logto
+  #     client_id: "logto1_client_id"
+  #     client_secret: "logto1_client_secret"
+  #     endpoint: "https://logto1.example.com"
+  #     redirect_url: "https://app.example.com/oauth2/callback"
+  #
+  #   logto2:
+  #     type: logto
+  #     client_id: "logto2_client_id"
+  #     client_secret: "logto2_client_secret"
+  #     endpoint: "https://logto2.example.com"
+  #     redirect_url: "https://app.example.com/oauth2/callback"
+  #
+  #   # Generic OIDC provider
+  #   custom_oidc:
+  #     type: oidc
+  #     client_id: "custom_client_id"
+  #     redirect_url: "https://app.example.com/oauth2/callback"
+  #     client_secret: "custom_client_secret"
+  #     issuer: "https://custom.oidc.provider.com"
+  providers: ""
+
+# Environment Variables for OAuth2:
+#   Format: SYNCTV_OAUTH2_<FIELD>
+#   Examples:
+#     SYNCTV_OAUTH2_REDIRECT_SCHEME=https
+
+# ============================================================================
+# WebRTC Configuration
+# ============================================================================
+#
+# WebRTC supports 2 operation modes:
+#   - signaling_only: Pure signaling relay (zero cost, ~70% success rate)
+#   - peer_to_peer:   P2P with STUN/TURN (recommended, ~99% success rate)
+
+webrtc:
+  mode: "peer_to_peer"
+
+  # --- Built-in STUN Server ---
+  enable_builtin_stun: true
+  stun_port: 3478
+  stun_host: "0.0.0.0"
+  # External address for STUN reflexive candidates. In K8s/NAT, set to
+  # the pod IP or service IP (e.g., via SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR).
+  # If empty, falls back to advertise_host:stun_port.
+  # stun_external_addr: ""
+
+  # --- External STUN & TURN Servers ---
+  # Configured dynamically via the settings API (no restart required):
+  #   "webrtc.external_stun_servers" - JSON array of STUN URLs, e.g.:
+  #       ["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]
+  #   "webrtc.turn_servers" - JSON array of TURN server objects, e.g.:
+  #       [{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
+
+# ============================================================================
+# Dynamic ICE Servers Configuration
+# ============================================================================
+#
+# External STUN and TURN servers are managed via the settings API at runtime.
+#
+# Setting key: "webrtc.external_stun_servers"
+# Value: JSON array of STUN URL strings
+#   Default: ["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]
+#
+# Setting key: "webrtc.turn_servers"
+# Value: JSON array of TURN server objects
+#   [{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
+#   Default: [] (no TURN servers)
+#
+# Changes take effect immediately without restarting the server.
+
+# ============================================================================
+# Buffer Size Tuning
+# ============================================================================
+#
+# Controls internal channel buffer sizes. Larger values provide more resilience
+# during traffic spikes but use more memory. Defaults match the original
+# hardcoded values for backward compatibility.
+#
+# Additional buffer sizes are configured in their respective sections:
+#   - cluster.critical_channel_capacity (default: 1000)
+#   - cluster.publish_channel_capacity (default: 10000)
+#   - livestream.stream_hub_event_channel_capacity (default: 4096)
+
+buffer_sizes:
+  # Per-connection WebSocket outbound message queue.
+  # When full, new messages are dropped (backpressure for slow clients).
+  websocket_outbound: 256
+  # Audit log event buffer. Events are batched and flushed to the database.
+  # When full, new audit events are dropped with a warning.
+  audit_buffer: 10000

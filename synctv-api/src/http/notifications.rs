@@ -26,6 +26,7 @@ use crate::proto::client::{
 
 /// Query parameters for listing notifications (HTTP-specific, not in proto)
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct ListNotificationsQuery {
     pub page: Option<i32>,
     pub page_size: Option<i32>,
@@ -49,6 +50,24 @@ fn get_notification_api(
 }
 
 /// GET /api/notifications - List user's notifications
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/notifications",
+        tag = "Notification",
+        params(ListNotificationsQuery),
+        responses(
+            (status = 200, description = "Notifications list", body = ListNotificationsResponse),
+            (status = 400, description = "Invalid notification filter", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Notification service unavailable", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn list_notifications(
     auth: AuthUser,
     Query(query): Query<ListNotificationsQuery>,
@@ -93,6 +112,26 @@ pub async fn list_notifications(
 }
 
 /// GET /api/notifications/:id - Get a specific notification
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/notifications/{id}",
+        tag = "Notification",
+        params(
+            ("id" = String, Path, description = "Notification ID as UUID")
+        ),
+        responses(
+            (status = 200, description = "Notification details", body = GetNotificationResponse),
+            (status = 400, description = "Invalid notification ID", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Notification not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_notification(
     auth: AuthUser,
     Path(notification_id): Path<Uuid>,
@@ -111,6 +150,24 @@ pub async fn get_notification(
 }
 
 /// POST /api/notifications/read - Mark notifications as read
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/notifications/actions/mark-read",
+        tag = "Notification",
+        request_body = MarkAsReadRequest,
+        responses(
+            (status = 204, description = "Notifications marked as read"),
+            (status = 400, description = "Invalid notification IDs", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Notification service unavailable", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn mark_as_read(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -136,6 +193,24 @@ pub async fn mark_as_read(
 }
 
 /// POST /api/notifications/read-all - Mark all notifications as read
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/notifications/read-all",
+        tag = "Notification",
+        request_body = Option<MarkAllAsReadRequest>,
+        responses(
+            (status = 204, description = "Notifications marked as read"),
+            (status = 400, description = "Invalid timestamp", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Notification service unavailable", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn mark_all_as_read(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -159,6 +234,26 @@ pub async fn mark_all_as_read(
 }
 
 /// DELETE /api/notifications/:id - Delete a notification
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/notifications/{id}",
+        tag = "Notification",
+        params(
+            ("id" = String, Path, description = "Notification ID as UUID")
+        ),
+        responses(
+            (status = 204, description = "Notification deleted"),
+            (status = 400, description = "Invalid notification ID", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Notification not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn delete_notification(
     auth: AuthUser,
     Path(notification_id): Path<Uuid>,
@@ -174,6 +269,22 @@ pub async fn delete_notification(
 }
 
 /// DELETE /api/notifications/read - Delete all read notifications
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/notifications/actions/mark-read",
+        tag = "Notification",
+        responses(
+            (status = 204, description = "All read notifications deleted"),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Notification service unavailable", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn delete_all_read(
     auth: AuthUser,
     State(state): State<AppState>,

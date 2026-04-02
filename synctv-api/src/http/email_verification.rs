@@ -92,6 +92,20 @@ pub fn create_email_router() -> Router<AppState> {
 /// Public endpoint - no authentication required
 ///
 /// Rate limited per-email (3/hour) in addition to per-IP middleware.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/email/verify/send",
+        tag = "Email",
+        request_body = SendVerificationEmailRequest,
+        responses(
+            (status = 200, description = "Verification email accepted", body = SendVerificationEmailResponse),
+            (status = 400, description = "Invalid email request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn send_verification_email(
     State(state): State<AppState>,
     Json(req): Json<SendVerificationEmailRequest>,
@@ -115,6 +129,19 @@ pub async fn send_verification_email(
 ///
 /// POST /api/email/verify/confirm
 /// Public endpoint - no authentication required
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/email/verify/confirm",
+        tag = "Email",
+        request_body = ConfirmEmailRequest,
+        responses(
+            (status = 200, description = "Email confirmed", body = ConfirmEmailResponse),
+            (status = 400, description = "Invalid confirmation request", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn confirm_email(
     State(state): State<AppState>,
     Json(req): Json<ConfirmEmailRequest>,
@@ -138,6 +165,20 @@ pub async fn confirm_email(
 /// Public endpoint - no authentication required
 ///
 /// Rate limited per-email (3/hour) in addition to per-IP middleware.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/email/password/reset",
+        tag = "Email",
+        request_body = RequestPasswordResetRequest,
+        responses(
+            (status = 200, description = "Password reset email accepted", body = RequestPasswordResetResponse),
+            (status = 400, description = "Invalid password reset request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn request_password_reset(
     State(state): State<AppState>,
     Json(req): Json<RequestPasswordResetRequest>,
@@ -161,6 +202,19 @@ pub async fn request_password_reset(
 ///
 /// POST /api/email/password/confirm
 /// Public endpoint - no authentication required
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/email/password/confirm",
+        tag = "Email",
+        request_body = ConfirmPasswordResetRequest,
+        responses(
+            (status = 200, description = "Password reset confirmed", body = ConfirmPasswordResetResponse),
+            (status = 400, description = "Invalid password reset confirmation", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn confirm_password_reset(
     State(state): State<AppState>,
     Json(req): Json<ConfirmPasswordResetRequest>,

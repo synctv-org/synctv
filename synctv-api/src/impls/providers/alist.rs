@@ -105,12 +105,7 @@ impl AlistApiImpl {
         instance_name: Option<&str>,
     ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
         let host = req.host.clone();
-
-        let (password, hashed) = if req.hashed_password.is_empty() {
-            (req.password.clone(), false)
-        } else {
-            (req.hashed_password.clone(), true)
-        };
+        let (password, hashed) = Self::resolve_login_credential(&req)?;
 
         let login_req = synctv_media_providers::grpc::alist::LoginReq {
             host: req.host,
@@ -179,6 +174,25 @@ impl AlistApiImpl {
             })?;
 
         Ok(LoginResponse { token, server_id })
+    }
+
+    fn resolve_login_credential(
+        req: &LoginRequest,
+    ) -> Result<(String, bool), synctv_core::provider::ProviderError> {
+        let password = req.password.trim();
+        let hashed_password = req.hashed_password.trim();
+
+        if hashed_password.is_empty() {
+            if password.is_empty() {
+                return Err(synctv_core::provider::ProviderError::InvalidConfig(
+                    "Alist login requires password or hashed_password".to_string(),
+                ));
+            }
+
+            return Ok((req.password.clone(), false));
+        }
+
+        Ok((req.hashed_password.clone(), true))
     }
 
     /// List Alist directory using stored credential
@@ -305,6 +319,7 @@ impl AlistApiImpl {
 mod tests {
     use super::AlistApiImpl;
     use std::sync::Arc;
+    use synctv_proto::providers::alist::LoginRequest;
     use synctv_core::provider::{AlistProvider, ProviderError};
     use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
     use synctv_core::service::RemoteProviderManager;
@@ -316,6 +331,86 @@ mod tests {
         Arc::new(AlistProvider::new(Arc::new(RemoteProviderManager::new(
             repo,
         ))))
+    }
+
+    #[test]
+    fn resolve_login_credential_rejects_missing_password_and_hash() {
+        let err = AlistApiImpl::resolve_login_credential(&LoginRequest {
+            host: "https://alist.example.com".to_string(),
+            username: "alice".to_string(),
+            password: String::new(),
+            hashed_password: String::new(),
+            instance_name: String::new(),
+        })
+        .expect_err("missing both credential forms must fail");
+
+        match err {
+            ProviderError::InvalidConfig(message) => {
+                assert!(message.contains("password or hashed_password"));
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_login_credential_accepts_plaintext_password_without_hash() {
+        let (credential, hashed) = AlistApiImpl::resolve_login_credential(&LoginRequest {
+            host: "https://alist.example.com".to_string(),
+            username: "alice".to_string(),
+            password: "secret123".to_string(),
+            hashed_password: String::new(),
+            instance_name: String::new(),
+        })
+        .expect("plaintext password must remain valid");
+
+        assert_eq!(credential, "secret123");
+        assert!(!hashed);
+    }
+
+    #[test]
+    fn resolve_login_credential_accepts_hashed_password_without_plaintext() {
+        let (credential, hashed) = AlistApiImpl::resolve_login_credential(&LoginRequest {
+            host: "https://alist.example.com".to_string(),
+            username: "alice".to_string(),
+            password: String::new(),
+            hashed_password: "sha256:abc123".to_string(),
+            instance_name: String::new(),
+        })
+        .expect("hashed password must remain valid");
+
+        assert_eq!(credential, "sha256:abc123");
+        assert!(hashed);
+    }
+
+    #[tokio::test]
+    async fn login_rejects_missing_password_and_hash_before_provider_call() {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
+        let api = AlistApiImpl::new(
+            provider(),
+            Arc::new(UserProviderCredentialRepository::new(pool)),
+        );
+
+        let err = api
+            .login(
+                "user-1",
+                LoginRequest {
+                    host: "https://alist.example.com".to_string(),
+                    username: "alice".to_string(),
+                    password: String::new(),
+                    hashed_password: String::new(),
+                    instance_name: String::new(),
+                },
+                None,
+            )
+            .await
+            .expect_err("missing both credential forms must fail before provider login");
+
+        match err {
+            ProviderError::InvalidConfig(message) => {
+                assert!(message.contains("password or hashed_password"));
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
     }
 
     #[tokio::test]

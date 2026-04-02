@@ -711,6 +711,11 @@ impl Config {
         env: &HashMap<String, String>,
     ) -> Result<Self, ConfigError> {
         let seen_env_keys = std::cell::RefCell::new(std::collections::HashSet::<String>::new());
+        if config_file.is_some() && env.contains_key("SYNCTV_CONFIG_PATH") {
+            seen_env_keys
+                .borrow_mut()
+                .insert("SYNCTV_CONFIG_PATH".to_string());
+        }
         let get_env = |name: &str| {
             seen_env_keys.borrow_mut().insert(name.to_string());
             env.get(name).cloned()

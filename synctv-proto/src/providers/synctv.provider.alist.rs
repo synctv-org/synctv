@@ -2,6 +2,8 @@
 /// Login request
 /// SECURITY: Prefer hashed_password over password when possible to reduce plaintext exposure.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_LoginRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LoginRequest {
     #[prost(string, tag = "1")]
@@ -10,16 +12,21 @@ pub struct LoginRequest {
     pub username: ::prost::alloc::string::String,
     /// SECURITY: Plaintext credential - requires TLS in transit. Prefer hashed_password.
     #[prost(string, tag = "3")]
+    #[serde(default)]
     pub password: ::prost::alloc::string::String,
     /// Hashed password (if provided, password is ignored)
     #[prost(string, tag = "4")]
+    #[serde(default)]
     pub hashed_password: ::prost::alloc::string::String,
     /// Optional provider instance name
     #[prost(string, tag = "5")]
+    #[serde(default)]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// Login response
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_LoginResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LoginResponse {
     #[prost(string, tag = "1")]
@@ -30,28 +37,38 @@ pub struct LoginResponse {
 }
 /// List directory request
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_ListRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListRequest {
     /// Stored credential identifier
     #[prost(string, tag = "1")]
     pub server_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub path: ::prost::alloc::string::String,
     /// Directory password (optional)
     #[prost(string, tag = "3")]
+    #[serde(default)]
     pub password: ::prost::alloc::string::String,
     #[prost(uint64, tag = "4")]
+    #[serde(default)]
     pub page: u64,
     #[prost(uint64, tag = "5")]
+    #[serde(default)]
     pub per_page: u64,
     #[prost(bool, tag = "6")]
+    #[serde(default)]
     pub refresh: bool,
     /// Optional provider instance name
     #[prost(string, tag = "7")]
+    #[serde(default)]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// List directory response
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_ListResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListResponse {
     #[prost(message, repeated, tag = "1")]
@@ -61,6 +78,8 @@ pub struct ListResponse {
 }
 /// File/directory item
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_FileItem))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FileItem {
     #[prost(string, tag = "1")]
@@ -80,6 +99,8 @@ pub struct FileItem {
 }
 /// Get user info request
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_GetMeRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetMeRequest {
     /// Stored credential identifier
@@ -87,10 +108,13 @@ pub struct GetMeRequest {
     pub server_id: ::prost::alloc::string::String,
     /// Optional provider instance name
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// Get user info response
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_GetMeResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetMeResponse {
     #[prost(string, tag = "1")]
@@ -100,6 +124,8 @@ pub struct GetMeResponse {
 }
 /// Logout request
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_LogoutRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogoutRequest {
     /// Which credential to unbind
@@ -107,10 +133,13 @@ pub struct LogoutRequest {
     pub server_id: ::prost::alloc::string::String,
     /// Optional provider instance name
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// Logout response
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_LogoutResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogoutResponse {
     #[prost(string, tag = "1")]
@@ -118,14 +147,19 @@ pub struct LogoutResponse {
 }
 /// Get binds request
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_GetBindsRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetBindsRequest {
     /// Optional provider instance name
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// Get binds response
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_GetBindsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetBindsResponse {
     #[prost(message, repeated, tag = "1")]
@@ -133,6 +167,8 @@ pub struct GetBindsResponse {
 }
 /// Saved credential information
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_BindInfo))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BindInfo {
     #[prost(string, tag = "1")]

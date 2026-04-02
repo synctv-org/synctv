@@ -5,7 +5,7 @@
 
 use axum::{
     extract::{Path, State},
-    response::{IntoResponse, Json},
+    response::Json,
 };
 
 use crate::http::middleware::AuthUser;
@@ -23,11 +23,32 @@ use crate::proto::client::GetIceServersResponse;
 /// Path: `GET /api/rooms/{room_id}/webrtc/ice-servers`
 /// Auth: Required (JWT)
 /// Permissions: Room membership required
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/webrtc/ice-servers",
+        tag = "WebRTC",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        responses(
+            (status = 200, description = "ICE servers for the authenticated room member", body = GetIceServersResponse),
+            (status = 400, description = "Invalid room ID", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Room membership required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_ice_servers(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-) -> AppResult<impl IntoResponse> {
+) -> AppResult<Json<GetIceServersResponse>> {
     let user_id = auth.user_id;
     let room_id = crate::room_id_validation::parse_room_id(&room_id)
         .map_err(|e| crate::http::AppError::bad_request(format!("Invalid room_id: {e}")))?;

@@ -83,10 +83,11 @@ pub async fn get_provider_binds(
 /// Eliminates the repetitive 5-line block duplicated across all gRPC provider methods.
 #[must_use]
 pub fn extract_instance_name(name: &str) -> Option<String> {
-    if name.is_empty() {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
         None
     } else {
-        Some(name.to_string())
+        Some(trimmed.to_string())
     }
 }
 
@@ -128,7 +129,7 @@ pub(crate) fn resolve_bound_instance_name(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_bound_instance_name;
+    use super::{extract_instance_name, resolve_bound_instance_name};
     use synctv_core::provider::ProviderError;
 
     #[test]
@@ -165,5 +166,15 @@ mod tests {
     fn resolve_bound_instance_name_treats_blank_names_as_absent() {
         let resolved = resolve_bound_instance_name(Some("   "), Some("")).unwrap();
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn extract_instance_name_treats_blank_names_as_absent() {
+        assert_eq!(extract_instance_name(""), None);
+        assert_eq!(extract_instance_name("   "), None);
+        assert_eq!(
+            extract_instance_name("  emby-main  "),
+            Some("emby-main".to_string())
+        );
     }
 }

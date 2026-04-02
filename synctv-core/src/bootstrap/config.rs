@@ -186,4 +186,27 @@ mod tests {
             "unexpected error: {err}"
         );
     }
+
+    #[test]
+    fn test_load_config_accepts_valid_explicit_file_when_synctv_config_path_is_set() {
+        let _lock = acquire_process_config_test_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let config_path = dir.path().join("explicit-config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+jwt:
+  secret: "12345678901234567890123456789012"
+"#,
+        )
+        .expect("valid config should be written");
+        let _env = EnvVarGuard::set(
+            "SYNCTV_CONFIG_PATH",
+            config_path.to_string_lossy().to_string(),
+        );
+
+        let config = load_config().expect("valid explicit config path should load successfully");
+
+        assert_eq!(config.jwt.secret, "12345678901234567890123456789012");
+    }
 }

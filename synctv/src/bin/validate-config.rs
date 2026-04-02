@@ -99,7 +99,8 @@ fn main() {
 
 /// Load configuration without starting the server
 fn load_config_for_validation(config_path: &Option<String>) -> Result<Config, String> {
-    load_config_for_validation_with_env(config_path, &std::collections::HashMap::new())
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    load_config_for_validation_with_env(config_path, &env)
 }
 
 fn load_config_for_validation_with_env(
@@ -190,6 +191,32 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    struct EnvVarGuard {
+        key: &'static str,
+        value: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl Into<String>) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value.into());
+            Self {
+                key,
+                value: previous,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.value.take() {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     #[test]
     fn load_config_for_validation_rejects_invalid_env_override() {
         let result = load_config_for_validation_with_env(
@@ -254,6 +281,28 @@ jwt:
             &HashMap::from([("SYNCTV_SERVER_PORT".to_string(), "50061".to_string())]),
         )
         .expect("config with env override should load");
+
+        assert_eq!(result.server.port, 50061);
+    }
+
+    #[test]
+    fn load_config_for_validation_reads_process_env_overrides() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            r#"
+server:
+  port: 50051
+jwt:
+  secret: "12345678901234567890123456789012"
+"#,
+        )
+        .expect("write config");
+        let _env = EnvVarGuard::set("SYNCTV_SERVER_PORT", "50061");
+
+        let result = load_config_for_validation(&Some(path.display().to_string()))
+            .expect("config loader should honor process env overrides");
 
         assert_eq!(result.server.port, 50061);
     }

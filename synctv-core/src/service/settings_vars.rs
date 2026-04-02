@@ -532,20 +532,44 @@ mod tests {
 
     // ========== SettingsStorage.validate() with real Setting instances ==========
 
-    /// Helper: create a `SettingsStorage` backed by a lazy (never-connected) pool.
-    fn test_storage() -> Arc<SettingsStorage> {
-        let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-        let pool = pool_opts
-            .connect_lazy("postgres://fake:fake@localhost/fake")
-            .unwrap();
-        let repo = crate::repository::SettingsRepository::new(pool.clone());
-        let service = Arc::new(SettingsService::new(repo, pool));
-        Arc::new(SettingsStorage::new(service))
+    struct TestStorageHarness {
+        _runtime: tokio::runtime::Runtime,
+        storage: Arc<SettingsStorage>,
+        service: Arc<SettingsService>,
     }
 
-    #[tokio::test]
-    async fn test_storage_validate_bool_setting_accepts_valid() {
-        let storage = test_storage();
+    /// Helper: create a `SettingsStorage` backed by a lazy (never-connected)
+    /// pool while keeping an explicit current-thread Tokio runtime alive for the
+    /// duration of the test. This avoids nextest leak flakes from implicit test
+    /// runtimes while still satisfying `sqlx::connect_lazy`.
+    fn test_storage_harness() -> TestStorageHarness {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (storage, service) = {
+            let _guard = runtime.enter();
+            let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
+            let pool = pool_opts
+                .connect_lazy("postgres://fake:fake@localhost/fake")
+                .unwrap();
+            let repo = crate::repository::SettingsRepository::new(pool.clone());
+            let service = Arc::new(SettingsService::new(repo, pool));
+            let storage = Arc::new(SettingsStorage::new(service.clone()));
+            (storage, service)
+        };
+
+        TestStorageHarness {
+            _runtime: runtime,
+            storage,
+            service,
+        }
+    }
+
+    #[test]
+    fn test_storage_validate_bool_setting_accepts_valid() {
+        let harness = test_storage_harness();
+        let storage = harness.storage;
         let _setting = Setting::<bool>::new("test.enabled", storage.clone(), true);
         assert!(
             storage.validate("test.enabled", "true"),
@@ -557,9 +581,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_storage_validate_bool_setting_rejects_invalid() {
-        let storage = test_storage();
+    #[test]
+    fn test_storage_validate_bool_setting_rejects_invalid() {
+        let harness = test_storage_harness();
+        let storage = harness.storage;
         let _setting = Setting::<bool>::new("test.enabled", storage.clone(), true);
         assert!(
             !storage.validate("test.enabled", "not_a_bool"),
@@ -572,9 +597,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_storage_validate_i64_setting_with_range_validator() {
-        let storage = test_storage();
+    #[test]
+    fn test_storage_validate_i64_setting_with_range_validator() {
+        let harness = test_storage_harness();
+        let storage = harness.storage;
         let _setting =
             Setting::<i64>::new("test.max_items", storage.clone(), 10).with_validator(|v: &i64| {
                 if *v > 0 && *v <= 100 {
@@ -619,9 +645,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_storage_validate_unknown_key_passes() {
-        let storage = test_storage();
+    #[test]
+    fn test_storage_validate_unknown_key_passes() {
+        let harness = test_storage_harness();
+        let storage = harness.storage;
         // No settings registered
         assert!(
             storage.validate("unknown.key", "anything"),
@@ -629,17 +656,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_storage_validate_service_providers_wired() {
+    #[test]
+    fn test_storage_validate_service_providers_wired() {
         // Verify that creating a SettingsStorage wires providers to the
         // SettingsService so that validate_setting works too.
-        let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-        let pool = pool_opts
-            .connect_lazy("postgres://fake:fake@localhost/fake")
-            .unwrap();
-        let repo = crate::repository::SettingsRepository::new(pool.clone());
-        let service = Arc::new(SettingsService::new(repo, pool));
-        let storage = Arc::new(SettingsStorage::new(service.clone()));
+        let harness = test_storage_harness();
+        let storage = harness.storage;
+        let service = harness.service;
 
         let _setting = Setting::<i64>::new("server.max_rooms_per_user", storage, 10)
             .with_validator(|v: &i64| {

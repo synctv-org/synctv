@@ -3402,8 +3402,7 @@ impl ShutdownReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::redis::Redis;
+    use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
 
     impl ConnectionManager {
         fn drain_pending_retries_for_test(&self) -> Vec<PendingRedisOp> {
@@ -5208,24 +5207,13 @@ mod tests {
     async fn docker_redis_connection(
         prefix: &str,
     ) -> (
-        testcontainers::ContainerAsync<Redis>,
+        RedisContainer,
         redis::Client,
         redis::aio::ConnectionManager,
         String,
     ) {
-        let container = Redis::default()
-            .start()
-            .await
-            .expect("Failed to start Redis container");
-        let host = container
-            .get_host()
-            .await
-            .expect("Failed to get Redis host");
-        let port = container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get Redis port");
-        let redis_url = format!("redis://{host}:{port}");
+        let sanitized_label = prefix.replace(':', "-");
+        let (container, redis_url) = start_redis_url_with_label(&sanitized_label).await;
         let client = redis::Client::open(redis_url.as_str()).expect("Failed to open Redis client");
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

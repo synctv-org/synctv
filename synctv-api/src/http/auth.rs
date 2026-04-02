@@ -25,6 +25,20 @@ pub fn extract_client_ip(
 }
 
 /// Register a new user
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/register",
+        tag = "Auth",
+        request_body = RegisterRequest,
+        responses(
+            (status = 200, description = "Registration succeeded", body = RegisterResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn register(
     State(state): State<AppState>,
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -43,6 +57,21 @@ pub async fn register(
 }
 
 /// Login with username and password
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/login",
+        tag = "Auth",
+        request_body = LoginRequest,
+        responses(
+            (status = 200, description = "Login succeeded", body = LoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Invalid credentials", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn login(
     State(state): State<AppState>,
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -61,6 +90,20 @@ pub async fn login(
 }
 
 /// Refresh access token using refresh token.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/refresh",
+        tag = "Auth",
+        request_body = RefreshTokenRequest,
+        responses(
+            (status = 200, description = "Token refresh succeeded", body = RefreshTokenResponse),
+            (status = 401, description = "Invalid refresh token", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn refresh_token(
     State(state): State<AppState>,
     Json(req): Json<RefreshTokenRequest>,
@@ -81,6 +124,21 @@ pub async fn refresh_token(
 ///
 /// Returns 400 Bad Request if no Bearer token is provided.
 /// Returns 200 OK with success: true on successful logout.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/logout",
+        tag = "Auth",
+        responses(
+            (status = 200, description = "Logout succeeded", body = LogoutResponse),
+            (status = 401, description = "Missing or invalid bearer token", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn logout(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,

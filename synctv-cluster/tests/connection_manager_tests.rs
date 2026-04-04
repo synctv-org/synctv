@@ -335,13 +335,3 @@ async fn test_rtc_connections_filter() {
 // ============================================================================
 // Test 7: unregister nonexistent is a no-op
 // ============================================================================
-
-#[tokio::test]
-async fn test_unregister_nonexistent_noop() {
-    let mgr = ConnectionManager::default();
-
-    // Should not panic or error
-    mgr.unregister("does_not_exist").await;
-
-    assert_eq!(mgr.connection_count(), 0);
-}

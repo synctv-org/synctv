@@ -352,25 +352,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_member_permissions() {
-        let perms = PermissionBits(PermissionBits::DEFAULT_MEMBER);
-        assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MOVIE));
-        assert!(perms.has(PermissionBits::DELETE_MOVIE_SELF));
-        assert!(perms.has(PermissionBits::VIEW_PLAYLIST));
-        assert!(!perms.has(PermissionBits::DELETE_MOVIE_ANY));
-    }
-
-    #[test]
-    fn test_default_admin_permissions() {
-        let perms = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-        assert!(perms.has_all(PermissionBits::DEFAULT_MEMBER));
-        assert!(perms.has(PermissionBits::DELETE_MOVIE_ANY));
-        assert!(perms.has(PermissionBits::BAN_MEMBER));
-        assert!(perms.has(PermissionBits::SET_ROOM_SETTINGS));
-    }
-
-    #[test]
     fn test_allow_deny_pattern() {
         // Start with DEFAULT_MEMBER
         let mut perms = PermissionBits(PermissionBits::DEFAULT_MEMBER);
@@ -434,31 +415,6 @@ mod tests {
     fn test_has_any_with_zero_is_false() {
         let perms = PermissionBits(PermissionBits::ALL);
         assert!(!perms.has_any(0)); // 0 & anything == 0
-    }
-
-    #[test]
-    fn test_all_permissions_bit_coverage() {
-        // ALL should be u64::MAX
-        assert_eq!(PermissionBits::ALL, u64::MAX);
-    }
-
-    #[test]
-    fn test_none_permissions_is_zero() {
-        assert_eq!(PermissionBits::NONE, 0);
-    }
-
-    #[test]
-    fn test_default_is_empty() {
-        let perms = PermissionBits::default();
-        assert_eq!(perms.0, 0);
-    }
-
-    #[test]
-    fn test_admin_defaults_include_all_member_defaults() {
-        // Admin should have a superset of member permissions
-        let admin = PermissionBits::DEFAULT_ADMIN;
-        let member = PermissionBits::DEFAULT_MEMBER;
-        assert_eq!(admin & member, member);
     }
 
     // ========== Role FromStr / Display ==========

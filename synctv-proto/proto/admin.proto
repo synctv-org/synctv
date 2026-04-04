@@ -182,7 +182,14 @@ message SendTestEmailResponse {
 // =========================
 
 message ListProviderInstancesRequest {
-    string provider_type = 1; // Optional filter by media provider type
+    int32 page = 1;
+    int32 page_size = 2;
+    string provider_type = 3; // Optional filter by media provider type
+    string search = 4;
+    optional bool enabled = 5;
+    optional bool tls = 6;
+    ProviderInstanceListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
 }
 
 message ListProviderInstancesResponse {
@@ -261,6 +268,7 @@ message CreateUserRequest {
     string password = 2; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars
     string email = 3; // Validation: max 254 chars, email format when non-empty
     synctv.common.UserRole role = 4; // Default: USER_ROLE_USER
+    synctv.common.UserStatus status = 5; // Optional explicit initial status
 }
 
 message CreateUserResponse {
@@ -281,6 +289,8 @@ message ListUsersRequest {
     synctv.common.UserStatus status = 3; // Optional filter (UNSPECIFIED = show all)
     synctv.common.UserRole role = 4; // Optional filter (UNSPECIFIED = show all)
     string search = 5; // Search by username or email
+    UserListSortBy sort_by = 6;
+    SortDirection sort_direction = 7;
 }
 
 message ListUsersResponse {
@@ -347,11 +357,65 @@ message GetUserRoomsRequest {
     string user_id = 1; // Validation: required
     int32 page = 2;       // Page number (default 1). Validation: >= 1
     int32 page_size = 3;  // Items per page (default 50). Validation: max 100
+    synctv.common.RoomStatus status = 4;
+    string search = 5;
+    optional bool is_banned = 6;
+    RoomListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
 }
 
 message GetUserRoomsResponse {
     repeated AdminRoom rooms = 1;
     int32 total = 2; // Total number of rooms for this user
+}
+
+enum SortDirection {
+    SORT_DIRECTION_UNSPECIFIED = 0;
+    SORT_DIRECTION_ASC = 1;
+    SORT_DIRECTION_DESC = 2;
+}
+
+enum UserListSortBy {
+    USER_LIST_SORT_BY_UNSPECIFIED = 0;
+    USER_LIST_SORT_BY_CREATED_AT = 1;
+    USER_LIST_SORT_BY_UPDATED_AT = 2;
+    USER_LIST_SORT_BY_USERNAME = 3;
+    USER_LIST_SORT_BY_EMAIL = 4;
+    USER_LIST_SORT_BY_STATUS = 5;
+    USER_LIST_SORT_BY_ROLE = 6;
+}
+
+enum RoomListSortBy {
+    ROOM_LIST_SORT_BY_UNSPECIFIED = 0;
+    ROOM_LIST_SORT_BY_CREATED_AT = 1;
+    ROOM_LIST_SORT_BY_UPDATED_AT = 2;
+    ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 3;
+    ROOM_LIST_SORT_BY_NAME = 4;
+}
+
+enum RoomMemberListSortBy {
+    ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED = 0;
+    ROOM_MEMBER_LIST_SORT_BY_JOINED_AT = 1;
+    ROOM_MEMBER_LIST_SORT_BY_USERNAME = 2;
+    ROOM_MEMBER_LIST_SORT_BY_ROLE = 3;
+    ROOM_MEMBER_LIST_SORT_BY_STATUS = 4;
+}
+
+enum ProviderInstanceListSortBy {
+    PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED = 0;
+    PROVIDER_INSTANCE_LIST_SORT_BY_NAME = 1;
+    PROVIDER_INSTANCE_LIST_SORT_BY_ENDPOINT = 2;
+    PROVIDER_INSTANCE_LIST_SORT_BY_CREATED_AT = 3;
+    PROVIDER_INSTANCE_LIST_SORT_BY_UPDATED_AT = 4;
+}
+
+enum ActiveStreamListSortBy {
+    ACTIVE_STREAM_LIST_SORT_BY_UNSPECIFIED = 0;
+    ACTIVE_STREAM_LIST_SORT_BY_STARTED_AT = 1;
+    ACTIVE_STREAM_LIST_SORT_BY_ROOM_ID = 2;
+    ACTIVE_STREAM_LIST_SORT_BY_MEDIA_ID = 3;
+    ACTIVE_STREAM_LIST_SORT_BY_USER_ID = 4;
+    ACTIVE_STREAM_LIST_SORT_BY_NODE_ID = 5;
 }
 
 message ApproveUserRequest {
@@ -373,6 +437,8 @@ message ListRoomsRequest {
     string search = 4; // Search by name
     string creator_id = 5; // Optional filter by creator
     optional bool is_banned = 6; // Optional filter by ban status (true = banned only, false = not banned, absent = all)
+    RoomListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
 }
 
 message ListRoomsResponse {
@@ -459,6 +525,11 @@ message GetRoomMembersRequest {
     string room_id = 1; // Validation: required
     int32 page = 2;      // Page number (default 1). Validation: >= 1
     int32 page_size = 3;  // Items per page (default 50). Validation: max 100
+    string search = 4;
+    synctv.common.RoomMemberRole role = 5;
+    synctv.common.MemberStatus status = 6;
+    RoomMemberListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
 }
 
 message GetRoomMembersResponse {
@@ -486,7 +557,13 @@ message RemoveAdminResponse {
     bool success = 1;
 }
 
-message ListAdminsRequest {}
+message ListAdminsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    string search = 3;
+    UserListSortBy sort_by = 4;
+    SortDirection sort_direction = 5;
+}
 
 message ListAdminsResponse {
     repeated AdminUser admins = 1;
@@ -515,7 +592,14 @@ message GetSystemStatsResponse {
 // =========================
 
 message ListActiveStreamsRequest {
-    string room_id = 1; // optional filter by room
+    int32 page = 1;
+    int32 page_size = 2;
+    string room_id = 3; // optional filter by room
+    string user_id = 4;
+    string node_id = 5;
+    string search = 6;
+    ActiveStreamListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
 }
 
 message ActiveStreamInfo {

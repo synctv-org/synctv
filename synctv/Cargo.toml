@@ -14,7 +14,7 @@ default = ["k8s", "mimalloc", "openapi"]
 # Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
 # Disable to reduce binary size for non-K8s deployments:
 #   cargo build --no-default-features
-k8s = ["synctv-cluster/k8s", "synctv-core/k8s"]
+k8s = ["synctv-cluster/k8s", "synctv-core/k8s", "synctv-api/k8s"]
 # Allocator selection (mutually exclusive — enable at most one):
 #   mimalloc (default) — fast, works on all platforms
 #   jemalloc           — excellent for long-running servers, unix only
@@ -32,6 +32,9 @@ synctv-api.workspace = true
 synctv-livestream.workspace = true
 synctv-cluster = { workspace = true, default-features = false }
 synctv-proxy.workspace = true
+synctv-proto.workspace = true
+synctv-management.workspace = true
+synctv-common.workspace = true
 
 # Async
 tokio.workspace = true
@@ -40,6 +43,8 @@ async-trait.workspace = true
 
 # HTTP Framework
 axum.workspace = true
+tonic.workspace = true
+hyper.workspace = true
 
 # Database
 sqlx.workspace = true
@@ -49,18 +54,28 @@ redis.workspace = true
 
 # Utilities
 anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
 dotenvy.workspace = true
 hostname.workspace = true
-nanoid.workspace = true
 parking_lot.workspace = true
 percent-encoding.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
+toml.workspace = true
+serde.workspace = true
+url.workspace = true
+rustls-pemfile.workspace = true
 
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tower.workspace = true
+hyper-util.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
 
 mimalloc = { workspace = true, optional = true }
 
@@ -71,8 +86,6 @@ tikv-jemallocator = { workspace = true, optional = true }
 synctv-media-providers.workspace = true
 synctv-common.workspace = true
 synctv-core-testing.workspace = true
-synctv-proto.workspace = true
-tonic.workspace = true
 tonic-health.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 testcontainers.workspace = true
@@ -84,3 +97,6 @@ tempfile.workspace = true
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
 prost.workspace = true
+clap = { workspace = true, features = ["derive"] }
+clap_complete.workspace = true
+tokio-stream.workspace = true

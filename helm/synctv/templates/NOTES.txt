@@ -47,8 +47,12 @@ Ingress is enabled. Access the application at:
 
 ## Connection info
 
-  - Database: {{ .Values.config.database.host }}:{{ .Values.config.database.port }}/{{ .Values.config.database.name }}
-  - Redis:    {{ .Values.config.redis.host }}:{{ .Values.config.redis.port }}
+  - Database host: {{ include "synctv.postgresql.host" . }}
+  - Database port: {{ include "synctv.postgresql.port" . }}
+  - Database name: {{ include "synctv.postgresql.database" . }}
+  - Redis host:    {{ include "synctv.redis.host" . }}
+  - Redis port:    {{ include "synctv.redis.port" . }}
+  - Access scope:  internal cluster traffic only; use kubectl port-forward for temporary external access
 
 {{- if .Values.autoscaling.enabled }}
 
@@ -81,7 +85,7 @@ To view all generated secrets:
 Or view specific secrets:
 
   # Database password
-  kubectl get secret {{ $secretName }} -n {{ .Release.Namespace }} -o jsonpath='{.data.SYNCTV_DATABASE_URL}' | base64 -d
+  kubectl get secret {{ $secretName }} -n {{ .Release.Namespace }} -o jsonpath='{.data.SYNCTV_DATABASE_PASSWORD}' | base64 -d
 
   # JWT secret
   kubectl get secret {{ $secretName }} -n {{ .Release.Namespace }} -o jsonpath='{.data.SYNCTV_JWT_SECRET}' | base64 -d

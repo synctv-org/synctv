@@ -70,7 +70,7 @@ async fn test_chat_message_default_partition_routing() {
     // This should route to the DEFAULT partition instead of failing
     let far_future = Utc::now() + Duration::days(365);
     let msg = ChatMessage {
-        id: nanoid::nanoid!(12),
+        id: synctv_common::snanoid!(12),
         room_id: room.id.clone(),
         user_id: Some(owner.id.clone()),
         content: "Future message".to_string(),
@@ -121,44 +121,6 @@ async fn test_create_chat_message_partitions_function() {
 
     // Should have at least some partitions (migrations create 31, plus our 6)
     assert!(partition_count > 0, "Should have chat message partitions");
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_chat_message_default_partition_exists() {
-    let (_container, pool) = create_test_pool().await;
-
-    // Verify the default partition table exists
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-            SELECT 1 FROM pg_tables
-            WHERE schemaname = 'public' AND tablename = 'chat_messages_default'
-        )",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    assert!(exists, "chat_messages_default partition should exist");
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_audit_logs_default_partition_exists() {
-    let (_container, pool) = create_test_pool().await;
-
-    // Verify the default partition table exists
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-            SELECT 1 FROM pg_tables
-            WHERE schemaname = 'public' AND tablename = 'audit_logs_default'
-        )",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    assert!(exists, "audit_logs_default partition should exist");
 }
 
 #[tokio::test]

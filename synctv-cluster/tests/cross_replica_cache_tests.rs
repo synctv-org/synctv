@@ -64,7 +64,7 @@ async fn test_cross_replica_cache_invalidation() {
         &node_b,
         &mut local_rx_a,
         || ClusterEvent::CacheInvalidate {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             targets: vec![
                 CacheTarget::User {
                     user_id: "updated_user".to_string(),
@@ -118,7 +118,7 @@ async fn test_cross_replica_permission_changed() {
         &node_b,
         &mut room_rx,
         || ClusterEvent::PermissionChanged {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             target_user_id: UserId::from_string("target_user".to_string()),
             target_username: "target_user".to_string(),
@@ -213,7 +213,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         &node_b,
         &mut local_rx_a,
         || ClusterEvent::CacheInvalidate {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             targets: vec![CacheTarget::User {
                 user_id: "perm_changed_user".to_string(),
             }],
@@ -321,7 +321,7 @@ async fn test_cluster_permission_cache_consistency() {
         &node_a,
         &mut rx_b,
         || ClusterEvent::CacheInvalidate {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             targets: vec![CacheTarget::User {
                 user_id: user_id.clone(),
             }],
@@ -345,7 +345,7 @@ async fn test_cluster_permission_cache_consistency() {
         &node_b,
         &mut rx_a,
         || ClusterEvent::CacheInvalidate {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             targets: vec![CacheTarget::Room {
                 room_id: room_id.clone(),
             }],
@@ -368,7 +368,7 @@ async fn test_cluster_permission_cache_consistency() {
     let mut invalidation_count = 0;
     for i in 0..10 {
         let event = ClusterEvent::CacheInvalidate {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             targets: vec![CacheTarget::User {
                 user_id: format!("rapid_user_{i}"),
             }],
@@ -559,7 +559,7 @@ async fn test_concurrent_permission_cache_updates() {
     let node_a_handle = tokio::spawn(async move {
         for i in 0..invalidations_per_node {
             let event = ClusterEvent::CacheInvalidate {
-                event_id: nanoid::nanoid!(16),
+                event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::User {
                     user_id: format!("concurrent_user_a_{i}"),
                 }],
@@ -574,7 +574,7 @@ async fn test_concurrent_permission_cache_updates() {
     let node_b_handle = tokio::spawn(async move {
         for i in 0..invalidations_per_node {
             let event = ClusterEvent::CacheInvalidate {
-                event_id: nanoid::nanoid!(16),
+                event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::User {
                     user_id: format!("concurrent_user_b_{i}"),
                 }],
@@ -589,7 +589,7 @@ async fn test_concurrent_permission_cache_updates() {
     let node_c_handle = tokio::spawn(async move {
         for i in 0..invalidations_per_node {
             let event = ClusterEvent::CacheInvalidate {
-                event_id: nanoid::nanoid!(16),
+                event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::User {
                     user_id: format!("concurrent_user_c_{i}"),
                 }],

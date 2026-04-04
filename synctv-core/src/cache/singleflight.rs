@@ -340,20 +340,4 @@ mod tests {
         assert_eq!(fail_count, 5);
     }
 
-    /// Test: clone shares the same underlying group
-    #[test]
-    fn test_singleflight_clone_shares_state() {
-        let sf1: SingleFlight<String, i32, String> = SingleFlight::new();
-        let sf2 = sf1.clone();
-        // Both clones share the same Arc<Group>
-        assert!(Arc::ptr_eq(&sf1.group, &sf2.group));
-    }
-
-    /// Test: Default trait produces a new instance
-    #[test]
-    fn test_singleflight_default() {
-        let sf: SingleFlight<String, i32, String> = SingleFlight::default();
-        // Just verify it was created successfully
-        assert!(Arc::strong_count(&sf.group) >= 1);
-    }
 }

@@ -34,7 +34,7 @@ async fn test_cross_replica_kick_user() {
         &node_b,
         &mut admin_rx_a,
         || ClusterEvent::KickUser {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             user_id: UserId::from_string("victim_user".to_string()),
             reason: "banned_by_admin".to_string(),
             timestamp: Utc::now(),
@@ -91,7 +91,7 @@ async fn test_cross_replica_room_event_propagation() {
         &node_b,
         &mut room_rx,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("sender_user".to_string()),
             username: "sender".to_string(),
@@ -145,7 +145,7 @@ async fn test_cross_replica_kick_publisher() {
         &node_b,
         &mut admin_rx_a,
         || ClusterEvent::KickPublisher {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             media_id: MediaId::from_string("live_stream_1".to_string()),
             reason: "room_deleted".to_string(),
@@ -205,7 +205,7 @@ async fn test_cross_replica_room_deleted() {
         &node_b,
         &mut room_rx,
         || ClusterEvent::RoomDeleted {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             deleted_by: UserId::from_string("admin_user".to_string()),
             timestamp: Utc::now(),
@@ -262,7 +262,7 @@ async fn test_cross_replica_room_settings_changed() {
         &node_b,
         &mut room_rx,
         || ClusterEvent::RoomSettingsChanged {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("room_admin".to_string()),
             username: "room_admin".to_string(),
@@ -319,7 +319,7 @@ async fn test_multiple_rooms_cross_replica() {
         &node_b,
         &mut rx1,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room1.clone(),
             user_id: UserId::from_string("sender_b".to_string()),
             username: "sender_b".to_string(),
@@ -343,7 +343,7 @@ async fn test_multiple_rooms_cross_replica() {
         &node_b,
         &mut rx2,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room2.clone(),
             user_id: UserId::from_string("sender_b".to_string()),
             username: "sender_b".to_string(),

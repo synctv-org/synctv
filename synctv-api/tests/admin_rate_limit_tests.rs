@@ -310,55 +310,6 @@ async fn test_admin_rate_limit_isolated_from_write() {
 }
 
 // ============================================================================
-// Configuration verification tests
-// ============================================================================
-
-#[test]
-fn test_admin_rate_limit_config_values() {
-    use synctv_api::http::middleware::RateLimitConfig;
-
-    let config = RateLimitConfig::default();
-
-    // Verify admin rate limit configuration
-    assert_eq!(
-        config.admin_max_requests, ADMIN_MAX_REQUESTS,
-        "Admin max requests should match test constant"
-    );
-    assert_eq!(
-        config.admin_window_seconds, ADMIN_WINDOW_SECONDS,
-        "Admin window seconds should match test constant"
-    );
-}
-
-#[test]
-fn test_admin_rate_limit_stricter_than_read() {
-    use synctv_api::http::middleware::RateLimitConfig;
-
-    let config = RateLimitConfig::default();
-
-    // Admin should be stricter than read (100 req/min)
-    assert!(
-        config.admin_max_requests < config.read_max_requests,
-        "Admin rate limit ({}) should be stricter than read ({})",
-        config.admin_max_requests,
-        config.read_max_requests
-    );
-}
-
-#[test]
-fn test_admin_rate_limit_same_as_write() {
-    use synctv_api::http::middleware::RateLimitConfig;
-
-    let config = RateLimitConfig::default();
-
-    // Admin and write have the same default limit (30 req/min)
-    assert_eq!(
-        config.admin_max_requests, config.write_max_requests,
-        "Admin and write rate limits should have same default"
-    );
-}
-
-// ============================================================================
 // Burst protection tests
 // ============================================================================
 

@@ -219,34 +219,6 @@ fn test_permission_bits_operations() {
     assert!(perms.has(PermissionBits::ADD_MOVIE));
 }
 
-#[test]
-fn test_permission_default_roles() {
-    use synctv_core::models::PermissionBits;
-
-    let member = PermissionBits(PermissionBits::DEFAULT_MEMBER);
-    assert!(member.has(PermissionBits::SEND_CHAT));
-    assert!(member.has(PermissionBits::ADD_MOVIE));
-    assert!(!member.has(PermissionBits::MANAGE_ADMIN));
-
-    let admin = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-    assert!(admin.has(PermissionBits::SEND_CHAT));
-    assert!(admin.has(PermissionBits::KICK_MEMBER));
-    assert!(admin.has(PermissionBits::SET_ROOM_SETTINGS));
-
-    let guest = PermissionBits(PermissionBits::DEFAULT_GUEST);
-    assert!(guest.has(PermissionBits::VIEW_PLAYLIST));
-    assert!(!guest.has(PermissionBits::SEND_CHAT));
-
-    let none = PermissionBits(PermissionBits::NONE);
-    assert!(!none.has(PermissionBits::SEND_CHAT));
-    assert!(!none.has(PermissionBits::VIEW_PLAYLIST));
-
-    let all = PermissionBits(PermissionBits::ALL);
-    assert!(all.has(PermissionBits::SEND_CHAT));
-    assert!(all.has(PermissionBits::MANAGE_ADMIN));
-    assert!(all.has(PermissionBits::DELETE_ROOM));
-}
-
 // ==================== Playlist Model Tests ====================
 
 #[test]

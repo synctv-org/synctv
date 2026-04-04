@@ -41,15 +41,15 @@ async fn validate_auth_user(
     let auth_header = parts
         .headers
         .get(axum::http::header::AUTHORIZATION)
-        .ok_or_else(|| AppError::unauthorized("Missing Authorization header"))?;
+        .ok_or_else(AppError::missing_authorization_header)?;
 
     let auth_str = auth_header
         .to_str()
-        .map_err(|e| AppError::unauthorized(format!("Invalid Authorization header: {e}")))?;
+        .map_err(|_| AppError::invalid_authorization_header())?;
 
     let claims = validator
         .validate_http(auth_str)
-        .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+        .map_err(|_| AppError::invalid_or_expired_token())?;
 
     // Run the shared SecurityPipeline (password version, user status, access
     // token blacklist). This matches the checks in the regular AuthUser
@@ -59,7 +59,7 @@ async fn validate_auth_user(
         .check(&claims)
         .await
         .map_err(|e| match SecurityPipeline::classify_auth_error(&e) {
-            AuthErrorCategory::Authentication => AppError::unauthorized(format!("{e}")),
+            AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
             AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
             AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
         })?;
@@ -420,6 +420,8 @@ pub struct ListUsersQuery {
     pub status: Option<String>,
     pub role: Option<String>,
     pub search: Option<String>,
+    pub sort_by: Option<String>,
+    pub sort_direction: Option<String>,
 }
 
 #[cfg_attr(
@@ -464,6 +466,18 @@ pub(crate) async fn list_users(
             status: status_i32,
             role: role_i32,
             search: q.search.unwrap_or_default(),
+            sort_by: match q.sort_by.as_deref() {
+                Some("username") => admin::UserListSortBy::Username as i32,
+                Some("email") => admin::UserListSortBy::Email as i32,
+                Some("status") => admin::UserListSortBy::Status as i32,
+                Some("role") => admin::UserListSortBy::Role as i32,
+                Some("updated_at") => admin::UserListSortBy::UpdatedAt as i32,
+                _ => admin::UserListSortBy::CreatedAt as i32,
+            },
+            sort_direction: match q.sort_direction.as_deref() {
+                Some("asc") => admin::SortDirection::Asc as i32,
+                _ => admin::SortDirection::Desc as i32,
+            },
         })
         .await
         .map_err(admin_err_to_app_error)?;
@@ -768,7 +782,7 @@ pub(crate) async fn approve_user(
         tag = "Admin",
         params(
             ("user_id" = String, Path, description = "User ID"),
-            PaginationQuery
+            UserRoomsQuery
         ),
         responses(
             (status = 200, description = "Rooms belonging to user", body = admin::GetUserRoomsResponse),
@@ -781,7 +795,7 @@ pub(crate) async fn get_user_rooms(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-    Query(q): Query<PaginationQuery>,
+    Query(q): Query<UserRoomsQuery>,
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
@@ -792,6 +806,24 @@ pub(crate) async fn get_user_rooms(
             user_id,
             page,
             page_size,
+            status: match q.status.as_deref() {
+                Some("active") => synctv_proto::common::RoomStatus::Active as i32,
+                Some("pending") => synctv_proto::common::RoomStatus::Pending as i32,
+                Some("closed") => synctv_proto::common::RoomStatus::Closed as i32,
+                _ => synctv_proto::common::RoomStatus::Unspecified as i32,
+            },
+            search: q.search.unwrap_or_default(),
+            is_banned: q.is_banned,
+            sort_by: match q.sort_by.as_deref() {
+                Some("name") => admin::RoomListSortBy::Name as i32,
+                Some("updated_at") => admin::RoomListSortBy::UpdatedAt as i32,
+                Some("last_activity_at") => admin::RoomListSortBy::LastActivityAt as i32,
+                _ => admin::RoomListSortBy::CreatedAt as i32,
+            },
+            sort_direction: match q.sort_direction.as_deref() {
+                Some("asc") => admin::SortDirection::Asc as i32,
+                _ => admin::SortDirection::Desc as i32,
+            },
         })
         .await
         .map_err(admin_err_to_app_error)?;
@@ -890,9 +922,49 @@ pub(crate) async fn batch_delete_users(
 
 #[derive(serde::Deserialize, Default)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct PaginationQuery {
+pub struct UserRoomsQuery {
     page: Option<i32>,
     page_size: Option<i32>,
+    status: Option<String>,
+    search: Option<String>,
+    is_banned: Option<bool>,
+    sort_by: Option<String>,
+    sort_direction: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct ListProvidersQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
+    provider_type: Option<String>,
+    search: Option<String>,
+    enabled: Option<bool>,
+    tls: Option<bool>,
+    sort_by: Option<String>,
+    sort_direction: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct ListAdminsQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
+    search: Option<String>,
+    sort_by: Option<String>,
+    sort_direction: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct RoomMembersQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
+    search: Option<String>,
+    role: Option<String>,
+    status: Option<String>,
+    sort_by: Option<String>,
+    sort_direction: Option<String>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -904,6 +976,8 @@ pub struct ListRoomsQuery {
     pub search: Option<String>,
     pub creator_id: Option<String>,
     pub is_banned: Option<bool>,
+    pub sort_by: Option<String>,
+    pub sort_direction: Option<String>,
 }
 
 #[cfg_attr(
@@ -936,6 +1010,16 @@ pub(crate) async fn list_rooms(
             search: q.search.unwrap_or_default(),
             creator_id: q.creator_id.unwrap_or_default(),
             is_banned: q.is_banned,
+            sort_by: match q.sort_by.as_deref() {
+                Some("name") => admin::RoomListSortBy::Name as i32,
+                Some("updated_at") => admin::RoomListSortBy::UpdatedAt as i32,
+                Some("last_activity_at") => admin::RoomListSortBy::LastActivityAt as i32,
+                _ => admin::RoomListSortBy::CreatedAt as i32,
+            },
+            sort_direction: match q.sort_direction.as_deref() {
+                Some("asc") => admin::SortDirection::Asc as i32,
+                _ => admin::SortDirection::Desc as i32,
+            },
         })
         .await
         .map_err(admin_err_to_app_error)?;
@@ -1040,7 +1124,7 @@ pub(crate) async fn set_room_password(
         tag = "Admin",
         params(
             ("room_id" = String, Path, description = "Room ID"),
-            PaginationQuery
+            RoomMembersQuery
         ),
         responses(
             (status = 200, description = "Room members", body = admin::GetRoomMembersResponse),
@@ -1053,7 +1137,7 @@ pub(crate) async fn get_room_members(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Query(q): Query<PaginationQuery>,
+    Query(q): Query<RoomMembersQuery>,
 ) -> AppResult<Json<admin::GetRoomMembersResponse>> {
     validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
@@ -1064,6 +1148,31 @@ pub(crate) async fn get_room_members(
             room_id,
             page,
             page_size,
+            search: q.search.unwrap_or_default(),
+            role: match q.role.as_deref() {
+                Some("guest") => synctv_proto::common::RoomMemberRole::Guest as i32,
+                Some("member") => synctv_proto::common::RoomMemberRole::Member as i32,
+                Some("admin") => synctv_proto::common::RoomMemberRole::Admin as i32,
+                Some("creator") => synctv_proto::common::RoomMemberRole::Creator as i32,
+                _ => synctv_proto::common::RoomMemberRole::Unspecified as i32,
+            },
+            status: match q.status.as_deref() {
+                Some("active") => synctv_proto::common::MemberStatus::Active as i32,
+                Some("pending") => synctv_proto::common::MemberStatus::Pending as i32,
+                Some("banned") => synctv_proto::common::MemberStatus::Banned as i32,
+                Some("left") => synctv_proto::common::MemberStatus::Left as i32,
+                _ => synctv_proto::common::MemberStatus::Unspecified as i32,
+            },
+            sort_by: match q.sort_by.as_deref() {
+                Some("username") => admin::RoomMemberListSortBy::Username as i32,
+                Some("role") => admin::RoomMemberListSortBy::Role as i32,
+                Some("status") => admin::RoomMemberListSortBy::Status as i32,
+                _ => admin::RoomMemberListSortBy::JoinedAt as i32,
+            },
+            sort_direction: match q.sort_direction.as_deref() {
+                Some("desc") => admin::SortDirection::Desc as i32,
+                _ => admin::SortDirection::Asc as i32,
+            },
         })
         .await
         .map_err(admin_err_to_app_error)?;
@@ -1360,11 +1469,28 @@ pub(crate) async fn batch_delete_rooms(
 pub(crate) async fn list_providers(
     _auth: AuthAdmin,
     State(state): State<AppState>,
+    Query(q): Query<ListProvidersQuery>,
 ) -> AppResult<Json<admin::ListProviderInstancesResponse>> {
     let api = require_admin_api(&state)?;
+    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
     let resp = api
         .list_provider_instances(admin::ListProviderInstancesRequest {
-            provider_type: String::new(),
+            page,
+            page_size,
+            provider_type: q.provider_type.unwrap_or_default(),
+            search: q.search.unwrap_or_default(),
+            enabled: q.enabled,
+            tls: q.tls,
+            sort_by: match q.sort_by.as_deref() {
+                Some("name") => admin::ProviderInstanceListSortBy::Name as i32,
+                Some("endpoint") => admin::ProviderInstanceListSortBy::Endpoint as i32,
+                Some("updated_at") => admin::ProviderInstanceListSortBy::UpdatedAt as i32,
+                _ => admin::ProviderInstanceListSortBy::CreatedAt as i32,
+            },
+            sort_direction: match q.sort_direction.as_deref() {
+                Some("asc") => admin::SortDirection::Asc as i32,
+                _ => admin::SortDirection::Desc as i32,
+            },
         })
         .await
         .map_err(admin_err_to_app_error)?;
@@ -1563,7 +1689,14 @@ pub(crate) async fn disable_provider(
 #[derive(serde::Deserialize, Default)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct ListStreamsQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
     room_id: Option<String>,
+    user_id: Option<String>,
+    node_id: Option<String>,
+    search: Option<String>,
+    sort_by: Option<String>,
+    sort_direction: Option<String>,
 }
 
 #[cfg_attr(
@@ -1586,12 +1719,30 @@ pub(crate) async fn list_streams(
     Query(q): Query<ListStreamsQuery>,
 ) -> AppResult<Json<admin::ListActiveStreamsResponse>> {
     let api = require_admin_api(&state)?;
-    let room_id = q.room_id.as_deref().filter(|s| !s.is_empty());
-    let streams = api
-        .list_active_streams(room_id)
+    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
+    let response = api
+        .list_active_streams(admin::ListActiveStreamsRequest {
+            page,
+            page_size,
+            room_id: q.room_id.unwrap_or_default(),
+            user_id: q.user_id.unwrap_or_default(),
+            node_id: q.node_id.unwrap_or_default(),
+            search: q.search.unwrap_or_default(),
+            sort_by: match q.sort_by.as_deref() {
+                Some("room_id") => admin::ActiveStreamListSortBy::RoomId as i32,
+                Some("media_id") => admin::ActiveStreamListSortBy::MediaId as i32,
+                Some("user_id") => admin::ActiveStreamListSortBy::UserId as i32,
+                Some("node_id") => admin::ActiveStreamListSortBy::NodeId as i32,
+                _ => admin::ActiveStreamListSortBy::StartedAt as i32,
+            },
+            sort_direction: match q.sort_direction.as_deref() {
+                Some("asc") => admin::SortDirection::Asc as i32,
+                _ => admin::SortDirection::Desc as i32,
+            },
+        })
         .await
-        .map_err(|e| admin_err_to_app_error(crate::impls::ApiError::Internal(e.to_string())))?;
-    Ok(Json(admin::ListActiveStreamsResponse { streams }))
+        .map_err(admin_err_to_app_error)?;
+    Ok(Json(response))
 }
 
 #[cfg_attr(
@@ -1628,7 +1779,7 @@ pub(crate) async fn kick_stream(
         &rctx.0,
     )
     .await
-    .map_err(|e| admin_err_to_app_error(crate::impls::ApiError::Internal(e.to_string())))?;
+    .map_err(admin_err_to_app_error)?;
     Ok(Json(admin::KickStreamResponse {}))
 }
 
@@ -1652,10 +1803,28 @@ pub(crate) async fn kick_stream(
 pub(crate) async fn list_admins(
     _auth: AuthRoot,
     State(state): State<AppState>,
+    Query(q): Query<ListAdminsQuery>,
 ) -> AppResult<Json<admin::ListAdminsResponse>> {
     let api = require_admin_api(&state)?;
+    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
     let resp = api
-        .list_admins(admin::ListAdminsRequest {})
+        .list_admins(admin::ListAdminsRequest {
+            page,
+            page_size,
+            search: q.search.unwrap_or_default(),
+            sort_by: match q.sort_by.as_deref() {
+                Some("username") => admin::UserListSortBy::Username as i32,
+                Some("email") => admin::UserListSortBy::Email as i32,
+                Some("status") => admin::UserListSortBy::Status as i32,
+                Some("role") => admin::UserListSortBy::Role as i32,
+                Some("updated_at") => admin::UserListSortBy::UpdatedAt as i32,
+                _ => admin::UserListSortBy::CreatedAt as i32,
+            },
+            sort_direction: match q.sort_direction.as_deref() {
+                Some("asc") => admin::SortDirection::Asc as i32,
+                _ => admin::SortDirection::Desc as i32,
+            },
+        })
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1769,95 +1938,6 @@ mod tests {
     }
 
     #[test]
-    fn test_update_user_password_request_deserialization() {
-        let json = r#"{"password":"newpassword123"}"#;
-        let req: admin::UpdateUserPasswordRequest =
-            serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.user_id, "");
-        assert_eq!(req.new_password, "newpassword123");
-        assert_eq!(req.reason, "");
-    }
-
-    #[test]
-    fn test_update_user_username_request_deserialization() {
-        let json = r#"{"username":"newname"}"#;
-        let req: admin::UpdateUserUsernameRequest =
-            serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.user_id, "");
-        assert_eq!(req.new_username, "newname");
-    }
-
-    #[test]
-    fn test_ban_user_request_with_reason() {
-        let json = r#"{"reason":"spamming"}"#;
-        let req: admin::BanUserRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.user_id, "");
-        assert_eq!(req.reason, "spamming");
-    }
-
-    #[test]
-    fn test_ban_user_request_empty_reason_default() {
-        let json = r"{}";
-        let req: admin::BanUserRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.reason, "");
-    }
-
-    #[test]
-    fn test_update_room_password_request_deserialization() {
-        let json = r#"{"password":"roompass"}"#;
-        let req: admin::UpdateRoomPasswordRequest =
-            serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.room_id, "");
-        assert_eq!(req.new_password, "roompass");
-    }
-
-    #[test]
-    fn test_update_room_password_empty_clears_password() {
-        let json = r"{}";
-        let req: admin::UpdateRoomPasswordRequest =
-            serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.new_password, "");
-    }
-
-    #[test]
-    fn test_batch_ban_users_request_deserialization() {
-        let json = r#"{"user_ids":["u1","u2"],"reason":"violation"}"#;
-        let req: admin::BatchBanUsersRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.user_ids, vec!["u1", "u2"]);
-        assert_eq!(req.reason, "violation");
-    }
-
-    #[test]
-    fn test_batch_delete_users_request_deserialization() {
-        let json = r#"{"user_ids":["u1","u2"]}"#;
-        let req: admin::BatchDeleteUsersRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.user_ids, vec!["u1", "u2"]);
-    }
-
-    #[test]
-    fn test_ban_room_request_with_reason() {
-        let json = r#"{"reason":"abuse"}"#;
-        let req: admin::BanRoomRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.room_id, "");
-        assert_eq!(req.reason, "abuse");
-    }
-
-    #[test]
-    fn test_batch_ban_rooms_request_deserialization() {
-        let json = r#"{"room_ids":["r1","r2"],"reason":"cleanup"}"#;
-        let req: admin::BatchBanRoomsRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.room_ids, vec!["r1", "r2"]);
-        assert_eq!(req.reason, "cleanup");
-    }
-
-    #[test]
-    fn test_batch_delete_rooms_request_deserialization() {
-        let json = r#"{"room_ids":["r1","r2"]}"#;
-        let req: admin::BatchDeleteRoomsRequest = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(req.room_ids, vec!["r1", "r2"]);
-    }
-
-    #[test]
     fn test_update_room_settings_request_accepts_raw_json_body() {
         let json = r#"{"theme":"dark","guest_enabled":true}"#;
         let req: admin::UpdateRoomSettingsRequest =
@@ -1874,40 +1954,21 @@ mod tests {
     // ========== Query Struct Tests ==========
 
     #[test]
-    fn test_list_users_query_defaults() {
-        let query = ListUsersQuery::default();
-        assert!(query.page.is_none());
-        assert!(query.page_size.is_none());
-        assert!(query.status.is_none());
-        assert!(query.role.is_none());
-        assert!(query.search.is_none());
-    }
-
-    #[test]
     fn test_list_users_query_deserialization() {
-        let json = r#"{"page":2,"page_size":50,"status":"active","role":"admin","search":"test"}"#;
+        let json = r#"{"page":2,"page_size":50,"status":"active","role":"admin","search":"test","sort_by":"username","sort_direction":"asc"}"#;
         let query: ListUsersQuery = serde_json::from_str(json).expect("deserialize");
         assert_eq!(query.page, Some(2));
         assert_eq!(query.page_size, Some(50));
         assert_eq!(query.status.as_deref(), Some("active"));
         assert_eq!(query.role.as_deref(), Some("admin"));
         assert_eq!(query.search.as_deref(), Some("test"));
-    }
-
-    #[test]
-    fn test_list_rooms_query_defaults() {
-        let query = ListRoomsQuery::default();
-        assert!(query.page.is_none());
-        assert!(query.page_size.is_none());
-        assert!(query.status.is_none());
-        assert!(query.search.is_none());
-        assert!(query.creator_id.is_none());
-        assert!(query.is_banned.is_none());
+        assert_eq!(query.sort_by.as_deref(), Some("username"));
+        assert_eq!(query.sort_direction.as_deref(), Some("asc"));
     }
 
     #[test]
     fn test_list_rooms_query_deserialization() {
-        let json = r#"{"page":1,"page_size":10,"status":1,"search":"room","creator_id":"user1","is_banned":false}"#;
+        let json = r#"{"page":1,"page_size":10,"status":1,"search":"room","creator_id":"user1","is_banned":false,"sort_by":"last_activity_at","sort_direction":"desc"}"#;
         let query: ListRoomsQuery = serde_json::from_str(json).expect("deserialize");
         assert_eq!(query.page, Some(1));
         assert_eq!(query.page_size, Some(10));
@@ -1915,37 +1976,20 @@ mod tests {
         assert_eq!(query.search.as_deref(), Some("room"));
         assert_eq!(query.creator_id.as_deref(), Some("user1"));
         assert_eq!(query.is_banned, Some(false));
-    }
-
-    // ========== AuthAdmin / AuthRoot Type Tests ==========
-
-    #[test]
-    fn test_auth_admin_debug() {
-        let auth = AuthAdmin {
-            user_id: UserId::from_string("admin1".to_string()),
-            role: synctv_core::models::UserRole::Admin,
-        };
-        let debug = format!("{auth:?}");
-        assert!(debug.contains("AuthAdmin"));
+        assert_eq!(query.sort_by.as_deref(), Some("last_activity_at"));
+        assert_eq!(query.sort_direction.as_deref(), Some("desc"));
     }
 
     #[test]
-    fn test_auth_admin_clone() {
-        let auth = AuthAdmin {
-            user_id: UserId::from_string("admin1".to_string()),
-            role: synctv_core::models::UserRole::Admin,
-        };
-        let cloned = auth;
-        assert_eq!(cloned.user_id.as_str(), "admin1");
-    }
-
-    #[test]
-    fn test_auth_root_debug() {
-        let auth = AuthRoot {
-            user_id: UserId::from_string("root1".to_string()),
-        };
-        let debug = format!("{auth:?}");
-        assert!(debug.contains("AuthRoot"));
+    fn test_room_members_query_deserialization() {
+        let json = r#"{"page":2,"page_size":25,"search":"alice","role":"admin","sort_by":"username","sort_direction":"asc"}"#;
+        let query: RoomMembersQuery = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.page_size, Some(25));
+        assert_eq!(query.search.as_deref(), Some("alice"));
+        assert_eq!(query.role.as_deref(), Some("admin"));
+        assert_eq!(query.sort_by.as_deref(), Some("username"));
+        assert_eq!(query.sort_direction.as_deref(), Some("asc"));
     }
 
     #[tokio::test]

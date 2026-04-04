@@ -5,7 +5,7 @@ use super::id::{RoomId, UserId};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ChatMessage {
-    pub id: String, // nanoid(12)
+    pub id: String, // base62 ID (12 chars)
     pub room_id: RoomId,
     /// The user who sent this message.
     ///

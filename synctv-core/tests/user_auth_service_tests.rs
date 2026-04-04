@@ -247,8 +247,8 @@ async fn test_refresh_token_happy_path() {
     // Register a user
     let (user, Some(access_token), Some(refresh_token)) = service
         .register(
-            format!("refresh_user_{}", nanoid::nanoid!(6)),
-            Some(format!("refresh_{}@test.com", nanoid::nanoid!(6))),
+            format!("refresh_user_{}", synctv_common::snanoid!(6)),
+            Some(format!("refresh_{}@test.com", synctv_common::snanoid!(6))),
             "StrongPass1".to_string(),
             None,
         )
@@ -292,8 +292,8 @@ async fn test_refresh_token_old_jti_blacklisted_before_new_issued() {
     // Register and get tokens
     let (_user, _access, Some(refresh_token)) = service
         .register(
-            format!("blacklist_user_{}", nanoid::nanoid!(6)),
-            Some(format!("blacklist_{}@test.com", nanoid::nanoid!(6))),
+            format!("blacklist_user_{}", synctv_common::snanoid!(6)),
+            Some(format!("blacklist_{}@test.com", synctv_common::snanoid!(6))),
             "StrongPass1".to_string(),
             None,
         )
@@ -337,8 +337,11 @@ async fn test_refresh_token_fails_closed_when_family_revocation_read_fails() {
 
     let (_user, _access, Some(refresh_token)) = service
         .register(
-            format!("family_read_fail_{}", nanoid::nanoid!(6)),
-            Some(format!("family_read_fail_{}@test.com", nanoid::nanoid!(6))),
+            format!("family_read_fail_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "family_read_fail_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -366,8 +369,8 @@ async fn test_refresh_token_replay_same_jti_triggers_family_revocation() {
     // Register and get tokens
     let (_user, _access, Some(refresh_token)) = service
         .register(
-            format!("replay_user_{}", nanoid::nanoid!(6)),
-            Some(format!("replay_{}@test.com", nanoid::nanoid!(6))),
+            format!("replay_user_{}", synctv_common::snanoid!(6)),
+            Some(format!("replay_{}@test.com", synctv_common::snanoid!(6))),
             "StrongPass1".to_string(),
             None,
         )
@@ -412,8 +415,8 @@ async fn test_refresh_token_password_version_mismatch_rejected() {
     // Register a user
     let (_user, _access, Some(refresh_token)) = service
         .register(
-            format!("pv_user_{}", nanoid::nanoid!(6)),
-            Some(format!("pv_{}@test.com", nanoid::nanoid!(6))),
+            format!("pv_user_{}", synctv_common::snanoid!(6)),
+            Some(format!("pv_{}@test.com", synctv_common::snanoid!(6))),
             "StrongPass1".to_string(),
             None,
         )
@@ -452,8 +455,11 @@ async fn test_refresh_token_banned_user_rejected() {
     // Register a user and get refresh token
     let (user, _access, Some(refresh_token)) = service
         .register(
-            format!("banned_refresh_{}", nanoid::nanoid!(6)),
-            Some(format!("banned_refresh_{}@test.com", nanoid::nanoid!(6))),
+            format!("banned_refresh_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "banned_refresh_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -485,8 +491,11 @@ async fn test_refresh_token_deleted_user_rejected() {
     // Register a user
     let (user, _access, Some(refresh_token)) = service
         .register(
-            format!("deleted_refresh_{}", nanoid::nanoid!(6)),
-            Some(format!("deleted_refresh_{}@test.com", nanoid::nanoid!(6))),
+            format!("deleted_refresh_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "deleted_refresh_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -522,8 +531,11 @@ async fn test_refresh_token_family_revocation_timestamp_blocks_older_tokens() {
     // Register and get tokens
     let (_user, _access, Some(refresh_token_1)) = service
         .register(
-            format!("family_rev_{}", nanoid::nanoid!(6)),
-            Some(format!("family_rev_{}@test.com", nanoid::nanoid!(6))),
+            format!("family_rev_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "family_rev_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -569,10 +581,10 @@ async fn test_refresh_token_fails_closed_when_family_revocation_lookup_errors() 
 
     let (_user, _access, Some(refresh_token)) = service
         .register(
-            format!("family_lookup_fail_{}", nanoid::nanoid!(6)),
+            format!("family_lookup_fail_{}", synctv_common::snanoid!(6)),
             Some(format!(
                 "family_lookup_fail_{}@test.com",
-                nanoid::nanoid!(6)
+                synctv_common::snanoid!(6)
             )),
             "StrongPass1".to_string(),
             None,
@@ -602,11 +614,14 @@ async fn test_login_banned_user_rejected() {
     let service = create_user_service(pool.clone());
 
     // Register
-    let username = format!("banned_login_{}", nanoid::nanoid!(6));
+    let username = format!("banned_login_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
         .register(
             username.clone(),
-            Some(format!("banned_login_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "banned_login_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -634,11 +649,14 @@ async fn test_login_pending_user_rejected() {
     let service = create_user_service(pool.clone());
 
     // Register
-    let username = format!("pending_login_{}", nanoid::nanoid!(6));
+    let username = format!("pending_login_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
         .register(
             username.clone(),
-            Some(format!("pending_login_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "pending_login_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -666,11 +684,14 @@ async fn test_login_soft_deleted_user_rejected() {
     let service = create_user_service(pool.clone());
 
     // Register
-    let username = format!("deleted_login_{}", nanoid::nanoid!(6));
+    let username = format!("deleted_login_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
         .register(
             username.clone(),
-            Some(format!("deleted_login_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "deleted_login_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -700,8 +721,8 @@ async fn test_login_unverified_email_blocked_when_verification_required() {
     let (_container, pool) = create_test_pool().await;
     let mut service = create_user_service(pool.clone());
     // First register without email verification to get the user created
-    let username = format!("unverified_{}", nanoid::nanoid!(6));
-    let email = format!("unverified_{}@test.com", nanoid::nanoid!(6));
+    let username = format!("unverified_{}", synctv_common::snanoid!(6));
+    let email = format!("unverified_{}@test.com", synctv_common::snanoid!(6));
     let (user, _, _) = service
         .register(
             username.clone(),
@@ -739,11 +760,11 @@ async fn test_login_unverified_email_allowed_when_not_required() {
     let service = create_user_service(pool.clone());
 
     // Register (no email verification required)
-    let username = format!("norev_{}", nanoid::nanoid!(6));
+    let username = format!("norev_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
         .register(
             username.clone(),
-            Some(format!("norev_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!("norev_{}@test.com", synctv_common::snanoid!(6))),
             "StrongPass1".to_string(),
             None,
         )
@@ -797,7 +818,7 @@ async fn test_login_email_verification_no_account_enumeration() {
     service.set_email_verification_required(true);
 
     // Create user WITH email (unverified but Active)
-    let email_user = format!("email_user_{}", nanoid::nanoid!(6));
+    let email_user = format!("email_user_{}", synctv_common::snanoid!(6));
     let (user_with_email, _, _) = service
         .register(
             email_user.clone(),
@@ -866,7 +887,7 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
     // email_verification_required is false by default
 
     // Create user WITH email (unverified)
-    let email_user = format!("email_allowed_{}", nanoid::nanoid!(6));
+    let email_user = format!("email_allowed_{}", synctv_common::snanoid!(6));
     let (_user_with_email, _, _) = service
         .register(
             email_user.clone(),
@@ -930,8 +951,8 @@ async fn test_delete_user_already_deleted_guard() {
     // Register
     let (user, _, _) = service
         .register(
-            format!("del_guard_{}", nanoid::nanoid!(6)),
-            Some(format!("del_guard_{}@test.com", nanoid::nanoid!(6))),
+            format!("del_guard_{}", synctv_common::snanoid!(6)),
+            Some(format!("del_guard_{}@test.com", synctv_common::snanoid!(6))),
             "StrongPass1".to_string(),
             None,
         )
@@ -967,8 +988,8 @@ async fn test_delete_user_transaction_atomicity_with_oauth2() {
     // Register
     let (user, _, _) = service
         .register(
-            format!("del_oauth_{}", nanoid::nanoid!(6)),
-            Some(format!("del_oauth_{}@test.com", nanoid::nanoid!(6))),
+            format!("del_oauth_{}", synctv_common::snanoid!(6)),
+            Some(format!("del_oauth_{}@test.com", synctv_common::snanoid!(6))),
             "StrongPass1".to_string(),
             None,
         )
@@ -1007,8 +1028,8 @@ async fn test_change_password_wrong_old_password_rejected() {
     // Register
     let (user, _, _) = service
         .register(
-            format!("chpw_user_{}", nanoid::nanoid!(6)),
-            Some(format!("chpw_{}@test.com", nanoid::nanoid!(6))),
+            format!("chpw_user_{}", synctv_common::snanoid!(6)),
+            Some(format!("chpw_{}@test.com", synctv_common::snanoid!(6))),
             "StrongPass1".to_string(),
             None,
         )
@@ -1035,8 +1056,8 @@ async fn test_change_password_bumps_password_version() {
     // Register
     let (user, _, _) = service
         .register(
-            format!("pvbump_{}", nanoid::nanoid!(6)),
-            Some(format!("pvbump_{}@test.com", nanoid::nanoid!(6))),
+            format!("pvbump_{}", synctv_common::snanoid!(6)),
+            Some(format!("pvbump_{}@test.com", synctv_common::snanoid!(6))),
             "StrongPass1".to_string(),
             None,
         )
@@ -1067,8 +1088,8 @@ async fn test_set_password_bumps_password_version() {
     // Register
     let (user, _, _) = service
         .register(
-            format!("setpw_{}", nanoid::nanoid!(6)),
-            Some(format!("setpw_{}@test.com", nanoid::nanoid!(6))),
+            format!("setpw_{}", synctv_common::snanoid!(6)),
+            Some(format!("setpw_{}@test.com", synctv_common::snanoid!(6))),
             "StrongPass1".to_string(),
             None,
         )
@@ -1099,11 +1120,14 @@ async fn test_set_password_succeeds_even_when_family_revocation_store_fails() {
     });
     let service = create_user_service_with_blacklist(pool.clone(), token_blacklist);
 
-    let username = format!("setpw_fail_{}", nanoid::nanoid!(6));
+    let username = format!("setpw_fail_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
         .register(
             username.clone(),
-            Some(format!("setpw_fail_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "setpw_fail_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1139,12 +1163,15 @@ async fn test_update_profile_updates_username_and_password_atomically() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
 
-    let old_username = format!("profile_atomic_{}", nanoid::nanoid!(6));
-    let new_username = format!("profile_atomic_new_{}", nanoid::nanoid!(6));
+    let old_username = format!("profile_atomic_{}", synctv_common::snanoid!(6));
+    let new_username = format!("profile_atomic_new_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
         .register(
             old_username.clone(),
-            Some(format!("profile_atomic_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "profile_atomic_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1191,12 +1218,15 @@ async fn test_update_profile_rolls_back_username_when_password_verification_fail
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
 
-    let old_username = format!("profile_rollback_{}", nanoid::nanoid!(6));
-    let new_username = format!("profile_rollback_new_{}", nanoid::nanoid!(6));
+    let old_username = format!("profile_rollback_{}", synctv_common::snanoid!(6));
+    let new_username = format!("profile_rollback_new_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
         .register(
             old_username.clone(),
-            Some(format!("profile_rollback_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "profile_rollback_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1252,12 +1282,15 @@ async fn test_update_profile_commits_when_family_revocation_store_fails() {
     });
     let service = create_user_service_with_blacklist(pool.clone(), token_blacklist);
 
-    let old_username = format!("profile_revoke_{}", nanoid::nanoid!(6));
-    let new_username = format!("profile_revoke_new_{}", nanoid::nanoid!(6));
+    let old_username = format!("profile_revoke_{}", synctv_common::snanoid!(6));
+    let new_username = format!("profile_revoke_new_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
         .register(
             old_username.clone(),
-            Some(format!("profile_revoke_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "profile_revoke_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1307,13 +1340,13 @@ async fn test_register_succeeds_when_username_cache_write_fails() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service_with_failing_username_cache(pool.clone());
 
-    let username = format!("cache_fail_register_{}", nanoid::nanoid!(6));
+    let username = format!("cache_fail_register_{}", synctv_common::snanoid!(6));
     let (user, access_token, refresh_token) = service
         .register(
             username.clone(),
             Some(format!(
                 "cache_fail_register_{}@test.com",
-                nanoid::nanoid!(6)
+                synctv_common::snanoid!(6)
             )),
             "StrongPass1".to_string(),
             None,
@@ -1340,10 +1373,10 @@ async fn test_finalize_registration_succeeds_when_username_cache_write_fails() {
 
     let user = service
         .register_with_executor(
-            format!("cache_fail_finalize_{}", nanoid::nanoid!(6)),
+            format!("cache_fail_finalize_{}", synctv_common::snanoid!(6)),
             Some(format!(
                 "cache_fail_finalize_{}@test.com",
-                nanoid::nanoid!(6)
+                synctv_common::snanoid!(6)
             )),
             "StrongPass1".to_string(),
             synctv_core::models::SignupMethod::Email,
@@ -1370,8 +1403,11 @@ async fn test_create_user_with_role_succeeds_when_username_cache_write_fails() {
 
     let created = service
         .create_user_with_role(
-            format!("cache_fail_admin_{}", nanoid::nanoid!(6)),
-            Some(format!("cache_fail_admin_{}@test.com", nanoid::nanoid!(6))),
+            format!("cache_fail_admin_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "cache_fail_admin_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             Some(synctv_core::models::UserRole::Admin),
         )
@@ -1394,8 +1430,11 @@ async fn test_get_username_falls_back_to_database_when_cache_read_fails() {
 
     let (user, _, _) = service
         .register(
-            format!("cache_fail_lookup_{}", nanoid::nanoid!(6)),
-            Some(format!("cache_fail_lookup_{}@test.com", nanoid::nanoid!(6))),
+            format!("cache_fail_lookup_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "cache_fail_lookup_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1561,9 +1600,12 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
     let provider = OAuth2Provider::Google;
     let user_info = synctv_core::service::OAuth2UserInfo {
         provider: provider.clone(),
-        provider_user_id: format!("oauth_concurrent_{}", nanoid::nanoid!(8)),
-        username: format!("oauth_concurrent_user_{}", nanoid::nanoid!(6)),
-        email: Some(format!("oauth_concurrent_{}@test.com", nanoid::nanoid!(6))),
+        provider_user_id: format!("oauth_concurrent_{}", synctv_common::snanoid!(8)),
+        username: format!("oauth_concurrent_user_{}", synctv_common::snanoid!(6)),
+        email: Some(format!(
+            "oauth_concurrent_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
         avatar: None,
         email_verified: true,
     };
@@ -1648,9 +1690,12 @@ async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collisio
     let provider = OAuth2Provider::Google;
     let user_info = synctv_core::service::OAuth2UserInfo {
         provider: provider.clone(),
-        provider_user_id: format!("oauth_collision_{}", nanoid::nanoid!(8)),
+        provider_user_id: format!("oauth_collision_{}", synctv_common::snanoid!(8)),
         username: "oauth_collision_user".to_string(),
-        email: Some(format!("oauth_collision_{}@test.com", nanoid::nanoid!(6))),
+        email: Some(format!(
+            "oauth_collision_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
         avatar: None,
         email_verified: true,
     };
@@ -1694,8 +1739,11 @@ async fn test_refresh_token_email_verification_recheck() {
     let service_no_verify = create_user_service(pool.clone());
     let (user, _access, Some(refresh_token)) = service_no_verify
         .register(
-            format!("email_recheck_{}", nanoid::nanoid!(6)),
-            Some(format!("email_recheck_{}@test.com", nanoid::nanoid!(6))),
+            format!("email_recheck_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "email_recheck_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1746,10 +1794,10 @@ async fn test_refresh_token_rate_limiting_per_user() {
     // Register and get initial tokens
     let (_user, _access, Some(refresh_token)) = service
         .register(
-            format!("rate_limit_refresh_{}", nanoid::nanoid!(6)),
+            format!("rate_limit_refresh_{}", synctv_common::snanoid!(6)),
             Some(format!(
                 "rate_limit_refresh_{}@test.com",
-                nanoid::nanoid!(6)
+                synctv_common::snanoid!(6)
             )),
             "StrongPass1".to_string(),
             None,
@@ -1835,8 +1883,11 @@ async fn test_refresh_token_concurrent_refresh_race_condition() {
     // Register and get tokens
     let (_user, _access, Some(refresh_token)) = service
         .register(
-            format!("concurrent_race_{}", nanoid::nanoid!(6)),
-            Some(format!("concurrent_race_{}@test.com", nanoid::nanoid!(6))),
+            format!("concurrent_race_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "concurrent_race_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1910,8 +1961,11 @@ async fn test_refresh_token_concurrent_refresh_family_revocation() {
     // Register and get tokens
     let (_user, _access, Some(refresh_token)) = service
         .register(
-            format!("family_rev_race_{}", nanoid::nanoid!(6)),
-            Some(format!("family_rev_race_{}@test.com", nanoid::nanoid!(6))),
+            format!("family_rev_race_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "family_rev_race_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1964,10 +2018,10 @@ async fn test_refresh_token_rate_limit_recovers() {
 
     let (_user, _access, Some(refresh_token)) = service
         .register(
-            format!("rate_limit_recover_{}", nanoid::nanoid!(6)),
+            format!("rate_limit_recover_{}", synctv_common::snanoid!(6)),
             Some(format!(
                 "rate_limit_recover_{}@test.com",
-                nanoid::nanoid!(6)
+                synctv_common::snanoid!(6)
             )),
             "StrongPass1".to_string(),
             None,

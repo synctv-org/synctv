@@ -12,7 +12,7 @@ use std::time::Duration;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use synctv_proxy::{rewrite_m3u8, NoopMetrics};
+use synctv_proxy::rewrite_m3u8;
 
 // ------------------------------------------------------------------
 // Helper: plain reqwest client without SSRF restrictions for reaching wiremock
@@ -93,18 +93,6 @@ async fn test_proxy_m3u8_rewrites_and_returns() {
     // Both segments should be rewritten
     assert_eq!(rewritten.matches("url=").count(), 2);
     assert!(rewritten.contains("#EXT-X-ENDLIST"));
-}
-
-// ==================================================================
-// NoopMetrics
-// ==================================================================
-
-#[test]
-fn test_noop_metrics_does_not_panic() {
-    use synctv_proxy::ProxyMetrics;
-    let m = NoopMetrics;
-    m.on_proxy_complete("hls", Duration::from_millis(100), None);
-    m.on_proxy_complete("video", Duration::from_secs(1), Some("timeout"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

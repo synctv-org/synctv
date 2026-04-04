@@ -29,6 +29,14 @@ enum RoomMemberRole {
     ROOM_MEMBER_ROLE_CREATOR = 4;
 }
 
+enum MemberStatus {
+    MEMBER_STATUS_UNSPECIFIED = 0;
+    MEMBER_STATUS_ACTIVE = 1;
+    MEMBER_STATUS_PENDING = 2;
+    MEMBER_STATUS_BANNED = 3;
+    MEMBER_STATUS_LEFT = 4;
+}
+
 // Room lifecycle status (independent of ban state)
 // Banned state is tracked via is_banned field on Room message
 enum RoomStatus {
@@ -36,6 +44,12 @@ enum RoomStatus {
     ROOM_STATUS_ACTIVE = 1;
     ROOM_STATUS_PENDING = 2;
     ROOM_STATUS_CLOSED = 3;
+}
+
+enum ListSortDirection {
+    LIST_SORT_DIRECTION_UNSPECIFIED = 0;
+    LIST_SORT_DIRECTION_ASC = 1;
+    LIST_SORT_DIRECTION_DESC = 2;
 }
 
 // Error codes for ErrorMessage

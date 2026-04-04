@@ -1,4 +1,5 @@
 use std::sync::Arc;
+
 use tonic::{Request, Response, Status};
 
 use crate::impls::admin::RequestContext;
@@ -874,17 +875,12 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListActiveStreamsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let room_id = if req.room_id.is_empty() {
-            None
-        } else {
-            Some(req.room_id.as_str())
-        };
-        let streams = self
+        let response = self
             .admin_api
-            .list_active_streams(room_id)
+            .list_active_streams(req)
             .await
-            .map_err(|e| map_api_error(crate::impls::ApiError::Internal(e.to_string())))?;
-        Ok(Response::new(ListActiveStreamsResponse { streams }))
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
     }
 
     async fn kick_stream(
@@ -910,7 +906,7 @@ impl AdminService for AdminServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(crate::impls::ApiError::Internal(e.to_string())))?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(KickStreamResponse {}))
     }

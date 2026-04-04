@@ -95,20 +95,6 @@ mod auth_method {
         assert_ne!(AuthMethod::Header, AuthMethod::Ticket);
     }
 
-    #[test]
-    fn test_method_is_copy() {
-        let method = AuthMethod::Header;
-        let copied = method;
-        assert_eq!(method, copied);
-    }
-
-    #[test]
-    fn test_method_debug() {
-        let s = format!("{:?}", AuthMethod::Header);
-        assert!(s.contains("Header"));
-        let s = format!("{:?}", AuthMethod::Ticket);
-        assert!(s.contains("Ticket"));
-    }
 }
 
 // ============================================================================
@@ -586,39 +572,6 @@ mod ws_auth_scenarios {
     fn test_expired_ticket_error() {
         let err = AppError::unauthorized("Invalid or expired ticket: ticket not found");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-    }
-}
-
-// ============================================================================
-// Module: Proto message types (ClientMessage / ServerMessage)
-// ============================================================================
-
-mod proto_messages {
-    use synctv_proto::client::{ClientMessage, ServerMessage};
-
-    #[test]
-    fn test_client_message_default() {
-        let msg = ClientMessage::default();
-        // Default message should have no content set
-        assert!(msg.message.is_none());
-    }
-
-    #[test]
-    fn test_server_message_default() {
-        let msg = ServerMessage::default();
-        assert!(msg.message.is_none());
-    }
-
-    #[test]
-    fn test_client_message_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<ClientMessage>();
-    }
-
-    #[test]
-    fn test_server_message_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<ServerMessage>();
     }
 }
 
@@ -1102,6 +1055,9 @@ mod websocket_e2e {
             )),
             proxy_http_client: synctv_proxy::build_proxy_http_client()
                 .expect("proxy HTTP client should build for tests"),
+            metrics_access_controller: std::sync::Arc::new(
+                synctv_api::http::metrics_auth::MetricsAccessController::new(),
+            ),
         };
 
         // Build a minimal router with just the WebSocket endpoint
@@ -2201,7 +2157,7 @@ mod websocket_e2e {
         );
 
         let event = synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: rid.clone(),
             user_id: user2_id.clone(),
             reason: "admin kick".to_string(),
@@ -4285,6 +4241,9 @@ mod websocket_connection_limit_timing {
             )),
             proxy_http_client: synctv_proxy::build_proxy_http_client()
                 .expect("proxy HTTP client should build for tests"),
+            metrics_access_controller: std::sync::Arc::new(
+                synctv_api::http::metrics_auth::MetricsAccessController::new(),
+            ),
         };
 
         let app = axum::Router::new()

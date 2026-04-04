@@ -339,7 +339,7 @@ async fn test_concurrent_room_creation_unique_ids() {
 
     let results: Vec<_> = futures::future::join_all(handles).await;
 
-    // All should succeed since each room gets a unique nanoid
+    // All should succeed since each room gets a unique base62 ID
     let mut created_ids = std::collections::HashSet::new();
     for result in results {
         let room = result.unwrap().unwrap();

@@ -787,7 +787,7 @@ mod tests {
         use testcontainers_modules::redis::Redis;
 
         /// Default Redis version for test containers
-        const REDIS_VERSION: &str = "7";
+        const REDIS_VERSION: &str = "8";
 
         let redis_container = Redis::default()
             .with_tag(REDIS_VERSION)

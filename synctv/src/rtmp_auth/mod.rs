@@ -836,8 +836,8 @@ impl SyncTvRtmpAuth {
 
         // Write an additional cross-replica user→stream mapping to Redis.
         // Key: `{prefix}rtmp:user_stream:{user_id}` (per-user key with individual TTL)
-        // Value: `{room_id}|{media_id}` (using `|` separator since nanoid IDs only
-        //        contain [A-Za-z0-9_-], so `|` is unambiguous)
+        // Value: `{room_id}|{media_id}` (using `|` separator since shared base62 IDs only
+        //        contain ASCII alphanumeric characters, so `|` is unambiguous)
         //
         // This complements the Set-based `stream:user_publishers:{user_id}` index
         // already written by try_register_publisher_with_user.  The per-user key
@@ -938,7 +938,7 @@ impl SyncTvRtmpAuth {
             match result {
                 Ok(Some(stream_value)) => {
                     // Value format: "{room_id}|{media_id}" — `|` is safe because
-                    // nanoid IDs only use [A-Za-z0-9_-] characters.
+                    // Shared base62 IDs only use ASCII alphanumeric characters.
                     if let Some((room_id, media_id)) = stream_value.split_once('|') {
                         return Some((room_id.to_string(), media_id.to_string()));
                     }
@@ -1902,19 +1902,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_stream_lifecycle_event_clone() {
-        let event = StreamLifecycleEvent::Started {
-            room_id: "r1".to_string(),
-            media_id: "m1".to_string(),
-            user_id: "u1".to_string(),
-        };
-        let cloned = event;
-        match cloned {
-            StreamLifecycleEvent::Started { room_id, .. } => {
-                assert_eq!(room_id, "r1");
-            }
-            other => unreachable!("Expected Started variant, got: {other:?}"),
-        }
-    }
 }

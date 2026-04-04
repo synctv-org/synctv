@@ -72,10 +72,10 @@ impl ProviderInstance {
 /// Stores user-specific credentials for media providers (Bilibili cookies, Alist passwords, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct UserProviderCredential {
-    /// Credential ID (nanoid)
+    /// Credential ID (shared base62 ID)
     pub id: String,
 
-    /// User ID (nanoid, foreign key to users table)
+    /// User ID (shared base62 ID, foreign key to users table)
     pub user_id: String,
 
     /// Media provider type ("bilibili", "alist", "emby")

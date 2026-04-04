@@ -12,7 +12,7 @@ use synctv_core_testing::{start_redis_url_with_label, test_redis_key_prefix};
 
 /// Default Redis version for test containers
 #[allow(dead_code)]
-pub const REDIS_VERSION: &str = "7";
+pub const REDIS_VERSION: &str = "8";
 
 #[allow(dead_code)]
 const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;

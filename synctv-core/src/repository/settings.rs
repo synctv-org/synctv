@@ -107,6 +107,37 @@ impl SettingsRepository {
         })
     }
 
+    /// Insert or update a setting value by key.
+    pub async fn upsert(&self, key: &str, group_name: &str, value: &str) -> Result<SettingsGroup> {
+        let row = sqlx::query(
+            r"
+            INSERT INTO settings (key, group_name, value, version)
+            VALUES ($1, $2, $3, 0)
+            ON CONFLICT (key) DO UPDATE
+            SET group_name = EXCLUDED.group_name,
+                value = EXCLUDED.value,
+                version = settings.version + 1,
+                updated_at = NOW()
+            RETURNING key, group_name, value, version, created_at, updated_at
+            ",
+        )
+        .bind(key)
+        .bind(group_name)
+        .bind(value)
+        .fetch_one(&self.pool)
+        .await?;
+
+        debug!("Upserted setting '{}'", key);
+        Ok(SettingsGroup {
+            key: row.try_get("key")?,
+            group_name: row.try_get("group_name")?,
+            value: row.try_get("value")?,
+            version: row.try_get("version")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+
     /// Update a setting value by key with optimistic locking (Task #45)
     ///
     /// This method checks the `expected_version` before updating. If the current

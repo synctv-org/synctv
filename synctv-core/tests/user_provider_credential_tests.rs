@@ -34,7 +34,7 @@ fn bilibili_server_id() -> String {
 fn make_credential(user_id: &str, provider: &str, server_id: &str) -> UserProviderCredential {
     let now = Utc::now();
     UserProviderCredential {
-        id: nanoid::nanoid!(12),
+        id: synctv_common::snanoid!(12),
         user_id: user_id.to_string(),
         provider: provider.to_string(),
         server_id: server_id.to_string(),

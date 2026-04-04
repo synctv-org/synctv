@@ -1,6 +1,6 @@
 # SyncTV Configuration Example
 #
-# Copy this file to config.yaml and modify as needed
+# Copy this file to synctv.yaml and modify as needed
 #
 # Configuration priority: defaults < config file < environment variables
 #
@@ -18,8 +18,6 @@ server:
   # Minimum: 1MB (1048576 bytes), Maximum: 1GB (1073741824 bytes).
   # Environment variable: SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES
   # grpc_max_message_size_bytes: 16777216
-  # Enable the /metrics Prometheus endpoint
-  metrics_enabled: false
   # Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation.
   # If empty, X-Forwarded-For headers are NOT trusted (socket address is used).
   # Example: ["10.0.0.0/8", "192.168.0.0/16"]
@@ -52,6 +50,46 @@ server:
   # Maximum time in seconds to wait for active connections to drain during shutdown.
   # Defaults to 30 seconds. Increase for deployments with many long-lived connections.
   shutdown_drain_timeout_seconds: 30
+
+time:
+  # Default IANA timezone used for human-readable time output and local datetime parsing.
+  # Resolution priority:
+  #   1. time.timezone
+  #   2. SYNCTV_TIME_TIMEZONE
+  #   3. TZ
+  #   4. system timezone
+  #   5. UTC
+  #
+  # Examples: "Asia/Shanghai", "UTC", "America/New_York"
+  # Leave empty to use env/system detection.
+  timezone: ""
+
+metrics:
+  # Dedicated metrics listener. When enabled, /metrics is not served on the API port.
+  enabled: false
+  host: "0.0.0.0"
+  port: 9090
+  auth:
+    # Authentication mode for /metrics: bearer_token, basic, kubernetes
+    mode: "bearer_token"
+    bearer_token: ""
+
+management:
+  # Local-only management daemon transport used by the `synctv` CLI for remote lifecycle commands.
+  # Unix-like platforms default to a Unix domain socket for daemon-style local access.
+  # Switch transport to "tcp" when the CLI must connect over a TCP loopback endpoint.
+  # Leave unix_socket_path unset to use the platform default runtime directory.
+  # Environment variables:
+  #   SYNCTV_MANAGEMENT_ENABLED=true
+  #   SYNCTV_MANAGEMENT_TRANSPORT=unix
+  #   SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH=/path/to/synctv.sock
+  #   SYNCTV_MANAGEMENT_PORT=50052
+  enabled: true
+  transport: "unix"
+  port: 50052
+  # unix_socket_path: "/absolute/path/to/synctv.sock"
+  # Reflection can be configured independently from the public API gRPC listener.
+  enable_reflection: false
 
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
@@ -139,9 +177,6 @@ jwt:
 logging:
   level: "info"
   format: "pretty"
-  # Optional fine-grained tracing filter. When set, this takes precedence over level.
-  # filter: "info,synctv=debug,synctv_core::service=trace"
-  backtrace: false
   # file_path: "/var/log/synctv/app.log"
 
 livestream:
@@ -472,8 +507,8 @@ webrtc:
 # ============================================================================
 #
 # Controls internal channel buffer sizes. Larger values provide more resilience
-# during traffic spikes but use more memory. Defaults match the original
-# hardcoded values for backward compatibility.
+# during traffic spikes but use more memory. Defaults match the current
+# built-in runtime values.
 #
 # Additional buffer sizes are configured in their respective sections:
 #   - cluster.critical_channel_capacity (default: 1000)

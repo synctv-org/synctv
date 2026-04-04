@@ -26,23 +26,16 @@ use crate::observability::metrics;
 /// Prevents a hung dependency from blocking the readiness endpoint indefinitely.
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Health check router (without metrics endpoint)
-///
-/// To expose the `/metrics` endpoint, set `server.metrics_enabled = true`
-/// in the application config (or `metrics.enabled` in Helm values).
+/// Health check router.
 pub fn create_health_router() -> Router<AppState> {
-    // Metrics are conditionally registered via create_health_router_with_config
     Router::new()
         .route("/health/live", get(liveness_check))
         .route("/health/ready", get(readiness_check))
 }
 
-/// Create health router with `/metrics` Prometheus endpoint
-pub fn create_health_router_with_metrics() -> Router<AppState> {
-    Router::new()
-        .route("/health/live", get(liveness_check))
-        .route("/health/ready", get(readiness_check))
-        .route("/metrics", get(prometheus_metrics))
+/// Dedicated metrics router.
+pub fn create_metrics_router() -> Router<AppState> {
+    Router::new().route("/metrics", get(prometheus_metrics))
 }
 
 /// Health check response structure
@@ -595,26 +588,20 @@ fn check_memory_health_macos() -> Option<MemoryHealth> {
 
 /// Prometheus metrics endpoint
 ///
-/// Startup validation requires `server.metrics_bearer_token` whenever metrics
-/// are enabled, so this endpoint always enforces bearer authentication in
-/// production. Requests without the correct token receive HTTP 401 Unauthorized.
+/// Startup validation requires a valid `metrics.auth` configuration whenever
+/// metrics are enabled, so this endpoint always enforces authenticated access
+/// in production.
 pub async fn prometheus_metrics(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let expected_token = &state.config.server.metrics_bearer_token;
-
-    // Check Authorization: Bearer <token>
-    let provided = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| synctv_core::service::auth::JwtValidator::extract_bearer_token(s).ok());
-
-    match provided {
-        Some(ref token) if token == expected_token => {
-            // Token matches — proceed to return metrics
-        }
-        _ => {
+    match state
+        .metrics_access_controller
+        .authorize(&state.config.metrics, &headers, "/metrics", "GET")
+        .await
+    {
+        Ok(()) => {}
+        Err(crate::http::metrics_auth::MetricsAccessError::Unauthorized) => {
             return (
                 StatusCode::UNAUTHORIZED,
                 [(
@@ -622,6 +609,28 @@ pub async fn prometheus_metrics(
                     "text/plain; charset=utf-8",
                 )],
                 "Unauthorized".to_string(),
+            )
+                .into_response();
+        }
+        Err(crate::http::metrics_auth::MetricsAccessError::Forbidden) => {
+            return (
+                StatusCode::FORBIDDEN,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
+                "Forbidden".to_string(),
+            )
+                .into_response();
+        }
+        Err(crate::http::metrics_auth::MetricsAccessError::Internal) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
+                "Internal Server Error".to_string(),
             )
                 .into_response();
         }
@@ -647,6 +656,7 @@ mod tests {
     use axum::response::IntoResponse;
     use http_body_util::BodyExt;
     use std::sync::Arc;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn test_liveness_check_returns_ok() {
@@ -892,8 +902,9 @@ mod tests {
         let mut state = test_app_state();
         Arc::make_mut(&mut state.router_config).config = Arc::new({
             let mut config = (*state.config).clone();
-            config.server.metrics_enabled = true;
-            config.server.metrics_bearer_token = metrics_bearer_token.to_string();
+            config.metrics.enabled = true;
+            config.metrics.auth.mode = synctv_core::config::MetricsAuthMode::BearerToken;
+            config.metrics.auth.bearer_token = metrics_bearer_token.to_string();
             config
         });
         state
@@ -916,6 +927,49 @@ mod tests {
         let response = prometheus_metrics(State(metrics_test_state("secret")), headers)
             .await
             .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_metrics_accepts_matching_basic_auth() {
+        let mut state = test_app_state();
+        Arc::make_mut(&mut state.router_config).config = Arc::new({
+            let mut config = (*state.config).clone();
+            config.metrics.enabled = true;
+            config.metrics.auth.mode = synctv_core::config::MetricsAuthMode::Basic;
+            config.metrics.auth.basic_username = "metrics".to_string();
+            config.metrics.auth.basic_password = "secret".to_string();
+            config
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic bWV0cmljczpzZWNyZXQ="),
+        );
+
+        let response = prometheus_metrics(State(state), headers)
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_router_exposes_metrics_endpoint() {
+        let app = create_metrics_router().with_state(metrics_test_state("secret"));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/metrics")
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
 
         assert_eq!(response.status(), StatusCode::OK);
     }

@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = ["openapi"]
 openapi = ["synctv-proto/openapi", "dep:utoipa", "dep:utoipa-swagger-ui"]
+k8s = ["dep:kube", "dep:k8s-openapi"]
 
 [dependencies]
 # Internal
@@ -59,7 +60,6 @@ redis.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
-nanoid.workspace = true
 rand.workspace = true
 parking_lot.workspace = true
 hostname.workspace = true
@@ -68,6 +68,9 @@ uuid.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
 ipnet.workspace = true
+dashmap.workspace = true
+kube = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, optional = true }
 
 # Cryptography (for M3U8 proxy tokens)
 sha2.workspace = true

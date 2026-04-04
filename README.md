@@ -42,10 +42,18 @@ Prebuilt image deployment:
 
 ```bash
 export SYNCTV_JWT_SECRET="your-secure-random-string-at-least-32-chars"
+export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="StrongRootPass12345"
 docker compose up -d
 ```
 
 This variant uses `synctvorg/synctv:v1` from [docker-compose.yml](/Volumes/workspace/rust/synctv/docker-compose.yml) and intentionally keeps the environment surface small.
+
+Once the daemon is up, management CLI commands can run inside the container and use the
+default Unix socket without extra flags:
+
+```bash
+docker compose exec synctv synctv system stats
+```
 
 ### 2. Manual Environment Variables
 
@@ -53,28 +61,26 @@ This variant uses `synctvorg/synctv:v1` from [docker-compose.yml](/Volumes/works
 export SYNCTV_DATABASE_URL="postgresql://synctv:synctv@localhost:5432/synctv"
 export SYNCTV_REDIS_URL="redis://localhost:6379"
 export SYNCTV_JWT_SECRET="your-secure-RANDOM-string-WITH-mixed-CASE-123-and-SPECIAL!@#$%"
+export SYNCTV_BOOTSTRAP_CREATE_ROOT_USER=true
+export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="StrongRootPass12345"
 export SYNCTV_SERVER_PORT=8080
 ```
-
-Optional diagnostics:
-- `SYNCTV_LOGGING_FILTER` for target-specific tracing filters
-- `SYNCTV_LOGGING_BACKTRACE=true` for panic backtraces
 
 ### 3. Validate Configuration (Optional but Recommended)
 
 ```bash
 # Validate your configuration before deployment
-cargo run --bin validate-config
+cargo run --bin synctv -- config validate
 
-# Or use the shell script
-./scripts/validate-config.sh config.yaml
+# Validate a specific config file
+cargo run --bin synctv -- config --config /path/to/synctv.yaml validate
 ```
 
 ### 4. Run Database Migrations
 
 ```bash
-cargo install sqlx-cli --no-default-features --features postgres
-sqlx migrate run --database-url $SYNCTV_DATABASE_URL
+# Run embedded migrations with the same config resolution as the server
+cargo run --bin synctv -- db migrate
 ```
 
 ### 5. Start the Server
@@ -82,11 +88,71 @@ sqlx migrate run --database-url $SYNCTV_DATABASE_URL
 ```bash
 # Set JWT secret (required for production, min 32 chars)
 export SYNCTV_JWT_SECRET="your-secure-random-string-at-least-32-chars"
+export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="StrongRootPass12345"
 
-cargo run --bin synctv
+cargo run --bin synctv -- serve
 ```
 
-HTTP/REST and gRPC share a single API port, defaulting to `0.0.0.0:8080`.
+HTTP/REST and public gRPC share a single API port, defaulting to `0.0.0.0:8080`.
+The management daemon default endpoint is platform-specific:
+- Linux / other Unix: `unix://$XDG_RUNTIME_DIR/synctv/synctv.sock` when `XDG_RUNTIME_DIR` is set, otherwise `unix:///run/synctv/synctv.sock`
+- macOS: `unix://$HOME/Library/Application Support/synctv/run/synctv.sock`
+- Windows: `http://127.0.0.1:50052`
+
+On platforms without Unix Domain Socket support, `management.transport: unix` is rejected during
+configuration validation instead of silently falling back.
+
+When a Unix socket is not available, the CLI can be pointed at an explicit endpoint with
+`--endpoint` or `SYNCTV_MANAGEMENT_ENDPOINT`, and the server can be configured to listen on
+TCP at `127.0.0.1:50052`. In TCP mode the management listener is always forced to loopback;
+there is no configurable management host.
+
+### 6. Remote CLI Operations
+
+All operational CLI commands talk to a running SyncTV server. There is no offline admin mode.
+
+```bash
+# List users through the local management daemon endpoint
+cargo run --bin synctv -- user list
+
+# Inspect effective runtime settings
+cargo run --bin synctv -- settings get server
+
+# Update runtime settings through the management daemon
+cargo run --bin synctv -- settings update server \
+  --set signup_enabled=false \
+  --set max_rooms_per_user=42
+
+# Inspect cluster/system stats
+cargo run --bin synctv -- system stats
+
+# Inspect or manage remote provider instances
+cargo run --bin synctv -- provider list
+
+# List playlists inside a room
+cargo run --bin synctv -- playlist list --room-id room-123
+
+# Add a direct media URL into a room playlist
+cargo run --bin synctv -- media add-url 'https://cdn.example.com/video.mp4' \
+  --room-id room-123 \
+  --playlist-id playlist-123
+```
+
+The management daemon executes local CLI requests with built-in god-mode privileges. The compose
+files and development scripts create a bootstrap administrator automatically; for manual
+deployments, set
+`SYNCTV_BOOTSTRAP_CREATE_ROOT_USER=true` together with a strong
+`SYNCTV_BOOTSTRAP_ROOT_PASSWORD` before first startup.
+
+Remote CLI commands do not load SyncTV config files. Endpoint resolution is:
+1. `--endpoint`
+2. `SYNCTV_MANAGEMENT_ENDPOINT`
+3. platform default Unix socket path
+4. default TCP endpoint `http://127.0.0.1:50052`
+
+In containerized deployments, `docker compose exec synctv synctv ...` uses the same default
+Unix socket path inside the container. Use `--endpoint` only when intentionally targeting a
+non-default TCP or Unix socket listener.
 
 ## Development
 
@@ -109,14 +175,11 @@ cargo test --workspace
 ### Run with Logging
 
 ```bash
-SYNCTV_LOGGING_LEVEL=debug cargo run --bin synctv
+SYNCTV_LOGGING_LEVEL=debug cargo run --bin synctv -- serve
 ```
 
-For fine-grained target filters:
-
-```bash
-SYNCTV_LOGGING_FILTER=info,synctv=debug,synctv_core::service=trace cargo run --bin synctv
-```
+For advanced tracing filters, prefer setting `logging.filter` in `synctv.yaml` or exporting
+`SYNCTV_LOGGING_FILTER` only for one-off diagnostics.
 
 ### Build Release
 
@@ -158,12 +221,15 @@ grpcurl -plaintext -d '{
 
 Configuration can be provided via:
 1. Environment variables (highest priority): `SYNCTV_SECTION_KEY`
-2. Config file: `config.yaml` (YAML only)
+2. Config file (YAML only), searched in platform-aware default locations such as:
+   `./synctv.yaml`, Linux `$XDG_CONFIG_HOME/synctv/synctv.yaml` or `~/.config/synctv/synctv.yaml`,
+   macOS `~/Library/Application Support/synctv/synctv.yaml`, `/etc/synctv/synctv.yaml`,
+   `/config/synctv.yaml`
 3. Defaults (lowest priority)
 
 **Comprehensive Configuration File**
 
-A complete `config.yaml` with all options documented is provided in the repository. It includes:
+A complete example config with documented options is provided in the repository. It includes:
 - All server, database, and Redis settings
 - WebRTC configuration for audio/video calls
 - OAuth2 provider examples (GitHub, Google, OIDC)
@@ -172,7 +238,7 @@ A complete `config.yaml` with all options documented is provided in the reposito
 - Production vs development guidance
 - 417 lines of documented configuration
 
-View the complete file: [`config.yaml`](config.yaml)
+View the complete file: [`synctv.example.yaml`](/Volumes/workspace/rust/synctv/synctv.example.yaml)
 
 **Quick Example** (minimal configuration):
 
@@ -180,6 +246,11 @@ View the complete file: [`config.yaml`](config.yaml)
 server:
   host: "0.0.0.0"
   port: 8080
+
+management:
+  enabled: true
+  transport: "unix"
+  unix_socket_path: "/run/synctv/synctv.sock"  # Linux/container example
 
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
@@ -205,14 +276,11 @@ logging:
 Use the built-in validation tool to catch configuration errors before deployment:
 
 ```bash
-# Validate config.yaml
-cargo run --bin validate-config
+# Validate synctv.yaml
+cargo run --bin synctv -- config validate
 
 # Validate specific file
-SYNCTV_CONFIG_PATH=/path/to/config.yaml cargo run --bin validate-config
-
-# Use the shell script wrapper
-./scripts/validate-config.sh config.yaml
+cargo run --bin synctv -- config --config /path/to/synctv.yaml validate
 ```
 
 **What gets validated:**
@@ -228,7 +296,7 @@ SYNCTV_CONFIG_PATH=/path/to/config.yaml cargo run --bin validate-config
 ```yaml
 # GitHub Actions example
 - name: Validate Configuration
-  run: cargo run --bin validate-config
+  run: cargo run --bin synctv -- config validate
 ```
 
 See [docs/config-validation.md](docs/config-validation.md) for detailed documentation.

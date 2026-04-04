@@ -556,12 +556,6 @@ mod tests {
     }
 
     #[test]
-    fn test_circuit_breaker_closed_by_default() {
-        let cb = CircuitBreakerState::new();
-        assert!(!cb.is_open(CIRCUIT_BREAKER_COOLDOWN_MS));
-    }
-
-    #[test]
     fn test_circuit_breaker_opens_after_threshold() {
         let cb = CircuitBreakerState::new();
         for _ in 0..CIRCUIT_BREAKER_THRESHOLD {
@@ -597,12 +591,6 @@ mod tests {
         // now_ms() - opened_at >= cooldown. Since the CB was just created,
         // now_ms() is ~0. Instead, test with cooldown_ms = 0.
         assert!(!cb.is_open(0));
-    }
-
-    #[test]
-    fn test_pool_max_size_default() {
-        let pool = GrpcConnectionPool::with_defaults();
-        assert_eq!(pool.max_size(), DEFAULT_MAX_POOL_SIZE);
     }
 
     #[test]

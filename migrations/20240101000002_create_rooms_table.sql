@@ -43,11 +43,10 @@ ALTER TABLE rooms ADD CONSTRAINT rooms_status_check
 
 -- Comments
 COMMENT ON TABLE rooms IS 'Video watching rooms - all settings stored in room_settings table';
-COMMENT ON COLUMN rooms.id IS '12-character nanoid';
+COMMENT ON COLUMN rooms.id IS '12-character base62 ID';
 COMMENT ON COLUMN rooms.description IS 'Room description, max 500 characters';
 COMMENT ON COLUMN rooms.status IS 'Room lifecycle status: 1=active, 2=pending, 3=closed';
 COMMENT ON COLUMN rooms.is_banned IS 'Ban flag set by global admin. Room retains its status when banned/unbanned.';
 COMMENT ON COLUMN rooms.version IS 'Monotonically increasing integer for optimistic locking. Incremented on each UPDATE.';
-
 
 

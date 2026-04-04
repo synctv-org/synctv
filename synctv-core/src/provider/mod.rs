@@ -325,7 +325,7 @@ pub async fn finalize_versioned_playback(
     ctx: &ProviderContext<'_>,
 ) -> Result<PlaybackResult> {
     let versioned = VersionedPlayback {
-        version: nanoid::nanoid!(16),
+        version: synctv_common::snanoid!(16),
         result: result.clone(),
         expires_at: chrono::Utc::now().timestamp() + cache_ttl.as_secs() as i64,
     };

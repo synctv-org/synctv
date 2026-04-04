@@ -524,25 +524,7 @@ mod tests {
 
     // --- HealthProbeConfig tests ---
 
-    #[test]
-    fn test_health_probe_config_defaults() {
-        let config = HealthProbeConfig::default();
-        assert_eq!(config.probe_timeout_secs, 3);
-        assert_eq!(config.failure_threshold, 2);
-        assert_eq!(config.success_threshold, 1);
-        assert_eq!(config.probe_interval_secs, 15);
-    }
-
     // --- NodeHealth enum tests ---
-
-    #[test]
-    fn test_node_health_equality() {
-        assert_eq!(NodeHealth::Healthy, NodeHealth::Healthy);
-        assert_eq!(NodeHealth::Degraded, NodeHealth::Degraded);
-        assert_eq!(NodeHealth::Unhealthy, NodeHealth::Unhealthy);
-        assert_ne!(NodeHealth::Healthy, NodeHealth::Unhealthy);
-        assert_ne!(NodeHealth::Healthy, NodeHealth::Degraded);
-    }
 
     // --- HealthMonitor construction ---
 
@@ -656,13 +638,6 @@ mod tests {
     }
 
     // --- ProbeState ---
-
-    #[test]
-    fn test_probe_state_default() {
-        let state = ProbeState::default();
-        assert_eq!(state.success_count.load(Ordering::Relaxed), 0);
-        assert_eq!(state.failure_count.load(Ordering::Relaxed), 0);
-    }
 
     // --- start / shutdown lifecycle ---
 

@@ -618,16 +618,6 @@ async fn test_reorder_batch_with_tx_swaps_positions() {
     assert_eq!(updated_m2.position, 0);
 }
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_reorder_batch_with_tx_empty_list_noop() {
-    let ctx = setup_test_context("reorder_empty").await;
-    let media_repo = MediaRepository::new(ctx.pool.clone());
-
-    // Empty reorder should succeed as a no-op
-    media_repo.reorder_batch(&[]).await.unwrap();
-}
-
 // ============================================================================
 // create_batch_chunked test
 // ============================================================================

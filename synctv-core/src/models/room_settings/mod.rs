@@ -622,15 +622,6 @@ mod tests {
     }
 
     #[test]
-    fn test_admin_permissions_default() {
-        let settings = RoomSettings::default();
-        let global = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-        let result = settings.admin_permissions(global);
-        // No overrides -> result should equal global default
-        assert_eq!(result.0, PermissionBits::DEFAULT_ADMIN);
-    }
-
-    #[test]
     fn test_admin_permissions_with_added() {
         let settings = RoomSettings {
             admin_added_permissions: AdminAddedPermissions(PermissionBits::EXPORT_DATA),

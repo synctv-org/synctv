@@ -1,142 +1,173 @@
 # SyncTV Helm Chart
 
-A production-ready Helm chart for deploying SyncTV - a distributed video synchronization platform with real-time streaming capabilities (RTMP/HLS/WebRTC).
+用于部署 SyncTV 的 Helm Chart。默认安装一个 SyncTV Deployment，并自动部署项目自身依赖的 PostgreSQL 18 和 Redis 8。
 
-## Features
+## 特性
 
-- **Single Binary**: HTTP API, gRPC, RTMP, STUN, and SFU all run in one process
-- **Multi-Replica**: Native cluster support with automatic node discovery and load balancing via Redis
-- **High Availability**: Pod Disruption Budgets, anti-affinity rules, startup/liveness/readiness probes
-- **Security**: Network policies, pod security contexts, secrets management, read-only root filesystem
-- **Observability**: Prometheus ServiceMonitor, structured JSON logging
-- **Production-Ready**: Resource limits, HPA autoscaling, ingress with TLS
+- 单进程部署 HTTP、gRPC、RTMP、STUN 与管理接口
+- 默认内置 PostgreSQL 与 Redis，无需额外依赖 chart
+- 可切换为 KubeBlocks 管理数据库
+- 内置 HPA、PDB、探针、反亲和、NetworkPolicy 与 Ingress
 
-## Prerequisites
+## 前置要求
 
 - Kubernetes 1.23+
 - Helm 3.8+
-- Ingress controller (nginx recommended)
-- cert-manager (optional, for automatic TLS certificates)
-- PostgreSQL 14+ (external or via Bitnami chart)
-- Redis 7+ (external or via Bitnami chart)
+- 可选：Ingress Controller
+- 可选：cert-manager
+- 可选：已安装 KubeBlocks Operator（仅在 `kubeblocks` 模式下需要）
 
-## Installation
+## 数据库模式
 
-### 1. Install External Dependencies
+`postgresql.mode` 和 `redis.mode` 都支持以下两种模式：
 
-#### PostgreSQL
+- `standard`
+  Chart 自己创建 PostgreSQL / Redis 资源。这是默认模式。
+- `kubeblocks`
+  Chart 创建 KubeBlocks `Cluster` 资源，并直接消费 KubeBlocks 自动生成的连接 Secret。
 
-```bash
-helm repo add bitnami https://charts.bitnami.com/bitnami
+## 快速开始
 
-helm install postgresql bitnami/postgresql \
-  --namespace synctv \
-  --create-namespace \
-  --set auth.username=synctv \
-  --set auth.password=your-secure-password \
-  --set auth.database=synctv \
-  --set primary.persistence.size=20Gi
-```
+默认安装会同时部署：
 
-#### Redis
+- SyncTV
+- PostgreSQL 18
+- Redis 8
 
-```bash
-helm install redis bitnami/redis \
-  --namespace synctv \
-  --set auth.password=your-redis-password \
-  --set master.persistence.size=8Gi
-```
-
-### 2. Create Custom Values File
-
-Create a `my-values.yaml` file:
-
-```yaml
-# Database connection (host/port/name used to compose the URL)
-config:
-  database:
-    host: "postgresql.synctv.svc.cluster.local"
-    port: 5432
-    name: "synctv"
-  redis:
-    host: "redis-master.synctv.svc.cluster.local"
-    port: 6379
-  server:
-    corsAllowedOrigins:
-      - "https://synctv.yourdomain.com"
-
-ingress:
-  hosts:
-    - host: synctv.yourdomain.com
-      paths:
-        - path: /
-          pathType: Prefix
-  tls:
-    - secretName: synctv-tls
-      hosts:
-        - synctv.yourdomain.com
-
-# Secrets (IMPORTANT: Change all values in production!)
-secrets:
-  database:
-    username: "synctv"
-    password: "your-secure-password"
-  redis:
-    password: "your-redis-password"
-  jwt:
-    secret: "your-256-bit-random-jwt-secret"
-  cluster:
-    grpcSecret: "your-cluster-secret"
-  bootstrap:
-    rootPassword: "your-root-password"
-```
-
-### 3. Install SyncTV
+这些数据库服务仅用于集群内访问，不提供面向集群外的数据库暴露能力。需要临时从集群外访问时，只建议使用 `kubectl port-forward`。
+此外，Helm chart 默认会开启 `cluster.enabled=true`，因为这个部署形态本身就是多副本、Redis 驱动的集群运行模式。
 
 ```bash
 helm install synctv ./helm/synctv \
   --namespace synctv \
-  --create-namespace \
-  --values my-values.yaml
+  --create-namespace
 ```
 
-### 4. Verify Installation
+生产环境至少应覆盖这些秘密：
 
-```bash
-# Check pods
-kubectl get pods -n synctv
-
-# Check services
-kubectl get svc -n synctv
-
-# Check ingress
-kubectl get ingress -n synctv
-
-# View logs
-kubectl logs -n synctv -l app.kubernetes.io/name=synctv -f
+```yaml
+secrets:
+  database:
+    password: "replace-me"
+  redis:
+    password: "replace-me"
+  jwt:
+    secret: "replace-with-a-strong-random-secret"
+  cluster:
+    grpcSecret: "replace-me"
+  bootstrap:
+    rootPassword: "replace-me"
 ```
 
-## Configuration
+## 标准模式
 
-### Application Config
+标准模式下，数据库认证配置放在 `standard.auth` 内，而不是 `mode` 同级：
 
-All configuration fields match the Rust `Config` struct in `synctv-core/src/config.rs`. The config file is generated from the ConfigMap and mounted at `/config/config.yaml`. Secrets are injected as environment variables with the `SYNCTV_` prefix (e.g., `SYNCTV_DATABASE_URL`, `SYNCTV_JWT_SECRET`).
+```yaml
+postgresql:
+  mode: standard
+  standard:
+    auth:
+      username: synctv
+      database: synctv
+    persistence:
+      size: 20Gi
 
-Key sections:
+redis:
+  mode: standard
+  standard:
+    auth:
+      username: ""
+      database: 0
+    persistence:
+      size: 8Gi
+```
+
+说明：
+
+- PostgreSQL 标准模式使用 chart Secret 中的 `SYNCTV_DATABASE_PASSWORD`
+- Redis 标准模式使用 chart Secret 中的 `SYNCTV_REDIS_PASSWORD`
+- PostgreSQL 18 官方镜像应挂载 `/var/lib/postgresql`，不能继续挂 `/var/lib/postgresql/data`
+- 标准模式下 PostgreSQL 和 Redis 都只通过集群内 `ClusterIP` / Pod 网络访问
+
+## KubeBlocks 模式
+
+KubeBlocks 模式下，chart 不再生成和使用数据库静态密码，而是直接引用 KubeBlocks 自动生成的 Secret。
+
+PostgreSQL 示例：
+
+```yaml
+postgresql:
+  mode: kubeblocks
+  kubeblocks:
+    clusterName: synctv-pg
+    replicas: 2
+    serviceVersion: "18.1.0"
+```
+
+Redis 示例：
+
+```yaml
+redis:
+  mode: kubeblocks
+  kubeblocks:
+    clusterName: synctv-redis
+    replicas: 2
+    serviceVersion: "8.4.0"
+    sentinel:
+      replicas: 3
+```
+
+说明：
+
+- PostgreSQL 默认连接到 `<cluster>-postgresql-postgresql:5432`
+- PostgreSQL 默认引用 `<cluster>-postgresql-account-postgres`
+- Redis 默认连接到 `<cluster>-redis-redis:6379`
+- Redis 默认引用 `<cluster>-redis-account-default`
+- PostgreSQL 和 Redis 的 Secret key 固定为 `username` / `password`
+- KubeBlocks 模式默认使用生成的数据库账号；PostgreSQL 数据库名固定为 `postgres`
+- KubeBlocks 生成的数据库服务也仅用于集群内访问；从集群外调试时同样只建议用 `kubectl port-forward`
+
+## 配置模型
+
+Chart 会生成配置文件并挂载到 `/config/synctv.yaml`，同时通过 `SYNCTV_` 环境变量注入敏感值和连接信息。
+
+应用当前使用分离式数据库配置模型，而不是仅依赖单个 DSN：
 
 | Section | Description |
 |---------|-------------|
-| `config.server` | Unified API port, CORS, trusted proxies |
-| `config.database` | Host, port, name (URL composed with secrets), pool settings |
-| `config.redis` | Host, port (URL composed with secrets), pool settings |
-| `config.jwt` | Token durations (secret via env var) |
-| `config.livestream` | RTMP port, max streams, GOP cache, timeouts |
-| `config.cluster` | Channel capacities for inter-node communication |
-| `config.webrtc` | Mode (signaling_only/peer_to_peer/hybrid/sfu), STUN, SFU settings |
-| `config.connectionLimits` | Per-user, per-room, total connection limits |
-| `config.bootstrap` | Root user creation on first startup |
-| `config.email` | SMTP settings (credentials via secrets) |
-| `config.oauth2` | Redirect scheme (http/https) |
+| `config.server` | API 监听地址、CORS、代理设置 |
+| `config.management` | 管理端点配置 |
+| `config.database` | 连接池参数，实际主机/端口/用户/密码由环境变量注入 |
+| `config.redis` | Redis 基础配置，连接信息由环境变量注入 |
+| `config.cluster` | 集群同步与发现参数 |
+| `config.jwt` | Token 时长，密钥由 Secret 注入 |
+| `config.bootstrap` | 初始化 root 用户 |
+| `config.email` | SMTP 基础配置，凭据可由 Secret 注入 |
+| `config.livestream` | RTMP/HLS/拉流超时与缓存 |
+| `config.webrtc` | STUN/TURN/WebRTC 相关配置 |
+
+## 验证部署
+
+```bash
+kubectl get pods -n synctv
+kubectl get svc -n synctv
+kubectl logs -n synctv -l app.kubernetes.io/name=synctv -f
+```
+
+## 升级
+
+```bash
+helm upgrade synctv ./helm/synctv \
+  --namespace synctv \
+  --values my-values.yaml
+```
+
+## 卸载
+
+```bash
+helm uninstall synctv -n synctv
+```
 
 ### Security Best Practices
 
@@ -184,22 +215,86 @@ kubectl delete namespace synctv
 
 ## Monitoring
 
+Helm defaults to `metrics.auth.mode=bearer_token`, which means:
+
+- The chart stores a bearer token in the SyncTV secret
+- `ServiceMonitor` and `VMServiceScrape` use that bearer token automatically
+
+Example:
+
 ```yaml
 metrics:
   enabled: true
+  auth:
+    mode: bearer_token
   serviceMonitor:
     enabled: true
     namespace: monitoring
-    interval: 30s
     labels:
       prometheus: kube-prometheus
 ```
 
-```bash
-# Port-forward to access metrics
-kubectl port-forward -n synctv svc/synctv 8080:8080
-curl http://localhost:8080/metrics
+If you want Kubernetes-native `TokenReview` + `SubjectAccessReview` auth instead:
+
+- SyncTV validates the scraper's service account token with Kubernetes `TokenReview`
+- SyncTV authorizes `/metrics` access with `SubjectAccessReview`
+- You grant scrape access by listing allowed service accounts in the chart values
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: kubernetes
+    kubernetes:
+      allowedServiceAccounts:
+        - name: prometheus-kube-prometheus-prometheus
+          namespace: monitoring
 ```
+
+If you want static username/password instead, switch to basic auth:
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: basic
+  serviceMonitor:
+    enabled: true
+secrets:
+  metrics:
+    basicUsername: metrics
+    basicPassword: change-me
+```
+
+If you want HTTPS on the metrics endpoint, enable cert-manager-managed TLS for metrics. The chart will mount the generated certificate into the container automatically. When `issuerRef.name` is empty, the chart creates a namespace-local self-signed issuer:
+
+```yaml
+metrics:
+  enabled: true
+  tls:
+    enabled: true
+    issuerRef:
+      name: ""
+      kind: Issuer
+  serviceMonitor:
+    enabled: true
+```
+
+To use an existing cert-manager issuer instead:
+
+```yaml
+metrics:
+  enabled: true
+  tls:
+    enabled: true
+    issuerRef:
+      name: monitoring-ca
+      kind: ClusterIssuer
+  vmServiceScrape:
+    enabled: true
+```
+
+You can then scrape through either Prometheus Operator (`ServiceMonitor`) or VictoriaMetrics Operator (`VMServiceScrape`).
 
 ## Architecture
 
@@ -221,14 +316,13 @@ curl http://localhost:8080/metrics
            |             |          |
       +----v-----+  +---v----+  (Cluster)
       |PostgreSQL|  | Redis  |  Node Discovery
-      |(External)|  |(Extern)|  via Redis
+      |(Internal)|  |(Internal) via Redis
       +----------+  +--------+
 ```
 
 ## Production Checklist
 
 - [ ] Change all default secrets in `secrets` section
-- [ ] Configure external PostgreSQL and Redis
 - [ ] Enable TLS for ingress (cert-manager)
 - [ ] Set appropriate resource limits
 - [ ] Enable autoscaling (HPA)

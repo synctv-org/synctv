@@ -75,7 +75,7 @@ pub(super) fn user_to_proto(user: &synctv_core::models::User) -> crate::proto::c
     }
 }
 
-pub(super) fn room_to_proto_basic(
+pub(crate) fn room_to_proto_basic(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
@@ -139,7 +139,7 @@ pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::clien
     }
 }
 
-pub(super) fn playlist_to_proto(
+pub(crate) fn playlist_to_proto(
     playlist: &synctv_core::models::Playlist,
     item_count: i32,
 ) -> crate::proto::client::Playlist {
@@ -160,7 +160,7 @@ pub(super) fn playlist_to_proto(
     }
 }
 
-pub(super) fn playlist_path_node_to_proto(
+pub(crate) fn playlist_path_node_to_proto(
     playlist: &synctv_core::models::Playlist,
 ) -> crate::proto::client::PlaylistBrowsePathNode {
     crate::proto::client::PlaylistBrowsePathNode {
@@ -170,7 +170,7 @@ pub(super) fn playlist_path_node_to_proto(
     }
 }
 
-pub(super) fn playback_state_to_proto(
+pub(crate) fn playback_state_to_proto(
     state: &synctv_core::models::RoomPlaybackState,
 ) -> crate::proto::client::PlaybackState {
     crate::proto::client::PlaybackState {
@@ -237,7 +237,7 @@ pub(super) fn members_to_proto(
 
 /// Convert provider `PlaybackInfo` to models `PlaybackInfo`
 #[must_use]
-pub fn provider_playback_info_to_model(
+pub(crate) fn provider_playback_info_to_model(
     info: &synctv_core::provider::traits::PlaybackInfo,
 ) -> synctv_core::models::media::PlaybackInfo {
     use synctv_core::models::media::{PlaybackInfo, PlaybackUrl, Subtitle, SubtitleUrl};
@@ -279,7 +279,7 @@ pub fn provider_playback_info_to_model(
 
 /// Convert models `PlaybackResult` to proto `PlaybackResult`
 #[must_use]
-pub(super) fn playback_result_to_proto(
+pub(crate) fn playback_result_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
 ) -> crate::proto::client::PlaybackResult {
     let playback_infos = result

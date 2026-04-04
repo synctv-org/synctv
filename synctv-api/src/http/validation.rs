@@ -32,7 +32,7 @@ pub mod limits {
     pub const OAUTH2_REDIRECT_URL_MAX: usize = 2048;
     /// Maximum `OAuth2` provider user ID length
     pub const OAUTH2_PROVIDER_USER_ID_MAX: usize = 256;
-    /// `OAuth2` state token length (nanoid generates 32 chars)
+    /// `OAuth2` state token length (shared base62 generator emits 32 chars)
     pub const OAUTH2_STATE_LENGTH: usize = 32;
     /// `OAuth2` authorization code max length
     pub const OAUTH2_CODE_MAX: usize = 256;
@@ -795,8 +795,8 @@ pub fn validate_oauth2_provider_user_id(id: Option<&str>) -> ValidationResult<Op
 
 /// Validate `OAuth2` state token (required for CSRF protection)
 ///
-/// State tokens are generated using nanoid with 32 characters from the
-/// URL-safe alphabet: A-Za-z0-9_-
+/// State tokens are generated using the shared ID generator with 32 characters from the
+/// shared base62 alphabet: A-Za-z0-9
 ///
 /// This validation ensures:
 /// - State is not empty
@@ -809,16 +809,7 @@ pub fn validate_oauth2_state(state: &str) -> ValidationResult<String> {
         return Err(ValidationError::Required("state"));
     }
 
-    let len = sanitized.len();
-    if len != limits::OAUTH2_STATE_LENGTH {
-        return Err(ValidationError::InvalidFormat { field: "state" });
-    }
-
-    // Validate characters: nanoid uses URL-safe alphabet (A-Za-z0-9_-)
-    if !sanitized
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
+    if !synctv_common::id::is_valid_with_len(&sanitized, limits::OAUTH2_STATE_LENGTH) {
         return Err(ValidationError::InvalidFormat { field: "state" });
     }
 
@@ -1316,8 +1307,8 @@ mod tests {
 
     #[test]
     fn test_validate_oauth2_state() {
-        // Valid state: 32 chars, URL-safe alphabet
-        let valid_state = "AbCdEfGh1234567890_-aBcDeFgHiJkL";
+        // Valid state: 32 chars, base62 alphabet
+        let valid_state = "AbCdEfGh1234567890ZaBcDeFgHiJkLQ";
         assert_eq!(valid_state.len(), limits::OAUTH2_STATE_LENGTH);
         assert!(validate_oauth2_state(valid_state).is_ok());
 
@@ -1342,6 +1333,8 @@ mod tests {
         // Invalid characters
         assert!(validate_oauth2_state("AbCdEfGh1234567890aBcDeFgHiJkLm!@").is_err()); // Special chars
         assert!(validate_oauth2_state("AbCdEfGh1234567890 aBcDeFgHiJkLmN").is_err()); // Space
+        assert!(validate_oauth2_state("AbCdEfGh1234567890-aBcDeFgHiJkLmN").is_err()); // Hyphen
+        assert!(validate_oauth2_state("AbCdEfGh1234567890_aBcDeFgHiJkLmN").is_err()); // Underscore
 
         // State with control characters should be sanitized and fail
         assert!(validate_oauth2_state("AbCdEfGh1234567890\x00aBcDeFgHiJ").is_err());
@@ -1359,7 +1352,7 @@ mod tests {
         assert_eq!(exact_state.len(), 32);
         assert!(validate_oauth2_state(exact_state).is_ok());
 
-        // 2. State must only contain URL-safe characters (prevents injection)
+        // 2. State must only contain base62 characters (prevents injection)
         let injection_attempt = "abc;DROP TABLE users;123456789012345678";
         assert!(validate_oauth2_state(injection_attempt).is_err());
 

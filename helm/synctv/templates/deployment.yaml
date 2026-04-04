@@ -30,7 +30,8 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      {{- with .Values.imagePullSecrets }}
+      {{- $imagePullSecrets := .Values.imagePullSecrets | default .Values.global.imagePullSecrets }}
+      {{- with $imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -48,6 +49,11 @@ spec:
             - name: api
               containerPort: {{ .Values.config.server.port }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port | default 9090 }}
+              protocol: TCP
+            {{- end }}
             - name: rtmp
               containerPort: {{ .Values.config.livestream.rtmpPort }}
               protocol: TCP
@@ -58,7 +64,23 @@ spec:
             {{- end }}
           env:
             - name: SYNCTV_CONFIG_PATH
-              value: "/config/config.yaml"
+              value: "/config/synctv.yaml"
+            - name: SYNCTV_DATABASE_HOST
+              value: {{ include "synctv.postgresql.host" . | quote }}
+            - name: SYNCTV_DATABASE_PORT
+              value: {{ include "synctv.postgresql.port" . | quote }}
+            - name: SYNCTV_DATABASE_NAME
+              value: {{ include "synctv.postgresql.database" . | quote }}
+            {{- if ne (include "synctv.postgresql.mode" .) "kubeblocks" }}
+            - name: SYNCTV_DATABASE_USER
+              value: {{ include "synctv.postgresql.appUsername" . | quote }}
+            {{- end }}
+            - name: SYNCTV_REDIS_HOST
+              value: {{ include "synctv.redis.host" . | quote }}
+            - name: SYNCTV_REDIS_PORT
+              value: {{ include "synctv.redis.port" . | quote }}
+            - name: SYNCTV_REDIS_DATABASE
+              value: {{ include "synctv.redis.database" . | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -79,17 +101,47 @@ spec:
             - name: HEADLESS_SERVICE_NAME
               value: {{ include "synctv.fullname" . }}-headless
             {{- end }}
-            # Secrets injected via env vars (SYNCTV_ prefix matches Config::load)
-            - name: SYNCTV_DATABASE_URL
+            {{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" }}
+            - name: SYNCTV_DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.postgresql.kubeblocks.superuserSecretName" . }}
+                  key: username
+            - name: SYNCTV_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.postgresql.kubeblocks.superuserSecretName" . }}
+                  key: password
+            {{- else }}
+            - name: SYNCTV_DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
-                  key: SYNCTV_DATABASE_URL
-            - name: SYNCTV_REDIS_URL
+                  key: SYNCTV_DATABASE_PASSWORD
+            {{- end }}
+            {{- if eq (include "synctv.redis.mode" .) "kubeblocks" }}
+            - name: SYNCTV_REDIS_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.redis.kubeblocks.secretName" . }}
+                  key: username
+            - name: SYNCTV_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.redis.kubeblocks.secretName" . }}
+                  key: password
+            {{- else }}
+            {{- $redisUsername := include "synctv.redis.username" . | trim }}
+            {{- if $redisUsername }}
+            - name: SYNCTV_REDIS_USER
+              value: {{ $redisUsername | quote }}
+            {{- end }}
+            - name: SYNCTV_REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
-                  key: SYNCTV_REDIS_URL
+                  key: SYNCTV_REDIS_PASSWORD
+            {{- end }}
             - name: SYNCTV_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -135,6 +187,25 @@ spec:
                   key: SYNCTV_BOOTSTRAP_ROOT_PASSWORD
             {{- end }}
             {{- end }}
+            {{- if and .Values.metrics.enabled (eq (.Values.metrics.auth.mode | default "bearer_token") "bearer_token") }}
+            - name: SYNCTV_METRICS_AUTH_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_METRICS_AUTH_BEARER_TOKEN
+            {{- end }}
+            {{- if and .Values.metrics.enabled (eq (.Values.metrics.auth.mode | default "bearer_token") "basic") }}
+            - name: SYNCTV_METRICS_AUTH_BASIC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_METRICS_AUTH_BASIC_USERNAME
+            - name: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
+            {{- end }}
             {{- with .Values.extraEnvVars }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -160,14 +231,28 @@ spec:
             - name: config
               mountPath: /config
               readOnly: true
+            - name: management-run
+              mountPath: /run/synctv
             - name: tmp
               mountPath: /tmp
+            {{- if and .Values.metrics.enabled .Values.metrics.tls.enabled }}
+            - name: metrics-tls
+              mountPath: /etc/synctv/metrics/tls
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "synctv.configMapName" . }}
+        - name: management-run
+          emptyDir: {}
         - name: tmp
           emptyDir: {}
+        {{- if and .Values.metrics.enabled .Values.metrics.tls.enabled }}
+        - name: metrics-tls
+          secret:
+            secretName: {{ include "synctv.metricsTlsSecretName" . }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -601,7 +601,7 @@ async fn scenario_channel_creation_from_db_config() {
     let host = "channel-create.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -639,7 +639,7 @@ async fn scenario_channel_cache_hit() {
     let host = "cache-hit.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -674,7 +674,7 @@ async fn scenario_channel_cache_ttl_expiration() {
 
     // Create a manager and back it with a reachable remote instance.
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -713,7 +713,7 @@ async fn scenario_redis_invalidation_on_delete() {
         spawn_authenticated_provider_server("remote-provider-test-secret").await;
     let host = "redis-delete.test.localhost";
     let repo = provider_repo(&infra.pool);
-    let stream_key = format!("test:provider:invalidate:{}", nanoid::nanoid!(8));
+    let stream_key = format!("test:provider:invalidate:{}", synctv_common::snanoid!(8));
     let invalidation1 = CacheInvalidationService::new(
         Some(infra.redis_client.clone()),
         "node1".to_string(),
@@ -734,12 +734,12 @@ async fn scenario_redis_invalidation_on_delete() {
     invalidation2.start().await.unwrap();
 
     let address_overrides = make_test_address_overrides(host, health_addr.port());
-    let manager1 = RemoteProviderManager::new_with_test_address_overrides(
+    let manager1 = RemoteProviderManager::new_with_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         Some(invalidation1.clone()),
         address_overrides.clone(),
     );
-    let manager2 = RemoteProviderManager::new_with_test_address_overrides(
+    let manager2 = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         Some(invalidation2.clone()),
         address_overrides,
@@ -797,7 +797,7 @@ async fn scenario_health_check_integration() {
         spawn_authenticated_provider_server("remote-provider-test-secret").await;
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         HashMap::from([(
@@ -840,7 +840,7 @@ async fn scenario_health_check_respects_enabled_flag() {
     let host = "health-enabled.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -907,7 +907,7 @@ async fn scenario_health_check_reports_enabled_instance_with_missing_secret_as_u
         spawn_authenticated_provider_server("remote-provider-test-secret").await;
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         HashMap::from([(
@@ -948,7 +948,7 @@ async fn scenario_health_check_reports_enabled_instance_with_wrong_secret_as_unh
         spawn_authenticated_provider_server("remote-provider-test-secret").await;
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         HashMap::from([(
@@ -992,7 +992,7 @@ async fn scenario_health_check_reports_authenticated_provider_failure_as_unhealt
             .await;
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         HashMap::from([(
@@ -1039,7 +1039,7 @@ async fn scenario_add_alist_instance_does_not_require_fake_upstream_auth_for_man
     let host = "alist-management-validation.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -1070,7 +1070,7 @@ async fn scenario_health_check_reports_emby_authenticated_provider_failure_as_un
         .await;
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         HashMap::from([(
@@ -1117,7 +1117,7 @@ async fn scenario_add_emby_instance_does_not_require_authenticated_handler_succe
     let host = "emby-management-validation.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -1411,7 +1411,7 @@ async fn scenario_enable_disable_instance() {
     let host = "enable-disable.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -1583,7 +1583,7 @@ async fn scenario_reconnect_instance() {
     let host = "reconnect.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -1623,7 +1623,7 @@ async fn scenario_add_duplicate_instance_fails() {
     let host = "duplicate-add.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -1685,7 +1685,7 @@ async fn scenario_update_to_disabled_invalidates_cached_channel() {
     let host = "update-disable.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -1730,7 +1730,7 @@ async fn scenario_concurrent_duplicate_add_returns_one_success_and_one_already_e
         spawn_authenticated_provider_server("remote-provider-test-secret").await;
     let host = "concurrent-dup.test.localhost";
 
-    let manager = Arc::new(RemoteProviderManager::new_with_test_address_overrides(
+    let manager = Arc::new(RemoteProviderManager::new_with_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -2034,7 +2034,7 @@ async fn scenario_get_all_instances() {
     let host = "get-all.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -2090,7 +2090,7 @@ async fn scenario_manager_without_redis() {
     let host = "manager-no-redis.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -2131,7 +2131,7 @@ async fn scenario_init_pre_warms_cache() {
     let host = "init-prewarm.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -2170,7 +2170,7 @@ async fn scenario_init_rejects_invalid_secret_and_aborts_prewarming() {
     let host = "init-invalid-secret.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -2303,7 +2303,7 @@ async fn scenario_resolve_client_uses_remote_when_available() {
     let host = "resolve-remote.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = Arc::new(RemoteProviderManager::new_with_test_address_overrides(
+    let manager = Arc::new(RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -2332,7 +2332,7 @@ async fn scenario_cache_respects_max_capacity() {
     let host = "cache-capacity.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, health_addr.port()),
@@ -2363,7 +2363,10 @@ async fn scenario_redis_invalidation_respects_key_prefix() {
     let (health_addr, health_handle) =
         spawn_authenticated_provider_server("remote-provider-test-secret").await;
     let host = "redis-prefix.test.localhost";
-    let stream_key = format!("tenant-a:test:provider:invalidate:{}", nanoid::nanoid!(8));
+    let stream_key = format!(
+        "tenant-a:test:provider:invalidate:{}",
+        synctv_common::snanoid!(8)
+    );
     let invalidation1 = CacheInvalidationService::new(
         Some(infra.redis_client.clone()),
         "tenant-a-node1".to_string(),
@@ -2384,12 +2387,12 @@ async fn scenario_redis_invalidation_respects_key_prefix() {
     invalidation2.start().await.unwrap();
 
     let address_overrides = make_test_address_overrides(host, health_addr.port());
-    let manager1 = RemoteProviderManager::new_with_test_address_overrides(
+    let manager1 = RemoteProviderManager::new_with_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         Some(invalidation1.clone()),
         address_overrides.clone(),
     );
-    let manager2 = RemoteProviderManager::new_with_test_address_overrides(
+    let manager2 = RemoteProviderManager::new_with_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         Some(invalidation2.clone()),
         address_overrides,
@@ -2427,7 +2430,7 @@ async fn scenario_invalidation_listener_shutdown_is_idempotent() {
     flush_provider_instances(&infra).await;
     let stream_key = format!(
         "tenant-shutdown:test:provider:invalidate:{}",
-        nanoid::nanoid!(8)
+        synctv_common::snanoid!(8)
     );
     let invalidation = CacheInvalidationService::new(
         Some(infra.redis_client.clone()),
@@ -2462,7 +2465,7 @@ async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
         spawn_authenticated_provider_server("remote-provider-test-secret").await;
     let host = "durable-invalidation.test.localhost";
 
-    let stream_key = format!("test:provider:durable:{}", nanoid::nanoid!(8));
+    let stream_key = format!("test:provider:durable:{}", synctv_common::snanoid!(8));
     let invalidation1 = CacheInvalidationService::new(
         Some(infra.redis_client.clone()),
         "provider-node1".to_string(),
@@ -2483,12 +2486,12 @@ async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
     invalidation2.start().await.unwrap();
 
     let address_overrides = make_test_address_overrides(host, health_addr.port());
-    let manager1 = RemoteProviderManager::new_with_test_address_overrides(
+    let manager1 = RemoteProviderManager::new_with_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         Some(invalidation1.clone()),
         address_overrides.clone(),
     );
-    let manager2 = RemoteProviderManager::new_with_test_address_overrides(
+    let manager2 = RemoteProviderManager::new_with_address_overrides(
         Arc::new(provider_repo(&infra.pool)),
         Some(invalidation2.clone()),
         address_overrides,
@@ -2714,7 +2717,7 @@ async fn scenario_add_reachable_remote_instance_succeeds_with_connectivity_valid
         spawn_authenticated_provider_server("remote-provider-test-secret").await;
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         HashMap::from([(
@@ -2830,7 +2833,7 @@ async fn scenario_update_unreachable_remote_instance_preserves_existing_configur
         spawn_authenticated_provider_server("remote-provider-test-secret").await;
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         HashMap::from([(
@@ -2881,7 +2884,7 @@ async fn scenario_add_stalling_remote_instance_honors_connect_timeout() {
     let host = "connect-timeout.test.localhost";
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_test_address_overrides(
+    let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
         None,
         make_test_address_overrides(host, stall_addr.port()),

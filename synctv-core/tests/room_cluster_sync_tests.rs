@@ -48,7 +48,7 @@ pub struct TestInfra {
 }
 
 fn unique_invalidation_key(prefix: &str) -> String {
-    format!("{prefix}:{}", nanoid::nanoid!(8))
+    format!("{prefix}:{}", synctv_common::snanoid!(8))
 }
 
 async fn create_test_infra() -> TestInfra {

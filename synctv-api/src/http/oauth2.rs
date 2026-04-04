@@ -141,7 +141,7 @@ pub async fn exchange_authorization_code(
         .ok_or_else(|| super::AppError::bad_request("OAuth2 is not configured on this server"))?;
 
     // Validate state parameter format (CSRF protection)
-    // State must be exactly 32 characters from the URL-safe alphabet
+    // State must be exactly 32 characters from the shared base62 alphabet
     let validated_state = validation::validate_oauth2_state(&req.state)
         .map_err(|e| super::AppError::bad_request(format!("Invalid state parameter: {e}")))?;
 

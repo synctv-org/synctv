@@ -26,7 +26,7 @@ pub fn random_user_id() -> UserId {
 
 /// Generate a random room ID for testing
 pub fn random_room_id() -> RoomId {
-    RoomId(nanoid::nanoid!(12))
+    RoomId(synctv_common::snanoid!(12))
 }
 
 /// Test fixture builder for User
@@ -88,7 +88,7 @@ impl UserFixture {
         // Generate unique email if not provided to avoid unique constraint violations in parallel tests
         let email = self
             .email
-            .unwrap_or_else(|| format!("test_{}@example.com", nanoid::nanoid!(8)));
+            .unwrap_or_else(|| format!("test_{}@example.com", synctv_common::snanoid!(8)));
         crate::models::User {
             id: self.id,
             username: self.username,
@@ -223,7 +223,7 @@ pub struct ChatMessageFixture {
 impl ChatMessageFixture {
     pub fn new() -> Self {
         Self {
-            id: nanoid::nanoid!(12),
+            id: synctv_common::snanoid!(12),
             room_id: random_room_id(),
             user_id: random_user_id(),
             content: "Test message".to_string(),
@@ -303,7 +303,7 @@ impl PlaylistFixture {
             id: PlaylistId::new(),
             room_id: random_room_id(),
             creator_id: None,
-            name: format!("playlist_{}", nanoid::nanoid!(8)),
+            name: format!("playlist_{}", synctv_common::snanoid!(8)),
             parent_id: Some(parent_id),
             position: -1, // Use auto-position (negative triggers MAX+1 logic in create)
         }

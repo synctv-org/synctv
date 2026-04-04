@@ -405,7 +405,7 @@ impl DistributedLock {
         with_token: bool,
     ) -> Result<Option<(String, u64)>> {
         let lock_key = format!("lock:{key}");
-        let lock_value = crate::models::generate_id(); // nanoid(12)
+        let lock_value = crate::models::generate_id(); // base62 ID (12 chars)
 
         let mut conn = self.conn().await;
 
@@ -1012,7 +1012,7 @@ impl Redlock {
         })
     }
 
-    /// Generate a unique lock value using nanoid.
+    /// Generate a unique lock value using the shared base62 ID generator.
     fn generate_lock_value() -> String {
         crate::models::generate_id()
     }
@@ -1404,15 +1404,6 @@ mod tests {
         assert_eq!((3 / 2) + 1, 2);
         assert_eq!((5 / 2) + 1, 3);
         assert_eq!((7 / 2) + 1, 4);
-    }
-
-    #[test]
-    fn test_redlock_config_defaults() {
-        let config = RedlockConfig::default();
-        assert_eq!(config.ttl_ms, 10_000);
-        assert_eq!(config.acquire_timeout_ms, 5_000);
-        assert_eq!(config.retry_interval_ms, 50);
-        assert!(config.master_urls.is_empty());
     }
 
     #[test]

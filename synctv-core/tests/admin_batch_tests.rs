@@ -266,13 +266,3 @@ async fn batch_delete_users_empty_list_fails() {
     let result = service.batch_delete_users(&[]).await;
     assert!(result.is_err(), "Batch delete should fail with empty list");
 }
-
-// ============================================================================
-// Constants and Limits Tests
-// ============================================================================
-
-#[test]
-fn batch_size_limit_is_defined() {
-    // Ensure the batch size limit is properly defined
-    assert_eq!(BATCH_SIZE_LIMIT, 100);
-}

@@ -27,7 +27,7 @@ fn rid(s: &str) -> RoomId {
 fn test_ice_candidate_event_serialization() {
     let room = rid("room1");
     let event = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: "ice_candidate".to_string(),
         from: "user1|conn1".to_string(),
@@ -90,7 +90,7 @@ async fn test_ice_candidate_routing() {
 
     // Send ICE candidate from user1 to user2
     let event = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         message_type: "ice_candidate".to_string(),
         from: format!("{}|conn1", user1.as_str()),
@@ -132,7 +132,7 @@ async fn test_ice_candidate_routing_supports_conn_id_only_target() {
         .expect("subscribe should succeed");
 
     let event = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         message_type: "ice_candidate".to_string(),
         from: format!("{}|conn1", user1.as_str()),
@@ -177,7 +177,7 @@ m=audio 9 UDP/TLS/RTP/SAVPF 111 103 104 9 0 8 106 105 13 110 112 113 126
 ...";
 
     let event = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: "offer".to_string(),
         from: "caller|conn1".to_string(),
@@ -213,7 +213,7 @@ a=group:BUNDLE 0 1
 ...";
 
     let event = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room,
         message_type: "answer".to_string(),
         from: "callee|conn2".to_string(),
@@ -252,7 +252,7 @@ async fn test_sdp_offer_answer_flow() {
 
     // Caller sends offer
     let offer = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         message_type: "offer".to_string(),
         from: format!("{}|conn1", caller.as_str()),
@@ -268,7 +268,7 @@ async fn test_sdp_offer_answer_flow() {
 
     // Callee sends answer
     let answer = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         message_type: "answer".to_string(),
         from: format!("{}|conn2", callee.as_str()),
@@ -294,7 +294,7 @@ fn test_webrtc_join_event() {
     let user = uid("user1");
 
     let event = ClusterEvent::WebRTCJoin {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room,
         user_id: user,
         conn_id: "conn1".to_string(),
@@ -315,7 +315,7 @@ fn test_webrtc_leave_event() {
     let user = uid("user1");
 
     let event = ClusterEvent::WebRTCLeave {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room,
         user_id: user,
         conn_id: "conn1".to_string(),
@@ -347,7 +347,7 @@ async fn test_webrtc_join_leave_broadcast() {
 
     // User1 joins WebRTC
     let join_event = ClusterEvent::WebRTCJoin {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         user_id: user1.clone(),
         conn_id: "conn1".to_string(),
@@ -364,7 +364,7 @@ async fn test_webrtc_join_leave_broadcast() {
 
     // User1 leaves WebRTC
     let leave_event = ClusterEvent::WebRTCLeave {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         user_id: user1.clone(),
         conn_id: "conn1".to_string(),
@@ -492,7 +492,7 @@ async fn test_multi_user_signaling() {
 
     // User1 sends ICE candidate to user2 only
     let event = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         message_type: "ice_candidate".to_string(),
         from: "user1|conn1".to_string(),
@@ -522,7 +522,7 @@ async fn test_multi_user_signaling() {
 fn test_signaling_event_timestamp() {
     let before = chrono::Utc::now();
     let event = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("room1"),
         message_type: "offer".to_string(),
         from: "user1|conn1".to_string(),
@@ -578,7 +578,7 @@ async fn test_connection_cleanup_on_webrtc_leave() {
 #[test]
 fn test_webrtc_signaling_not_critical() {
     let event = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("room1"),
         message_type: "ice_candidate".to_string(),
         from: "user1|conn1".to_string(),
@@ -610,7 +610,7 @@ fn test_large_sdp_payload() {
     );
 
     let event = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("room1"),
         message_type: "offer".to_string(),
         from: "user1|conn1".to_string(),
@@ -657,7 +657,7 @@ async fn test_broadcast_to_user_all_connections() {
 
     // Broadcast to user (all connections)
     let event = ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         message_type: "offer".to_string(),
         from: "other|conn0".to_string(),

@@ -12,6 +12,7 @@ k8s = ["kube", "k8s-openapi"]
 [dependencies]
 # Internal
 synctv-core.workspace = true
+synctv-common.workspace = true
 
 # Async
 tokio.workspace = true
@@ -49,7 +50,6 @@ anyhow.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
-nanoid.workspace = true
 
 # Security
 subtle.workspace = true

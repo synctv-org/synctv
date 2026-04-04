@@ -4,6 +4,88 @@ use serde_json::Value as JsonValue;
 use std::str::FromStr;
 
 use super::id::{MediaId, PlaylistId, RoomId, UserId};
+use super::query::SortDirection;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaListSortBy {
+    Name,
+    AddedAt,
+    UpdatedAt,
+    SourceProvider,
+    ProviderInstanceName,
+    #[default]
+    Position,
+}
+
+impl MediaListSortBy {
+    #[must_use]
+    pub const fn as_sql(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::AddedAt => "added_at",
+            Self::UpdatedAt => "updated_at",
+            Self::SourceProvider => "source_provider",
+            Self::ProviderInstanceName => "provider_instance_name",
+            Self::Position => "position",
+        }
+    }
+}
+
+impl std::str::FromStr for MediaListSortBy {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "name" => Ok(Self::Name),
+            "added_at" | "addedat" => Ok(Self::AddedAt),
+            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
+            "source_provider" | "sourceprovider" => Ok(Self::SourceProvider),
+            "provider_instance_name" | "providerinstancename" => Ok(Self::ProviderInstanceName),
+            "position" => Ok(Self::Position),
+            other => Err(format!("Unknown media list sort field: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for MediaListSortBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Name => "name",
+            Self::AddedAt => "added_at",
+            Self::UpdatedAt => "updated_at",
+            Self::SourceProvider => "source_provider",
+            Self::ProviderInstanceName => "provider_instance_name",
+            Self::Position => "position",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaListQuery {
+    pub pagination: super::pagination::PageParams,
+    pub search: Option<String>,
+    pub source_provider: Option<String>,
+    pub provider_instance_name: Option<String>,
+    #[serde(default)]
+    pub sort_by: MediaListSortBy,
+    #[serde(default)]
+    pub sort_direction: SortDirection,
+}
+
+impl Default for MediaListQuery {
+    fn default() -> Self {
+        Self {
+            pagination: super::pagination::PageParams::default(),
+            search: None,
+            source_provider: None,
+            provider_instance_name: None,
+            sort_by: MediaListSortBy::Position,
+            sort_direction: SortDirection::Asc,
+        }
+    }
+}
 
 /// Media provider type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

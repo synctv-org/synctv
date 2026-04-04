@@ -512,6 +512,11 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
                 target: br#"{"relative_path":"season-1"}"#.to_vec(),
                 page: 1,
                 page_size: 50,
+                search: String::new(),
+                source_provider: String::new(),
+                provider_instance_name: String::new(),
+                sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
             },
         )
         .await
@@ -714,6 +719,11 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
                 target: Vec::new(),
                 page: 1,
                 page_size: 50,
+                search: String::new(),
+                source_provider: String::new(),
+                provider_instance_name: String::new(),
+                sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
             },
         )
         .await
@@ -806,6 +816,11 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
                 target: Vec::new(),
                 page: 1,
                 page_size: 50,
+                search: String::new(),
+                source_provider: String::new(),
+                provider_instance_name: String::new(),
+                sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
             },
         )
         .await

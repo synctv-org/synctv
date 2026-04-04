@@ -371,7 +371,7 @@ async fn test_concurrent_room_creation_same_name_different_users() {
         handles.push(handle);
     }
 
-    // All should succeed since room IDs are unique (nanoid)
+    // All should succeed since room IDs are unique (shared base62 IDs)
     let mut created_room_ids = std::collections::HashSet::new();
     let mut success_count = 0;
 

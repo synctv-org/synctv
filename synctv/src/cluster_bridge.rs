@@ -18,7 +18,7 @@ impl synctv_core::service::PlaybackBroadcaster for ClusterPlaybackBroadcaster {
         state: &synctv_core::models::RoomPlaybackState,
     ) -> synctv_core::service::BroadcastResult {
         let event = synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: state.room_id.clone(),
             // For system-initiated broadcasts (auto-play, reset), use a sentinel user_id
             // with a clearly-invalid prefix that cannot collide with real user IDs.
@@ -56,7 +56,7 @@ impl synctv_core::service::MemberEventBroadcaster for ClusterMemberEventBroadcas
         let _ =
             self.cluster_manager
                 .broadcast(synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: room_id.clone(),
                     user_id: user_id.clone(),
                     reason: reason.to_string(),
@@ -68,7 +68,7 @@ impl synctv_core::service::MemberEventBroadcaster for ClusterMemberEventBroadcas
         let _ = self
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::KickUser {
-                event_id: nanoid::nanoid!(16),
+                event_id: synctv_common::snanoid!(16),
                 user_id: user_id.clone(),
                 reason: reason.to_string(),
                 timestamp: chrono::Utc::now(),

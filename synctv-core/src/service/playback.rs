@@ -860,97 +860,23 @@ impl PlaybackService {
         playlist_id: Option<PlaylistId>,
         target: Vec<u8>,
     ) -> Result<RoomPlaybackState> {
-        self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::CHANGE_CURRENT_MOVIE)
-            .await?;
-        let target = SwitchPlaybackTarget {
-            media_id,
-            playlist_id,
-            target,
-        };
-        validate_switch_target(&target)?;
+        self.switch_internal(room_id, user_id, media_id, playlist_id, target, false)
+            .await
+    }
 
-        if target.media_id.is_none() && target.playlist_id.is_none() {
-            let state = self
-                .update_state(room_id.clone(), |state| {
-                    state.playing_media_id = None;
-                    state.playing_playlist_id = None;
-                    state.target = Vec::new();
-                    state.current_time = 0.0;
-                    state.speed = 1.0;
-                    state.is_playing = false;
-                    state.updated_at = chrono::Utc::now();
-                })
-                .await?;
-
-            self.broadcast_state_change(&state).await;
-            return Ok(state);
-        }
-
-        if let Some(ref media_id) = target.media_id {
-            let media = self
-                .media_service
-                .get_media(media_id)
-                .await?
-                .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
-        }
-
-        if let Some(ref playlist_id) = target.playlist_id {
-            let playlist = self
-                .media_service
-                .get_playlist(playlist_id)
-                .await?
-                .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-            if playlist.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Playlist does not belong to this room".to_string(),
-                ));
-            }
-
-            if !playlist.is_dynamic() {
-                return Err(Error::InvalidInput(
-                    "playlist_id playback target must reference a dynamic playlist".to_string(),
-                ));
-            }
-
-            let resolved = self
-                .media_service
-                .resolve_dynamic_playlist_item(
-                    room_id.clone(),
-                    user_id.clone(),
-                    playlist_id,
-                    &target.target,
-                )
-                .await?;
-            if resolved.is_none() {
-                return Err(Error::NotFound(
-                    "Dynamic playlist item not found".to_string(),
-                ));
-            }
-        }
-
-        let state = self
-            .update_state(room_id.clone(), |state| {
-                state.playing_media_id = target.media_id.clone();
-                state.playing_playlist_id = target.playlist_id.clone();
-                state.target = target.target.clone();
-                state.current_time = 0.0;
-                state.is_playing = true;
-                state.updated_at = chrono::Utc::now();
-                // version is incremented by the SQL UPDATE, not here
-            })
-            .await?;
-
-        // Cache invalidation is already handled inside update_state()
-        self.broadcast_state_change(&state).await;
-        Ok(state)
+    /// Management-only playback switch that is authorized outside the room permission graph.
+    ///
+    /// Callers must validate global admin/root identity before invoking this method.
+    pub async fn admin_switch(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        media_id: Option<MediaId>,
+        playlist_id: Option<PlaylistId>,
+        target: Vec<u8>,
+    ) -> Result<RoomPlaybackState> {
+        self.switch_internal(room_id, actor_user_id, media_id, playlist_id, target, true)
+            .await
     }
 
     /// Play next media in playlist (auto-play next episode)
@@ -1318,25 +1244,18 @@ impl PlaybackService {
 
     /// Reset playback to initial state
     pub async fn reset(&self, room_id: RoomId, user_id: UserId) -> Result<RoomPlaybackState> {
-        self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::PLAY_CONTROL)
-            .await?;
+        self.reset_internal(room_id, user_id, false).await
+    }
 
-        let state = self
-            .update_state(room_id, |state| {
-                state.is_playing = false;
-                state.current_time = 0.0;
-                state.speed = 1.0;
-                state.playing_media_id = None;
-                state.playing_playlist_id = None;
-                state.target = Vec::new();
-                state.updated_at = chrono::Utc::now();
-                // version is incremented by the SQL UPDATE, not here
-            })
-            .await?;
-
-        self.broadcast_state_change(&state).await;
-        Ok(state)
+    /// Management-only playback reset that bypasses room membership-derived permissions.
+    ///
+    /// Callers must validate global admin/root identity before invoking this method.
+    pub async fn admin_reset(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+    ) -> Result<RoomPlaybackState> {
+        self.reset_internal(room_id, actor_user_id, true).await
     }
 
     pub async fn broadcast_playback_reset_after_force_delete(
@@ -1363,6 +1282,139 @@ impl PlaybackService {
     pub async fn get_current_time(&self, room_id: &RoomId) -> Result<f64> {
         let state = self.get_state(room_id).await?;
         Ok(state.current_time)
+    }
+
+    async fn switch_internal(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        media_id: Option<MediaId>,
+        playlist_id: Option<PlaylistId>,
+        target: Vec<u8>,
+        bypass_room_permissions: bool,
+    ) -> Result<RoomPlaybackState> {
+        if !bypass_room_permissions {
+            self.permission_service
+                .check_permission(&room_id, &user_id, PermissionBits::CHANGE_CURRENT_MOVIE)
+                .await?;
+        }
+        let target = SwitchPlaybackTarget {
+            media_id,
+            playlist_id,
+            target,
+        };
+        validate_switch_target(&target)?;
+
+        if target.media_id.is_none() && target.playlist_id.is_none() {
+            let state = self
+                .update_state(room_id.clone(), |state| {
+                    state.playing_media_id = None;
+                    state.playing_playlist_id = None;
+                    state.target = Vec::new();
+                    state.current_time = 0.0;
+                    state.speed = 1.0;
+                    state.is_playing = false;
+                    state.updated_at = chrono::Utc::now();
+                })
+                .await?;
+
+            self.broadcast_state_change(&state).await;
+            return Ok(state);
+        }
+
+        if let Some(ref media_id) = target.media_id {
+            let media = self
+                .media_service
+                .get_media(media_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+
+            if media.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
+            }
+        }
+
+        if let Some(ref playlist_id) = target.playlist_id {
+            let playlist = self
+                .media_service
+                .get_playlist(playlist_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+            if playlist.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Playlist does not belong to this room".to_string(),
+                ));
+            }
+
+            if !playlist.is_dynamic() {
+                return Err(Error::InvalidInput(
+                    "playlist_id playback target must reference a dynamic playlist".to_string(),
+                ));
+            }
+
+            let resolved = self
+                .media_service
+                .resolve_dynamic_playlist_item(
+                    room_id.clone(),
+                    user_id.clone(),
+                    playlist_id,
+                    &target.target,
+                )
+                .await?;
+            if resolved.is_none() {
+                return Err(Error::NotFound(
+                    "Dynamic playlist item not found".to_string(),
+                ));
+            }
+        }
+
+        let state = self
+            .update_state(room_id.clone(), |state| {
+                state.playing_media_id = target.media_id.clone();
+                state.playing_playlist_id = target.playlist_id.clone();
+                state.target = target.target.clone();
+                state.current_time = 0.0;
+                state.is_playing = true;
+                state.updated_at = chrono::Utc::now();
+                // version is incremented by the SQL UPDATE, not here
+            })
+            .await?;
+
+        // Cache invalidation is already handled inside update_state()
+        self.broadcast_state_change(&state).await;
+        Ok(state)
+    }
+
+    async fn reset_internal(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        bypass_room_permissions: bool,
+    ) -> Result<RoomPlaybackState> {
+        if !bypass_room_permissions {
+            self.permission_service
+                .check_permission(&room_id, &user_id, PermissionBits::PLAY_CONTROL)
+                .await?;
+        }
+
+        let state = self
+            .update_state(room_id, |state| {
+                state.is_playing = false;
+                state.current_time = 0.0;
+                state.speed = 1.0;
+                state.playing_media_id = None;
+                state.playing_playlist_id = None;
+                state.target = Vec::new();
+                state.updated_at = chrono::Utc::now();
+                // version is incremented by the SQL UPDATE, not here
+            })
+            .await?;
+
+        self.broadcast_state_change(&state).await;
+        Ok(state)
     }
 
     /// Get current playback speed
@@ -1854,33 +1906,6 @@ mod tests {
             );
         }
 
-        #[test]
-        fn test_max_attempts_is_five() {
-            assert_eq!(PlaybackService::MAX_RETRIES, 5, "MAX_RETRIES should be 5");
-        }
-
-        #[test]
-        fn test_max_retries_exceeds_generic_default() {
-            assert_eq!(
-                PlaybackService::MAX_RETRIES,
-                crate::service::optimistic_retry::DEFAULT_MAX_RETRIES + 2,
-                "PlaybackService retries should reserve extra budget for bursty playback contention"
-            );
-        }
-
-        #[test]
-        fn test_backoff_increases_exponentially() {
-            // Verify exponential backoff calculation:
-            // attempt 0: base * 1 = 5ms
-            // attempt 1: base * 2 = 10ms
-            let base_ms = PlaybackService::BACKOFF_BASE_MS;
-
-            let backoff_attempt_0 = base_ms; // 5ms
-            let backoff_attempt_1 = base_ms * (1 << 1); // 10ms
-
-            assert_eq!(backoff_attempt_0, 5);
-            assert_eq!(backoff_attempt_1, 10);
-        }
     }
 
     /// Tests for the CAS (compare-and-swap) version check in

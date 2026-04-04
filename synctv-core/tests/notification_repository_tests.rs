@@ -237,6 +237,9 @@ async fn test_list_by_user_with_count_empty_returns_zero() {
         pagination: PageParams::default(),
         is_read: None,
         notification_type: None,
+        search: None,
+        sort_by: synctv_core::models::NotificationListSortBy::CreatedAt,
+        sort_direction: synctv_core::models::SortDirection::Desc,
     };
 
     let (notifications, total) = notif_repo
@@ -267,6 +270,9 @@ async fn test_list_by_user_with_count_returns_correct_total() {
         pagination: PageParams::new(Some(1), Some(2)),
         is_read: None,
         notification_type: None,
+        search: None,
+        sort_by: synctv_core::models::NotificationListSortBy::CreatedAt,
+        sort_direction: synctv_core::models::SortDirection::Desc,
     };
 
     let (notifications, total) = notif_repo
@@ -312,6 +318,9 @@ async fn test_list_by_user_with_count_has_partition_pruning() {
         pagination: PageParams::default(),
         is_read: None,
         notification_type: None,
+        search: None,
+        sort_by: synctv_core::models::NotificationListSortBy::CreatedAt,
+        sort_direction: synctv_core::models::SortDirection::Desc,
     };
 
     let (notifications, total) = notif_repo

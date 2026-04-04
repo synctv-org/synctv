@@ -87,6 +87,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.ListPlaylistItemsRequest.playlist_id",
         ".synctv.client.ListPlaylistItemsRequest.page",
         ".synctv.client.ListPlaylistItemsRequest.page_size",
+        ".synctv.client.ListPlaylistItemsRequest.search",
+        ".synctv.client.ListPlaylistItemsRequest.source_provider",
+        ".synctv.client.ListPlaylistItemsRequest.provider_instance_name",
+        ".synctv.client.ListPlaylistItemsRequest.sort_by",
+        ".synctv.client.ListPlaylistItemsRequest.sort_direction",
         ".synctv.client.EditMediaRequest.media_id",
         ".synctv.client.DeleteEntriesRequest.playlist_ids",
         ".synctv.client.DeleteEntriesRequest.media_ids",
@@ -156,18 +161,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     prost_config.field_attribute(
         ".synctv.client.UpdatePlaylistRequest.position",
         "#[serde(default = \"crate::serde_defaults::update_playlist_position\")]",
-    );
-    prost_config.field_attribute(
-        ".synctv.admin.UpdateUserPasswordRequest.new_password",
-        "#[serde(alias = \"password\")]",
-    );
-    prost_config.field_attribute(
-        ".synctv.admin.UpdateUserUsernameRequest.new_username",
-        "#[serde(alias = \"username\")]",
-    );
-    prost_config.field_attribute(
-        ".synctv.admin.UpdateRoomPasswordRequest.new_password",
-        "#[serde(alias = \"password\")]",
     );
     prost_config.field_attribute(".synctv.admin.BanUserRequest.reason", "#[serde(default)]");
     prost_config.field_attribute(".synctv.admin.BanRoomRequest.reason", "#[serde(default)]");

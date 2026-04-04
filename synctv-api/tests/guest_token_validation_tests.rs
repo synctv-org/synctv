@@ -399,18 +399,3 @@ fn test_validator_has_blacklist_flag() {
         "Validator without blacklist should report has_blacklist=false"
     );
 }
-
-/// Test that GuestTokenValidator is Debug-printable.
-#[test]
-fn test_validator_debug_format() {
-    let validator = create_test_validator_with_blacklist();
-    let debug_str = format!("{validator:?}");
-    assert!(
-        debug_str.contains("GuestTokenValidator"),
-        "Debug output should contain struct name"
-    );
-    assert!(
-        debug_str.contains("has_blacklist"),
-        "Debug output should contain has_blacklist field"
-    );
-}

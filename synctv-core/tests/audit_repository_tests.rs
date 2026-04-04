@@ -48,7 +48,7 @@ async fn test_list_filter_by_actor_id() {
     let repo = AuditLogRepository::new(pool.clone());
     let now = Utc::now();
 
-    let actor_a = generate_id(); // 12-char nanoid
+    let actor_a = generate_id(); // 12-char base62 ID
     let actor_b = generate_id();
 
     insert_audit_log(&pool, Some(&actor_a), None, "login", None, None, now).await;

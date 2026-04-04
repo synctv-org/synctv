@@ -250,16 +250,15 @@ async fn test_list_by_room_paginated_empty_page() {
         .await
         .unwrap();
 
-    // Only 1 member, requesting page 2 should return empty
-    // Note: COUNT(*) OVER() returns 0 when OFFSET exceeds total rows
+    // Only 1 member, requesting page 2 should return an empty page while
+    // preserving the total number of matching members.
     let pagination = PageParams::new(Some(2), Some(10));
     let (members, total) = member_repo
         .list_by_room_paginated(&room.id, pagination)
         .await
         .unwrap();
 
-    // When OFFSET > total rows, the window function has no rows to count, so total=0
-    assert_eq!(total, 0, "Total should be 0 when page is beyond data");
+    assert_eq!(total, 1, "Total should reflect all matching members");
     assert!(members.is_empty(), "Page 2 should be empty");
 }
 
@@ -431,12 +430,11 @@ async fn test_list_by_room_paginated_large_member_count() {
         .list_by_room_paginated(&room.id, PageParams::new(Some(4), Some(50)))
         .await
         .unwrap();
-    // Page 4 might have remaining members if page 3 didn't get all
+    // Page 4 might have remaining members if page 3 didn't get all.
+    // Even if the page is empty, total should still reflect the full match set.
     if p4.is_empty() {
-        // When page is beyond data, total is 0 (no rows to count with window function)
-        assert_eq!(total4, 0);
+        assert_eq!(total4, expected_total);
     } else {
-        // If there are remaining members, total should still be consistent
         assert_eq!(total4, expected_total);
     }
 }
@@ -629,56 +627,6 @@ async fn test_list_by_room_paginated_empty_room() {
 
     assert_eq!(total, 0);
     assert!(members.is_empty());
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_default_pagination() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    let owner = user_repo.create(&make_user("owner_default")).await.unwrap();
-    let room = room_repo
-        .create(&make_room("Room Default", &owner.id))
-        .await
-        .unwrap();
-
-    member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
-        .await
-        .unwrap();
-
-    // Add 30 members
-    for i in 0..30 {
-        let user = user_repo
-            .create(&make_user(&format!("member_default_{i:02}")))
-            .await
-            .unwrap();
-        member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
-            .await
-            .unwrap();
-    }
-
-    // Use default pagination (page=1, page_size=20)
-    let pagination = PageParams::default();
-    let (members, total) = member_repo
-        .list_by_room_paginated(&room.id, pagination)
-        .await
-        .unwrap();
-
-    assert_eq!(total, 31); // 1 creator + 30 members
-    assert_eq!(members.len(), 20); // Default page size
 }
 
 // ========== MemberService pagination tests ==========

@@ -913,6 +913,10 @@ impl BilibiliProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{MediaProvider, ProviderContext};
+    use crate::repository::ProviderInstanceRepository;
+    use crate::service::RemoteProviderManager;
+    use std::sync::Arc;
 
     fn test_cred_ref() -> serde_json::Value {
         json!({
@@ -921,66 +925,21 @@ mod tests {
         })
     }
 
-    fn validate_bilibili(config: Value) -> Result<(), ProviderError> {
-        // Replicate the validation logic without needing a full provider instance
-        let config = BilibiliSourceConfig::try_from(&config)?;
+    fn fake_provider_instance_manager() -> Arc<RemoteProviderManager> {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        Arc::new(RemoteProviderManager::new(repo))
+    }
 
-        match &config {
-            BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
-                let has_bvid = bvid.as_ref().is_some_and(|s| !s.is_empty());
-                let has_aid = aid.is_some_and(|a| a > 0);
-                if !has_bvid && !has_aid {
-                    return Err(ProviderError::InvalidConfig(
-                        "Bilibili video requires either bvid or aid".to_string(),
-                    ));
-                }
-                if let Some(bv) = bvid.as_ref() {
-                    if !bv.is_empty() {
-                        if !bv.starts_with("BV") {
-                            return Err(ProviderError::InvalidConfig(
-                                "Bilibili bvid must start with 'BV'".to_string(),
-                            ));
-                        }
-                        if bv.len() != 12 {
-                            return Err(ProviderError::InvalidConfig(
-                                "Bilibili bvid must be exactly 12 characters long".to_string(),
-                            ));
-                        }
-                        if !bv.chars().all(|c| c.is_ascii_alphanumeric()) {
-                            return Err(ProviderError::InvalidConfig(
-                                "Bilibili bvid must contain only alphanumeric characters"
-                                    .to_string(),
-                            ));
-                        }
-                    }
-                }
-                if *cid == 0 {
-                    return Err(ProviderError::InvalidConfig(
-                        "Bilibili video cid must be non-zero".to_string(),
-                    ));
-                }
-            }
-            BilibiliSourceConfig::Pgc { epid, cid, .. } => {
-                if *epid == 0 {
-                    return Err(ProviderError::InvalidConfig(
-                        "Bilibili PGC epid must be non-zero".to_string(),
-                    ));
-                }
-                if *cid == 0 {
-                    return Err(ProviderError::InvalidConfig(
-                        "Bilibili PGC cid must be non-zero".to_string(),
-                    ));
-                }
-            }
-            BilibiliSourceConfig::Live { room_id, .. } => {
-                if *room_id == 0 {
-                    return Err(ProviderError::InvalidConfig(
-                        "Bilibili live room_id must be non-zero".to_string(),
-                    ));
-                }
-            }
-        }
-        Ok(())
+    fn validate_bilibili(config: Value) -> Result<(), ProviderError> {
+        tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                let provider = BilibiliProvider::new(fake_provider_instance_manager());
+                provider
+                    .validate_source_config(&ProviderContext::new("test"), &config)
+                    .await
+            })
     }
 
     #[test]

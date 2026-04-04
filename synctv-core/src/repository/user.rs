@@ -3,7 +3,7 @@ use sqlx::PgPool;
 
 use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
-    models::{User, UserId, UserListQuery},
+    models::{User, UserId, UserListQuery, UserListSortBy},
     Error, Result,
 };
 
@@ -424,6 +424,22 @@ impl UserRepository {
         wb
     }
 
+    fn build_order_by(query: &UserListQuery) -> String {
+        let direction = query.sort_direction.as_sql();
+        match query.sort_by {
+            UserListSortBy::Username => format!("username {direction}, id {direction}"),
+            UserListSortBy::Email => format!("email {direction} NULLS LAST, id {direction}"),
+            UserListSortBy::Status => {
+                format!("status {direction}, created_at {direction}, id {direction}")
+            }
+            UserListSortBy::Role => {
+                format!("role {direction}, created_at {direction}, id {direction}")
+            }
+            UserListSortBy::UpdatedAt => format!("updated_at {direction}, id {direction}"),
+            UserListSortBy::CreatedAt => format!("created_at {direction}, id {direction}"),
+        }
+    }
+
     /// Bind the filter parameters (search, status, role) onto a sqlx query in order.
     /// This is used by both count and list queries to avoid duplicating bind logic.
     fn bind_user_filters<'q, O>(
@@ -475,12 +491,13 @@ impl UserRepository {
 
         // List query: $1=LIMIT, $2=OFFSET, then filters start at $3
         let (list_where, _) = wb.build(3);
+        let order_by = Self::build_order_by(query);
         let list_sql = format!(
             r"
             SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
             FROM users
             WHERE {list_where}
-            ORDER BY created_at DESC
+            ORDER BY {order_by}
             LIMIT $1 OFFSET $2
             "
         );
@@ -491,6 +508,62 @@ impl UserRepository {
             .bind(offset);
         let list_qb = Self::bind_user_filters(list_qb, &search_pattern, &query.status, &query.role);
         let users: Vec<User> = list_qb.fetch_all(&self.pool).await?;
+
+        Ok((users, count))
+    }
+
+    /// List admin-capable users (root + admin) with pagination.
+    pub async fn list_admins(&self, query: &UserListQuery) -> Result<(Vec<User>, i64)> {
+        let limit = query.pagination.limit() as i64;
+        let offset = query.pagination.offset() as i64;
+        let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
+        let order_by = Self::build_order_by(query);
+
+        let mut count_qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND role IN (",
+        );
+        count_qb.push_bind(crate::models::UserRole::Root);
+        count_qb.push(", ");
+        count_qb.push_bind(crate::models::UserRole::Admin);
+        count_qb.push(")");
+        if let Some(pattern) = &search_pattern {
+            count_qb.push(" AND (username ILIKE ");
+            count_qb.push_bind(pattern.clone());
+            count_qb.push(" OR email ILIKE ");
+            count_qb.push_bind(pattern.clone());
+            count_qb.push(")");
+        }
+        let count = count_qb
+            .build_query_scalar::<i64>()
+            .fetch_one(&self.pool)
+            .await?;
+
+        let mut list_qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "SELECT id, username, email, password_hash, signup_method, role, status, created_at, \
+             updated_at, password_changed_at, password_version, version, deleted_at, \
+             email_verified \
+             FROM users WHERE deleted_at IS NULL AND role IN (",
+        );
+        list_qb.push_bind(crate::models::UserRole::Root);
+        list_qb.push(", ");
+        list_qb.push_bind(crate::models::UserRole::Admin);
+        list_qb.push(")");
+        if let Some(pattern) = &search_pattern {
+            list_qb.push(" AND (username ILIKE ");
+            list_qb.push_bind(pattern.clone());
+            list_qb.push(" OR email ILIKE ");
+            list_qb.push_bind(pattern.clone());
+            list_qb.push(")");
+        }
+        list_qb.push(format!(" ORDER BY {order_by} LIMIT "));
+        list_qb.push_bind(limit);
+        list_qb.push(" OFFSET ");
+        list_qb.push_bind(offset);
+
+        let users = list_qb
+            .build_query_as::<User>()
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok((users, count))
     }
@@ -541,6 +614,8 @@ mod tests {
             status: None,
             role: None,
             pagination: crate::models::PageParams::default(),
+            sort_by: crate::models::UserListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = UserRepository::build_user_list_conditions(&query);
 
@@ -557,6 +632,8 @@ mod tests {
             status: None,
             role: None,
             pagination: crate::models::PageParams::default(),
+            sort_by: crate::models::UserListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = UserRepository::build_user_list_conditions(&query);
 
@@ -574,6 +651,8 @@ mod tests {
             status: Some(crate::models::UserStatus::Active),
             role: None,
             pagination: crate::models::PageParams::default(),
+            sort_by: crate::models::UserListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = UserRepository::build_user_list_conditions(&query);
 
@@ -589,6 +668,8 @@ mod tests {
             status: None,
             role: Some(crate::models::UserRole::Admin),
             pagination: crate::models::PageParams::default(),
+            sort_by: crate::models::UserListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = UserRepository::build_user_list_conditions(&query);
 
@@ -604,6 +685,8 @@ mod tests {
             status: Some(crate::models::UserStatus::Active),
             role: Some(crate::models::UserRole::User),
             pagination: crate::models::PageParams::default(),
+            sort_by: crate::models::UserListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = UserRepository::build_user_list_conditions(&query);
 
@@ -623,6 +706,40 @@ mod tests {
         assert!(sql.contains("status = $4"));
         assert!(sql.contains("role = $5"));
         assert_eq!(next, 6);
+    }
+
+    #[test]
+    fn test_build_order_by_uses_requested_sort() {
+        let query = UserListQuery {
+            search: None,
+            status: None,
+            role: None,
+            pagination: crate::models::PageParams::default(),
+            sort_by: crate::models::UserListSortBy::Username,
+            sort_direction: crate::models::SortDirection::Asc,
+        };
+
+        assert_eq!(
+            UserRepository::build_order_by(&query),
+            "username ASC, id ASC"
+        );
+    }
+
+    #[test]
+    fn test_user_list_order_clause_supports_username_ascending() {
+        let query = UserListQuery {
+            search: None,
+            status: None,
+            role: None,
+            sort_by: crate::models::UserListSortBy::Username,
+            sort_direction: crate::models::SortDirection::Asc,
+            pagination: crate::models::PageParams::default(),
+        };
+
+        assert_eq!(
+            UserRepository::build_order_by(&query),
+            "username ASC, id ASC"
+        );
     }
 
     // ========== Integration Tests (Require DB via testcontainers) ==========

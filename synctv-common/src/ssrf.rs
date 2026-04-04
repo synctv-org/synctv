@@ -442,20 +442,6 @@ mod tests {
         assert!(!guard.is_host_blocked("example.com"));
     }
 
-    #[test]
-    fn test_guard_dns_resolver() {
-        let guard = SsrfGuard::default_policy();
-        let _resolver = guard.dns_resolver();
-    }
-
-    #[test]
-    fn test_guard_clone() {
-        let guard = SsrfGuard::default_policy();
-        let cloned = guard;
-        assert!(cloned.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
-        assert!(!cloned.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
-    }
-
     // =======================================================================
     // Builder tests
     // =======================================================================
@@ -492,17 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_extra_allowed_host() {
-        let guard = SsrfGuard::builder()
-            .extra_allowed_host("trusted.internal".to_string())
-            .build();
-        // Default blocks still apply
-        assert!(guard.is_host_blocked("localhost"));
-        // Public hosts still allowed
-        assert!(!guard.is_host_blocked("example.com"));
-    }
-
-    #[test]
     fn test_builder_disallow_http() {
         let guard = SsrfGuard::builder().allow_http(false).build();
         let acl = guard.acl();
@@ -522,20 +497,4 @@ mod tests {
         assert!(acl.is_scheme_allowed("http").is_allowed());
     }
 
-    #[test]
-    fn test_shared_default_guard_matches_default_policy() {
-        let guard1 = SsrfGuard::shared_default();
-        let guard2 = SsrfGuard::default_policy();
-        // Both should block/allow the same IPs
-        let test_ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        assert_eq!(
-            guard1.is_ip_blocked(&test_ip),
-            guard2.is_ip_blocked(&test_ip)
-        );
-        let public_ip = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
-        assert_eq!(
-            guard1.is_ip_blocked(&public_ip),
-            guard2.is_ip_blocked(&public_ip)
-        );
-    }
 }

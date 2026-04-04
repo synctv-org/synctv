@@ -109,6 +109,26 @@ impl AppError {
             "Service temporarily unavailable. Please try again later.",
         )
     }
+
+    #[must_use]
+    pub fn missing_authorization_header() -> Self {
+        Self::unauthorized("Missing Authorization header")
+    }
+
+    #[must_use]
+    pub fn invalid_authorization_header() -> Self {
+        Self::unauthorized("Invalid Authorization header")
+    }
+
+    #[must_use]
+    pub fn invalid_or_expired_token() -> Self {
+        Self::unauthorized("Invalid or expired token")
+    }
+
+    #[must_use]
+    pub fn invalid_or_expired_ticket() -> Self {
+        Self::unauthorized("Invalid or expired ticket")
+    }
 }
 
 impl fmt::Display for AppError {
@@ -518,6 +538,34 @@ mod tests {
         let err = AppError::internal("oops");
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.message, "oops");
+    }
+
+    #[test]
+    fn test_missing_authorization_header_helper() {
+        let err = AppError::missing_authorization_header();
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message, "Missing Authorization header");
+    }
+
+    #[test]
+    fn test_invalid_authorization_header_helper() {
+        let err = AppError::invalid_authorization_header();
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message, "Invalid Authorization header");
+    }
+
+    #[test]
+    fn test_invalid_or_expired_token_helper() {
+        let err = AppError::invalid_or_expired_token();
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message, "Invalid or expired token");
+    }
+
+    #[test]
+    fn test_invalid_or_expired_ticket_helper() {
+        let err = AppError::invalid_or_expired_ticket();
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message, "Invalid or expired ticket");
     }
 
     // ========== Common user-facing errors ==========

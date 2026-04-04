@@ -238,7 +238,7 @@ async fn test_multi_replica_websocket_connections() {
         &mut clients_a,
         message_from_a,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("ws_client_a_0".to_string()),
             username: "client_a_0".to_string(),
@@ -255,7 +255,7 @@ async fn test_multi_replica_websocket_connections() {
         &mut clients_b,
         message_from_a,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("ws_client_a_0".to_string()),
             username: "client_a_0".to_string(),
@@ -272,7 +272,7 @@ async fn test_multi_replica_websocket_connections() {
         &mut clients_c,
         message_from_a,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("ws_client_a_0".to_string()),
             username: "client_a_0".to_string(),
@@ -292,7 +292,7 @@ async fn test_multi_replica_websocket_connections() {
         &mut clients_a,
         message_from_c,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("ws_client_c_2".to_string()),
             username: "client_c_2".to_string(),
@@ -309,7 +309,7 @@ async fn test_multi_replica_websocket_connections() {
         &mut clients_b,
         message_from_c,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("ws_client_c_2".to_string()),
             username: "client_c_2".to_string(),

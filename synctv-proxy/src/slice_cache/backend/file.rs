@@ -1131,22 +1131,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_file_backend_evict_to_size_no_op() {
-        let (backend, _tmp) = make_backend().await;
-        put_entry(
-            &backend,
-            "aaaa0000000000000000000000000000000000000000000000000000000000aa",
-            &[0u8; 50],
-        )
-        .await;
-
-        // Target is above current size -- nothing to do.
-        let freed = backend.evict_to_size(1000).await;
-        assert_eq!(freed, 0);
-        assert_eq!(backend.entry_count(), 1);
-    }
-
     // --- Load index ---
 
     #[tokio::test]

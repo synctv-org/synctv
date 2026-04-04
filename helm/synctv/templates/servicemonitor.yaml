@@ -3,11 +3,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{ include "synctv.fullname" . }}
-  {{- if .Values.metrics.serviceMonitor.namespace }}
-  namespace: {{ .Values.metrics.serviceMonitor.namespace }}
-  {{- else }}
-  namespace: {{ .Release.Namespace }}
-  {{- end }}
+  namespace: {{ .Values.metrics.serviceMonitor.namespace | default .Release.Namespace }}
   labels:
     {{- include "synctv.labels" . | nindent 4 }}
     {{- with .Values.metrics.serviceMonitor.labels }}
@@ -21,10 +17,36 @@ spec:
     matchNames:
       - {{ .Release.Namespace }}
   endpoints:
-    - port: api
+    - port: metrics
       path: {{ .Values.metrics.path | default "/metrics" }}
       interval: {{ .Values.metrics.serviceMonitor.interval | default "30s" }}
       {{- with .Values.metrics.serviceMonitor.scrapeTimeout }}
       scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- if .Values.metrics.tls.enabled }}
+      scheme: https
+      tlsConfig:
+        serverName: {{ include "synctv.metricsTlsServerName" . }}
+        ca:
+          secret:
+            name: {{ include "synctv.metricsTlsSecretName" . }}
+            key: ca.crt
+      {{- end }}
+      {{- if eq (.Values.metrics.auth.mode | default "bearer_token") "kubernetes" }}
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      {{- else if eq (.Values.metrics.auth.mode | default "bearer_token") "bearer_token" }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "synctv.secretName" . }}
+          key: SYNCTV_METRICS_AUTH_BEARER_TOKEN
+      {{- else if eq (.Values.metrics.auth.mode | default "bearer_token") "basic" }}
+      basicAuth:
+        username:
+          name: {{ include "synctv.secretName" . }}
+          key: SYNCTV_METRICS_AUTH_BASIC_USERNAME
+        password:
+          name: {{ include "synctv.secretName" . }}
+          key: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
       {{- end }}
 {{- end }}

@@ -103,6 +103,18 @@ impl MediaService {
         &self.providers_manager
     }
 
+    /// Get the credential encryption used for provider source resolution, if configured.
+    #[must_use]
+    pub const fn credential_encryption(&self) -> Option<&crate::service::CredentialEncryption> {
+        self.credential_encryption.as_ref()
+    }
+
+    /// Get the credential repository used for provider source resolution, if configured.
+    #[must_use]
+    pub const fn credential_repo(&self) -> Option<&Arc<UserProviderCredentialRepository>> {
+        self.credential_repo.as_ref()
+    }
+
     /// Set the notification service for broadcasting media changes to local WebSocket clients
     pub fn set_notification_service(&mut self, service: NotificationService) {
         self.notification_service = Some(service);
@@ -276,6 +288,124 @@ impl MediaService {
                     created_media.id.as_str(),
                     &created_media.name,
                     "", // URL is generated dynamically at playback time
+                    created_media.position,
+                )
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    "Failed to broadcast media added event"
+                );
+            }
+        }
+
+        Ok(created_media)
+    }
+
+    /// Add media to a playlist as a global admin.
+    ///
+    /// This bypasses room membership and room-scoped permission checks, but still
+    /// validates provider binding, room ownership, and source configuration.
+    pub async fn admin_add_media(
+        &self,
+        room_id: RoomId,
+        admin_user_id: UserId,
+        request: AddMediaRequest,
+    ) -> Result<Media> {
+        if let Some(ref playlist_id) = request.playlist_id {
+            let playlist = self
+                .playlist_repo
+                .get_by_id(playlist_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+            if playlist.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Playlist does not belong to this room".to_string(),
+                ));
+            }
+        }
+
+        let provider = self
+            .providers_manager
+            .get(&request.provider_instance_name)
+            .await
+            .ok_or_else(|| {
+                Error::NotFound(format!(
+                    "Provider instance not found: {}",
+                    request.provider_instance_name
+                ))
+            })?;
+
+        let mut ctx = ProviderContext::new("synctv")
+            .with_user_id(admin_user_id.as_str())
+            .with_room_id(room_id.as_str());
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
+        }
+
+        provider
+            .validate_source_config(&ctx, &request.source_config)
+            .await
+            .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
+
+        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024;
+        let config_size = serde_json::to_string(&request.source_config).map_or(0, |s| s.len());
+        if config_size > MAX_SOURCE_CONFIG_SIZE {
+            return Err(Error::InvalidInput(format!(
+                "source_config too large: {config_size} bytes (max {MAX_SOURCE_CONFIG_SIZE} bytes / 1MB)"
+            )));
+        }
+
+        let prepared_source_config = provider
+            .prepare_source_config(&ctx, request.source_config.clone())
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to prepare source_config: {e}")))?;
+
+        let mut tx = self.media_repo.pool().begin().await?;
+        let position = self
+            .media_repo
+            .get_next_position_with_tx(&room_id, request.playlist_id.as_ref(), &mut tx)
+            .await?;
+
+        let media = Media::from_provider(
+            request.playlist_id.clone(),
+            room_id.clone(),
+            Some(admin_user_id.clone()),
+            request.name.clone(),
+            prepared_source_config,
+            provider.name(),
+            request.provider_instance_name.clone(),
+            position,
+        );
+
+        let created_media = self
+            .media_repo
+            .create_with_executor(&media, &mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        tracing::info!(
+            room_id = %room_id.as_str(),
+            admin_user_id = %admin_user_id.as_str(),
+            media_id = %created_media.id.as_str(),
+            name = %created_media.name,
+            provider = %request.provider_instance_name,
+            "Media added to playlist by admin"
+        );
+
+        if let Some(ref ns) = self.notification_service {
+            if let Err(e) = ns
+                .notify_media_added(
+                    &room_id,
+                    created_media.id.as_str(),
+                    &created_media.name,
+                    "",
                     created_media.position,
                 )
                 .await
@@ -551,6 +681,87 @@ impl MediaService {
                             request.media_id.as_str()
                         ),
                     ));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(Error::Internal(format!(
+            "Media edit failed after {} attempts for media_id={}",
+            Self::EDIT_MAX_RETRIES,
+            request.media_id.as_str()
+        )))
+    }
+
+    /// Edit media item as a global admin.
+    pub async fn admin_edit_media(
+        &self,
+        room_id: RoomId,
+        admin_user_id: UserId,
+        request: EditMediaRequest,
+    ) -> Result<Media> {
+        for attempt in 0..Self::EDIT_MAX_RETRIES {
+            let mut media = self
+                .media_repo
+                .get_by_id(&request.media_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+
+            if media.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
+            }
+
+            let expected_version = media.version;
+
+            if let Some(ref name) = request.name {
+                media.name = name.clone();
+            }
+            if let Some(position) = request.position {
+                media.position = position;
+            }
+
+            match self
+                .media_repo
+                .update_with_version(&media, expected_version)
+                .await
+            {
+                Ok(Some(updated_media)) => {
+                    tracing::info!(
+                        room_id = %room_id.as_str(),
+                        admin_user_id = %admin_user_id.as_str(),
+                        media_id = %request.media_id.as_str(),
+                        "Media edited by admin"
+                    );
+
+                    if let Some(ref ns) = self.notification_service {
+                        if let Err(e) = ns
+                            .notify_media_updated(
+                                &room_id,
+                                updated_media.id.as_str(),
+                                &updated_media.name,
+                                updated_media.position,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                room_id = %room_id.as_str(),
+                                "Failed to broadcast media updated event"
+                            );
+                        }
+                    }
+
+                    return Ok(updated_media);
+                }
+                Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => continue,
+                Ok(None) => {
+                    return Err(Error::Internal(format!(
+                        "Media edit failed: concurrent modification after {} retries for media_id={}",
+                        attempt + 1,
+                        request.media_id.as_str()
+                    )));
                 }
                 Err(e) => return Err(e),
             }
@@ -974,6 +1185,165 @@ impl MediaService {
         );
 
         Ok(())
+    }
+
+    /// Bulk reorder media items as a global admin.
+    pub async fn admin_reorder_media_batch(
+        &self,
+        room_id: RoomId,
+        admin_user_id: UserId,
+        updates: Vec<(MediaId, i32)>,
+    ) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        if updates.len() > MAX_BATCH_SIZE {
+            return Err(Error::InvalidInput(format!(
+                "Batch size exceeds maximum of {MAX_BATCH_SIZE}"
+            )));
+        }
+
+        for (media_id, position) in &updates {
+            if *position < 0 {
+                return Err(Error::InvalidInput(format!(
+                    "Invalid position {} for media {}: position must be non-negative",
+                    position,
+                    media_id.as_str()
+                )));
+            }
+        }
+
+        let mut tx = self.media_repo.pool().begin().await?;
+        let media_ids: Vec<MediaId> = updates.iter().map(|(id, _)| id.clone()).collect();
+        let media_items = self
+            .media_repo
+            .get_by_ids_with_executor(&media_ids, &mut *tx)
+            .await?;
+
+        if media_items.len() != updates.len() {
+            return Err(Error::NotFound(
+                "One or more media items not found".to_string(),
+            ));
+        }
+
+        for media in &media_items {
+            if media.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
+            }
+        }
+
+        self.media_repo
+            .reorder_batch_with_tx(&updates, &mut tx)
+            .await?;
+
+        tx.commit().await?;
+
+        tracing::info!(
+            room_id = %room_id.as_str(),
+            admin_user_id = %admin_user_id.as_str(),
+            count = updates.len(),
+            "Bulk reordered media in playlist by admin"
+        );
+
+        Ok(())
+    }
+
+    /// List dynamic playlist items as a global admin.
+    pub async fn admin_list_dynamic_playlist_items(
+        &self,
+        room_id: RoomId,
+        admin_user_id: UserId,
+        playlist_id: &PlaylistId,
+        target: Option<&[u8]>,
+        page: usize,
+        page_size: usize,
+    ) -> Result<Vec<DirectoryItem>> {
+        let playlist = self
+            .playlist_repo
+            .get_by_id(playlist_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+        if playlist.room_id != room_id {
+            return Err(Error::Authorization(
+                "Playlist does not belong to this room".to_string(),
+            ));
+        }
+
+        if !playlist.is_dynamic() {
+            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
+        }
+
+        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
+        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Provider {provider_name} does not support dynamic folders"
+            ))
+        })?;
+
+        let mut ctx = ProviderContext::new("synctv")
+            .with_user_id(admin_user_id.as_str())
+            .with_room_id(room_id.as_str());
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
+        }
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
+
+        dynamic_folder
+            .list_playlist(&ctx, &playlist, target, page, page_size)
+            .await
+            .map_err(Error::from)
+    }
+
+    pub async fn admin_get_dynamic_playlist_browse_path(
+        &self,
+        room_id: RoomId,
+        admin_user_id: UserId,
+        playlist_id: &PlaylistId,
+        target: Option<&[u8]>,
+    ) -> Result<Vec<crate::provider::DynamicBrowsePathSegment>> {
+        let playlist = self
+            .playlist_repo
+            .get_by_id(playlist_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+        if playlist.room_id != room_id {
+            return Err(Error::Authorization(
+                "Playlist does not belong to this room".to_string(),
+            ));
+        }
+
+        if !playlist.is_dynamic() {
+            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
+        }
+
+        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
+        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Provider {provider_name} does not support dynamic folders"
+            ))
+        })?;
+
+        let mut ctx = ProviderContext::new("synctv")
+            .with_user_id(admin_user_id.as_str())
+            .with_room_id(room_id.as_str());
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
+        }
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
+
+        dynamic_folder
+            .browse_path(&ctx, &playlist, target)
+            .await
+            .map_err(Error::from)
     }
 
     /// Delete all media in a playlist (single query, no N+1).

@@ -67,7 +67,7 @@ CREATE INDEX idx_media_playlist_covering ON media(playlist_id, position, source_
 
 -- Comments
 COMMENT ON TABLE media IS 'Media items (videos/audio) in playlists';
-COMMENT ON COLUMN media.id IS '12-character nanoid';
+COMMENT ON COLUMN media.id IS '12-character base62 ID';
 COMMENT ON COLUMN media.playlist_id IS 'Associated playlist (directory). NULL means the media is directly under the room root.';
 COMMENT ON COLUMN media.name IS 'Media display name. It is not a routing key or unique path segment.';
 COMMENT ON COLUMN media.position IS 'Position in playlist (0-indexed)';

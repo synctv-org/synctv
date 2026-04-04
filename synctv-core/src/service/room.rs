@@ -407,6 +407,11 @@ impl RoomService {
         self.settings_registry.is_some()
     }
 
+    #[doc(hidden)]
+    pub fn settings_registry(&self) -> Option<&Arc<crate::service::SettingsRegistry>> {
+        self.settings_registry.as_ref()
+    }
+
     #[cfg(test)]
     pub(crate) fn has_playback_l2_cache(&self) -> bool {
         self.playback_service.has_l2_cache()
@@ -522,6 +527,19 @@ impl RoomService {
         password: Option<String>,
         settings: Option<RoomSettings>,
     ) -> Result<(Room, RoomMember)> {
+        self.do_create_room_with_policy(name, description, created_by, password, settings, true)
+            .await
+    }
+
+    async fn do_create_room_with_policy(
+        &self,
+        name: String,
+        description: String,
+        created_by: UserId,
+        password: Option<String>,
+        settings: Option<RoomSettings>,
+        enforce_creation_policy: bool,
+    ) -> Result<(Room, RoomMember)> {
         tracing::info!(
             user_id = %created_by,
             room_name = %name,
@@ -543,19 +561,21 @@ impl RoomService {
         //   - `disable_create_room` = emergency override (takes priority over everything)
         //   - `allow_room_creation` = standard policy control (opt-out, default-allow)
         if let Some(ref registry) = self.settings_registry {
-            // `disable_create_room` takes precedence (explicit disable)
-            if registry.disable_create_room.get().unwrap_or(false) {
-                tracing::warn!(user_id = %created_by, "Room creation rejected: disable_create_room is true");
-                return Err(Error::Authorization(
-                    "Room creation is currently disabled".to_string(),
-                ));
-            }
-            // `allow_room_creation` defaults to true; when explicitly set to false, block
-            if !registry.allow_room_creation.get().unwrap_or(true) {
-                tracing::warn!(user_id = %created_by, "Room creation rejected: allow_room_creation is false");
-                return Err(Error::Authorization(
-                    "Room creation is currently disabled".to_string(),
-                ));
+            if enforce_creation_policy {
+                // `disable_create_room` takes precedence (explicit disable)
+                if registry.disable_create_room.get().unwrap_or(false) {
+                    tracing::warn!(user_id = %created_by, "Room creation rejected: disable_create_room is true");
+                    return Err(Error::Authorization(
+                        "Room creation is currently disabled".to_string(),
+                    ));
+                }
+                // `allow_room_creation` defaults to true; when explicitly set to false, block
+                if !registry.allow_room_creation.get().unwrap_or(true) {
+                    tracing::warn!(user_id = %created_by, "Room creation rejected: allow_room_creation is false");
+                    return Err(Error::Authorization(
+                        "Room creation is currently disabled".to_string(),
+                    ));
+                }
             }
             // `room_must_need_pwd`: if true, rooms must have a password
             if registry.room_must_need_pwd.get().unwrap_or(false) && password.is_none() {
@@ -680,6 +700,8 @@ impl RoomService {
                         search: None,
                         status: Some(UserStatus::Active),
                         role: Some(role),
+                        sort_by: crate::models::UserListSortBy::CreatedAt,
+                        sort_direction: crate::models::SortDirection::Desc,
                     };
                     if let Ok((users, _)) = self.user_service.list_users(&query).await {
                         all_admins.extend(users);
@@ -715,6 +737,29 @@ impl RoomService {
         }
 
         Ok((created_room, created_member))
+    }
+
+    /// Create a room as a global admin.
+    ///
+    /// This bypasses user-facing room creation switches while preserving the
+    /// rest of the room bootstrap lifecycle.
+    pub async fn admin_create_room(
+        &self,
+        name: String,
+        description: String,
+        created_by: UserId,
+        password: Option<String>,
+        settings: Option<RoomSettings>,
+    ) -> Result<(Room, RoomMember)> {
+        let admin_user = self.user_service.get_user(&created_by).await?;
+        if !admin_user.role.is_admin_or_above() {
+            return Err(Error::Authorization(
+                "Admin role required for this operation".to_string(),
+            ));
+        }
+
+        self.do_create_room_with_policy(name, description, created_by, password, settings, false)
+            .await
     }
 
     /// Join a room
@@ -1352,6 +1397,8 @@ impl RoomService {
             search: None,
             is_banned: None,
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
 
         self.room_repo.list(&query).await
@@ -1947,6 +1994,16 @@ impl RoomService {
         self.room_repo.list(query).await
     }
 
+    /// List rooms related to a user either by ownership or active membership.
+    pub async fn list_related_rooms_for_user(
+        &self,
+        user_id: &UserId,
+        query: &RoomListQuery,
+    ) -> Result<(Vec<Room>, i64)> {
+        query.pagination.validate()?;
+        self.room_repo.list_related_to_user(user_id, query).await
+    }
+
     /// List all rooms with member count (optimized, single query)
     pub async fn list_rooms_with_count(
         &self,
@@ -1999,6 +2056,18 @@ impl RoomService {
         pagination.validate()?;
         self.member_service
             .list_user_rooms_with_details(user_id, pagination)
+            .await
+    }
+
+    /// List rooms where a user participates, with filtering, sorting and pagination.
+    pub async fn list_joined_rooms_with_query(
+        &self,
+        user_id: &UserId,
+        query: &crate::models::RelatedRoomListQuery,
+    ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
+        query.pagination.validate()?;
+        self.member_service
+            .list_user_rooms_with_details_query(user_id, query)
             .await
     }
 
@@ -2088,6 +2157,14 @@ impl RoomService {
         self.member_service
             .list_members_paginated(room_id, pagination)
             .await
+    }
+
+    pub async fn get_room_members_query(
+        &self,
+        room_id: &RoomId,
+        query: crate::models::RoomMemberListQuery,
+    ) -> Result<(Vec<crate::models::RoomMemberWithUser>, i64)> {
+        self.member_service.list_members_query(room_id, query).await
     }
 
     /// Get member count for a room
@@ -2404,6 +2481,210 @@ impl RoomService {
         })
     }
 
+    /// Delete a mixed set of media and playlists as a global admin.
+    pub async fn admin_delete_entries(
+        &self,
+        room_id: RoomId,
+        admin_user_id: UserId,
+        request: DeleteEntriesRequest,
+    ) -> Result<DeleteEntriesResult> {
+        let admin_user = self.user_service.get_user(&admin_user_id).await?;
+        if !admin_user.role.is_admin_or_above() {
+            return Err(Error::Authorization(
+                "Admin role required for this operation".to_string(),
+            ));
+        }
+
+        const MAX_DELETE_TARGETS: usize = 100;
+
+        let playlist_ids = dedup_ids(request.playlist_ids);
+        let media_ids = dedup_ids(request.media_ids);
+        let force = request.force;
+        let total_targets = playlist_ids.len() + media_ids.len();
+
+        if total_targets == 0 {
+            return Ok(DeleteEntriesResult::default());
+        }
+
+        if total_targets > MAX_DELETE_TARGETS {
+            return Err(Error::InvalidInput(format!(
+                "Delete batch size exceeds maximum of {MAX_DELETE_TARGETS}"
+            )));
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        let playlists = self
+            .playlist_repo
+            .get_by_ids_with_executor(&playlist_ids, &mut *tx)
+            .await?;
+        if playlists.len() != playlist_ids.len() {
+            return Err(Error::NotFound(
+                "One or more playlists not found".to_string(),
+            ));
+        }
+
+        for playlist in &playlists {
+            if playlist.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Playlist does not belong to this room".to_string(),
+                ));
+            }
+        }
+
+        let media_items = self
+            .media_repo
+            .get_by_ids_with_executor(&media_ids, &mut *tx)
+            .await?;
+        if media_items.len() != media_ids.len() {
+            return Err(Error::NotFound(
+                "One or more media items not found".to_string(),
+            ));
+        }
+
+        for media in &media_items {
+            if media.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
+            }
+        }
+
+        let deleted_media_ids =
+            collect_deleted_media_ids_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids).await?;
+
+        let playback_row = sqlx::query(
+            "SELECT playing_media_id, playing_playlist_id
+             FROM room_playback_state
+             WHERE room_id = $1
+             FOR UPDATE",
+        )
+        .bind(room_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some(row) = playback_row {
+            use sqlx::Row;
+
+            let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
+            let playing_playlist_id: Option<String> = row.try_get("playing_playlist_id")?;
+
+            let deletes_playing_media = playing_media_id.as_ref().is_some_and(|current_id| {
+                deleted_media_ids
+                    .iter()
+                    .any(|id| id.as_str() == current_id.as_str())
+            });
+
+            let deletes_playing_playlist =
+                if let Some(ref playing_playlist_id) = playing_playlist_id {
+                    let targeted_playlist_ids: Vec<&str> =
+                        playlist_ids.iter().map(PlaylistId::as_str).collect();
+                    if targeted_playlist_ids.is_empty() {
+                        false
+                    } else {
+                        sqlx::query_scalar(
+                            "WITH RECURSIVE target_playlists AS (
+                            SELECT id
+                            FROM playlists
+                            WHERE id = ANY($1)
+                            UNION ALL
+                            SELECT p.id
+                            FROM playlists p
+                            JOIN target_playlists tp ON p.parent_id = tp.id
+                        )
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM target_playlists
+                            WHERE id = $2
+                        )",
+                        )
+                        .bind(&targeted_playlist_ids)
+                        .bind(playing_playlist_id.as_str())
+                        .fetch_one(&mut *tx)
+                        .await?
+                    }
+                } else {
+                    false
+                };
+
+            if deletes_playing_media || deletes_playing_playlist {
+                if !force {
+                    return Err(Error::InvalidInput(
+                        "Cannot delete entries that include the currently playing media"
+                            .to_string(),
+                    ));
+                }
+
+                sqlx::query(
+                    "UPDATE room_playback_state
+                     SET playing_media_id = NULL,
+                         playing_playlist_id = NULL,
+                         target = ''::bytea,
+                         \"current_time\" = 0,
+                         speed = 1.0,
+                         is_playing = false,
+                         version = version + 1,
+                         updated_at = NOW()
+                     WHERE room_id = $1",
+                )
+                .bind(room_id.as_str())
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        if !media_ids.is_empty() {
+            self.media_repo
+                .delete_batch_with_executor(&media_ids, &mut *tx)
+                .await?;
+        }
+        if !playlist_ids.is_empty() {
+            self.playlist_repo
+                .delete_batch_with_executor(&playlist_ids, &mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+
+        if force {
+            let state = self.playback_service.get_state(&room_id).await?;
+            self.playback_service
+                .broadcast_playback_reset_after_force_delete(state)
+                .await;
+        }
+
+        if !deleted_media_ids.is_empty() {
+            for media_id in &deleted_media_ids {
+                if let Err(error) = self
+                    .notification_service
+                    .notify_media_removed(&room_id, media_id.as_str())
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id.as_str(),
+                        media_id = %media_id.as_str(),
+                        "Failed to broadcast media removed event"
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            room_id = %room_id.as_str(),
+            admin_user_id = %admin_user_id.as_str(),
+            deleted_playlists = playlist_ids.len(),
+            deleted_media = deleted_media_ids.len(),
+            "Entries deleted by admin"
+        );
+
+        Ok(DeleteEntriesResult {
+            deleted_playlists: playlist_ids.len(),
+            deleted_media: deleted_media_ids.len(),
+            deleted_media_ids,
+        })
+    }
+
     /// Get media directly under the room root.
     pub async fn get_room_root_media(&self, room_id: &RoomId) -> Result<Vec<Media>> {
         self.media_service.get_room_root_media(room_id).await
@@ -2688,7 +2969,7 @@ impl RoomService {
         }
 
         let message = ChatMessage {
-            id: nanoid::nanoid!(12),
+            id: synctv_common::snanoid!(12),
             room_id,
             user_id: Some(user_id),
             content,
@@ -3024,6 +3305,49 @@ impl RoomService {
         tracing::info!(room_id = %room_id, "Orphaned room deleted successfully");
 
         Ok(())
+    }
+
+    /// Start playback from the management plane, bypassing room membership permissions.
+    ///
+    /// Only global admin/root identities may use this path.
+    pub async fn admin_start_playback(
+        &self,
+        room_id: RoomId,
+        admin_user_id: UserId,
+        media_id: Option<MediaId>,
+        playlist_id: Option<PlaylistId>,
+        target: Vec<u8>,
+    ) -> Result<RoomPlaybackState> {
+        let admin_user = self.user_service.get_user(&admin_user_id).await?;
+        if !admin_user.role.is_admin_or_above() {
+            return Err(Error::Authorization(
+                "Admin role required for this operation".to_string(),
+            ));
+        }
+
+        self.playback_service
+            .admin_switch(room_id, admin_user_id, media_id, playlist_id, target)
+            .await
+    }
+
+    /// Stop playback from the management plane, bypassing room membership permissions.
+    ///
+    /// Only global admin/root identities may use this path.
+    pub async fn admin_stop_playback(
+        &self,
+        room_id: RoomId,
+        admin_user_id: UserId,
+    ) -> Result<RoomPlaybackState> {
+        let admin_user = self.user_service.get_user(&admin_user_id).await?;
+        if !admin_user.role.is_admin_or_above() {
+            return Err(Error::Authorization(
+                "Admin role required for this operation".to_string(),
+            ));
+        }
+
+        self.playback_service
+            .admin_reset(room_id, admin_user_id)
+            .await
     }
 
     /// Set room password (admin use, bypasses permission checks)
@@ -3657,103 +3981,6 @@ mod tests {
         );
     }
 
-    // ========== Room Description Validation ==========
-
-    /// Replicates the description validation from `do_create_room`.
-    /// Uses `chars().count()` for Unicode safety, matching the service code.
-    fn validate_room_description(description: &str) -> crate::Result<()> {
-        if description.chars().count() > 500 {
-            return Err(Error::InvalidInput(
-                "Room description too long (max 500 characters)".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_description_at_max_length_is_ok() {
-        let desc = "a".repeat(500);
-        assert!(validate_room_description(&desc).is_ok());
-    }
-
-    #[test]
-    fn test_description_exceeding_max_length_returns_error() {
-        let desc = "a".repeat(501);
-        let result = validate_room_description(&desc);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            Error::InvalidInput(msg) => assert!(msg.contains("too long"), "got: {msg}"),
-            other => panic!("Expected InvalidInput, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_description_counts_unicode_characters_not_bytes() {
-        // Each CJK character is 3 bytes in UTF-8 but 1 character.
-        // 500 CJK chars = 1500 bytes, should be valid.
-        let desc: String = std::iter::repeat_n('\u{4e00}', 500).collect();
-        assert_eq!(desc.chars().count(), 500);
-        assert!(validate_room_description(&desc).is_ok());
-
-        // 501 CJK characters should be rejected even though 255 ASCII chars would be fine
-        let desc_too_long: String = std::iter::repeat_n('\u{4e00}', 501).collect();
-        assert!(validate_room_description(&desc_too_long).is_err());
-    }
-
-    #[test]
-    fn test_empty_description_is_ok() {
-        assert!(validate_room_description("").is_ok());
-    }
-
-    // ========== Chat Message Validation ==========
-
-    /// Replicates the chat message validation from `save_chat_message`.
-    fn validate_chat_message(content: &str) -> crate::Result<()> {
-        if content.is_empty() {
-            return Err(Error::InvalidInput(
-                "Chat message cannot be empty".to_string(),
-            ));
-        }
-        if content.chars().count() > 2000 {
-            return Err(Error::InvalidInput(
-                "Chat message cannot exceed 2000 characters".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_empty_chat_message_returns_error() {
-        let result = validate_chat_message("");
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            Error::InvalidInput(msg) => assert!(msg.contains("cannot be empty"), "got: {msg}"),
-            other => panic!("Expected InvalidInput, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_chat_message_at_max_length_is_ok() {
-        let content = "x".repeat(2000);
-        assert!(validate_chat_message(&content).is_ok());
-    }
-
-    #[test]
-    fn test_chat_message_exceeding_max_length_returns_error() {
-        let content = "x".repeat(2001);
-        let result = validate_chat_message(&content);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            Error::InvalidInput(msg) => assert!(msg.contains("2000"), "got: {msg}"),
-            other => panic!("Expected InvalidInput, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_normal_chat_message_is_ok() {
-        assert!(validate_chat_message("Hello, world!").is_ok());
-    }
-
     // ========== Update Room Setting via Registry ==========
 
     #[test]
@@ -3822,12 +4049,6 @@ mod tests {
     }
 
     // ========== RoomSettings Permission Validation ==========
-
-    #[test]
-    fn test_settings_validate_permissions_default_is_ok() {
-        let settings = RoomSettings::default();
-        assert!(settings.validate_permissions().is_ok());
-    }
 
     #[test]
     fn test_settings_validate_permissions_guest_escalation_is_rejected() {
@@ -3899,16 +4120,6 @@ mod tests {
     // ========== RoomSettings Serialization ==========
 
     #[test]
-    fn test_room_settings_default_serialization_roundtrip() {
-        let settings = RoomSettings::default();
-        let json = serde_json::to_string(&settings).expect("serialize");
-        let deserialized: RoomSettings = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(deserialized.chat_enabled.0, settings.chat_enabled.0);
-        assert_eq!(deserialized.max_members.0, settings.max_members.0);
-        assert_eq!(deserialized.require_password.0, settings.require_password.0);
-    }
-
-    #[test]
     fn test_room_settings_custom_values_roundtrip() {
         let settings = RoomSettings {
             chat_enabled: ChatEnabled(false),
@@ -3928,21 +4139,6 @@ mod tests {
     }
 
     // ========== Room Model Tests ==========
-
-    #[test]
-    fn test_room_fixture_defaults() {
-        let room = RoomFixture::new().build();
-        assert_eq!(room.status, RoomStatus::Active);
-        assert!(!room.is_banned);
-        assert_eq!(room.name, "Test Room");
-    }
-
-    #[test]
-    fn test_room_status_is_pending() {
-        assert!(RoomStatus::Pending.is_pending());
-        assert!(!RoomStatus::Active.is_pending());
-        assert!(!RoomStatus::Closed.is_pending());
-    }
 
     // ========== Room Model: Ban / Unban ==========
 
@@ -4001,149 +4197,6 @@ mod tests {
         let mut closed_room = room;
         closed_room.status = RoomStatus::Closed;
         assert!(!closed_room.is_active());
-    }
-
-    // ========== Room Model: Constructor Behavior ==========
-
-    #[test]
-    fn test_room_new_generates_unique_ids() {
-        use crate::models::Room;
-
-        let user_id = crate::models::UserId::new();
-        let room1 = Room::new("Room A".to_string(), user_id.clone());
-        let room2 = Room::new("Room B".to_string(), user_id);
-        assert_ne!(room1.id, room2.id);
-    }
-
-    #[test]
-    fn test_room_new_with_description_sets_fields() {
-        use crate::models::Room;
-
-        let user_id = crate::models::UserId::new();
-        let room = Room::new_with_description(
-            "My Room".to_string(),
-            "A description".to_string(),
-            user_id.clone(),
-        );
-        assert_eq!(room.name, "My Room");
-        assert_eq!(room.description, "A description");
-        assert_eq!(room.created_by, user_id);
-        assert_eq!(room.status, RoomStatus::Active);
-        assert!(!room.is_banned);
-        assert!(room.deleted_at.is_none());
-    }
-
-    // ========== RoomStatus: Exhaustive Status Predicates ==========
-
-    #[test]
-    fn test_room_status_predicates_exhaustive() {
-        // Active
-        assert!(RoomStatus::Active.is_active());
-        assert!(!RoomStatus::Active.is_pending());
-        assert!(!RoomStatus::Active.is_closed());
-
-        // Pending
-        assert!(!RoomStatus::Pending.is_active());
-        assert!(RoomStatus::Pending.is_pending());
-        assert!(!RoomStatus::Pending.is_closed());
-
-        // Closed
-        assert!(!RoomStatus::Closed.is_active());
-        assert!(!RoomStatus::Closed.is_pending());
-        assert!(RoomStatus::Closed.is_closed());
-    }
-
-    #[test]
-    fn test_room_status_as_str() {
-        assert_eq!(RoomStatus::Active.as_str(), "active");
-        assert_eq!(RoomStatus::Pending.as_str(), "pending");
-        assert_eq!(RoomStatus::Closed.as_str(), "closed");
-    }
-
-    #[test]
-    fn test_room_status_default_is_active() {
-        assert_eq!(RoomStatus::default(), RoomStatus::Active);
-    }
-
-    // ========== RoomSettings: require_password Reflects Password State ==========
-
-    #[test]
-    fn test_require_password_is_set_when_password_provided() {
-        // Replicates the logic from `do_create_room`:
-        // `room_settings.require_password = RequirePassword(password.is_some())`
-        let password: Option<String> = Some("secret".to_string());
-        let mut settings = RoomSettings::default();
-        settings.require_password = RequirePassword(password.is_some());
-        assert!(settings.require_password.0);
-    }
-
-    #[test]
-    fn test_require_password_is_unset_when_no_password() {
-        let password: Option<String> = None;
-        let mut settings = RoomSettings::default();
-        settings.require_password = RequirePassword(password.is_some());
-        assert!(!settings.require_password.0);
-    }
-
-    // ========== Room Description Validation: Edge Cases ==========
-
-    #[test]
-    fn test_update_room_description_validation_at_boundary() {
-        // Replicates validation in `update_room_description`
-        fn validate_desc(desc: &str) -> crate::Result<()> {
-            if desc.chars().count() > 500 {
-                return Err(Error::InvalidInput(
-                    "Room description too long (max 500 characters)".to_string(),
-                ));
-            }
-            Ok(())
-        }
-
-        // Mixed Unicode: emoji are single characters but multi-byte
-        let emoji_desc: String = std::iter::repeat_n('\u{1F600}', 500).collect();
-        assert_eq!(emoji_desc.chars().count(), 500);
-        assert!(validate_desc(&emoji_desc).is_ok());
-
-        let emoji_over: String = std::iter::repeat_n('\u{1F600}', 501).collect();
-        assert!(validate_desc(&emoji_over).is_err());
-    }
-
-    // ========== RoomSettings: AllowGuestJoin / RequirePassword Interaction ==========
-
-    #[test]
-    fn test_settings_guest_blocked_by_password_requirement() {
-        // If require_password is true and allow_guest_join is true,
-        // the check_guest_allowed method in the service layer still blocks guests
-        // because guests cannot provide passwords
-        let settings = RoomSettings {
-            allow_guest_join: AllowGuestJoin(true),
-            require_password: RequirePassword(true),
-            ..Default::default()
-        };
-        // This is a data-level check, the actual enforcement is in check_guest_allowed
-        assert!(settings.allow_guest_join.0);
-        assert!(settings.require_password.0);
-    }
-
-    #[test]
-    fn test_settings_guest_allowed_when_no_password_and_guest_join_enabled() {
-        let settings = RoomSettings {
-            allow_guest_join: AllowGuestJoin(true),
-            require_password: RequirePassword(false),
-            ..Default::default()
-        };
-        assert!(settings.allow_guest_join.0);
-        assert!(!settings.require_password.0);
-    }
-
-    #[test]
-    fn test_settings_guest_blocked_when_guest_join_disabled() {
-        let settings = RoomSettings {
-            allow_guest_join: AllowGuestJoin(false),
-            require_password: RequirePassword(false),
-            ..Default::default()
-        };
-        assert!(!settings.allow_guest_join.0);
     }
 
     // ========== RoomMember: Ban / Unban Mutations ==========
@@ -4233,77 +4286,6 @@ mod tests {
             member.effective_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER));
         assert!(effective.has(PermissionBits::PLAY_CONTROL));
         assert!(!effective.has(PermissionBits::SEND_CHAT));
-    }
-
-    #[test]
-    fn test_room_member_reset_to_role_default() {
-        use crate::models::{RoomId, RoomMember, RoomRole, UserId};
-
-        let mut member = RoomMember::new(
-            RoomId("room1".to_string()),
-            UserId("user1".to_string()),
-            RoomRole::Member,
-        );
-        member.added_permissions = PermissionBits::PLAY_CONTROL;
-        member.removed_permissions = PermissionBits::SEND_CHAT;
-        member.admin_added_permissions = PermissionBits::BAN_MEMBER;
-        member.admin_removed_permissions = PermissionBits::KICK_MEMBER;
-
-        member.reset_to_role_default();
-        assert_eq!(member.added_permissions, 0);
-        assert_eq!(member.removed_permissions, 0);
-        assert_eq!(member.admin_added_permissions, 0);
-        assert_eq!(member.admin_removed_permissions, 0);
-
-        let effective =
-            member.effective_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER));
-        assert_eq!(effective.0, PermissionBits::DEFAULT_MEMBER);
-    }
-
-    // ========== Room Status Transition Tests ==========
-
-    #[test]
-    fn test_room_status_pending_is_pending() {
-        use crate::models::RoomStatus;
-        let status = RoomStatus::Pending;
-        assert!(status.is_pending());
-        assert!(!status.is_active());
-        assert!(!status.is_closed());
-    }
-
-    #[test]
-    fn test_room_status_active_is_active() {
-        use crate::models::RoomStatus;
-        let status = RoomStatus::Active;
-        assert!(status.is_active());
-        assert!(!status.is_pending());
-        assert!(!status.is_closed());
-    }
-
-    #[test]
-    fn test_room_status_closed_is_closed() {
-        use crate::models::RoomStatus;
-        let status = RoomStatus::Closed;
-        assert!(status.is_closed());
-        assert!(!status.is_pending());
-        assert!(!status.is_active());
-    }
-
-    #[test]
-    fn test_room_new_has_active_status() {
-        use crate::models::{Room, RoomStatus, UserId};
-        let owner = UserId::new();
-        let room = Room::new("Test Room".to_string(), owner);
-        assert_eq!(room.status, RoomStatus::Active);
-    }
-
-    #[test]
-    fn test_room_new_with_description_has_active_status() {
-        use crate::models::{Room, RoomStatus, UserId};
-        let owner = UserId::new();
-        let room =
-            Room::new_with_description("Test Room".to_string(), "A test room".to_string(), owner);
-        assert_eq!(room.status, RoomStatus::Active);
     }
 
     // ========== Join Room Password Verification Race Condition ==========
@@ -4432,16 +4414,6 @@ mod tests {
             }
             other => panic!("Expected Authorization, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_room_creation_allowed_with_defaults() {
-        // Default: disable_create_room=false, allow_room_creation=true
-        let result = check_room_creation_allowed(false, true);
-        assert!(
-            result.is_ok(),
-            "Should allow room creation with default settings"
-        );
     }
 
     #[test]

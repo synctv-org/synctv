@@ -46,7 +46,7 @@ async fn test_three_node_cluster() {
         &mut clients_a,
         message_from_b,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("user_b".to_string()),
             username: "user_b".to_string(),
@@ -64,7 +64,7 @@ async fn test_three_node_cluster() {
         &mut clients_c,
         message_from_b,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("user_b".to_string()),
             username: "user_b".to_string(),

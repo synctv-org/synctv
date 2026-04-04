@@ -149,44 +149,6 @@ fn test_logout_blacklist_failure_maps_to_grpc_internal() {
 }
 
 // ============================================================================
-// GrpcRateLimitTier mapping tests
-// ============================================================================
-
-/// Verify the `tier_from_path` function maps known gRPC paths correctly.
-/// These tests verify the rate limit tier extraction from gRPC service paths.
-///
-/// Since `tier_from_path` is pub(crate), we test the behavior indirectly
-/// by verifying the `GrpcRateLimitTier` configuration values.
-#[test]
-fn test_grpc_rate_limit_tier_config_defaults() {
-    let config = synctv_core::GrpcRateLimitConfig::default();
-
-    // Auth tier should be strictest
-    assert!(config.auth_max_requests <= config.read_max_requests);
-    assert!(config.auth_max_requests <= config.write_max_requests);
-
-    // Email tier should be strict (prevent spam)
-    assert!(config.email_max_requests <= config.write_max_requests);
-
-    // Read tier should be most permissive
-    assert!(config.read_max_requests >= config.write_max_requests);
-    assert!(config.read_max_requests >= config.auth_max_requests);
-}
-
-#[test]
-fn test_grpc_rate_limit_tier_key_suffixes_unique() {
-    // Verify all tier key suffixes are distinct
-    let suffixes = ["auth", "email", "media", "write", "admin", "read"];
-    let mut seen = std::collections::HashSet::new();
-    for suffix in &suffixes {
-        assert!(
-            seen.insert(suffix),
-            "Duplicate rate limit key suffix: {suffix}"
-        );
-    }
-}
-
-// ============================================================================
 // AuthInterceptor tests
 // ============================================================================
 

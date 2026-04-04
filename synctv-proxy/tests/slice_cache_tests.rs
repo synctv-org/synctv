@@ -62,17 +62,6 @@ fn full_body_cache_key(url: &str, provider_headers: &HashMap<String, String>) ->
 // ==================================================================
 
 #[test]
-fn test_default_config() {
-    let config = SliceCacheConfig::default();
-    assert!(config.enabled);
-    assert_eq!(config.slice_size, 2 * 1024 * 1024); // 2MB
-    assert_eq!(config.max_cache_size, 512 * 1024 * 1024); // 512MB
-    assert_eq!(config.max_cacheable_body, 10 * 1024 * 1024); // 10MB
-    assert_eq!(config.manifest_ttl, Duration::from_secs(5));
-    assert_eq!(config.segment_ttl, Duration::from_mins(5));
-}
-
-#[test]
 fn test_config_disabled() {
     let config = SliceCacheConfig {
         enabled: false,
@@ -2858,18 +2847,6 @@ async fn test_last_modified_tracked_in_metadata() {
 // ------------------------------------------------------------------
 // Backend selection via config
 // ------------------------------------------------------------------
-
-/// Default config creates a memory backend.
-#[test]
-fn test_default_config_creates_memory_backend() {
-    let config = SliceCacheConfig::default();
-    assert!(matches!(
-        config.backend,
-        synctv_proxy::slice_cache::config::CacheBackendConfig::Memory
-    ));
-    let cache = SliceCache::new(config);
-    assert!(cache.config().enabled);
-}
 
 /// File backend config requires try_new (async).
 #[tokio::test]

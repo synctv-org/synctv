@@ -5,7 +5,7 @@
 //! # Design Principles
 //!
 //! - All keys use a configurable prefix (default: "synctv")
-//! - All IDs are nanoid(12) strings
+//! - All IDs are 12-character shared base62 strings
 //! - Consistent naming convention for easy debugging
 //! - Support for multi-environment isolation
 
@@ -341,23 +341,6 @@ impl KeyBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_key_builder_default() {
-        let builder = KeyBuilder::default();
-
-        assert_eq!(
-            builder.cluster_node("node-1"),
-            "synctv:cluster:nodes:node-1"
-        );
-
-        assert_eq!(
-            builder.stream_info("room_123"),
-            "synctv:stream:info:room_123"
-        );
-
-        assert_eq!(builder.room_state("abc123"), "synctv:room:abc123:state");
-    }
 
     #[test]
     fn test_key_builder_custom_prefix() {

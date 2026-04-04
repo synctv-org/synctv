@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16
+    image: postgres:18
     container_name: synctv-postgres-dev
     environment:
       POSTGRES_USER: synctv
@@ -9,7 +9,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_dev_data:/var/lib/postgresql/data
+      - postgres18_dev_data:/var/lib/postgresql
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U synctv" ]
       interval: 5s
@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7
+    image: redis:8
     container_name: synctv-redis-dev
     ports:
       - "6379:6379"
@@ -53,9 +53,9 @@ services:
       SYNCTV_SERVER_PORT: 8080
       SYNCTV_JWT_SECRET: dev-jwt-secret-please-change-in-production-1234567890
       SYNCTV_SERVER_CLUSTER_SECRET: dev-cluster-secret-please-change-in-production-1234567890
+      SYNCTV_BOOTSTRAP_CREATE_ROOT_USER: "true"
+      SYNCTV_BOOTSTRAP_ROOT_PASSWORD: DevRootPass12345
       SYNCTV_LOGGING_LEVEL: debug
-      SYNCTV_LOGGING_FILTER: info,synctv=debug
-      SYNCTV_LOGGING_BACKTRACE: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,7 +72,7 @@ services:
       retries: 3
 
 volumes:
-  postgres_dev_data:
+  postgres18_dev_data:
     driver: local
   redis_dev_data:
     driver: local

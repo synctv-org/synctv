@@ -1,0 +1,11 @@
+{{- if and .Values.metrics.enabled .Values.metrics.tls.enabled (not .Values.metrics.tls.issuerRef.name) }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "synctv.metricsTlsIssuerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+{{- end }}

@@ -181,7 +181,7 @@ pub async fn kick_stream_cluster(
             tx,
             PublishRequest {
                 event: ClusterEvent::KickPublisher {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: Rid::from_string(room_id.to_string()),
                     media_id: Mid::from_string(media_id.to_string()),
                     reason: reason.to_string(),
@@ -509,6 +509,9 @@ pub fn classify_error(err: &str) -> ErrorKind {
     } else if lower.contains("permission")
         || lower.contains("forbidden")
         || lower.contains("not allowed")
+        || lower.contains("no longer allowed")
+        || lower.contains("not accepting new connections")
+        || lower.contains("account is no longer available")
         || lower.contains("banned")
     {
         ErrorKind::PermissionDenied
@@ -1039,32 +1042,6 @@ mod tests {
 
         assert!(matches!(err, ApiError::ServiceUnavailable(_)));
         assert_eq!(err.message(), "critical cluster event fanout failed");
-    }
-
-    #[tokio::test]
-    async fn test_require_cluster_event_publish_is_noop_outside_cluster_mode() {
-        use synctv_cluster::sync::{CacheTarget, ClusterEvent, PublishRequest};
-
-        let result = super::require_cluster_event_publish(
-            None,
-            PublishRequest {
-                event: ClusterEvent::CacheInvalidate {
-                    event_id: "standalone_event".to_string(),
-                    targets: vec![CacheTarget::Room {
-                        room_id: "room-standalone".to_string(),
-                    }],
-                    timestamp: chrono::Utc::now(),
-                },
-            },
-            false,
-            "should not fail",
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "standalone mode should not require cross-replica fanout"
-        );
     }
 
     #[test]

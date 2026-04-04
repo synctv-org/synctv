@@ -10,7 +10,8 @@ use uuid::Uuid;
 use synctv_core::models::id::UserId;
 
 use crate::impls::notification::{
-    notification_to_proto, proto_notification_type_to_core, NotificationTypeParseError,
+    notification_to_proto, proto_notification_type_to_core, proto_sort_direction_to_core,
+    NotificationTypeParseError,
 };
 use crate::impls::NotificationApiImpl;
 use crate::proto::client::{
@@ -18,6 +19,7 @@ use crate::proto::client::{
     DeleteNotificationRequest, DeleteNotificationResponse, GetNotificationRequest,
     GetNotificationResponse, ListNotificationsRequest, ListNotificationsResponse,
     MarkAllAsReadRequest, MarkAllAsReadResponse, MarkAsReadRequest, MarkAsReadResponse,
+    NotificationListSortBy,
 };
 
 /// gRPC `NotificationService` implementation
@@ -65,6 +67,17 @@ impl NotificationService for NotificationServiceImpl {
                 Some(req.page_size),
                 req.is_read,
                 notification_type,
+                (!req.search.is_empty()).then_some(req.search),
+                match NotificationListSortBy::try_from(req.sort_by) {
+                    Ok(NotificationListSortBy::Title) => {
+                        synctv_core::models::NotificationListSortBy::Title
+                    }
+                    Ok(NotificationListSortBy::UpdatedAt) => {
+                        synctv_core::models::NotificationListSortBy::UpdatedAt
+                    }
+                    _ => synctv_core::models::NotificationListSortBy::CreatedAt,
+                },
+                proto_sort_direction_to_core(req.sort_direction),
             )
             .await
             .map_err(map_api_error)?;

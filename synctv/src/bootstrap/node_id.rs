@@ -26,7 +26,7 @@ fn generate_node_id_with(get_env: &impl Fn(&str) -> Option<String>) -> String {
         .unwrap_or_else(|| "unknown".to_string());
 
     // Add random suffix for uniqueness
-    let suffix = nanoid::nanoid!(6);
+    let suffix = synctv_common::snanoid!(6);
 
     format!("{hostname}-{suffix}")
 }

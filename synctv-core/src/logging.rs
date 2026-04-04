@@ -9,6 +9,8 @@ use tracing_subscriber::{
 
 use crate::config::LoggingConfig;
 
+const SQLX_POSTGRES_NOTICE_TARGET: &str = "sqlx::postgres::notice";
+
 /// Initialize structured logging based on configuration
 ///
 /// Supports both JSON (production) and pretty (development) formats
@@ -102,13 +104,37 @@ fn build_env_filter(config: &LoggingConfig) -> anyhow::Result<EnvFilter> {
 }
 
 fn build_env_filter_spec(config: &LoggingConfig) -> anyhow::Result<String> {
-    if let Some(filter) = config.filter.as_deref().map(str::trim) {
+    let mut filter_spec = if let Some(filter) = config.filter.as_deref().map(str::trim) {
         if !filter.is_empty() {
-            return Ok(filter.to_string());
+            filter.to_string()
+        } else {
+            parse_log_level(&config.level)?.to_string()
         }
+    } else {
+        parse_log_level(&config.level)?.to_string()
+    };
+
+    if !filter_contains_target_directive(&filter_spec, SQLX_POSTGRES_NOTICE_TARGET) {
+        let notice_level = if matches!(effective_log_level(config)?, Level::TRACE | Level::DEBUG) {
+            "info"
+        } else {
+            "warn"
+        };
+        filter_spec.push(',');
+        filter_spec.push_str(SQLX_POSTGRES_NOTICE_TARGET);
+        filter_spec.push('=');
+        filter_spec.push_str(notice_level);
     }
 
-    Ok(parse_log_level(&config.level)?.to_string())
+    Ok(filter_spec)
+}
+
+fn filter_contains_target_directive(filter_spec: &str, target: &str) -> bool {
+    filter_spec.split(',').map(str::trim).any(|directive| {
+        directive
+            .strip_prefix(target)
+            .is_some_and(|rest| rest.starts_with('='))
+    })
 }
 
 /// Parse log level string to tracing Level
@@ -172,18 +198,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_env_filter_spec_uses_config_level_by_default() {
-        let config = LoggingConfig {
-            level: "info".to_string(),
-            ..LoggingConfig::default()
-        };
-
-        let spec = build_env_filter_spec(&config).expect("filter spec should build");
-
-        assert_eq!(spec.to_lowercase(), "info");
-    }
-
-    #[test]
     fn test_build_env_filter_spec_uses_config_level_without_env_override() {
         let config = LoggingConfig {
             level: "debug".to_string(),
@@ -192,7 +206,7 @@ mod tests {
 
         let spec = build_env_filter_spec(&config).expect("filter spec should build");
 
-        assert_eq!(spec.to_lowercase(), "debug");
+        assert_eq!(spec.to_lowercase(), "debug,sqlx::postgres::notice=info");
     }
 
     #[test]
@@ -205,7 +219,32 @@ mod tests {
 
         let spec = build_env_filter_spec(&config).expect("filter spec should build");
 
-        assert_eq!(spec, "warn,synctv=debug");
+        assert_eq!(spec, "warn,synctv=debug,sqlx::postgres::notice=warn");
+    }
+
+    #[test]
+    fn test_build_env_filter_spec_preserves_explicit_sqlx_notice_override() {
+        let config = LoggingConfig {
+            level: "info".to_string(),
+            filter: Some("warn,sqlx::postgres::notice=info,synctv=debug".to_string()),
+            ..LoggingConfig::default()
+        };
+
+        let spec = build_env_filter_spec(&config).expect("filter spec should build");
+
+        assert_eq!(spec, "warn,sqlx::postgres::notice=info,synctv=debug");
+    }
+
+    #[test]
+    fn test_filter_contains_target_directive_matches_exact_target_only() {
+        assert!(filter_contains_target_directive(
+            "warn,sqlx::postgres::notice=warn",
+            "sqlx::postgres::notice"
+        ));
+        assert!(!filter_contains_target_directive(
+            "warn,sqlx::postgres::notice_extra=warn",
+            "sqlx::postgres::notice"
+        ));
     }
 
     #[test]

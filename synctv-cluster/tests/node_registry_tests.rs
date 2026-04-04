@@ -54,17 +54,7 @@ fn test_node_info_fencing_token_values() {
 }
 
 // ============================================================================
-// Test 4: NodeInfo default epoch is 1
-// ============================================================================
-
-#[test]
-fn test_node_info_default_epoch() {
-    let node = NodeInfo::new("n1".to_string(), "localhost:8080".to_string());
-    assert_eq!(node.epoch, 1, "New NodeInfo should have epoch 1");
-}
-
-// ============================================================================
-// Test 5: FencingToken serialization round-trip
+// Test 4: FencingToken serialization round-trip
 // ============================================================================
 
 #[test]

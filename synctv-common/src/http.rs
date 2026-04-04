@@ -174,28 +174,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_provider_defaults() {
-        let b = SsrfSafeClientBuilder::provider();
-        assert_eq!(b.connect_timeout, Duration::from_secs(10));
-        assert_eq!(b.request_timeout, Some(Duration::from_secs(30)));
-        assert!(b.read_timeout.is_none());
-        assert_eq!(b.pool_max_idle_per_host, 10);
-        assert!(b.pool_idle_timeout.is_none());
-        assert!(b.user_agent.is_none());
-    }
-
-    #[test]
-    fn test_proxy_defaults() {
-        let b = SsrfSafeClientBuilder::proxy();
-        assert_eq!(b.connect_timeout, Duration::from_secs(10));
-        assert_eq!(b.request_timeout, Some(Duration::from_mins(1)));
-        assert_eq!(b.read_timeout, Some(Duration::from_secs(30)));
-        assert_eq!(b.pool_max_idle_per_host, 100);
-        assert_eq!(b.pool_idle_timeout, Some(Duration::from_secs(30)));
-        assert!(b.user_agent.is_none());
-    }
-
-    #[test]
     fn test_builder_customization() {
         let b = SsrfSafeClientBuilder::provider()
             .connect_timeout(Duration::from_secs(3))

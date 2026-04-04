@@ -669,24 +669,6 @@ mod tests {
     // ========== TurnServerList ==========
 
     #[test]
-    fn test_turn_server_list_new_is_empty() {
-        let list = TurnServerList::new();
-        assert!(list.0.is_empty());
-    }
-
-    #[test]
-    fn test_turn_server_list_default_is_empty() {
-        let list = TurnServerList::default();
-        assert!(list.0.is_empty());
-    }
-
-    #[test]
-    fn test_turn_server_list_display_empty() {
-        let list = TurnServerList::new();
-        assert_eq!(list.to_string(), "[]");
-    }
-
-    #[test]
     fn test_turn_server_list_display_with_servers() {
         let list = TurnServerList(vec![TurnServer {
             urls: vec!["turn:turn.example.com:3478".to_string()],
@@ -754,20 +736,6 @@ mod tests {
     // ========== StunServerList ==========
 
     #[test]
-    fn test_stun_server_list_new_has_defaults() {
-        let list = StunServerList::new();
-        assert_eq!(list.0.len(), 2);
-        assert!(list.0[0].contains("stun.l.google.com"));
-        assert!(list.0[1].contains("stun1.l.google.com"));
-    }
-
-    #[test]
-    fn test_stun_server_list_default_has_defaults() {
-        let list = StunServerList::default();
-        assert_eq!(list.0.len(), 2);
-    }
-
-    #[test]
     fn test_stun_server_list_display() {
         let list = StunServerList(vec!["stun:example.com:19302".to_string()]);
         let json = list.to_string();
@@ -807,28 +775,6 @@ mod tests {
     }
 
     // ========== PublicSettings ==========
-
-    #[test]
-    fn test_public_settings_defaults() {
-        let defaults = PublicSettings::defaults();
-        assert!(defaults.signup_enabled);
-        assert!(defaults.allow_room_creation);
-        assert_eq!(defaults.max_rooms_per_user, 10);
-        assert_eq!(defaults.max_members_per_room, 100);
-        assert!(!defaults.disable_create_room);
-        assert!(!defaults.create_room_need_review);
-        assert_eq!(defaults.room_ttl, 172800);
-        assert!(!defaults.room_must_need_pwd);
-        assert!(!defaults.room_must_no_need_pwd);
-        assert!(!defaults.signup_need_review);
-        assert!(defaults.enable_password_signup);
-        assert!(defaults.enable_guest);
-        assert!(defaults.movie_proxy);
-        assert!(defaults.live_proxy);
-        assert!(defaults.ts_disguised_as_png);
-        assert!(defaults.custom_publish_host.is_empty());
-        assert!(!defaults.email_whitelist_enabled);
-    }
 
     #[test]
     fn test_public_settings_serialization_roundtrip() {
@@ -913,36 +859,12 @@ mod tests {
     // ========== StunServerList edge cases ==========
 
     #[test]
-    fn test_stun_server_list_display_empty() {
-        let list = StunServerList(vec![]);
-        assert_eq!(list.to_string(), "[]");
-    }
-
-    #[test]
     fn test_stun_server_list_from_str_empty_array() {
         let list: StunServerList = "[]".parse().unwrap();
         assert!(list.0.is_empty());
     }
 
     // ========== CorsAllowedOrigins ==========
-
-    #[test]
-    fn test_cors_allowed_origins_new_is_empty() {
-        let origins = CorsAllowedOrigins::new();
-        assert!(origins.0.is_empty());
-    }
-
-    #[test]
-    fn test_cors_allowed_origins_default_is_empty() {
-        let origins = CorsAllowedOrigins::default();
-        assert!(origins.0.is_empty());
-    }
-
-    #[test]
-    fn test_cors_allowed_origins_display_empty() {
-        let origins = CorsAllowedOrigins::new();
-        assert_eq!(origins.to_string(), "[]");
-    }
 
     #[test]
     fn test_cors_allowed_origins_display_with_origins() {

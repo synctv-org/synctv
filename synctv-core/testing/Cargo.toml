@@ -5,13 +5,13 @@ edition.workspace = true
 
 [dependencies]
 synctv-core = { path = ".." }
+synctv-common.workspace = true
 
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono", "uuid", "json"] }
 testcontainers = { workspace = true, features = ["reusable-containers"] }
 testcontainers-modules = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 chrono = { workspace = true }
-nanoid = { workspace = true }
 redis = { workspace = true }
 
 [dev-dependencies]

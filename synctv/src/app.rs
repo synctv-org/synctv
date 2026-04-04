@@ -4,6 +4,8 @@
 //! of named phases, each producing a typed output. This replaces the
 //! monolithic `main()` function with a readable, maintainable structure.
 
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{future::Future, pin::Pin};
@@ -17,13 +19,17 @@ use synctv_cluster::leader::{LeaderRuntime, LeaderRuntimeBuilder, LeadershipEven
 use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
 use synctv_core::{
     bootstrap::{
-        bootstrap_root_user, database::init_database_with_cancel, has_any_admin_users, init_redis,
-        init_services, RedisHandles,
+        bootstrap_root_user,
+        database::init_database_with_cancel,
+        has_any_admin_users, init_redis,
+        services::{init_services_with_options, InitServicesOptions},
+        RedisHandles,
     },
     cache::{CacheInvalidationService, KeyBuilder},
     provider::{AlistProvider, BilibiliProvider, EmbyProvider},
     Config,
 };
+use synctv_management::lifecycle::ManagementLifecycleController;
 
 use crate::bootstrap::cluster::init_cluster_discovery;
 use crate::bootstrap::livestream::init_livestream;
@@ -94,6 +100,12 @@ pub struct Application {
     services: Services,
     livestream_state: Option<LivestreamState>,
     shutdown: ShutdownCoordinator,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ApplicationBuildOptions {
+    pub provider_test_address_overrides: HashMap<String, SocketAddr>,
+    pub credential_encryption_hex_key_override: Option<String>,
 }
 
 const fn cluster_runtime_enabled(config: &Config) -> bool {
@@ -343,6 +355,14 @@ impl Application {
     /// If any phase fails, all resources created in earlier phases are cleaned up
     /// via the `ShutdownCoordinator` before returning the error.
     pub async fn build(config: Config) -> Result<Self> {
+        Self::build_with_options(config, ApplicationBuildOptions::default()).await
+    }
+
+    /// Build the application with explicit runtime wiring options.
+    pub async fn build_with_options(
+        config: Config,
+        options: ApplicationBuildOptions,
+    ) -> Result<Self> {
         validate_startup_config(&config)?;
 
         let shutdown_budget =
@@ -365,7 +385,7 @@ impl Application {
         }
 
         // Phase 3: Core services
-        let core = match Self::init_core_services(&infra, &mut shutdown).await {
+        let core = match Self::init_core_services(&infra, &mut shutdown, &options).await {
             Ok(core) => core,
             Err(e) => {
                 shutdown.shutdown().await;
@@ -409,8 +429,13 @@ impl Application {
 
     /// Start all servers and wait for shutdown.
     pub async fn run(self) -> Result<()> {
-        let server =
-            SyncTvServer::new(self.config, self.services, self.livestream_state, self.pool);
+        let server = SyncTvServer::new(
+            self.config,
+            self.services,
+            self.livestream_state,
+            self.pool,
+            Arc::new(ManagementLifecycleController::new()),
+        );
         server.start_with_coordinator(self.shutdown).await
     }
 
@@ -427,8 +452,13 @@ impl Application {
     where
         F: Future<Output = ()> + Send,
     {
-        let server =
-            SyncTvServer::new(self.config, self.services, self.livestream_state, self.pool);
+        let server = SyncTvServer::new(
+            self.config,
+            self.services,
+            self.livestream_state,
+            self.pool,
+            Arc::new(ManagementLifecycleController::new()),
+        );
         server
             .start_with_coordinator_and_shutdown_signal(self.shutdown, shutdown_signal)
             .await
@@ -553,6 +583,7 @@ impl Application {
     async fn init_core_services(
         infra: &Infrastructure,
         shutdown: &mut ShutdownCoordinator,
+        options: &ApplicationBuildOptions,
     ) -> Result<CoreState> {
         // Initialize CacheInvalidationService early (before init_services).
         // Uses the cluster node_id so invalidation messages are correctly attributed.
@@ -594,12 +625,18 @@ impl Application {
         }
 
         // Initialize core services
-        let synctv_services = init_services(
+        let synctv_services = init_services_with_options(
             infra.pool.clone(),
             &infra.config,
             infra.redis_handles.clone(),
             cache_invalidation.clone(),
             cache_invalidation_listener_task,
+            InitServicesOptions {
+                provider_test_address_overrides: options.provider_test_address_overrides.clone(),
+                credential_encryption_hex_key_override: options
+                    .credential_encryption_hex_key_override
+                    .clone(),
+            },
         )
         .await?;
 
@@ -1270,14 +1307,18 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
                 enable_reflection: false,
-                metrics_enabled: false,
-                metrics_bearer_token: String::new(),
                 grpc_max_message_size_bytes: 16 * 1024 * 1024,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
                 cluster_secret: String::new(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
+            },
+            time: synctv_core::config::TimeConfig::default(),
+            metrics: synctv_core::config::MetricsConfig::default(),
+            management: synctv_core::config::ManagementConfig {
+                enabled: false,
+                ..synctv_core::config::ManagementConfig::default()
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig {

@@ -58,7 +58,7 @@ CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
 
 -- Comments
 COMMENT ON TABLE users IS 'User accounts with soft delete support (RBAC: role-based access control)';
-COMMENT ON COLUMN users.id IS '12-character nanoid';
+COMMENT ON COLUMN users.id IS '12-character base62 ID';
 COMMENT ON COLUMN users.username IS 'Unique username among active (non-deleted) users';
 COMMENT ON COLUMN users.email IS 'User email (NULL allowed for OAuth2 users, unique among active users)';
 COMMENT ON COLUMN users.signup_method IS 'Registration method: 0=unknown, 1=email, 2=password, 3=oauth2, 4=admin_created';
@@ -70,4 +70,3 @@ COMMENT ON COLUMN users.password_version IS 'Monotonically increasing counter, i
 COMMENT ON COLUMN users.version IS 'Monotonically increasing integer for optimistic locking. Incremented on each UPDATE. Used by compare-and-increment to detect concurrent modifications.';
 COMMENT ON COLUMN users.deleted_at IS 'Soft delete timestamp (NULL = active user)';
 COMMENT ON CONSTRAINT users_email_not_empty ON users IS 'Ensures email is either NULL or a non-empty string';
-

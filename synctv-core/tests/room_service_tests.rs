@@ -5484,7 +5484,7 @@ async fn test_admin_delete_orphaned_room_nonexistent_room() {
         .create(&make_user("admin_nonexistent"))
         .await
         .unwrap();
-    let fake_room_id = RoomId::from_string(nanoid::nanoid!(12));
+    let fake_room_id = RoomId::from_string(synctv_common::snanoid!(12));
 
     let result = room_service
         .admin_delete_orphaned_room(&fake_room_id, &admin.id)

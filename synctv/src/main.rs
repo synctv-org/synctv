@@ -13,8 +13,10 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod admin_client;
 mod app;
 mod bootstrap;
+mod cli;
 mod cluster_bridge;
 mod migrations;
 mod rtmp_auth;
@@ -22,22 +24,13 @@ mod server;
 mod shutdown;
 
 use anyhow::Result;
-use synctv_core::bootstrap::load_config;
-use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = load_config()?;
-    install_panic_hook(config.logging.backtrace);
-    let _log_guard = synctv_core::logging::init_logging(&config.logging)?;
-    info!("SyncTV server starting...");
-    info!("API address: {}", config.api_address());
-
-    let app = app::Application::build(config).await?;
-    app.run().await
+    cli::execute(clap::Parser::parse()).await
 }
 
-fn install_panic_hook(include_backtrace: bool) {
+pub(crate) fn install_panic_hook(include_backtrace: bool) {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         default_hook(panic_info);

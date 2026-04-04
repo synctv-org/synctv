@@ -7,12 +7,14 @@ metadata:
 {{- $connectionLimits := .Values.config.connectionLimits | default dict }}
 {{- $messagingRateLimits := .Values.config.messagingRateLimits | default dict }}
 data:
-  config.yaml: |
+  synctv.yaml: |
+    time:
+      timezone: {{ .Values.config.time.timezone | default "" | quote }}
+
     server:
       host: {{ .Values.config.server.host | quote }}
       port: {{ .Values.config.server.port }}
       enable_reflection: {{ .Values.config.server.enableReflection | default false }}
-      metrics_enabled: {{ .Values.metrics.enabled | default false }}
       {{- if .Values.config.server.trustedProxies }}
       trusted_proxies:
         {{- range .Values.config.server.trustedProxies }}
@@ -25,6 +27,35 @@ data:
         - {{ . | quote }}
         {{- end }}
       {{- end }}
+
+    metrics:
+      enabled: {{ .Values.metrics.enabled | default false }}
+      host: {{ .Values.metrics.host | default .Values.config.server.host | quote }}
+      port: {{ .Values.metrics.port | default 9090 }}
+      tls:
+        enabled: {{ .Values.metrics.tls.enabled | default false }}
+        {{- if .Values.metrics.tls.enabled }}
+        cert_path: "/etc/synctv/metrics/tls/tls.crt"
+        key_path: "/etc/synctv/metrics/tls/tls.key"
+        {{- end }}
+      auth:
+        mode: {{ .Values.metrics.auth.mode | default "bearer_token" | quote }}
+        {{- if eq (.Values.metrics.auth.mode | default "bearer_token") "basic" }}
+        basic_username: {{ .Values.secrets.metrics.basicUsername | default "metrics" | quote }}
+        {{- end }}
+        {{- if eq (.Values.metrics.auth.mode | default "bearer_token") "kubernetes" }}
+        kubernetes:
+          audience: {{ .Values.metrics.auth.kubernetes.audience | default "" | quote }}
+          authentication_cache_ttl_seconds: {{ .Values.metrics.auth.kubernetes.authenticationCacheTtlSeconds | default 60 }}
+          authorization_cache_ttl_seconds: {{ .Values.metrics.auth.kubernetes.authorizationCacheTtlSeconds | default 60 }}
+        {{- end }}
+
+    management:
+      enabled: {{ .Values.config.management.enabled | default true }}
+      transport: {{ .Values.config.management.transport | default "unix" | quote }}
+      unix_socket_path: {{ .Values.config.management.unixSocketPath | default "/run/synctv/synctv.sock" | quote }}
+      port: {{ .Values.config.management.port | default 50052 }}
+      enable_reflection: {{ .Values.config.management.enableReflection | default false }}
 
     database:
       max_connections: {{ .Values.config.database.maxConnections | default 20 }}
@@ -51,6 +82,7 @@ data:
 
     livestream:
       rtmp_port: {{ .Values.config.livestream.rtmpPort }}
+      public_rtmp_host: {{ .Values.config.livestream.publicRtmpHost | default "" | quote }}
       gop_cache_size: {{ .Values.config.livestream.gopCacheSize }}
       stream_timeout_seconds: {{ .Values.config.livestream.streamTimeoutSeconds }}
       cleanup_check_interval_seconds: {{ .Values.config.livestream.cleanupCheckIntervalSeconds }}
@@ -58,33 +90,37 @@ data:
       pull_initial_backoff_ms: {{ .Values.config.livestream.pullInitialBackoffMs | default 1000 }}
       pull_max_backoff_ms: {{ .Values.config.livestream.pullMaxBackoffMs | default 30000 }}
       max_flv_tag_size_bytes: {{ .Values.config.livestream.maxFlvTagSizeBytes | default 10485760 }}
+      gop_cache_max_memory_mb: {{ .Values.config.livestream.gopCacheMaxMemoryMb | default 100 }}
+      hls_memory_max_mb: {{ .Values.config.livestream.hlsMemoryMaxMb | default 0 }}
+      hls_shared_storage: {{ .Values.config.livestream.hlsSharedStorage | default false }}
+      hls_storage_path: {{ .Values.config.livestream.hlsStoragePath | default "" | quote }}
+      flv_max_connection_duration_seconds: {{ .Values.config.livestream.flvMaxConnectionDurationSeconds | default 86400 }}
+      flv_write_timeout_seconds: {{ .Values.config.livestream.flvWriteTimeoutSeconds | default 30 }}
 
     cluster:
+      enabled: {{ .Values.config.cluster.enabled | default true }}
       critical_channel_capacity: {{ .Values.config.cluster.criticalChannelCapacity }}
       publish_channel_capacity: {{ .Values.config.cluster.publishChannelCapacity }}
       discovery_mode: {{ .Values.config.cluster.discoveryMode | default "redis" | quote }}
       leader_election_mode: {{ .Values.config.cluster.leaderElectionMode | default "redis" | quote }}
 
     webrtc:
-      mode: {{ .Values.config.webrtc.mode | default "hybrid" | quote }}
+      mode: {{ .Values.config.webrtc.mode | default "peer_to_peer" | quote }}
       enable_builtin_stun: {{ .Values.config.webrtc.enableBuiltinStun | default true }}
       stun_port: {{ .Values.config.webrtc.stunPort | default 3478 }}
       stun_host: {{ .Values.config.webrtc.stunHost | default "0.0.0.0" | quote }}
       {{- if .Values.config.webrtc.stunExternalAddr }}
       stun_external_addr: {{ .Values.config.webrtc.stunExternalAddr | quote }}
       {{- end }}
-      sfu_threshold: {{ .Values.config.webrtc.sfuThreshold | default 5 }}
-      enable_simulcast: {{ .Values.config.webrtc.enableSimulcast | default true }}
-      max_sfu_rooms: {{ .Values.config.webrtc.maxSfuRooms | default 0 }}
-      max_peers_per_sfu_room: {{ .Values.config.webrtc.maxPeersPerSfuRoom | default 50 }}
-      {{- if .Values.config.webrtc.simulcastLayers }}
-      simulcast_layers:
-        {{- range .Values.config.webrtc.simulcastLayers }}
+      turn_shared_secret: {{ .Values.config.webrtc.turnSharedSecret | default "" | quote }}
+      {{- if .Values.config.webrtc.turnServerUrls }}
+      turn_server_urls:
+        {{- range .Values.config.webrtc.turnServerUrls }}
         - {{ . | quote }}
         {{- end }}
       {{- end }}
-      max_bitrate_per_peer: {{ .Values.config.webrtc.maxBitratePerPeer | default 0 }}
-      enable_bandwidth_estimation: {{ .Values.config.webrtc.enableBandwidthEstimation | default true }}
+      turn_credential_ttl_seconds: {{ .Values.config.webrtc.turnCredentialTtlSeconds | default 86400 }}
+      filter_private_ice_candidates: {{ .Values.config.webrtc.filterPrivateIceCandidates | default true }}
 
     connection_limits:
       max_per_user: {{ $connectionLimits.maxPerUser | default 5 }}

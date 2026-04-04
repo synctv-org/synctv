@@ -3,12 +3,26 @@
 use anyhow::Result;
 use std::io::ErrorKind;
 
-use crate::Config;
+use crate::{
+    config::{absolute_display_path, default_config_search_paths},
+    time::set_default_timezone_name,
+    Config,
+};
 
-pub fn load_dotenv() -> Result<()> {
+#[derive(Debug, Clone, Default)]
+pub struct LoadConfigOptions {
+    pub config_path: Option<String>,
+    pub load_dotenv: bool,
+    pub validate: bool,
+    pub verbose: bool,
+}
+
+pub fn load_dotenv(verbose: bool) -> Result<()> {
     match dotenvy::dotenv() {
         Ok(path) => {
-            eprintln!("Loaded environment from {}", path.display());
+            if verbose {
+                eprintln!("Loaded environment from {}", absolute_display_path(&path));
+            }
             Ok(())
         }
         Err(dotenvy::Error::Io(err)) if err.kind() == ErrorKind::NotFound => Ok(()),
@@ -20,85 +34,118 @@ pub fn load_dotenv() -> Result<()> {
 ///
 /// Config file search order:
 /// 1. `SYNCTV_CONFIG_PATH` environment variable (explicit path)
-/// 2. ./config.yaml (current working directory)
-/// 3. /config/config.yaml (Kubernetes mount path)
+/// 2. platform default search paths with extension priority
+///    `synctv.yaml`, `synctv.yml`, `synctv.json`, `synctv.toml`
+///    for each location (for example current directory, user config dir,
+///    macOS `~/Library/Application Support/synctv/`, `/etc/synctv/`, `/config/`)
 /// 4. Fall back to environment variables only
 pub fn load_config() -> Result<Config> {
-    load_dotenv()?;
+    load_config_with_options(LoadConfigOptions {
+        config_path: None,
+        load_dotenv: true,
+        validate: true,
+        verbose: false,
+    })
+}
 
-    // Check if SYNCTV_CONFIG_PATH was explicitly set (even if file doesn't exist)
-    let explicit_config_path = std::env::var("SYNCTV_CONFIG_PATH").ok();
+pub fn load_config_with_options(options: LoadConfigOptions) -> Result<Config> {
+    if options.load_dotenv {
+        load_dotenv(options.verbose)?;
+    }
 
-    // Determine config file path: env var > CWD > /config/ mount
-    let config_path = explicit_config_path
+    let explicit_config_path = options
+        .config_path
+        .clone()
+        .or_else(|| std::env::var("SYNCTV_CONFIG_PATH").ok());
+
+    let discovered_config_path = explicit_config_path
         .clone()
         .filter(|p| std::path::Path::new(p).exists())
         .or_else(|| {
-            let cwd = "config.yaml";
-            if std::path::Path::new(cwd).exists() {
-                Some(cwd.to_string())
-            } else {
-                None
-            }
-        })
-        .or_else(|| {
-            let k8s = "/config/config.yaml";
-            if std::path::Path::new(k8s).exists() {
-                Some(k8s.to_string())
-            } else {
-                None
-            }
+            default_config_search_paths()
+                .into_iter()
+                .find(|path| path.exists())
+                .map(|path| path.display().to_string())
         });
 
-    let config = if let Some(path) = config_path {
-        eprintln!("Loading config from {path}");
+    let config = if let Some(path) = discovered_config_path {
+        let display_path = absolute_display_path(std::path::Path::new(&path));
+        if options.verbose {
+            eprintln!("Loading config from {display_path}");
+        }
         match Config::from_file(&path) {
             Ok(cfg) => {
-                eprintln!("Successfully loaded {path}");
+                if options.verbose {
+                    eprintln!("Successfully loaded {display_path}");
+                }
                 cfg
             }
             Err(e) => {
-                let source = if explicit_config_path.is_some() {
+                let source = if options.config_path.is_some() {
+                    "explicit CLI --config"
+                } else if explicit_config_path.is_some() {
                     "explicitly set SYNCTV_CONFIG_PATH"
                 } else {
                     "auto-discovered config file"
                 };
                 return Err(anyhow::anyhow!(
-                    "Failed to load config from {source} '{path}': {e}"
+                    "Failed to load config from {source} '{display_path}': {e}"
                 ));
             }
         }
     } else if let Some(ref explicit_path) = explicit_config_path {
-        // SYNCTV_CONFIG_PATH was explicitly set but the file doesn't exist
+        // CLI --config or SYNCTV_CONFIG_PATH was explicitly set but the file doesn't exist.
+        let source = if options.config_path.is_some() {
+            "CLI --config"
+        } else {
+            "SYNCTV_CONFIG_PATH"
+        };
         return Err(anyhow::anyhow!(
-            "Config file not found at explicitly set SYNCTV_CONFIG_PATH '{explicit_path}'"
+            "Config file not found at explicitly set {source} '{}'",
+            absolute_display_path(std::path::Path::new(explicit_path))
         ));
     } else {
-        eprintln!("No config file found, using environment variables");
+        if options.verbose {
+            eprintln!("No config file found, using environment variables");
+        }
         Config::from_env()?
     };
 
-    // Validate configuration (fail fast on misconfigurations)
-    if let Err(errors) = config.validate() {
-        for error in &errors {
-            eprintln!("Config validation error: {error}");
-        }
-        return Err(anyhow::anyhow!(
-            "Configuration validation failed with {} error(s): {}",
-            errors.len(),
-            errors.join("; ")
-        ));
-    }
+    set_default_timezone_name(&config.time.timezone).map_err(|error| {
+        anyhow::anyhow!(
+            "Failed to initialize default timezone '{}': {error}",
+            config.time.timezone
+        )
+    })?;
 
-    eprintln!("Configuration loaded and validated successfully");
-    eprintln!("API address: {}", config.api_address());
+    if options.validate {
+        // Validate configuration (fail fast on misconfigurations)
+        if let Err(errors) = config.validate() {
+            for error in &errors {
+                eprintln!("Config validation error: {error}");
+            }
+            return Err(anyhow::anyhow!(
+                "Configuration validation failed with {} error(s): {}",
+                errors.len(),
+                errors.join("; ")
+            ));
+        }
+
+        if options.verbose {
+            eprintln!("Configuration loaded and validated successfully");
+            eprintln!("API address: {}", config.api_address());
+        }
+    } else if options.verbose {
+        eprintln!("Configuration loaded successfully");
+    }
 
     Ok(config)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::load_config;
+    use super::{load_config, load_config_with_options, LoadConfigOptions};
+    use crate::time::{default_timezone_name, set_default_timezone_name};
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
 
@@ -164,11 +211,29 @@ mod tests {
         }
     }
 
+    struct TimeZoneGuard {
+        previous: String,
+    }
+
+    impl TimeZoneGuard {
+        fn capture() -> Self {
+            Self {
+                previous: default_timezone_name(),
+            }
+        }
+    }
+
+    impl Drop for TimeZoneGuard {
+        fn drop(&mut self) {
+            let _ = set_default_timezone_name(&self.previous);
+        }
+    }
+
     #[test]
     fn test_load_config_fails_for_invalid_auto_discovered_file() {
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().expect("temp dir should be created");
-        let config_path = dir.path().join("config.yaml");
+        let config_path = dir.path().join("synctv.yaml");
         std::fs::write(&config_path, "not: [valid").expect("invalid config should be written");
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _env = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
@@ -182,10 +247,36 @@ mod tests {
     }
 
     #[test]
+    fn test_load_config_prefers_first_supported_default_extension_in_order() {
+        let _lock = acquire_process_config_test_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let _cwd = CurrentDirGuard::change_to(dir.path());
+        let _env = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
+
+        std::fs::write(
+            dir.path().join("synctv.yml"),
+            "server:\n  port: 58082\njwt:\n  secret: \"12345678901234567890123456789012\"\n",
+        )
+        .expect("yml config should be written");
+        std::fs::write(
+            dir.path().join("synctv.json"),
+            "{\"server\":{\"port\":58083},\"jwt\":{\"secret\":\"12345678901234567890123456789012\"}}",
+        )
+        .expect("json config should be written");
+
+        let config = load_config().expect("first discovered config should load");
+
+        assert_eq!(
+            config.server.port, 58082,
+            "default search must prefer .yml before .json"
+        );
+    }
+
+    #[test]
     fn test_load_config_fails_for_invalid_explicit_file() {
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().expect("temp dir should be created");
-        let config_path = dir.path().join("explicit-config.yaml");
+        let config_path = dir.path().join("explicit-synctv.yaml");
         std::fs::write(&config_path, "not: [valid").expect("invalid config should be written");
         let _env = EnvVarGuard::set(
             "SYNCTV_CONFIG_PATH",
@@ -206,7 +297,7 @@ mod tests {
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().expect("temp dir should be created");
         let _cwd = CurrentDirGuard::change_to(dir.path());
-        let config_path = dir.path().join("explicit-config.yaml");
+        let config_path = dir.path().join("explicit-synctv.yaml");
         std::fs::write(
             &config_path,
             r#"
@@ -243,5 +334,116 @@ jwt:
 
         assert_eq!(config.jwt.secret, "12345678901234567890123456789012");
         assert_eq!(config.server.port, 50061);
+    }
+
+    #[test]
+    fn test_load_config_with_options_accepts_explicit_cli_config_path() {
+        let _lock = acquire_process_config_test_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let config_path = dir.path().join("cli-synctv.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+jwt:
+  secret: "12345678901234567890123456789012"
+server:
+  port: 58080
+"#,
+        )
+        .expect("valid config should be written");
+
+        let config = load_config_with_options(LoadConfigOptions {
+            config_path: Some(config_path.to_string_lossy().to_string()),
+            load_dotenv: false,
+            validate: true,
+            verbose: false,
+        })
+        .expect("explicit CLI config path should load successfully");
+
+        assert_eq!(config.server.port, 58080);
+    }
+
+    #[test]
+    fn test_load_config_with_options_can_skip_validation() {
+        let _lock = acquire_process_config_test_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let config_path = dir.path().join("invalid-but-loadable.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+jwt:
+  secret: ""
+"#,
+        )
+        .expect("config should be written");
+
+        let config = load_config_with_options(LoadConfigOptions {
+            config_path: Some(config_path.to_string_lossy().to_string()),
+            load_dotenv: false,
+            validate: false,
+            verbose: false,
+        })
+        .expect("loading without validation should succeed");
+
+        assert!(config.jwt.secret.is_empty());
+    }
+
+    #[test]
+    fn test_load_config_with_options_honors_synctv_config_path_when_cli_path_absent() {
+        let _lock = acquire_process_config_test_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let config_path = dir.path().join("env-synctv.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+management:
+  transport: "tcp"
+  port: 58081
+"#,
+        )
+        .expect("config should be written");
+        let _env = EnvVarGuard::set(
+            "SYNCTV_CONFIG_PATH",
+            config_path.to_string_lossy().to_string(),
+        );
+
+        let config = load_config_with_options(LoadConfigOptions {
+            config_path: None,
+            load_dotenv: false,
+            validate: false,
+            verbose: false,
+        })
+        .expect("SYNCTV_CONFIG_PATH should be honored when CLI path is absent");
+
+        assert_eq!(config.management.port, 58081);
+    }
+
+    #[test]
+    fn test_load_config_with_options_initializes_default_timezone() {
+        let _lock = acquire_process_config_test_lock();
+        let _timezone = TimeZoneGuard::capture();
+        let dir = tempdir().expect("temp dir should be created");
+        let config_path = dir.path().join("timezone-synctv.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+time:
+  timezone: "Asia/Shanghai"
+jwt:
+  secret: "12345678901234567890123456789012"
+"#,
+        )
+        .expect("config should be written");
+
+        let config = load_config_with_options(LoadConfigOptions {
+            config_path: Some(config_path.to_string_lossy().to_string()),
+            load_dotenv: false,
+            validate: false,
+            verbose: false,
+        })
+        .expect("timezone config should load");
+
+        assert_eq!(config.time.timezone, "Asia/Shanghai");
+        assert_eq!(default_timezone_name(), "Asia/Shanghai");
     }
 }

@@ -116,7 +116,7 @@ impl BilibiliApiImpl {
         }
 
         let credential = UserProviderCredential {
-            id: nanoid::nanoid!(),
+            id: synctv_common::snanoid!(),
             user_id: caller_user_id.to_string(),
             provider: synctv_core::provider::BilibiliProvider::NAME.to_string(),
             server_id: server_id.clone(),

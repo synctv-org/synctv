@@ -1,10 +1,16 @@
 use sqlx::{postgres::PgRow, PgPool, Row};
 
 use crate::{
-    models::{MemberStatus, PageParams, RoomId, RoomMember, RoomMemberWithUser, RoomRole, UserId},
+    models::{
+        MemberStatus, PageParams, RelatedRoomListQuery, RelatedRoomListSortBy, RoomId, RoomMember,
+        RoomMemberListQuery, RoomMemberListSortBy, RoomMemberWithUser, RoomRole, RoomStatus,
+        UserId,
+    },
     service::AddMemberOptions,
     Error, Result,
 };
+
+use super::query_builder::{escape_ilike, WhereClauseBuilder};
 
 /// Room member repository for database operations
 #[derive(Clone)]
@@ -16,6 +22,78 @@ impl RoomMemberRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    fn build_room_member_order_by(query: &RoomMemberListQuery) -> String {
+        let direction = query.sort_direction.as_sql();
+        match query.sort_by {
+            RoomMemberListSortBy::JoinedAt => {
+                format!("rm.joined_at {direction}, rm.user_id ASC")
+            }
+            RoomMemberListSortBy::Username => format!("u.username {direction}, rm.user_id ASC"),
+            RoomMemberListSortBy::Role => {
+                format!("rm.role {direction}, rm.joined_at ASC, rm.user_id ASC")
+            }
+            RoomMemberListSortBy::Status => {
+                format!("rm.status {direction}, rm.joined_at ASC, rm.user_id ASC")
+            }
+        }
+    }
+
+    fn build_related_room_list_conditions(query: &RelatedRoomListQuery) -> WhereClauseBuilder {
+        let mut wb = WhereClauseBuilder::new();
+        wb.push_literal("rm.left_at IS NULL");
+        wb.push_literal("r.deleted_at IS NULL");
+
+        match query.status {
+            Some(RoomStatus::Active) => wb.push_literal("r.status = 1"),
+            Some(RoomStatus::Pending) => wb.push_literal("r.status = 2"),
+            Some(RoomStatus::Closed) => wb.push_literal("r.status = 3"),
+            None => {}
+        }
+
+        match query.is_banned {
+            Some(true) => wb.push_literal("r.is_banned = TRUE"),
+            Some(false) => wb.push_literal("r.is_banned = FALSE"),
+            None => {}
+        }
+
+        if query.search.is_some() {
+            wb.push_param(
+                "(r.name ILIKE ${idx} ESCAPE '\\' OR r.description ILIKE ${idx} ESCAPE '\\')",
+            );
+        }
+
+        wb
+    }
+
+    fn bind_related_room_filters<'q>(
+        qb: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+        search_pattern: &'q Option<String>,
+    ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+        match search_pattern {
+            Some(pattern) => qb.bind(pattern),
+            None => qb,
+        }
+    }
+
+    fn build_related_room_order_by(query: &RelatedRoomListQuery) -> String {
+        let direction = query.sort_direction.as_sql();
+        match query.sort_by {
+            RelatedRoomListSortBy::JoinedAt => {
+                format!("rm.joined_at {direction}, r.id {direction}")
+            }
+            RelatedRoomListSortBy::Name => format!("r.name {direction}, r.id {direction}"),
+            RelatedRoomListSortBy::CreatedAt => {
+                format!("r.created_at {direction}, r.id {direction}")
+            }
+            RelatedRoomListSortBy::UpdatedAt => {
+                format!("r.updated_at {direction}, r.id {direction}")
+            }
+            RelatedRoomListSortBy::LastActivityAt => {
+                format!("r.last_activity_at {direction} NULLS LAST, r.id {direction}")
+            }
+        }
     }
 
     /// Add user to room with role.
@@ -312,6 +390,22 @@ impl RoomMemberRepository {
     /// Used during user deletion/ban to clean up room memberships.
     /// Returns the number of memberships removed.
     pub async fn remove_all_for_user(&self, user_id: &UserId) -> Result<u64> {
+        self.remove_all_for_user_with_executor(user_id, &self.pool)
+            .await
+    }
+
+    /// Remove a user from all rooms using a provided executor (pool or transaction).
+    ///
+    /// Used to keep user lifecycle mutations and membership cleanup in the same
+    /// database transaction.
+    pub async fn remove_all_for_user_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<u64>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let result = sqlx::query(
             "UPDATE room_members
              SET status = $3, left_at = $2, version = version + 1
@@ -320,7 +414,7 @@ impl RoomMemberRepository {
         .bind(user_id.as_str())
         .bind(chrono::Utc::now())
         .bind(MemberStatus::Left)
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
 
         Ok(result.rows_affected())
@@ -427,32 +521,105 @@ impl RoomMemberRepository {
         room_id: &RoomId,
         pagination: PageParams,
     ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
-        let limit = pagination.limit() as i64;
-        let offset = pagination.offset() as i64;
+        self.list_by_room_query(
+            room_id,
+            &RoomMemberListQuery {
+                pagination,
+                ..Default::default()
+            },
+        )
+        .await
+    }
 
-        // Single query using COUNT(*) OVER() window function for atomic count + fetch
-        let rows = sqlx::query(
+    pub async fn list_by_room_query(
+        &self,
+        room_id: &RoomId,
+        query: &RoomMemberListQuery,
+    ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
+        let limit = query.pagination.limit() as i64;
+        let offset = query.pagination.offset() as i64;
+        let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
+
+        let mut count_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT COUNT(*) FROM room_members rm JOIN users u ON rm.user_id = u.id WHERE rm.room_id = ",
+        );
+        count_builder.push_bind(room_id.as_str());
+        match query.status {
+            Some(MemberStatus::Banned) | Some(MemberStatus::Left) => {
+                count_builder.push(" AND rm.status = ");
+                count_builder.push_bind(query.status.expect("status checked above"));
+            }
+            Some(status) => {
+                count_builder.push(" AND rm.left_at IS NULL AND rm.status = ");
+                count_builder.push_bind(status);
+            }
+            None => {
+                count_builder.push(" AND rm.left_at IS NULL AND rm.status != ");
+                count_builder.push_bind(MemberStatus::Banned);
+            }
+        }
+        count_builder.push(" AND u.deleted_at IS NULL");
+        if let Some(pattern) = &search_pattern {
+            count_builder.push(" AND (u.username ILIKE ");
+            count_builder.push_bind(pattern);
+            count_builder.push(" OR rm.user_id ILIKE ");
+            count_builder.push_bind(pattern);
+            count_builder.push(")");
+        }
+        if let Some(role) = &query.role {
+            count_builder.push(" AND rm.role = ");
+            count_builder.push_bind(role);
+        }
+        let total_count: i64 = count_builder
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = Self::build_room_member_order_by(query);
+        let mut list_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT
                 rm.room_id, rm.user_id, rm.role, rm.status,
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
                 rm.joined_at, rm.banned_at, rm.banned_reason,
-                u.username,
-                COUNT(*) OVER() as total_count
+                u.username
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
-             WHERE rm.room_id = $1 AND rm.left_at IS NULL AND rm.status != $2 AND u.deleted_at IS NULL
-             ORDER BY rm.joined_at ASC
-             LIMIT $3 OFFSET $4",
-        )
-        .bind(room_id.as_str())
-        .bind(MemberStatus::Banned)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
+             WHERE rm.room_id = ",
+        );
+        list_builder.push_bind(room_id.as_str());
+        match query.status {
+            Some(MemberStatus::Banned) | Some(MemberStatus::Left) => {
+                list_builder.push(" AND rm.status = ");
+                list_builder.push_bind(query.status.expect("status checked above"));
+            }
+            Some(status) => {
+                list_builder.push(" AND rm.left_at IS NULL AND rm.status = ");
+                list_builder.push_bind(status);
+            }
+            None => {
+                list_builder.push(" AND rm.left_at IS NULL AND rm.status != ");
+                list_builder.push_bind(MemberStatus::Banned);
+            }
+        }
+        list_builder.push(" AND u.deleted_at IS NULL");
+        if let Some(pattern) = &search_pattern {
+            list_builder.push(" AND (u.username ILIKE ");
+            list_builder.push_bind(pattern);
+            list_builder.push(" OR rm.user_id ILIKE ");
+            list_builder.push_bind(pattern);
+            list_builder.push(")");
+        }
+        if let Some(role) = &query.role {
+            list_builder.push(" AND rm.role = ");
+            list_builder.push_bind(role);
+        }
+        list_builder.push(format!(" ORDER BY {order_by} LIMIT "));
+        list_builder.push_bind(limit);
+        list_builder.push(" OFFSET ");
+        list_builder.push_bind(offset);
 
-        let total_count = rows.first().map_or(0, |r| r.get::<i64, _>("total_count"));
+        let rows = list_builder.build().fetch_all(&self.pool).await?;
         let members: Result<Vec<RoomMemberWithUser>> = rows
             .into_iter()
             .map(|row| self.row_to_member_with_user(row))
@@ -1174,15 +1341,33 @@ impl RoomMemberRepository {
         user_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
-        let limit = pagination.limit() as i64;
-        let offset = pagination.offset() as i64;
+        self.list_by_user_with_query(
+            user_id,
+            &RelatedRoomListQuery {
+                pagination,
+                ..Default::default()
+            },
+        )
+        .await
+    }
 
-        // Single query using COUNT(*) OVER() window function for atomic count + fetch
-        let rows = sqlx::query(
+    /// List rooms where a user is a member with full room details and query semantics.
+    pub async fn list_by_user_with_query(
+        &self,
+        user_id: &UserId,
+        query: &RelatedRoomListQuery,
+    ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
+        let limit = query.pagination.limit() as i64;
+        let offset = query.pagination.offset() as i64;
+        let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
+        let wb = Self::build_related_room_list_conditions(query);
+        let (where_sql, _) = wb.build(4);
+        let order_by = Self::build_related_room_order_by(query);
+        let sql = format!(
             r"
             SELECT
                 r.id, r.name, r.description, r.created_by, r.status,
-                r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version,
+                r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                 rm.role as user_role,
                 rm.status as user_status,
                 COUNT(rm2.user_id)::int as member_count,
@@ -1190,50 +1375,52 @@ impl RoomMemberRepository {
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
             LEFT JOIN room_members rm2 ON r.id = rm2.room_id AND rm2.left_at IS NULL
-            WHERE rm.user_id = $1 AND rm.left_at IS NULL AND r.deleted_at IS NULL
+            WHERE rm.user_id = $1 AND {where_sql}
             GROUP BY r.id, r.name, r.description, r.created_by, r.status,
-                     r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version,
+                     r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                      rm.role, rm.status, rm.joined_at
-            ORDER BY rm.joined_at DESC
+            ORDER BY {order_by}
             LIMIT $2 OFFSET $3
-            ",
+            "
+        );
+
+        let rows = Self::bind_related_room_filters(
+            sqlx::query(&sql)
+                .bind(user_id.as_str())
+                .bind(limit)
+                .bind(offset),
+            &search_pattern,
         )
-        .bind(user_id.as_str())
-        .bind(limit)
-        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
-        let total_count = rows.first().map_or(0, |r| r.get::<i64, _>("total_count"));
+        let total_count = rows
+            .first()
+            .map_or(0, |row| row.get::<i64, _>("total_count"));
 
         let results: Result<Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>> = rows
             .into_iter()
             .map(|row| {
-                // RoomStatus, RoomRole, MemberStatus are stored as SMALLINT (i16) in PostgreSQL
-                // and have sqlx::Decode impls — read them directly as the correct types
-                let status: crate::models::RoomStatus = row.try_get("status")?;
-
                 let room = crate::models::Room {
                     id: RoomId::from_string(row.try_get("id")?),
                     name: row.try_get("name")?,
                     description: row.try_get("description")?,
                     created_by: UserId::from_string(row.try_get("created_by")?),
-                    status,
+                    status: row.try_get("status")?,
                     is_banned: row.try_get("is_banned")?,
                     created_at: row.try_get("created_at")?,
                     updated_at: row.try_get("updated_at")?,
-                    last_activity_at: row
-                        .try_get("last_activity_at")
-                        .unwrap_or_else(|_| row.try_get("updated_at").unwrap_or_default()),
+                    last_activity_at: row.try_get("last_activity_at")?,
                     deleted_at: row.try_get("deleted_at")?,
                     version: row.try_get("version")?,
                 };
 
-                let role: RoomRole = row.try_get("user_role")?;
-                let member_status: MemberStatus = row.try_get("user_status")?;
-                let member_count: i32 = row.try_get("member_count")?;
-
-                Ok((room, role, member_status, member_count))
+                Ok((
+                    room,
+                    row.try_get("user_role")?,
+                    row.try_get("user_status")?,
+                    row.try_get("member_count")?,
+                ))
             })
             .collect();
 

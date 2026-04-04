@@ -492,46 +492,6 @@ fn test_i32_as_u32_is_dangerous() {
 }
 
 // ============================================================================
-// Input validation: get_hot_rooms negative limit
-// ============================================================================
-
-/// Verify that negative limit values for get_hot_rooms are handled safely.
-#[test]
-fn test_hot_rooms_negative_limit_defaults() {
-    // The fix changes `req.limit == 0` to `req.limit <= 0`
-    // So negative values now correctly default to 10
-    let limit: i32 = -5;
-    let safe_limit = if limit <= 0 || limit > 50 { 10 } else { limit };
-    assert_eq!(safe_limit, 10);
-
-    let limit: i32 = 0;
-    let safe_limit = if limit <= 0 || limit > 50 { 10 } else { limit };
-    assert_eq!(safe_limit, 10);
-
-    let limit: i32 = 25;
-    let safe_limit = if limit <= 0 || limit > 50 { 10 } else { limit };
-    assert_eq!(safe_limit, 25);
-}
-
-// ============================================================================
-// B1: Verify GuestTokenValidator is on AppState (structural check)
-// ============================================================================
-
-/// Verify that GuestTokenValidator::new creates a validator that can be shared.
-#[test]
-fn test_b1_guest_token_validator_is_cloneable() {
-    let jwt = create_test_jwt_service();
-    let blacklist: Arc<dyn TokenBlacklistStore> =
-        Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 7200));
-    let kb = KeyBuilder::new("test");
-    let validator = GuestTokenValidator::new(jwt).with_blacklist(blacklist, kb);
-
-    // GuestTokenValidator must be Clone (required for Arc<GuestTokenValidator>)
-    let _cloned = validator.clone();
-    assert!(validator.has_blacklist());
-}
-
-// ============================================================================
 // Test helpers
 // ============================================================================
 

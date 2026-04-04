@@ -11,6 +11,10 @@ http-acl-reqwest.workspace = true
 ipnet.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+iana-time-zone.workspace = true
+nanoid.workspace = true
 
 [lints]
 workspace = true

@@ -57,7 +57,7 @@ impl UserOAuthProviderRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let id = nanoid::nanoid!(12);
+        let id = synctv_common::snanoid!(12);
 
         let result = sqlx::query(
             r"

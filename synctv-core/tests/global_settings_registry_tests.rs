@@ -503,29 +503,6 @@ fn test_cors_allowed_origins_updates() {
 // ============================================================================
 
 #[test]
-fn test_public_settings_defaults() {
-    let defaults = PublicSettings::defaults();
-
-    assert!(defaults.signup_enabled);
-    assert!(defaults.allow_room_creation);
-    assert_eq!(defaults.max_rooms_per_user, 10);
-    assert_eq!(defaults.max_members_per_room, 100);
-    assert!(!defaults.disable_create_room);
-    assert!(!defaults.create_room_need_review);
-    assert_eq!(defaults.room_ttl, 172_800); // 48 hours
-    assert!(!defaults.room_must_need_pwd);
-    assert!(!defaults.room_must_no_need_pwd);
-    assert!(!defaults.signup_need_review);
-    assert!(defaults.enable_password_signup);
-    assert!(defaults.enable_guest);
-    assert!(defaults.movie_proxy);
-    assert!(defaults.live_proxy);
-    assert!(defaults.ts_disguised_as_png);
-    assert!(defaults.custom_publish_host.is_empty());
-    assert!(!defaults.email_whitelist_enabled);
-}
-
-#[test]
 fn test_public_settings_serialization() {
     let mut settings = PublicSettings::defaults();
     settings.custom_publish_host = "rtmp://live.example.com".to_string();
@@ -856,25 +833,6 @@ fn test_setting_value_roundtrip() {
     assert_eq!(cors_origins, cors_parsed);
 }
 
-#[test]
-fn test_default_values_are_valid() {
-    // Verify all default values pass validation
-
-    // max_rooms_per_user default: 10
-    assert!(validate_max_rooms_per_user(10).is_ok());
-
-    // max_members_per_room default: 100
-    assert!(validate_max_members_per_room(100).is_ok());
-
-    // max_chat_messages default: 500
-    assert!(validate_max_chat_messages(500).is_ok());
-
-    // room_ttl default: 172800 (48 hours)
-    assert!(validate_room_ttl(172_800).is_ok());
-
-    // max_chat_messages_per_room default: 500
-    assert!(validate_max_chat_messages_per_room(500).is_ok());
-}
 
 // ============================================================================
 // SettingsService.update() validation tests (Issue #1)

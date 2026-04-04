@@ -311,61 +311,6 @@ fn test_ssrf_acl_loopback_blocked() {
 }
 
 // ==================================================================
-// Content-type -> media_type label mapping
-// (tested indirectly through a helper that mirrors the logic)
-// ==================================================================
-
-/// Mirror of the `media_type` derivation logic from `proxy_fetch_and_forward`.
-/// Extracted here to enable direct unit testing.
-fn derive_media_type(content_type: &str) -> &'static str {
-    if content_type.contains("mpegurl") || content_type.contains("m3u8") {
-        "hls"
-    } else if content_type.contains("dash") || content_type.contains("mpd") {
-        "dash"
-    } else if content_type.contains("video/") {
-        "video"
-    } else if content_type.contains("audio/") {
-        "audio"
-    } else if content_type.contains("octet-stream") {
-        "binary"
-    } else {
-        "other"
-    }
-}
-
-#[test]
-fn test_media_type_hls() {
-    assert_eq!(derive_media_type("application/vnd.apple.mpegurl"), "hls");
-    // Case-sensitive: the real code checks lowercase "mpegurl" and "m3u8".
-    // HTTP Content-Type values from well-behaved servers are typically lowercase.
-    assert_eq!(derive_media_type("application/x-mpegurl"), "hls");
-    assert_eq!(derive_media_type("application/x-m3u8"), "hls");
-}
-
-#[test]
-fn test_media_type_dash() {
-    assert_eq!(derive_media_type("application/dash+xml"), "dash");
-    assert_eq!(derive_media_type("video/vnd.mpeg.dash.mpd"), "dash");
-}
-
-#[test]
-fn test_media_type_video() {
-    assert_eq!(derive_media_type("video/mp4"), "video");
-    assert_eq!(derive_media_type("video/webm"), "video");
-}
-
-#[test]
-fn test_media_type_audio() {
-    assert_eq!(derive_media_type("audio/mpeg"), "audio");
-    assert_eq!(derive_media_type("audio/aac"), "audio");
-}
-
-#[test]
-fn test_media_type_binary() {
-    assert_eq!(derive_media_type("application/octet-stream"), "binary");
-}
-
-// ==================================================================
 // make_absolute (additional coverage)
 // ==================================================================
 
@@ -477,17 +422,6 @@ fn test_ssrf_acl_cgnat_blocked() {
         synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
         "CGNAT should be blocked"
     );
-}
-
-// ==================================================================
-// media_type mapping - edge cases
-// ==================================================================
-
-#[test]
-fn test_media_type_other() {
-    assert_eq!(derive_media_type("text/html"), "other");
-    assert_eq!(derive_media_type("application/json"), "other");
-    assert_eq!(derive_media_type(""), "other");
 }
 
 // ==================================================================

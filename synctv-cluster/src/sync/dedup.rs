@@ -231,7 +231,7 @@ mod tests {
         let dedup = MessageDeduplicator::with_defaults();
 
         let event = crate::sync::events::ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: RoomId::from_string("room1".to_string()),
             user_id: UserId::from_string("user1".to_string()),
             username: "test".to_string(),

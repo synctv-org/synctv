@@ -22,7 +22,7 @@ async fn start_redis() -> (synctv_core_testing::RedisContainer, String) {
 }
 
 fn unique_stream_key() -> String {
-    format!("test:cache:invalidate:{}", nanoid::nanoid!(8))
+    format!("test:cache:invalidate:{}", synctv_common::snanoid!(8))
 }
 
 #[tokio::test]

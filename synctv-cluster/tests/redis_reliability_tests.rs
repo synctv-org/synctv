@@ -73,7 +73,7 @@ async fn test_redis_pubsub_no_message_loss() {
         &mut baseline_clients,
         "baseline no-loss message",
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("sender".to_string()),
             username: "sender".to_string(),
@@ -91,7 +91,7 @@ async fn test_redis_pubsub_no_message_loss() {
     let message_count = 20;
     for i in 0..message_count {
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("sender".to_string()),
             username: "sender".to_string(),
@@ -167,7 +167,7 @@ async fn test_redis_stream_catchup() {
     // Publish events to Redis (they go into streams via dual-write)
     for i in 0..5 {
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("publisher".to_string()),
             username: "publisher".to_string(),
@@ -244,7 +244,7 @@ async fn test_redis_stream_catchup() {
         &publisher,
         &mut rx,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("publisher".to_string()),
             username: "publisher".to_string(),
@@ -305,7 +305,7 @@ async fn test_redis_failure_and_recovery() {
         &node_a,
         &mut rx_b,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("recovery_user_a".to_string()),
             username: "user_a".to_string(),
@@ -352,7 +352,7 @@ async fn test_redis_failure_and_recovery() {
 
     // Broadcast from user_b on node A should reach both subscribers on node A
     let local_event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),
         user_id: UserId::from_string("recovery_user_b".to_string()),
         username: "user_b".to_string(),
@@ -395,7 +395,7 @@ async fn test_redis_failure_and_recovery() {
 
     for i in 0..5 {
         let ordered_event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("recovery_user_a".to_string()),
             username: "user_a".to_string(),
@@ -465,7 +465,7 @@ async fn test_redis_reconnection_event_preservation() {
         &mut baseline_clients,
         "Baseline message",
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: UserId::from_string("reconnect_sender".to_string()),
             username: "sender".to_string(),
@@ -482,7 +482,7 @@ async fn test_redis_reconnection_event_preservation() {
     // Test rapid message sending (simulating high-throughput scenario)
     let mut event_ids = Vec::new();
     for i in 0..20 {
-        let event_id = nanoid::nanoid!(16);
+        let event_id = synctv_common::snanoid!(16);
         event_ids.push(event_id.clone());
 
         let rapid_event = ClusterEvent::ChatMessage {
@@ -547,7 +547,7 @@ async fn test_cross_replica_deduplication() {
 
     // Broadcast the same event twice locally (simulating duplicate delivery)
     let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),
         user_id: UserId::from_string("sender".to_string()),
         username: "sender".to_string(),

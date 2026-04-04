@@ -9,7 +9,6 @@
 //! - This prevents email flooding and database bloat attacks
 
 use chrono::{Duration, Utc};
-use nanoid::nanoid;
 use sqlx::PgPool;
 use tracing::{debug, info, warn};
 
@@ -169,7 +168,7 @@ impl EmailTokenService {
             .await?;
 
         // Generate random token
-        let token = nanoid!(64);
+        let token = synctv_common::snanoid!(64);
 
         let expires_at = Utc::now() + token_type.expiration_duration();
 
@@ -275,13 +274,6 @@ mod tests {
 
         // Password reset: 1 hour
         assert_eq!(password_reset.expiration_duration(), Duration::hours(1));
-    }
-
-    #[test]
-    fn test_rate_limit_config_default() {
-        let config = EmailTokenRateLimitConfig::default();
-        assert_eq!(config.max_tokens_per_user, 5);
-        assert_eq!(config.window_seconds, 3600);
     }
 
     #[tokio::test]

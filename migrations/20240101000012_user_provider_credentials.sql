@@ -3,10 +3,10 @@
 
 CREATE TABLE IF NOT EXISTS user_media_provider_credentials (
     -- Primary Key
-    id CHAR(12) PRIMARY KEY,  -- nanoid(12)
+    id CHAR(12) PRIMARY KEY,  -- base62 ID (12 chars)
 
     -- User and Provider
-    user_id CHAR(12) NOT NULL,  -- nanoid(12)
+    user_id CHAR(12) NOT NULL,  -- base62 ID (12 chars)
     provider VARCHAR(32) NOT NULL,  -- bilibili, alist, emby
 
     -- Server Identifier (required, distinguishes different servers/accounts/instances)

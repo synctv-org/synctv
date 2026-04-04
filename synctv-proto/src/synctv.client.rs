@@ -360,6 +360,10 @@ pub struct ListRoomsRequest {
     /// Optional search by name/description
     #[prost(string, tag = "3")]
     pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "RoomListSortBy", tag = "4")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "5")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -483,7 +487,7 @@ pub struct CheckRoomPasswordResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomMembersRequest))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetRoomMembersRequest {
     /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "1")]
@@ -491,6 +495,16 @@ pub struct GetRoomMembersRequest {
     /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "2")]
     pub page_size: i32,
+    #[prost(string, tag = "3")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "super::common::RoomMemberRole", optional, tag = "4")]
+    pub role: ::core::option::Option<i32>,
+    #[prost(enumeration = "super::common::MemberStatus", optional, tag = "5")]
+    pub status: ::core::option::Option<i32>,
+    #[prost(enumeration = "RoomMemberListSortBy", tag = "6")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "7")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -718,6 +732,18 @@ pub struct ListPlaylistsRequest {
     /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "3")]
     pub page_size: i32,
+    #[prost(string, tag = "4")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub source_provider: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub provider_instance_name: ::prost::alloc::string::String,
+    #[prost(bool, optional, tag = "7")]
+    pub dynamic_only: ::core::option::Option<bool>,
+    #[prost(enumeration = "PlaylistListSortBy", tag = "8")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "9")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -871,6 +897,21 @@ pub struct ListPlaylistItemsRequest {
     #[prost(int32, tag = "4")]
     #[serde(default)]
     pub page_size: i32,
+    #[prost(string, tag = "5")]
+    #[serde(default)]
+    pub search: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    #[serde(default)]
+    pub source_provider: ::prost::alloc::string::String,
+    #[prost(string, tag = "7")]
+    #[serde(default)]
+    pub provider_instance_name: ::prost::alloc::string::String,
+    #[prost(enumeration = "MediaListSortBy", tag = "8")]
+    #[serde(default)]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "9")]
+    #[serde(default)]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -1643,7 +1684,7 @@ pub struct SetPasswordResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListCreatedRoomsRequest))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListCreatedRoomsRequest {
     /// Validation: >= 1
     #[prost(int32, tag = "1")]
@@ -1651,6 +1692,16 @@ pub struct ListCreatedRoomsRequest {
     /// Validation: max 100, default 20
     #[prost(int32, tag = "2")]
     pub page_size: i32,
+    #[prost(string, tag = "3")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "super::common::RoomStatus", tag = "4")]
+    pub status: i32,
+    #[prost(bool, optional, tag = "5")]
+    pub is_banned: ::core::option::Option<bool>,
+    #[prost(enumeration = "RoomListSortBy", tag = "6")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "7")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -1665,7 +1716,7 @@ pub struct ListCreatedRoomsResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListParticipatedRoomsRequest))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListParticipatedRoomsRequest {
     /// Validation: >= 1
     #[prost(int32, tag = "1")]
@@ -1673,6 +1724,16 @@ pub struct ListParticipatedRoomsRequest {
     /// Validation: max 100, default 20
     #[prost(int32, tag = "2")]
     pub page_size: i32,
+    #[prost(string, tag = "3")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "super::common::RoomStatus", tag = "4")]
+    pub status: i32,
+    #[prost(bool, optional, tag = "5")]
+    pub is_banned: ::core::option::Option<bool>,
+    #[prost(enumeration = "RelatedRoomListSortBy", tag = "6")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "7")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -2378,7 +2439,7 @@ pub struct NotificationProto {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListNotificationsRequest))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListNotificationsRequest {
     /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "1")]
@@ -2392,6 +2453,13 @@ pub struct ListNotificationsRequest {
     /// Filter by type
     #[prost(enumeration = "NotificationType", optional, tag = "4")]
     pub notification_type: ::core::option::Option<i32>,
+    /// Search by title or content
+    #[prost(string, tag = "5")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "NotificationListSortBy", tag = "6")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "7")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -2471,6 +2539,274 @@ pub struct DeleteAllReadRequest {}
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteAllReadResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteAllReadResponse {}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_SortDirection))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SortDirection {
+    Unspecified = 0,
+    Asc = 1,
+    Desc = 2,
+}
+impl SortDirection {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SORT_DIRECTION_UNSPECIFIED",
+            Self::Asc => "SORT_DIRECTION_ASC",
+            Self::Desc => "SORT_DIRECTION_DESC",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SORT_DIRECTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "SORT_DIRECTION_ASC" => Some(Self::Asc),
+            "SORT_DIRECTION_DESC" => Some(Self::Desc),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomMemberListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RoomMemberListSortBy {
+    Unspecified = 0,
+    JoinedAt = 1,
+    Username = 2,
+    Role = 3,
+    Status = 4,
+}
+impl RoomMemberListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED",
+            Self::JoinedAt => "ROOM_MEMBER_LIST_SORT_BY_JOINED_AT",
+            Self::Username => "ROOM_MEMBER_LIST_SORT_BY_USERNAME",
+            Self::Role => "ROOM_MEMBER_LIST_SORT_BY_ROLE",
+            Self::Status => "ROOM_MEMBER_LIST_SORT_BY_STATUS",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "ROOM_MEMBER_LIST_SORT_BY_JOINED_AT" => Some(Self::JoinedAt),
+            "ROOM_MEMBER_LIST_SORT_BY_USERNAME" => Some(Self::Username),
+            "ROOM_MEMBER_LIST_SORT_BY_ROLE" => Some(Self::Role),
+            "ROOM_MEMBER_LIST_SORT_BY_STATUS" => Some(Self::Status),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RoomListSortBy {
+    Unspecified = 0,
+    CreatedAt = 1,
+    UpdatedAt = 2,
+    LastActivityAt = 3,
+    Name = 4,
+}
+impl RoomListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ROOM_LIST_SORT_BY_UNSPECIFIED",
+            Self::CreatedAt => "ROOM_LIST_SORT_BY_CREATED_AT",
+            Self::UpdatedAt => "ROOM_LIST_SORT_BY_UPDATED_AT",
+            Self::LastActivityAt => "ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT",
+            Self::Name => "ROOM_LIST_SORT_BY_NAME",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ROOM_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "ROOM_LIST_SORT_BY_CREATED_AT" => Some(Self::CreatedAt),
+            "ROOM_LIST_SORT_BY_UPDATED_AT" => Some(Self::UpdatedAt),
+            "ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT" => Some(Self::LastActivityAt),
+            "ROOM_LIST_SORT_BY_NAME" => Some(Self::Name),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum PlaylistListSortBy {
+    Unspecified = 0,
+    Position = 1,
+    Name = 2,
+    CreatedAt = 3,
+    UpdatedAt = 4,
+}
+impl PlaylistListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PLAYLIST_LIST_SORT_BY_UNSPECIFIED",
+            Self::Position => "PLAYLIST_LIST_SORT_BY_POSITION",
+            Self::Name => "PLAYLIST_LIST_SORT_BY_NAME",
+            Self::CreatedAt => "PLAYLIST_LIST_SORT_BY_CREATED_AT",
+            Self::UpdatedAt => "PLAYLIST_LIST_SORT_BY_UPDATED_AT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PLAYLIST_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "PLAYLIST_LIST_SORT_BY_POSITION" => Some(Self::Position),
+            "PLAYLIST_LIST_SORT_BY_NAME" => Some(Self::Name),
+            "PLAYLIST_LIST_SORT_BY_CREATED_AT" => Some(Self::CreatedAt),
+            "PLAYLIST_LIST_SORT_BY_UPDATED_AT" => Some(Self::UpdatedAt),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MediaListSortBy {
+    Unspecified = 0,
+    Position = 1,
+    Name = 2,
+    AddedAt = 3,
+    UpdatedAt = 4,
+    SourceProvider = 5,
+    ProviderInstanceName = 6,
+}
+impl MediaListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "MEDIA_LIST_SORT_BY_UNSPECIFIED",
+            Self::Position => "MEDIA_LIST_SORT_BY_POSITION",
+            Self::Name => "MEDIA_LIST_SORT_BY_NAME",
+            Self::AddedAt => "MEDIA_LIST_SORT_BY_ADDED_AT",
+            Self::UpdatedAt => "MEDIA_LIST_SORT_BY_UPDATED_AT",
+            Self::SourceProvider => "MEDIA_LIST_SORT_BY_SOURCE_PROVIDER",
+            Self::ProviderInstanceName => "MEDIA_LIST_SORT_BY_PROVIDER_INSTANCE_NAME",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "MEDIA_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "MEDIA_LIST_SORT_BY_POSITION" => Some(Self::Position),
+            "MEDIA_LIST_SORT_BY_NAME" => Some(Self::Name),
+            "MEDIA_LIST_SORT_BY_ADDED_AT" => Some(Self::AddedAt),
+            "MEDIA_LIST_SORT_BY_UPDATED_AT" => Some(Self::UpdatedAt),
+            "MEDIA_LIST_SORT_BY_SOURCE_PROVIDER" => Some(Self::SourceProvider),
+            "MEDIA_LIST_SORT_BY_PROVIDER_INSTANCE_NAME" => {
+                Some(Self::ProviderInstanceName)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RelatedRoomListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RelatedRoomListSortBy {
+    Unspecified = 0,
+    JoinedAt = 1,
+    CreatedAt = 2,
+    UpdatedAt = 3,
+    LastActivityAt = 4,
+    Name = 5,
+}
+impl RelatedRoomListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RELATED_ROOM_LIST_SORT_BY_UNSPECIFIED",
+            Self::JoinedAt => "RELATED_ROOM_LIST_SORT_BY_JOINED_AT",
+            Self::CreatedAt => "RELATED_ROOM_LIST_SORT_BY_CREATED_AT",
+            Self::UpdatedAt => "RELATED_ROOM_LIST_SORT_BY_UPDATED_AT",
+            Self::LastActivityAt => "RELATED_ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT",
+            Self::Name => "RELATED_ROOM_LIST_SORT_BY_NAME",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RELATED_ROOM_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "RELATED_ROOM_LIST_SORT_BY_JOINED_AT" => Some(Self::JoinedAt),
+            "RELATED_ROOM_LIST_SORT_BY_CREATED_AT" => Some(Self::CreatedAt),
+            "RELATED_ROOM_LIST_SORT_BY_UPDATED_AT" => Some(Self::UpdatedAt),
+            "RELATED_ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT" => Some(Self::LastActivityAt),
+            "RELATED_ROOM_LIST_SORT_BY_NAME" => Some(Self::Name),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_NotificationListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum NotificationListSortBy {
+    Unspecified = 0,
+    CreatedAt = 1,
+    UpdatedAt = 2,
+    Title = 3,
+}
+impl NotificationListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "NOTIFICATION_LIST_SORT_BY_UNSPECIFIED",
+            Self::CreatedAt => "NOTIFICATION_LIST_SORT_BY_CREATED_AT",
+            Self::UpdatedAt => "NOTIFICATION_LIST_SORT_BY_UPDATED_AT",
+            Self::Title => "NOTIFICATION_LIST_SORT_BY_TITLE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "NOTIFICATION_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "NOTIFICATION_LIST_SORT_BY_CREATED_AT" => Some(Self::CreatedAt),
+            "NOTIFICATION_LIST_SORT_BY_UPDATED_AT" => Some(Self::UpdatedAt),
+            "NOTIFICATION_LIST_SORT_BY_TITLE" => Some(Self::Title),
+            _ => None,
+        }
+    }
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ItemType))]

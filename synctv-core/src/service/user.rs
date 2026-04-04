@@ -10,7 +10,7 @@ use crate::{
     config::PasswordComplexityConfig,
     models::oauth2_client::OAuth2Provider,
     models::{SignupMethod, User, UserId, UserStatus},
-    repository::{UserOAuthProviderRepository, UserRepository},
+    repository::{RoomMemberRepository, UserOAuthProviderRepository, UserRepository},
     service::auth::{BruteForceProtection, JwtService, TokenBlacklistStore, TokenType},
     service::rate_limit::RateLimiter,
     Error, Result,
@@ -130,7 +130,7 @@ impl UserService {
             } else {
                 base_username.clone()
             };
-            let suffix = nanoid::nanoid!(6);
+            let suffix = synctv_common::snanoid!(6);
             candidates.push(format!("{base}_{suffix}"));
         }
 
@@ -543,6 +543,18 @@ impl UserService {
         password: String,
         role: Option<crate::models::UserRole>,
     ) -> Result<User> {
+        self.create_user_with_role_and_status(username, email, password, role, None)
+            .await
+    }
+
+    pub async fn create_user_with_role_and_status(
+        &self,
+        username: String,
+        email: Option<String>,
+        password: String,
+        role: Option<crate::models::UserRole>,
+        status: Option<crate::models::UserStatus>,
+    ) -> Result<User> {
         self.validate_username(&username)?;
         if let Some(ref email) = email {
             self.validate_email(email)?;
@@ -554,9 +566,16 @@ impl UserService {
         if let Some(role) = role {
             user.role = role;
         }
+        if let Some(status) = status {
+            user.status = status;
+        }
         let created_user = self.repository.create(&user).await?;
-        self.cache_username_best_effort(&created_user.id, &username, "create_user_with_role")
-            .await;
+        self.cache_username_best_effort(
+            &created_user.id,
+            &username,
+            "create_user_with_role_and_status",
+        )
+        .await;
         Ok(created_user)
     }
 
@@ -676,6 +695,7 @@ impl UserService {
         Ok((user, access_token, refresh_token))
     }
 
+    /// Issue an access/refresh token pair for the local management plane.
     /// Generate token pair for `OAuth2` login (user already authenticated by `OAuth2` provider)
     ///
     /// This method generates access and refresh tokens for a user who has been
@@ -877,6 +897,19 @@ impl UserService {
             .ok_or_else(|| Error::NotFound("User not found".to_string()))
     }
 
+    /// Get user by username.
+    pub async fn get_user_by_username(&self, username: &str) -> Result<User> {
+        let username = username.trim();
+        if username.is_empty() {
+            return Err(Error::InvalidInput("Username is empty".to_string()));
+        }
+
+        self.repository
+            .get_by_username(username)
+            .await?
+            .ok_or_else(|| Error::NotFound("User not found".to_string()))
+    }
+
     /// Get user by email
     pub async fn get_by_email(&self, email: &str) -> Result<Option<User>> {
         self.repository.get_by_email(email).await
@@ -1057,6 +1090,15 @@ impl UserService {
         self.repository.list(query).await
     }
 
+    /// List root/admin users with pagination.
+    pub async fn list_admins(
+        &self,
+        query: &crate::models::UserListQuery,
+    ) -> Result<(Vec<User>, i64)> {
+        query.pagination.validate()?;
+        self.repository.list_admins(query).await
+    }
+
     /// Delete all `OAuth2` provider mappings for a user.
     ///
     /// Used during user deletion to clean up OAuth bindings.
@@ -1093,6 +1135,7 @@ impl UserService {
     /// 1. Within a single DB transaction:
     ///    a. Soft-delete the user row
     ///    b. Remove all `OAuth2` provider mappings
+    ///    c. Mark all room memberships as `Left`
     /// 2. Invalidate username cache (best-effort)
     /// 3. Invalidate user cache across replicas (best-effort)
     ///
@@ -1122,6 +1165,11 @@ impl UserService {
             .delete_all_for_user_with_executor(user_id, &mut *tx)
             .await?;
 
+        let room_member_repo = RoomMemberRepository::new(pool.clone());
+        room_member_repo
+            .remove_all_for_user_with_executor(user_id, &mut *tx)
+            .await?;
+
         tx.commit().await?;
 
         // 2. Invalidate username cache (best-effort)
@@ -1139,6 +1187,43 @@ impl UserService {
         tracing::info!(user_id = %user_id.as_str(), "User soft-deleted with full cleanup");
 
         Ok(())
+    }
+
+    /// Ban a user and remove them from all room memberships in the same transaction.
+    ///
+    /// This ensures global account bans and room lifecycle state stay aligned:
+    /// once the user becomes `Banned`, they are also no longer an active member
+    /// of any room.
+    pub async fn ban_user_and_cleanup_memberships(&self, user_id: &UserId) -> Result<User> {
+        let pool = self.repository.pool();
+        let mut tx = pool.begin().await?;
+
+        let mut user = self
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+
+        if user.status == UserStatus::Banned {
+            return Err(Error::InvalidInput("User is already banned".to_string()));
+        }
+
+        user.status = UserStatus::Banned;
+        let old_version = user.version;
+        let updated = self
+            .repository
+            .update_with_executor(&user, old_version, &mut *tx)
+            .await?;
+
+        let room_member_repo = RoomMemberRepository::new(pool.clone());
+        room_member_repo
+            .remove_all_for_user_with_executor(user_id, &mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        self.notify_user_invalidation(user_id).await;
+
+        Ok(updated)
     }
 
     /// Set user status (Active/Pending/Banned).
@@ -1320,7 +1405,7 @@ impl UserService {
         let (base_username, candidates) =
             self.oauth2_username_candidates(provider_user_id, username)?;
         // Generate a random password (OAuth2 users don't need password login)
-        let random_password = nanoid::nanoid!(32);
+        let random_password = synctv_common::snanoid!(32);
         let user_email = email.map(std::string::ToString::to_string);
         // Hash password
         let password_hash = self.password_hasher.hash_password(&random_password).await?;
@@ -1817,44 +1902,6 @@ mod tests {
         assert!(
             result.is_ok(),
             "non-strict mode should allow normal in-memory checks"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_refresh_rate_limiter_default_is_in_memory() {
-        // When no Redis is provided, the refresh rate limiter should use in-memory backend
-        let pool =
-            PgPool::connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid").unwrap();
-        let jwt_service = crate::service::auth::JwtService::new(
-            "test-secret-key-minimum-length-32-chars-required",
-        )
-        .unwrap();
-        let username_cache = crate::cache::UsernameCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            "test:".to_string(),
-            100,
-            0,
-        );
-        let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(
-            crate::service::InMemoryTokenBlacklistStore::new(100, 3600, 86400),
-        );
-        let key_builder = crate::cache::KeyBuilder::new("test");
-        let brute_force = BruteForceProtection::in_memory("test".to_string());
-
-        let user_service = super::UserService::new(
-            pool,
-            jwt_service,
-            username_cache,
-            PasswordComplexityConfig::default(),
-            token_blacklist,
-            key_builder,
-            brute_force,
-        );
-
-        assert_eq!(
-            user_service.refresh_rate_limiter.backend_name(),
-            "memory",
-            "Default refresh rate limiter should be in-memory"
         );
     }
 

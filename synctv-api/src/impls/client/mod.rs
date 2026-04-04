@@ -16,7 +16,7 @@
 
 mod auth;
 pub use auth::LogoutOutcome;
-mod media;
+pub(crate) mod media;
 mod member;
 mod playback;
 mod playlist;
@@ -25,8 +25,8 @@ mod stream;
 mod user;
 mod webrtc;
 
-// Proto conversion helpers used across sub-modules
-mod convert;
+// Proto conversion helpers used across impls modules within this crate.
+pub(crate) mod convert;
 
 #[cfg(test)]
 mod tests;
@@ -52,7 +52,7 @@ fn parse_external_room_id(room_id: &str) -> Result<RoomId, ApiError> {
 }
 
 /// Validate a password that is being **set** (create room, set password, update settings).
-fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
     // Issue #72: Reject passwords that are purely whitespace. A password of e.g. "   "
     // looks non-empty to a length check but provides no protection and confuses users.
     let trimmed = password.trim();
@@ -378,7 +378,7 @@ impl ClientApiImpl {
     ) -> synctv_cluster::sync::PublishRequest {
         synctv_cluster::sync::PublishRequest {
             event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
-                event_id: nanoid::nanoid!(16),
+                event_id: synctv_common::snanoid!(16),
                 targets: vec![synctv_cluster::sync::CacheTarget::Room {
                     room_id: room_id.as_str().to_string(),
                 }],
@@ -500,7 +500,7 @@ impl ClientApiImpl {
 
         let request = synctv_cluster::sync::PublishRequest {
             event: synctv_cluster::sync::ClusterEvent::PermissionChanged {
-                event_id: nanoid::nanoid!(16),
+                event_id: synctv_common::snanoid!(16),
                 room_id: room_id.clone(),
                 target_user_id: target_user_id.clone(),
                 target_username,

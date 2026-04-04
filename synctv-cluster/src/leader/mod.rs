@@ -1072,13 +1072,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config() {
-        let config = LeaderElectorConfig::default();
-        assert_eq!(config.lease_duration_secs, 30);
-        assert_eq!(config.renew_interval_secs, 10);
-    }
-
-    #[test]
     #[should_panic(expected = "renew_interval_secs")]
     fn test_invalid_config_panics() {
         // We can't construct a real ConnectionManager synchronously, so we

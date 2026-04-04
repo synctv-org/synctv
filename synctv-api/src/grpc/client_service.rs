@@ -3,7 +3,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 
-use crate::impls::messaging::{MessageSender, StreamMessage, StreamMessageHandler};
+use crate::impls::messaging::{
+    MessageSender, RealtimeJoinError, StreamMessage, StreamMessageHandler,
+};
 use synctv_cluster::sync::{ClusterManager, ConnectionManager};
 use synctv_core::models::{Room, RoomId, UserId};
 use synctv_core::service::{
@@ -96,11 +98,11 @@ fn extract_authenticated_token(
 }
 
 #[allow(clippy::result_large_err)]
-fn map_message_stream_join_error(error: String) -> Status {
-    let (kind, message) = crate::impls::parse_api_error_string(&error);
-    match kind {
-        crate::impls::ErrorKind::RateLimited => Status::resource_exhausted(message.to_string()),
-        crate::impls::ErrorKind::ServiceUnavailable => Status::unavailable(message.to_string()),
+fn map_message_stream_join_error(error: RealtimeJoinError) -> Status {
+    match error {
+        RealtimeJoinError::RateLimited(message) => Status::resource_exhausted(message),
+        RealtimeJoinError::ServiceUnavailable(message) => Status::unavailable(message),
+        RealtimeJoinError::PermissionDenied(message) => Status::permission_denied(message),
         _ => {
             tracing::error!("Unexpected MessageStream pre_join failure: {error}");
             Status::internal("Failed to establish message stream")
@@ -537,16 +539,9 @@ impl UserService for ClientServiceImpl {
     ) -> Result<Response<ListParticipatedRoomsResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let req = request.into_inner();
-        let page = u32::try_from(req.page).unwrap_or(1);
-        let page_size = u32::try_from(req.page_size).unwrap_or(10).min(100);
-        let params = synctv_core::models::PageParams::new(Some(page), Some(page_size));
         let response = self
             .client_api
-            .get_joined_rooms(
-                user_id.as_str(),
-                params.page as i32,
-                params.page_size as i32,
-            )
+            .get_joined_rooms(user_id.as_str(), req)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
@@ -1072,10 +1067,10 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<ListRoomStreamsResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let _req = request.into_inner();
+        let req = request.into_inner();
 
         self.client_api
-            .list_room_streams(user_id.as_str(), room_id.as_str())
+            .list_room_streams(user_id.as_str(), room_id.as_str(), req.page, req.page_size)
             .await
             .map(Response::new)
             .map_err(map_api_error)
@@ -1707,7 +1702,7 @@ mod tests {
     #[test]
     fn test_map_message_stream_join_error_maps_capacity_to_resource_exhausted() {
         let status = map_message_stream_join_error(
-            "Rate limited: realtime room capacity exceeded".to_string(),
+            RealtimeJoinError::RateLimited("realtime room capacity exceeded".to_string()),
         );
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert_eq!(status.message(), "realtime room capacity exceeded");
@@ -1716,7 +1711,9 @@ mod tests {
     #[test]
     fn test_map_message_stream_join_error_maps_raw_capacity_error() {
         let status =
-            map_message_stream_join_error("Room at capacity (42 connections, max: 40)".to_string());
+            map_message_stream_join_error(RealtimeJoinError::RateLimited(
+                "Room at capacity (42 connections, max: 40)".to_string(),
+            ));
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert_eq!(
             status.message(),
@@ -1727,7 +1724,9 @@ mod tests {
     #[test]
     fn test_map_message_stream_join_error_maps_raw_user_capacity_error() {
         let status = map_message_stream_join_error(
-            "Too many connections for this user across all replicas (max 3)".to_string(),
+            RealtimeJoinError::RateLimited(
+                "Too many connections for this user across all replicas (max 3)".to_string(),
+            ),
         );
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert_eq!(
@@ -1739,7 +1738,9 @@ mod tests {
     #[test]
     fn test_map_message_stream_join_error_maps_raw_total_capacity_error() {
         let status = map_message_stream_join_error(
-            "Server at capacity across all replicas (42 connections)".to_string(),
+            RealtimeJoinError::RateLimited(
+                "Server at capacity across all replicas (42 connections)".to_string(),
+            ),
         );
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert_eq!(
@@ -1797,7 +1798,9 @@ mod tests {
     #[test]
     fn test_map_message_stream_join_error_maps_distributed_degradation_to_unavailable() {
         let status = map_message_stream_join_error(
-            "Service unavailable: distributed room capacity check unavailable".to_string(),
+            RealtimeJoinError::ServiceUnavailable(
+                "distributed room capacity check unavailable".to_string(),
+            ),
         );
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(
@@ -1809,8 +1812,10 @@ mod tests {
     #[test]
     fn test_map_message_stream_join_error_maps_raw_degraded_cluster_error() {
         let status = map_message_stream_join_error(
-            "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
-                .to_string(),
+            RealtimeJoinError::ServiceUnavailable(
+                "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
+                    .to_string(),
+            ),
         );
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(
@@ -1822,8 +1827,10 @@ mod tests {
     #[test]
     fn test_map_message_stream_join_error_maps_raw_degraded_user_check_error() {
         let status = map_message_stream_join_error(
-            "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
-                .to_string(),
+            RealtimeJoinError::ServiceUnavailable(
+                "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
+                    .to_string(),
+            ),
         );
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(
@@ -1835,8 +1842,10 @@ mod tests {
     #[test]
     fn test_map_message_stream_join_error_maps_raw_degraded_total_check_error() {
         let status = map_message_stream_join_error(
-            "Distributed total connection check unavailable; refusing new connection while cluster Redis is degraded"
-                .to_string(),
+            RealtimeJoinError::ServiceUnavailable(
+                "Distributed total connection check unavailable; refusing new connection while cluster Redis is degraded"
+                    .to_string(),
+            ),
         );
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(
@@ -1846,9 +1855,26 @@ mod tests {
     }
 
     #[test]
+    fn test_map_message_stream_join_error_maps_business_denial_to_permission_denied() {
+        let status = map_message_stream_join_error(
+            RealtimeJoinError::PermissionDenied(
+                "User is no longer allowed to use real-time messaging".to_string(),
+            ),
+        );
+
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(
+            status.message(),
+            "User is no longer allowed to use real-time messaging"
+        );
+    }
+
+    #[test]
     fn test_map_message_stream_join_error_hides_unexpected_internal_details() {
         let status =
-            map_message_stream_join_error("Connection 'conn123' is already registered".to_string());
+            map_message_stream_join_error(RealtimeJoinError::Internal(
+                "Connection 'conn123' is already registered".to_string(),
+            ));
         assert_eq!(status.code(), tonic::Code::Internal);
         assert_eq!(status.message(), "Failed to establish message stream");
     }

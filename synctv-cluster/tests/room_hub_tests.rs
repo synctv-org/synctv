@@ -18,7 +18,7 @@ fn rid(s: &str) -> RoomId {
 
 fn chat_event(room: &RoomId, user: &UserId) -> ClusterEvent {
     ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         user_id: user.clone(),
         username: "tester".to_string(),
@@ -31,7 +31,7 @@ fn chat_event(room: &RoomId, user: &UserId) -> ClusterEvent {
 
 fn webrtc_event(room: &RoomId) -> ClusterEvent {
     ClusterEvent::WebRTCSignaling {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         message_type: "offer".to_string(),
         from: "sender|conn-from".to_string(),
@@ -259,7 +259,7 @@ async fn test_broadcast_to_user_current_thread_defers_reliable_delivery_when_cha
     let room_for_task = room.clone();
     let user_for_task = user.clone();
     let event = ClusterEvent::KickUserFromRoom {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         user_id: user.clone(),
         reason: "testing".to_string(),
@@ -323,7 +323,7 @@ async fn test_broadcast_current_thread_defers_reliable_delivery_when_channel_ful
     }
 
     let event = ClusterEvent::RoomDeleted {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         deleted_by: uid("deleter"),
         timestamp: chrono::Utc::now(),
@@ -380,7 +380,7 @@ async fn test_broadcast_to_user_current_thread_deferred_delivery_keeps_connectio
     }
 
     let event = ClusterEvent::KickUserFromRoom {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         user_id: user.clone(),
         reason: "testing".to_string(),

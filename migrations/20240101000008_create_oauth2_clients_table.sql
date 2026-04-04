@@ -32,7 +32,7 @@ ALTER TABLE oauth2_clients
 
 -- Comments
 COMMENT ON TABLE oauth2_clients IS 'OAuth2/OIDC provider mappings (NO TOKENS - only user identity info)';
-COMMENT ON COLUMN oauth2_clients.id IS '12-character nanoid';
+COMMENT ON COLUMN oauth2_clients.id IS '12-character base62 ID';
 COMMENT ON COLUMN oauth2_clients.provider IS 'OAuth2 provider (github, google, microsoft, discord, etc.)';
 COMMENT ON COLUMN oauth2_clients.provider_user_id IS 'User ID from OAuth2 provider';
 COMMENT ON COLUMN oauth2_clients.user_id IS 'Reference to local user';

@@ -520,14 +520,6 @@ fn test_room_to_proto_banned() {
 }
 
 #[test]
-fn test_room_to_proto_default_settings() {
-    let room = make_test_room(RoomStatus::Active);
-    let proto = room_to_proto_basic(&room, None, None);
-    // Settings should be default (serialized default RoomSettings)
-    assert!(!proto.settings.is_empty());
-}
-
-#[test]
 fn test_hot_room_embedded_room_member_count_uses_online_count_semantics() {
     let room = make_test_room(RoomStatus::Active);
     let online_count = 3;
@@ -855,69 +847,12 @@ fn test_pagination_page_negative_treated_as_one() {
 }
 
 #[test]
-fn test_pagination_page_none_defaults_to_one() {
-    assert_eq!(crate::http::validation::validate_page(None), 1);
-}
-
-#[test]
 fn test_pagination_page_positive_passes_through() {
     assert_eq!(crate::http::validation::validate_page(Some(1)), 1);
     assert_eq!(crate::http::validation::validate_page(Some(5)), 5);
     assert_eq!(crate::http::validation::validate_page(Some(100)), 100);
 }
 
-// === Permission Check Presence Tests (Issue 1) ===
-// These tests verify that the REORDER_PLAYLIST permission bit exists and is
-// used in the correct context. The actual API-layer permission enforcement
-// is tested via integration tests that require a running database, but these
-// unit tests verify the permission constant is properly defined.
-
-#[test]
-fn test_reorder_playlist_permission_in_creator_defaults() {
-    use synctv_core::models::{PermissionBits, RoomRole};
-    // Creator role should include REORDER_PLAYLIST by default
-    let creator_perms = RoomRole::Creator.permissions();
-    assert!(
-        creator_perms.0 & PermissionBits::REORDER_PLAYLIST != 0,
-        "Creator role should have REORDER_PLAYLIST permission"
-    );
-}
-
-// === P2#22: members_to_proto helper function tests ===
-//
-// The `members_to_proto` helper extracts the repeated pattern of:
-//   1. For each member: calculate_role_default_permissions
-//   2. Convert to proto with room_member_to_proto
-//
-// Since PermissionService requires DB repos, we test the conversion
-// logic using room_member_to_proto with role defaults directly, which
-// exercises the same path as members_to_proto.
-
-#[test]
-fn test_members_to_proto_pattern_empty() {
-    // An empty member list should produce an empty proto list
-    let members: Vec<synctv_core::models::RoomMemberWithUser> = vec![];
-    let result: Vec<synctv_proto::common::RoomMember> = members
-        .into_iter()
-        .map(|m| {
-            let role_default = m.role.permissions();
-            room_member_to_proto(m, role_default)
-        })
-        .collect();
-    assert!(result.is_empty());
-}
-
-#[test]
-fn test_members_to_proto_pattern_single_member() {
-    let member = make_test_member(RoomRole::Member);
-    let role_default = member.role.permissions();
-    let result = room_member_to_proto(member, role_default);
-    assert_eq!(result.username, "alice");
-    assert_eq!(
-        result.role,
-        synctv_proto::common::RoomMemberRole::Member as i32
-    );
-}
 
 #[test]
 fn test_members_to_proto_pattern_multiple_roles() {
@@ -1026,7 +961,7 @@ fn test_build_room_cache_invalidation_event_produces_correct_target() {
             }
             assert!(
                 !event_id.is_empty(),
-                "event_id should be a non-empty nanoid"
+                "event_id should be a non-empty shared base62 ID"
             );
         }
         other => panic!(

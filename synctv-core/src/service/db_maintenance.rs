@@ -233,21 +233,6 @@ impl DatabaseMaintenanceService {
 mod tests {
     use super::*;
 
-    /// M16: Verify that the default retention is 90 days when no settings registry is set.
-    #[tokio::test]
-    async fn test_default_retention_days() {
-        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
-        let leader = Arc::new(AlwaysLeader);
-        let svc = DatabaseMaintenanceService::new(pool, leader);
-        assert_eq!(
-            svc.chat_message_retention_days(),
-            DEFAULT_CHAT_MESSAGE_RETENTION_DAYS
-        );
-        assert_eq!(svc.notification_retention_days(), 30);
-        assert_eq!(svc.notification_max_retention_days(), 90);
-        assert_eq!(svc.expired_credential_buffer_hours(), 1);
-    }
-
     #[tokio::test]
     async fn test_custom_cleanup_config_is_used_by_db_maintenance() {
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();

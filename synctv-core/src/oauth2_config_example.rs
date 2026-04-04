@@ -6,11 +6,11 @@
 //! Configuration priority: Environment variables > Config file > Defaults
 //!
 //! Usage:
-//! 1. Save this configuration in config.yaml under the oauth2 section
+//! 1. Save this configuration in synctv.yaml under the oauth2 section
 //! 2. Or set environment variables (SYNCTV_OAUTH2_PROVIDERS__<INSTANCE_ID>__*)
 
 // ============================================================
-// Method 1: YAML Configuration File Example (config.yaml)
+// Method 1: YAML Configuration File Example (synctv.yaml)
 // ============================================================
 
 /*
@@ -156,7 +156,7 @@ Old configuration (not recommended):
   SYNCTV_OAUTH2_GITHUB__CLIENT_SECRET=yyy
 
 New configuration (recommended):
-  # In config.yaml:
+  # In synctv.yaml:
   oauth2:
     github:
       type: "github"

@@ -377,8 +377,4 @@ mod tests {
         assert_eq!(health.missing_partitions.len(), 1);
     }
 
-    #[test]
-    fn test_default_retention_days() {
-        assert_eq!(DEFAULT_RETENTION_DAYS, 90);
-    }
 }

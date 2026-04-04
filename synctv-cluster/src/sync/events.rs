@@ -20,7 +20,7 @@ pub enum CacheTarget {
 
 /// Events that are synchronized across cluster nodes via Redis Pub/Sub.
 ///
-/// Each event carries a unique `event_id` (nanoid) used as the primary
+/// Each event carries a unique `event_id` (shared base62 ID) used as the primary
 /// deduplication key, avoiding reliance on content hashing which can have
 /// collisions under high throughput.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +264,18 @@ pub enum ClusterEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// A room was forcibly banned by an administrator.
+    ///
+    /// Broadcast cluster-wide so other replicas can evict active members,
+    /// terminate room-scoped streams, and reject further participation while
+    /// preserving the room record itself.
+    RoomBanned {
+        event_id: String,
+        room_id: RoomId,
+        banned_by: UserId,
+        timestamp: DateTime<Utc>,
+    },
+
     /// A persistent user notification was created.
     ///
     /// Broadcast cluster-wide so that the node hosting the user's active WebSocket
@@ -332,6 +344,7 @@ impl ClusterEvent {
             | Self::KickUserFromRoom { event_id, .. }
             | Self::RoomCreated { event_id, .. }
             | Self::RoomDeleted { event_id, .. }
+            | Self::RoomBanned { event_id, .. }
             | Self::UserNotification { event_id, .. }
             | Self::CacheInvalidate { event_id, .. } => event_id,
         }
@@ -358,7 +371,8 @@ impl ClusterEvent {
             | Self::KickPublisher { room_id, .. }
             | Self::KickUserFromRoom { room_id, .. }
             | Self::RoomCreated { room_id, .. }
-            | Self::RoomDeleted { room_id, .. } => Some(room_id),
+            | Self::RoomDeleted { room_id, .. }
+            | Self::RoomBanned { room_id, .. } => Some(room_id),
             Self::SystemNotification { .. }
             | Self::KickUser { .. }
             | Self::UserNotification { .. }
@@ -387,6 +401,7 @@ impl ClusterEvent {
             | Self::UserNotification { user_id, .. } => Some(user_id),
             Self::RoomCreated { creator_id, .. } => Some(creator_id),
             Self::RoomDeleted { deleted_by, .. } => Some(deleted_by),
+            Self::RoomBanned { banned_by, .. } => Some(banned_by),
             Self::PermissionChanged { changed_by, .. } => Some(changed_by),
             Self::WebRTCSignaling { .. }
             | Self::SystemNotification { .. }
@@ -419,6 +434,7 @@ impl ClusterEvent {
             | Self::KickUserFromRoom { timestamp, .. }
             | Self::RoomCreated { timestamp, .. }
             | Self::RoomDeleted { timestamp, .. }
+            | Self::RoomBanned { timestamp, .. }
             | Self::UserNotification { timestamp, .. }
             | Self::CacheInvalidate { timestamp, .. } => timestamp,
         }
@@ -435,6 +451,7 @@ impl ClusterEvent {
                 | Self::KickUserFromRoom { .. }
                 | Self::UserLeft { .. }
                 | Self::PermissionChanged { .. }
+                | Self::RoomBanned { .. }
                 | Self::RoomDeleted { .. }
         )
     }
@@ -459,6 +476,7 @@ impl ClusterEvent {
                     room_id.as_str()
                 )
             }
+            Self::RoomBanned { room_id, .. } => format!("room_banned:{}", room_id.as_str()),
             Self::UserNotification {
                 user_id,
                 notification_id,
@@ -493,6 +511,7 @@ impl ClusterEvent {
             Self::KickUser { .. } => "kick_user",
             Self::KickUserFromRoom { .. } => "kick_user_from_room",
             Self::RoomCreated { .. } => "room_created",
+            Self::RoomBanned { .. } => "room_banned",
             Self::RoomDeleted { .. } => "room_deleted",
             Self::UserNotification { .. } => "user_notification",
             Self::CacheInvalidate { .. } => "cache_invalidate",
@@ -507,7 +526,7 @@ mod tests {
     #[test]
     fn test_cluster_event_serialization() {
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: RoomId::from_string("room123".to_string()),
             user_id: UserId::from_string("user456".to_string()),
             username: "testuser".to_string(),
@@ -553,7 +572,7 @@ mod tests {
     fn test_cluster_event_deserialization_rejects_unknown_type() {
         let json = serde_json::json!({
             "type": "future_event_type",
-            "event_id": nanoid::nanoid!(16),
+            "event_id": synctv_common::snanoid!(16),
             "timestamp": Utc::now()
         });
 
@@ -569,7 +588,7 @@ mod tests {
     #[test]
     fn test_cluster_event_room_id() {
         let event = ClusterEvent::UserJoined {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: RoomId::from_string("room123".to_string()),
             user_id: UserId::from_string("user456".to_string()),
             username: "testuser".to_string(),
@@ -590,7 +609,7 @@ mod tests {
     #[test]
     fn test_system_notification_no_room() {
         let event = ClusterEvent::SystemNotification {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             message: "Server maintenance in 1 hour".to_string(),
             level: NotificationLevel::Warning,
             timestamp: Utc::now(),
@@ -604,7 +623,7 @@ mod tests {
     #[test]
     fn test_kick_publisher_serialization() {
         let event = ClusterEvent::KickPublisher {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: RoomId::from_string("room123".to_string()),
             media_id: MediaId::from_string("media456".to_string()),
             reason: "user_banned".to_string(),
@@ -642,7 +661,7 @@ mod tests {
     #[test]
     fn test_kick_publisher_has_room_id_no_user_id() {
         let event = ClusterEvent::KickPublisher {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: RoomId::from_string("room789".to_string()),
             media_id: MediaId::from_string("media012".to_string()),
             reason: "room_deleted".to_string(),
@@ -657,7 +676,7 @@ mod tests {
     #[test]
     fn test_kick_user_serialization() {
         let event = ClusterEvent::KickUser {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             user_id: UserId::from_string("user123".to_string()),
             reason: "user_banned".to_string(),
             timestamp: Utc::now(),
@@ -676,7 +695,7 @@ mod tests {
     #[test]
     fn test_cache_invalidate_serialization() {
         let event = ClusterEvent::CacheInvalidate {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             targets: vec![
                 CacheTarget::User {
                     user_id: "u1".to_string(),

@@ -946,7 +946,7 @@ mod tests {
     use testcontainers_modules::redis::Redis;
 
     /// Default Redis version for test containers
-    const REDIS_VERSION: &str = "7";
+    const REDIS_VERSION: &str = "8";
 
     /// Type alias for the Redis container type
     type RedisContainer = testcontainers::ContainerAsync<Redis>;

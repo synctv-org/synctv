@@ -10,8 +10,8 @@
 use chrono::Utc;
 use synctv_core::{
     models::{
-        MemberStatus, PageParams, Room, RoomId, RoomMember, RoomRole, RoomStatus, User, UserId,
-        UserRole, UserStatus,
+        MemberStatus, PageParams, RelatedRoomListQuery, RelatedRoomListSortBy, Room, RoomId,
+        RoomMember, RoomRole, RoomStatus, SortDirection, User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
     service::AddMemberOptions,
@@ -889,6 +889,94 @@ async fn test_list_by_user_with_details_pagination() {
     for id in &ids_p2 {
         assert!(!ids_p3.contains(id));
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_related_query"))
+        .await
+        .unwrap();
+    let user = user_repo
+        .create(&make_user("user_related_query"))
+        .await
+        .unwrap();
+
+    let alpha_room = room_repo
+        .create(&make_room("Alpha Room", &owner.id))
+        .await
+        .unwrap();
+    let beta_room = room_repo
+        .create(&make_room("Beta Room", &owner.id))
+        .await
+        .unwrap();
+    let mut closed_room = room_repo
+        .create(&make_room("Gamma Room", &owner.id))
+        .await
+        .unwrap();
+    let mut banned_room = room_repo
+        .create(&make_room("Delta Room", &owner.id))
+        .await
+        .unwrap();
+
+    closed_room.status = RoomStatus::Closed;
+    room_repo
+        .update(&closed_room, closed_room.version)
+        .await
+        .unwrap();
+    banned_room.is_banned = true;
+    room_repo
+        .update(&banned_room, banned_room.version)
+        .await
+        .unwrap();
+
+    for room in [&alpha_room, &beta_room, &closed_room, &banned_room] {
+        member_repo
+            .add(&make_member(
+                room.id.clone(),
+                user.id.clone(),
+                RoomRole::Member,
+            ))
+            .await
+            .unwrap();
+    }
+
+    let query = RelatedRoomListQuery {
+        pagination: PageParams::new(Some(1), Some(1)),
+        search: Some("room".to_string()),
+        status: Some(RoomStatus::Active),
+        is_banned: Some(false),
+        sort_by: RelatedRoomListSortBy::Name,
+        sort_direction: SortDirection::Asc,
+    };
+
+    let (page1, total_page1) = member_repo
+        .list_by_user_with_query(&user.id, &query)
+        .await
+        .unwrap();
+    assert_eq!(total_page1, 2);
+    assert_eq!(page1.len(), 1);
+    assert_eq!(page1[0].0.name, "Alpha Room");
+
+    let (page2, total_page2) = member_repo
+        .list_by_user_with_query(
+            &user.id,
+            &RelatedRoomListQuery {
+                pagination: PageParams::new(Some(2), Some(1)),
+                ..query
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(total_page2, 2);
+    assert_eq!(page2.len(), 1);
+    assert_eq!(page2[0].0.name, "Beta Room");
 }
 
 // ========== diagnose_add_conflict tests ==========

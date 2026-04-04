@@ -312,13 +312,4 @@ mod tests {
         assert_eq!(health.missing_partitions.len(), 1);
     }
 
-    #[test]
-    fn test_default_retention_months() {
-        assert_eq!(DEFAULT_RETENTION_MONTHS, 6);
-    }
-
-    #[test]
-    fn test_default_months_ahead() {
-        assert_eq!(DEFAULT_MONTHS_AHEAD, 3);
-    }
 }

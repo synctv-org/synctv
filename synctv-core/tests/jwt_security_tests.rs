@@ -93,7 +93,7 @@ async fn test_jwt_expiry_enforcement() {
     let claims = ExpiredClaims {
         sub: user_id.as_str().to_string(),
         typ: "access".to_string(),
-        jti: nanoid::nanoid!(),
+        jti: synctv_common::snanoid!(),
         pv: 0,
         iat: now - 7200, // 2 hours ago
         exp: now - 3600, // expired 1 hour ago
@@ -225,7 +225,7 @@ async fn test_jwt_wrong_algorithm_rejection() {
     let claims = TestClaims {
         sub: user_id.as_str().to_string(),
         typ: "access".to_string(),
-        jti: nanoid::nanoid!(),
+        jti: synctv_common::snanoid!(),
         iat: now,
         exp: now + 3600,
     };
@@ -265,7 +265,7 @@ async fn test_jwt_future_issued_at_rejection() {
     let claims = FutureClaims {
         sub: user_id.as_str().to_string(),
         typ: "access".to_string(),
-        jti: nanoid::nanoid!(),
+        jti: synctv_common::snanoid!(),
         iat: now + 3600, // Future timestamp
         exp: now + 7200,
     };
@@ -811,7 +811,7 @@ async fn test_expired_refresh_token_rejected() {
     let claims = ExpiredClaims {
         sub: user_id.as_str().to_string(),
         typ: "refresh".to_string(),
-        jti: nanoid::nanoid!(),
+        jti: synctv_common::snanoid!(),
         iat: now - 2_592_000 - 3600, // 30 days + 1 hour ago
         exp: now - 3600,             // expired 1 hour ago
     };

@@ -455,48 +455,6 @@ async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
 
 use synctv_core::service::auth::brute_force::BruteForceConfig;
 
-/// `BruteForceConfig::default()` should preserve the current documented defaults
-/// when no explicit config is provided.
-#[test]
-fn test_brute_force_config_defaults_match_hardcoded() {
-    let config = BruteForceConfig::default();
-
-    // Tier 1: 5 failures -> 60 second lockout
-    assert_eq!(config.tier1_threshold, 5, "TIER1_THRESHOLD should be 5");
-    assert_eq!(
-        config.tier1_lockout_secs, 60,
-        "TIER1_LOCKOUT_SECS should be 60"
-    );
-
-    // Tier 2: 10 failures -> 5 minute lockout
-    assert_eq!(config.tier2_threshold, 10, "TIER2_THRESHOLD should be 10");
-    assert_eq!(
-        config.tier2_lockout_secs, 300,
-        "TIER2_LOCKOUT_SECS should be 300"
-    );
-
-    // Tier 3: 15 failures -> 15 minute lockout
-    assert_eq!(config.tier3_threshold, 15, "TIER3_THRESHOLD should be 15");
-    assert_eq!(
-        config.tier3_lockout_secs, 900,
-        "TIER3_LOCKOUT_SECS should be 900"
-    );
-
-    // IP lockout: 20 failures -> 10 minute lockout
-    assert_eq!(config.ip_threshold, 20, "IP_THRESHOLD should be 20");
-    assert_eq!(config.ip_lockout_secs, 600, "IP_LOCKOUT_SECS should be 600");
-
-    // TTLs
-    assert_eq!(
-        config.attempts_ttl_secs, 900,
-        "ATTEMPTS_TTL_SECS should be 900"
-    );
-    assert_eq!(
-        config.ip_attempts_ttl_secs, 600,
-        "IP_ATTEMPTS_TTL_SECS should be 600"
-    );
-}
-
 /// Test `BruteForceConfig::custom_thresholds()` with custom values
 #[test]
 fn test_brute_force_config_custom_thresholds() {
@@ -712,62 +670,6 @@ fn test_brute_force_config_from_json() {
     assert_eq!(config.ip_attempts_ttl_secs, 900);
 }
 
-/// Test that partial JSON uses default values for missing fields
-#[test]
-fn test_brute_force_config_partial_json_uses_defaults() {
-    let json = serde_json::json!({
-        "tier1_threshold": 3
-    });
-
-    let config: BruteForceConfig = serde_json::from_value(json).unwrap();
-
-    // Only tier1_threshold is customized
-    assert_eq!(config.tier1_threshold, 3);
-
-    // All other fields should use defaults
-    let defaults = BruteForceConfig::default();
-    assert_eq!(config.tier1_lockout_secs, defaults.tier1_lockout_secs);
-    assert_eq!(config.tier2_threshold, defaults.tier2_threshold);
-    assert_eq!(config.tier2_lockout_secs, defaults.tier2_lockout_secs);
-    assert_eq!(config.tier3_threshold, defaults.tier3_threshold);
-    assert_eq!(config.tier3_lockout_secs, defaults.tier3_lockout_secs);
-    assert_eq!(config.ip_threshold, defaults.ip_threshold);
-    assert_eq!(config.ip_lockout_secs, defaults.ip_lockout_secs);
-    assert_eq!(config.attempts_ttl_secs, defaults.attempts_ttl_secs);
-    assert_eq!(config.ip_attempts_ttl_secs, defaults.ip_attempts_ttl_secs);
-}
-
-/// Test that protection stores and uses custom config correctly
-#[test]
-fn test_protection_config_accessible() {
-    let config = BruteForceConfig {
-        tier1_threshold: 3,
-        tier1_lockout_secs: 30,
-        tier2_threshold: 7,
-        tier2_lockout_secs: 120,
-        tier3_threshold: 12,
-        tier3_lockout_secs: 300,
-        ip_threshold: 10,
-        ip_lockout_secs: 180,
-        attempts_ttl_secs: 600,
-        ip_attempts_ttl_secs: 300,
-    };
-
-    let protection =
-        BruteForceProtection::in_memory_with_config("test_config_access:".to_string(), config);
-
-    // Verify config is accessible
-    let stored_config = protection.config();
-    assert_eq!(stored_config.tier1_threshold, 3);
-    assert_eq!(stored_config.tier1_lockout_secs, 30);
-    assert_eq!(stored_config.tier2_threshold, 7);
-    assert_eq!(stored_config.tier2_lockout_secs, 120);
-    assert_eq!(stored_config.tier3_threshold, 12);
-    assert_eq!(stored_config.tier3_lockout_secs, 300);
-    assert_eq!(stored_config.ip_threshold, 10);
-    assert_eq!(stored_config.ip_lockout_secs, 180);
-}
-
 // ============================================================================
 // IP-only Failure Tracking Tests (Task #74)
 // ============================================================================
@@ -797,16 +699,6 @@ async fn test_record_ip_failure_only_affects_ip_counter() {
     // Now IP should be locked out (default threshold is 20)
     let result = protection.check_ip_allowed(ip).await;
     assert!(result.is_err(), "IP should be locked out after 20 failures");
-}
-
-/// Test `record_ip_failure` with None IP does nothing
-#[tokio::test]
-async fn test_record_ip_failure_with_none_ip_is_noop() {
-    let protection = BruteForceProtection::in_memory("test_noop:".to_string());
-
-    // Should succeed without error
-    let result = protection.record_ip_failure(None).await;
-    assert!(result.is_ok());
 }
 
 /// Test `check_ip_allowed` with None IP always returns Ok

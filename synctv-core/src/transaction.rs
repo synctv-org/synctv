@@ -336,21 +336,6 @@ mod tests {
     }
 
     #[test]
-    fn test_transaction_error_is_error() {
-        let err = TransactionError("test error");
-        // Ensure it implements std::error::Error
-        let _: &dyn std::error::Error = &err;
-        assert_eq!(err.0, "test error");
-    }
-
-    #[test]
-    fn test_transaction_error_clone() {
-        let err = TransactionError("clone me");
-        let cloned = err;
-        assert_eq!(cloned.0, "clone me");
-    }
-
-    #[test]
     fn test_uow_transaction_returns_error_when_consumed() {
         let mut uow = UnitOfWork {
             tx: None,

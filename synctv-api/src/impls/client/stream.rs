@@ -12,6 +12,34 @@ fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String
     format!("rtmp://{rtmp_host}:{rtmp_port}/live/{room_id}")
 }
 
+fn paginate_room_stream_ids(
+    mut media_ids: Vec<String>,
+    page: i32,
+    page_size: i32,
+) -> crate::proto::client::ListRoomStreamsResponse {
+    media_ids.sort_unstable();
+
+    let page = page.max(1) as usize;
+    let page_size = if page_size <= 0 {
+        50usize
+    } else {
+        page_size.min(100) as usize
+    };
+    let total = media_ids.len() as i32;
+    let offset = (page - 1) * page_size;
+    let streams = media_ids
+        .into_iter()
+        .skip(offset)
+        .take(page_size)
+        .map(|media_id| crate::proto::client::StreamEntry {
+            media_id,
+            active: true,
+        })
+        .collect();
+
+    crate::proto::client::ListRoomStreamsResponse { streams, total }
+}
+
 impl ClientApiImpl {
     pub async fn create_publish_key(
         &self,
@@ -165,6 +193,8 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
+        page: i32,
+        page_size: i32,
     ) -> Result<crate::proto::client::ListRoomStreamsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
@@ -186,16 +216,7 @@ impl ClientApiImpl {
             .await
             .map_err(|e| Self::map_livestream_backend_error(&*e))?;
 
-        let streams: Vec<_> = media_ids
-            .into_iter()
-            .map(|media_id| crate::proto::client::StreamEntry {
-                media_id,
-                active: true,
-            })
-            .collect();
-
-        let total = streams.len() as i32;
-        Ok(crate::proto::client::ListRoomStreamsResponse { streams, total })
+        Ok(paginate_room_stream_ids(media_ids, page, page_size))
     }
 
     /// Get a reference to the live streaming infrastructure, if configured.
@@ -235,6 +256,50 @@ impl ClientApiImpl {
             .get("url")
             .and_then(|v| v.as_str())
             .map(String::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::paginate_room_stream_ids;
+
+    #[test]
+    fn paginate_room_stream_ids_sorts_and_applies_defaults() {
+        let response = paginate_room_stream_ids(
+            vec![
+                "media-c".to_string(),
+                "media-a".to_string(),
+                "media-b".to_string(),
+            ],
+            0,
+            0,
+        );
+
+        assert_eq!(response.total, 3);
+        let ids: Vec<_> = response
+            .streams
+            .into_iter()
+            .map(|stream| stream.media_id)
+            .collect();
+        assert_eq!(ids, vec!["media-a", "media-b", "media-c"]);
+    }
+
+    #[test]
+    fn paginate_room_stream_ids_respects_page_and_page_size() {
+        let response = paginate_room_stream_ids(
+            vec![
+                "media-a".to_string(),
+                "media-b".to_string(),
+                "media-c".to_string(),
+            ],
+            2,
+            1,
+        );
+
+        assert_eq!(response.total, 3);
+        assert_eq!(response.streams.len(), 1);
+        assert_eq!(response.streams[0].media_id, "media-b");
+        assert!(response.streams[0].active);
     }
 }
 

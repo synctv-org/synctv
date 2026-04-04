@@ -80,7 +80,7 @@ impl_grpc_service_ext!(<T> synctv_livestream::grpc::StreamRelayServiceServer<T>)
 ///
 /// For internal errors, the details are logged server-side and a generic
 /// message is returned to the client to avoid leaking sensitive information.
-pub(crate) fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
+pub fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
     use crate::impls::ErrorKind;
     let msg = err.message().to_string();
     match err.classify() {
@@ -146,7 +146,7 @@ pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> t
 /// Matches HTTP semantics: only trust forwarded headers when the direct peer is
 /// a configured trusted proxy. Otherwise fall back to the socket peer address.
 #[must_use]
-pub(crate) fn extract_client_ip<T>(
+pub fn extract_client_ip<T>(
     request: &tonic::Request<T>,
     config: &synctv_core::Config,
 ) -> Option<std::net::IpAddr> {
@@ -249,12 +249,50 @@ const fn should_mark_cluster_service_serving(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GrpcHealthRegistrationState {
+    auth_registered: bool,
+    user_registered: bool,
+    room_registered: bool,
+    public_registered: bool,
+    admin_registered: bool,
     email_registered: bool,
     notification_registered: bool,
     oauth2_registered: bool,
     provider_services_registered: bool,
     cluster_service_registered: bool,
     livestream_relay_registered: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GrpcServiceRegistrationPlan {
+    reflection_enabled: bool,
+    health_state: GrpcHealthRegistrationState,
+}
+
+fn grpc_service_registration_plan(
+    config: &synctv_core::Config,
+    email_registered: bool,
+    notification_registered: bool,
+    oauth2_registered: bool,
+    provider_services_registered: bool,
+    cluster_service_registered: bool,
+    livestream_relay_registered: bool,
+) -> GrpcServiceRegistrationPlan {
+    GrpcServiceRegistrationPlan {
+        reflection_enabled: config.server.enable_reflection,
+        health_state: GrpcHealthRegistrationState {
+            auth_registered: true,
+            user_registered: true,
+            room_registered: true,
+            public_registered: true,
+            admin_registered: true,
+            email_registered,
+            notification_registered,
+            oauth2_registered,
+            provider_services_registered,
+            cluster_service_registered,
+            livestream_relay_registered,
+        },
+    }
 }
 
 const fn effective_grpc_request_timeout() -> Option<std::time::Duration> {
@@ -277,26 +315,36 @@ async fn set_registered_grpc_services_serving(
     health_reporter
         .set_service_status("", tonic_health::ServingStatus::Serving)
         .await;
-    health_reporter
-        .set_serving::<AuthServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_serving::<UserServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_serving::<RoomServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_serving::<PublicServiceServer<ClientServiceImpl>>()
-        .await;
+    if state.auth_registered {
+        health_reporter
+            .set_serving::<AuthServiceServer<ClientServiceImpl>>()
+            .await;
+    }
+    if state.user_registered {
+        health_reporter
+            .set_serving::<UserServiceServer<ClientServiceImpl>>()
+            .await;
+    }
+    if state.room_registered {
+        health_reporter
+            .set_serving::<RoomServiceServer<ClientServiceImpl>>()
+            .await;
+    }
+    if state.public_registered {
+        health_reporter
+            .set_serving::<PublicServiceServer<ClientServiceImpl>>()
+            .await;
+    }
     if state.email_registered {
         health_reporter
             .set_serving::<EmailServiceServer<ClientServiceImpl>>()
             .await;
     }
-    health_reporter
-        .set_serving::<AdminServiceServer<AdminServiceImpl>>()
-        .await;
+    if state.admin_registered {
+        health_reporter
+            .set_serving::<AdminServiceServer<AdminServiceImpl>>()
+            .await;
+    }
     if state.notification_registered {
         health_reporter
             .set_serving::<NotificationServiceServer<NotificationServiceImpl>>()
@@ -348,26 +396,36 @@ async fn set_registered_grpc_services_not_serving(
     health_reporter
         .set_service_status("", tonic_health::ServingStatus::NotServing)
         .await;
-    health_reporter
-        .set_not_serving::<AuthServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_not_serving::<UserServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_not_serving::<RoomServiceServer<ClientServiceImpl>>()
-        .await;
-    health_reporter
-        .set_not_serving::<PublicServiceServer<ClientServiceImpl>>()
-        .await;
+    if state.auth_registered {
+        health_reporter
+            .set_not_serving::<AuthServiceServer<ClientServiceImpl>>()
+            .await;
+    }
+    if state.user_registered {
+        health_reporter
+            .set_not_serving::<UserServiceServer<ClientServiceImpl>>()
+            .await;
+    }
+    if state.room_registered {
+        health_reporter
+            .set_not_serving::<RoomServiceServer<ClientServiceImpl>>()
+            .await;
+    }
+    if state.public_registered {
+        health_reporter
+            .set_not_serving::<PublicServiceServer<ClientServiceImpl>>()
+            .await;
+    }
     if state.email_registered {
         health_reporter
             .set_not_serving::<EmailServiceServer<ClientServiceImpl>>()
             .await;
     }
-    health_reporter
-        .set_not_serving::<AdminServiceServer<AdminServiceImpl>>()
-        .await;
+    if state.admin_registered {
+        health_reporter
+            .set_not_serving::<AdminServiceServer<AdminServiceImpl>>()
+            .await;
+    }
     if state.notification_registered {
         health_reporter
             .set_not_serving::<NotificationServiceServer<NotificationServiceImpl>>()
@@ -573,6 +631,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     let email_service_registered =
         should_register_email_service(email_service.is_some(), email_token_service.is_some());
     let providers_manager_for_client = providers_manager.clone();
+    let publish_key_service_for_client = publish_key_service.clone();
     let rate_limiter_for_provider = rate_limiter.clone();
     let shared_content_filter_for_provider = Arc::new(content_filter.clone());
 
@@ -657,12 +716,17 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         Arc::new(connection_manager_for_provider.clone()),
         provider_instance_manager,
         live_streaming_infrastructure_for_admin,
+        publish_key_service_for_client.clone(),
+        Arc::new(config.clone()),
         redis_publish_tx.clone(),
         audit_service.clone(),
     ));
 
-    let admin_service =
-        AdminServiceImpl::new(user_service_for_admin, admin_api, Arc::new(config.clone()));
+    let admin_service = AdminServiceImpl::new(
+        user_service_for_admin,
+        admin_api.clone(),
+        Arc::new(config.clone()),
+    );
 
     // Create auth interceptor for authenticated services (clone jwt_service for blacklist layer)
     let auth_interceptor = AuthInterceptor::new(jwt_service.clone());
@@ -745,48 +809,52 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     let provider_services_registered = providers_manager.is_some();
     let cluster_service_registered =
         should_mark_cluster_service_serving(config, node_registry.is_some());
-    let grpc_health_state = GrpcHealthRegistrationState {
-        email_registered: email_service_registered,
-        notification_registered: notification_service_registered,
-        oauth2_registered: oauth2_service_registered,
+    let grpc_registration_plan = grpc_service_registration_plan(
+        config,
+        email_service_registered,
+        notification_service_registered,
+        oauth2_service_registered,
         provider_services_registered,
         cluster_service_registered,
-        livestream_relay_registered: should_mark_livestream_relay_serving(
-            config,
-            live_streaming_infrastructure.is_some(),
-        ),
-    };
+        should_mark_livestream_relay_serving(config, live_streaming_infrastructure.is_some()),
+    );
 
     let mut routes = tonic::service::Routes::builder();
-    routes
-        // AuthService (public: register, login, refresh_token)
-        .add_service(
+    if grpc_registration_plan.health_state.auth_registered {
+        routes.add_service(
             AuthServiceServer::new(client_service).with_message_size_limit(max_message_size),
-        )
-        // UserService - JWT authentication (inject UserContext)
-        // Use tonic::codegen::InterceptedService::new to preserve message size limits set on the service
-        .add_service(tonic::codegen::InterceptedService::new(
+        );
+    }
+
+    if grpc_registration_plan.health_state.user_registered {
+        routes.add_service(tonic::codegen::InterceptedService::new(
             UserServiceServer::new(client_service_clone1).with_message_size_limit(max_message_size),
             move |req| user_interceptor.inject_user(req),
-        ))
-        // RoomService - JWT + room_id metadata (inject RoomContext)
-        .add_service(tonic::codegen::InterceptedService::new(
+        ));
+    }
+
+    if grpc_registration_plan.health_state.room_registered {
+        routes.add_service(tonic::codegen::InterceptedService::new(
             RoomServiceServer::new(client_service_clone2).with_message_size_limit(max_message_size),
             move |req| room_interceptor1.inject_room(req),
-        ))
-        // PublicService (public room discovery)
-        .add_service(
+        ));
+    }
+
+    if grpc_registration_plan.health_state.public_registered {
+        routes.add_service(
             PublicServiceServer::new(client_service_clone3)
                 .with_message_size_limit(max_message_size),
-        )
-        // EmailService (send codes, confirm with token)
-        // AdminService - JWT authentication (inject UserContext)
-        .add_service(tonic::codegen::InterceptedService::new(
+        );
+    }
+
+    if grpc_registration_plan.health_state.admin_registered {
+        routes.add_service(tonic::codegen::InterceptedService::new(
             AdminServiceServer::new(admin_service).with_message_size_limit(max_message_size),
             move |req| admin_interceptor.inject_user(req),
         ));
+    }
 
-    if email_service_registered {
+    if grpc_registration_plan.health_state.email_registered {
         routes.add_service(
             EmailServiceServer::new(client_service_clone4)
                 .with_message_size_limit(max_message_size),
@@ -794,7 +862,9 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     }
 
     // Register NotificationService if notification_service is configured
-    if let Some(notif_svc) = notification_service {
+    if grpc_registration_plan.health_state.notification_registered {
+        let notif_svc = notification_service
+            .expect("notification service presence must match registration plan");
         let notification_interceptor = auth_interceptor.clone();
         let notification_api = Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone()));
         let notif_impl = NotificationServiceImpl::new(notification_api);
@@ -843,7 +913,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                             match result {
                                 Ok(event) => {
                                     let cluster_event = synctv_cluster::sync::ClusterEvent::UserNotification {
-                                        event_id: nanoid::nanoid!(16),
+                                        event_id: synctv_common::snanoid!(16),
                                         user_id: event.user_id,
                                         notification_id: event.notification.id.to_string(),
                                         title: event.notification.title,
@@ -885,7 +955,9 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     // require no authentication. Private endpoints (GetAuthorizationUrlForBind,
     // UnlinkProvider, GetLinkedProviders) perform inline JWT validation using
     // the auth interceptor passed to the service constructor.
-    if let Some(oauth2_svc) = oauth2_service {
+    if grpc_registration_plan.health_state.oauth2_registered {
+        let oauth2_svc =
+            oauth2_service.expect("oauth2 service presence must match registration plan");
         use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
         let oauth2_auth_interceptor = auth_interceptor.clone();
         let oauth2_api = Arc::new(crate::impls::OAuth2ApiImpl::new(
@@ -906,7 +978,12 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     }
 
     // Register provider gRPC services
-    if let Some(_providers_mgr) = providers_manager {
+    if grpc_registration_plan
+        .health_state
+        .provider_services_registered
+    {
+        let _providers_mgr =
+            providers_manager.expect("provider services presence must match registration plan");
         tracing::info!("Registering provider gRPC services");
 
         // Create provider set for the gRPC services
@@ -1024,6 +1101,9 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             proxy_signing_key: proxy_signing_key.clone(),
             proxy_slice_cache: provider_proxy_slice_cache,
             proxy_http_client: provider_proxy_http_client,
+            metrics_access_controller: Arc::new(
+                crate::http::metrics_auth::MetricsAccessController::new(),
+            ),
         });
 
         // Register provider gRPC services with auth interceptor
@@ -1061,7 +1141,16 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     }
 
     // Register cluster gRPC service only in cluster mode.
-    if !config.cluster_runtime_enabled() {
+    if !grpc_registration_plan
+        .health_state
+        .cluster_service_registered
+    {
+        if config.cluster_runtime_enabled() {
+            tracing::info!("Cluster gRPC service hidden by gRPC exposure profile");
+        } else {
+            tracing::info!("Cluster mode disabled — cluster gRPC service will not be registered");
+        }
+    } else if !config.cluster_runtime_enabled() {
         tracing::info!("Cluster mode disabled — cluster gRPC service will not be registered");
     } else if config.server.cluster_secret.is_empty() {
         tracing::error!(
@@ -1090,7 +1179,10 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         );
     }
 
-    if should_register_livestream_relay_service(config, live_streaming_infrastructure.is_some()) {
+    if grpc_registration_plan
+        .health_state
+        .livestream_relay_registered
+    {
         let live_infra = live_streaming_infrastructure.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "cluster.enabled=true requires livestream infrastructure before registering the relay gRPC service"
@@ -1134,12 +1226,13 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     // All registered services are marked as SERVING so gRPC health probes
     // return the correct status rather than UNKNOWN.
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
-    set_registered_grpc_services_serving(&health_reporter, grpc_health_state).await;
+    set_registered_grpc_services_serving(&health_reporter, grpc_registration_plan.health_state)
+        .await;
     routes.add_service(health_service);
     tracing::info!("gRPC health check service registered");
 
     // Register gRPC reflection service if enabled in config
-    if config.server.enable_reflection {
+    if grpc_registration_plan.reflection_enabled {
         let reflection_service = tonic_reflection::server::Builder::configure()
             .register_encoded_file_descriptor_set(synctv_proto::FILE_DESCRIPTOR_SET)
             .register_encoded_file_descriptor_set(synctv_proto::PROVIDERS_FILE_DESCRIPTOR_SET)
@@ -1206,14 +1299,15 @@ pub async fn serve(mut grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_grpc_request_timeout, extract_client_ip, grpc_unary_request_timeout,
-        set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
-        should_fail_user_notification_fanout, should_mark_cluster_service_serving,
-        should_mark_email_service_serving, should_mark_livestream_relay_serving,
-        should_mark_notification_service_serving, should_mark_oauth2_service_serving,
-        should_mark_provider_services_serving, should_register_cluster_grpc_service,
-        should_register_email_service, should_register_livestream_relay_service,
-        validate_cluster_grpc_runtime_requirements, GrpcHealthRegistrationState,
+        effective_grpc_request_timeout, extract_client_ip, grpc_service_registration_plan,
+        grpc_unary_request_timeout, set_registered_grpc_services_not_serving,
+        set_registered_grpc_services_serving, should_fail_user_notification_fanout,
+        should_mark_cluster_service_serving, should_mark_email_service_serving,
+        should_mark_livestream_relay_serving, should_mark_notification_service_serving,
+        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
+        should_register_cluster_grpc_service, should_register_email_service,
+        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
+        GrpcHealthRegistrationState,
     };
     use std::net::SocketAddr;
     use tonic::metadata::{MetadataKey, MetadataValue};
@@ -1453,6 +1547,25 @@ mod tests {
     }
 
     #[test]
+    fn test_public_grpc_registration_plan_preserves_optional_service_registration() {
+        let config = synctv_core::Config::default();
+
+        let plan = grpc_service_registration_plan(&config, true, false, true, false, true, false);
+
+        assert!(plan.health_state.auth_registered);
+        assert!(plan.health_state.user_registered);
+        assert!(plan.health_state.room_registered);
+        assert!(plan.health_state.public_registered);
+        assert!(plan.health_state.admin_registered);
+        assert!(plan.health_state.email_registered);
+        assert!(!plan.health_state.notification_registered);
+        assert!(plan.health_state.oauth2_registered);
+        assert!(!plan.health_state.provider_services_registered);
+        assert!(plan.health_state.cluster_service_registered);
+        assert!(!plan.health_state.livestream_relay_registered);
+    }
+
+    #[test]
     fn test_user_notification_fanout_requires_redis_when_cluster_enabled() {
         assert!(should_fail_user_notification_fanout(false, true));
         assert!(!should_fail_user_notification_fanout(true, true));
@@ -1497,6 +1610,11 @@ mod tests {
         let health_reporter = tonic_health::server::HealthReporter::new();
         let health_service = HealthService::from_health_reporter(health_reporter.clone());
         let state = GrpcHealthRegistrationState {
+            auth_registered: true,
+            user_registered: true,
+            room_registered: true,
+            public_registered: true,
+            admin_registered: true,
             email_registered: true,
             notification_registered: true,
             oauth2_registered: false,

@@ -4,22 +4,32 @@
 //! - unified API server (REST/gRPC)
 //! - RTMP livestream server
 
+use anyhow::Context;
 use async_trait::async_trait;
+use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
 use sqlx::PgPool;
 use std::future::Future;
+use std::io::BufReader;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
+use tower::ServiceExt;
 use tracing::{error, info, warn};
 
+use synctv_api::impls::{AdminApiImpl, ClientApiImpl};
 use synctv_cluster::sync::ClusterEvent;
 use synctv_core::{
     cache::UserCache,
+    config::absolute_display_path,
     repository::UserProviderCredentialRepository,
     service::{RoomService, UserService},
     Config,
 };
+use synctv_management::lifecycle::{ManagementLifecycleController, ShutdownMode};
+use synctv_management::server::{spawn_management_server, ManagementServerConfig};
 
 use crate::app::ClusterActivation;
 use crate::shutdown::ShutdownCoordinator;
@@ -93,7 +103,10 @@ pub struct SyncTvServer {
     services: Services,
     livestream_state: Option<LivestreamState>,
     pool: PgPool,
+    lifecycle_controller: Arc<ManagementLifecycleController>,
     api_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    management_handle: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -127,6 +140,82 @@ fn build_ws_ticket_service(
         (false, None) => synctv_core::service::WsTicketService::with_memory(None),
     };
     Ok(Arc::new(svc))
+}
+
+async fn serve_metrics_connection<S>(stream: S, app: axum::Router) -> anyhow::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let service = service_fn(move |request| {
+        let app = app.clone();
+        async move {
+            let app = app.into_service();
+            let response = app
+                .oneshot(request)
+                .await
+                .unwrap_or_else(|_| unreachable!("metrics router should be infallible"));
+            Ok::<_, std::convert::Infallible>(response)
+        }
+    });
+
+    hyper::server::conn::http1::Builder::new()
+        .keep_alive(false)
+        .serve_connection(TokioIo::new(stream), service)
+        .await
+        .map_err(|error| anyhow::anyhow!("metrics connection error: {error}"))?;
+
+    Ok(())
+}
+
+async fn load_metrics_tls_server_config(
+    tls: &synctv_core::config::MetricsTlsConfig,
+) -> anyhow::Result<rustls::ServerConfig> {
+    let cert_pem = tokio::fs::read(&tls.cert_path).await.with_context(|| {
+        format!(
+            "failed to read metrics TLS certificate {}",
+            absolute_display_path(std::path::Path::new(&tls.cert_path))
+        )
+    })?;
+    let key_pem = tokio::fs::read(&tls.key_path).await.with_context(|| {
+        format!(
+            "failed to read metrics TLS private key {}",
+            absolute_display_path(std::path::Path::new(&tls.key_path))
+        )
+    })?;
+
+    let cert_chain = rustls_pemfile::certs(&mut BufReader::new(cert_pem.as_slice()))
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| {
+            format!(
+                "failed to parse metrics TLS certificate {}",
+                absolute_display_path(std::path::Path::new(&tls.cert_path))
+            )
+        })?;
+    if cert_chain.is_empty() {
+        anyhow::bail!(
+            "metrics TLS certificate {} did not contain any PEM certificates",
+            absolute_display_path(std::path::Path::new(&tls.cert_path))
+        );
+    }
+
+    let private_key = rustls_pemfile::private_key(&mut BufReader::new(key_pem.as_slice()))
+        .with_context(|| {
+            format!(
+                "failed to parse metrics TLS private key {}",
+                absolute_display_path(std::path::Path::new(&tls.key_path))
+            )
+        })?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "metrics TLS private key {} did not contain a supported PEM private key",
+                absolute_display_path(std::path::Path::new(&tls.key_path))
+            )
+        })?;
+
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, private_key)
+        .context("failed to build metrics TLS server config")
 }
 
 async fn await_task_shutdown(name: &'static str, mut handle: JoinHandle<()>, timeout: Duration) {
@@ -244,13 +333,15 @@ where
 
 async fn shutdown_runtime_phase(
     api_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    management_handle: Option<JoinHandle<anyhow::Result<()>>>,
     cleanup_handle: JoinHandle<()>,
     total_budget: Duration,
 ) {
     let deadline = tokio::time::Instant::now() + total_budget;
 
     info!(
-        "Waiting up to {}s for API server and cleanup task to stop...",
+        "Waiting up to {}s for API server, management server, and cleanup task to stop...",
         total_budget.as_secs()
     );
 
@@ -260,6 +351,24 @@ async fn shutdown_runtime_phase(
             force_abort_runtime_server("API server", api_handle).await;
         } else {
             await_runtime_server_shutdown("API server", api_handle, budget).await;
+        }
+    }
+
+    if let Some(metrics_handle) = metrics_handle {
+        let budget = remaining_budget(deadline);
+        if budget.is_zero() {
+            force_abort_runtime_server("Metrics server", metrics_handle).await;
+        } else {
+            await_runtime_server_shutdown("Metrics server", metrics_handle, budget).await;
+        }
+    }
+
+    if let Some(management_handle) = management_handle {
+        let budget = remaining_budget(deadline);
+        if budget.is_zero() {
+            force_abort_runtime_server("Management server", management_handle).await;
+        } else {
+            await_runtime_server_shutdown("Management server", management_handle, budget).await;
         }
     }
 
@@ -276,6 +385,8 @@ async fn cleanup_partial_startup(
     cleanup_cancel: &tokio_util::sync::CancellationToken,
     cleanup_handle: Option<JoinHandle<()>>,
     api_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    management_handle: Option<JoinHandle<anyhow::Result<()>>>,
     deadline: tokio::time::Instant,
 ) {
     let _ = shutdown_tx.send(true);
@@ -298,6 +409,24 @@ async fn cleanup_partial_startup(
             await_runtime_server_shutdown("API server", handle, timeout).await;
         }
     }
+
+    if let Some(handle) = metrics_handle {
+        let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
+        if timeout.is_zero() {
+            force_abort_runtime_server("Metrics server", handle).await;
+        } else {
+            await_runtime_server_shutdown("Metrics server", handle, timeout).await;
+        }
+    }
+
+    if let Some(handle) = management_handle {
+        let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
+        if timeout.is_zero() {
+            force_abort_runtime_server("Management gRPC server", handle).await;
+        } else {
+            await_runtime_server_shutdown("Management gRPC server", handle, timeout).await;
+        }
+    }
 }
 
 async fn shutdown_after_startup_failure(
@@ -305,6 +434,8 @@ async fn shutdown_after_startup_failure(
     cleanup_cancel: &tokio_util::sync::CancellationToken,
     cleanup_handle: Option<JoinHandle<()>>,
     api_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    management_handle: Option<JoinHandle<anyhow::Result<()>>>,
     deadline: tokio::time::Instant,
     component_cleanup: impl std::future::Future<Output = ()> + Send,
     coordinator: ShutdownCoordinator,
@@ -314,6 +445,8 @@ async fn shutdown_after_startup_failure(
         cleanup_cancel,
         cleanup_handle,
         api_handle,
+        metrics_handle,
+        management_handle,
         deadline,
     )
     .await;
@@ -330,6 +463,8 @@ async fn shutdown_after_cluster_activation_failure(
         cleanup_cancel,
         cleanup_handle,
         api_handle,
+        metrics_handle,
+        management_handle,
         deadline,
         coordinator,
     } = context;
@@ -355,6 +490,24 @@ async fn shutdown_after_cluster_activation_failure(
         }
     }
 
+    if let Some(handle) = metrics_handle {
+        let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
+        if timeout.is_zero() {
+            force_abort_runtime_server("Metrics server", handle).await;
+        } else {
+            await_runtime_server_shutdown("Metrics server", handle, timeout).await;
+        }
+    }
+
+    if let Some(handle) = management_handle {
+        let timeout = remaining_budget(deadline).min(STARTUP_CLEANUP_TIMEOUT);
+        if timeout.is_zero() {
+            force_abort_runtime_server("Management gRPC server", handle).await;
+        } else {
+            await_runtime_server_shutdown("Management gRPC server", handle, timeout).await;
+        }
+    }
+
     server.shutdown_startup_failure_components(deadline).await;
     coordinator.shutdown_with_deadline(deadline).await;
 }
@@ -364,6 +517,8 @@ struct ClusterActivationFailureShutdown {
     cleanup_cancel: tokio_util::sync::CancellationToken,
     cleanup_handle: Option<JoinHandle<()>>,
     api_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    management_handle: Option<JoinHandle<anyhow::Result<()>>>,
     deadline: tokio::time::Instant,
     coordinator: ShutdownCoordinator,
 }
@@ -456,13 +611,17 @@ impl SyncTvServer {
         services: Services,
         livestream_state: Option<LivestreamState>,
         pool: PgPool,
+        lifecycle_controller: Arc<ManagementLifecycleController>,
     ) -> Self {
         Self {
             config,
             services,
             livestream_state,
             pool,
+            lifecycle_controller,
             api_handle: None,
+            metrics_handle: None,
+            management_handle: None,
         }
     }
 
@@ -492,6 +651,7 @@ impl SyncTvServer {
 
         // Create shutdown signal channel
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut lifecycle_shutdown_rx = self.lifecycle_controller.shutdown_receiver();
         tokio::pin!(shutdown_signal);
 
         // Log infrastructure state
@@ -522,6 +682,8 @@ impl SyncTvServer {
                     &cleanup_cancel,
                     Some(cleanup_handle),
                     None,
+                    None,
+                    None,
                     startup_cleanup_deadline,
                     self.shutdown_startup_failure_components(startup_cleanup_deadline),
                     coordinator,
@@ -535,6 +697,69 @@ impl SyncTvServer {
         };
         self.api_handle = Some(api_handle);
 
+        if self.config.metrics.enabled {
+            let metrics_handle = match self.start_metrics_server(shutdown_rx.clone()).await {
+                Ok(handle) => handle,
+                Err(err) => {
+                    let api_handle = self.api_handle.take();
+                    let startup_cleanup_budget =
+                        Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
+                            .min(STARTUP_CLEANUP_TIMEOUT);
+                    let startup_cleanup_deadline =
+                        tokio::time::Instant::now() + startup_cleanup_budget;
+                    shutdown_after_startup_failure(
+                        &shutdown_tx,
+                        &cleanup_cancel,
+                        Some(cleanup_handle),
+                        api_handle,
+                        None,
+                        None,
+                        startup_cleanup_deadline,
+                        self.shutdown_startup_failure_components(startup_cleanup_deadline),
+                        coordinator,
+                    )
+                    .await;
+                    info!("Closing database connection pool after startup failure...");
+                    self.pool.close().await;
+                    info!("Database pool closed after startup failure");
+                    return Err(err);
+                }
+            };
+            self.metrics_handle = Some(metrics_handle);
+        }
+
+        if self.config.management.enabled {
+            let management_handle = match self.start_management_server(shutdown_rx.clone()).await {
+                Ok(handle) => handle,
+                Err(err) => {
+                    let api_handle = self.api_handle.take();
+                    let metrics_handle = self.metrics_handle.take();
+                    let startup_cleanup_budget =
+                        Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
+                            .min(STARTUP_CLEANUP_TIMEOUT);
+                    let startup_cleanup_deadline =
+                        tokio::time::Instant::now() + startup_cleanup_budget;
+                    shutdown_after_startup_failure(
+                        &shutdown_tx,
+                        &cleanup_cancel,
+                        Some(cleanup_handle),
+                        api_handle,
+                        metrics_handle,
+                        None,
+                        startup_cleanup_deadline,
+                        self.shutdown_startup_failure_components(startup_cleanup_deadline),
+                        coordinator,
+                    )
+                    .await;
+                    info!("Closing database connection pool after startup failure...");
+                    self.pool.close().await;
+                    info!("Database pool closed after startup failure");
+                    return Err(err);
+                }
+            };
+            self.management_handle = Some(management_handle);
+        }
+
         if let Some(cluster_activation) = &self.services.cluster_activation {
             if let Err(err) = crate::bootstrap::cluster::activate_cluster_node(
                 &cluster_activation.config,
@@ -546,6 +771,8 @@ impl SyncTvServer {
             .await
             {
                 let api_handle = self.api_handle.take();
+                let metrics_handle = self.metrics_handle.take();
+                let management_handle = self.management_handle.take();
                 let startup_cleanup_budget =
                     Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
                         .min(STARTUP_CLEANUP_TIMEOUT);
@@ -557,6 +784,8 @@ impl SyncTvServer {
                         cleanup_cancel: cleanup_cancel.clone(),
                         cleanup_handle: Some(cleanup_handle),
                         api_handle,
+                        metrics_handle,
+                        management_handle,
                         deadline: startup_cleanup_deadline,
                         coordinator,
                     },
@@ -595,8 +824,10 @@ impl SyncTvServer {
                 .take()
                 .ok_or_else(|| anyhow::anyhow!("API server handle missing after startup"))?,
         );
+        let mut metrics_handle = self.metrics_handle.take();
+        let mut management_handle = self.management_handle.take();
 
-        let (unexpected_exit, api_handle) = tokio::select! {
+        let (shutdown_mode, unexpected_exit, api_handle, metrics_handle, management_handle) = tokio::select! {
             result = async {
                 api_handle
                     .as_mut()
@@ -604,17 +835,77 @@ impl SyncTvServer {
                     .await
             } => {
                 let _ = api_handle.take();
-                (Some(map_runtime_server_exit("API server", result)), None)
+                (
+                    ShutdownMode::Graceful,
+                    Some(map_runtime_server_exit("API server", result)),
+                    None,
+                    metrics_handle.take(),
+                    management_handle.take(),
+                )
+            },
+            result = async {
+                metrics_handle
+                    .as_mut()
+                    .expect("metrics server handle should be present before select")
+                    .await
+            }, if metrics_handle.is_some() => {
+                let _ = metrics_handle.take();
+                (
+                    ShutdownMode::Graceful,
+                    Some(map_runtime_server_exit("Metrics server", result)),
+                    api_handle.take(),
+                    None,
+                    management_handle.take(),
+                )
+            },
+            result = async {
+                management_handle
+                    .as_mut()
+                    .expect("management server handle should be present before select")
+                    .await
+            }, if management_handle.is_some() => {
+                let _ = management_handle.take();
+                (
+                    ShutdownMode::Graceful,
+                    Some(map_runtime_server_exit("Management server", result)),
+                    api_handle.take(),
+                    metrics_handle.take(),
+                    None,
+                )
+            },
+            lifecycle_mode = async {
+                if lifecycle_shutdown_rx.changed().await.is_err() {
+                    ShutdownMode::Graceful
+                } else {
+                    (*lifecycle_shutdown_rx.borrow()).unwrap_or(ShutdownMode::Graceful)
+                }
+            }, if self.config.management.enabled => {
+                (
+                    lifecycle_mode,
+                    None,
+                    api_handle.take(),
+                    metrics_handle.take(),
+                    management_handle.take(),
+                )
             },
             () = &mut shutdown_signal => {
                 info!("External shutdown signal received, starting graceful shutdown...");
-                (None, api_handle.take())
+                self.lifecycle_controller
+                    .request_shutdown(ShutdownMode::Graceful);
+                (
+                    ShutdownMode::Graceful,
+                    None,
+                    api_handle.take(),
+                    metrics_handle.take(),
+                    management_handle.take(),
+                )
             }
         };
 
         // Signal API server to shut down
         let _ = shutdown_tx.send(true);
         cleanup_cancel.cancel();
+        self.lifecycle_controller.publish_runtime_draining();
 
         // D6 fix: Track total shutdown start time to compute remaining budget for
         // each phase. The total drain budget is `shutdown_drain_timeout_seconds`.
@@ -623,15 +914,23 @@ impl SyncTvServer {
         let shutdown_start = tokio::time::Instant::now();
         let total_drain_budget =
             Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
+        let force_shutdown = matches!(shutdown_mode, ShutdownMode::Force);
 
         // Phase 1: Wait for unified API server to finish (use 60% of budget).
         let http_drain_budget = total_drain_budget * 60 / 100;
         info!(
-            "Waiting up to {}s for API server to shut down...",
+            "Waiting up to {}s for API server and management server to shut down...",
             http_drain_budget.as_secs()
         );
-        shutdown_runtime_phase(api_handle, cleanup_handle, http_drain_budget).await;
-        info!("API server shut down");
+        shutdown_runtime_phase(
+            api_handle,
+            metrics_handle,
+            management_handle,
+            cleanup_handle,
+            http_drain_budget,
+        )
+        .await;
+        info!("API, metrics, and management servers shut down");
 
         // Phase 2: Drain active connections BEFORE shutting down the cluster manager.
         // Events generated during drain (UserLeft, etc.) need the pub/sub
@@ -640,11 +939,14 @@ impl SyncTvServer {
         // D6 fix: Use the REMAINING time from the total budget instead of a
         // separate full timeout, ensuring total shutdown stays within K8s grace period.
         {
+            self.lifecycle_controller.publish_connection_draining();
             let elapsed = shutdown_start.elapsed();
             let remaining_budget = total_drain_budget.saturating_sub(elapsed);
             let drain_poll_interval = Duration::from_millis(500);
             let active = self.services.connection_manager.connection_count();
-            if active > 0 && remaining_budget > Duration::ZERO {
+            if force_shutdown {
+                info!("Force shutdown requested, skipping connection drain wait");
+            } else if active > 0 && remaining_budget > Duration::ZERO {
                 info!(
                     "Waiting up to {}s for {} active connection(s) to drain ({}s elapsed)...",
                     remaining_budget.as_secs(),
@@ -656,6 +958,13 @@ impl SyncTvServer {
                     let remaining = self.services.connection_manager.connection_count();
                     if remaining == 0 {
                         info!("All connections drained");
+                        break;
+                    }
+                    if matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force)) {
+                        warn!(
+                            "Force shutdown requested during connection drain, stopping wait with {} connection(s) still active",
+                            remaining
+                        );
                         break;
                     }
                     if tokio::time::Instant::now() >= deadline {
@@ -696,12 +1005,26 @@ impl SyncTvServer {
         }
 
         // Shut down remaining infrastructure components
-        self.shutdown_components(total_drain_budget.saturating_sub(shutdown_start.elapsed()))
-            .await;
+        self.lifecycle_controller.publish_components_shutting_down();
+        self.shutdown_components(
+            if matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force)) {
+                Duration::ZERO
+            } else {
+                total_drain_budget.saturating_sub(shutdown_start.elapsed())
+            },
+        )
+        .await;
 
         // Centralized shutdown: cancel tokens -> drain tasks -> run hooks
+        self.lifecycle_controller.publish_finalizing();
         coordinator
-            .shutdown_with_deadline(shutdown_start + total_drain_budget)
+            .shutdown_with_deadline(
+                if matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force)) {
+                    tokio::time::Instant::now()
+                } else {
+                    shutdown_start + total_drain_budget
+                },
+            )
             .await;
 
         // Close the database connection pool (after audit flush and settings task)
@@ -711,8 +1034,13 @@ impl SyncTvServer {
 
         info!("SyncTV server shut down complete");
         if let Some(result) = unexpected_exit {
+            if let Err(error) = &result {
+                self.lifecycle_controller
+                    .publish_failure(format!("shutdown failed: {error}"));
+            }
             return result;
         }
+        self.lifecycle_controller.publish_completed();
         Ok(())
     }
 
@@ -774,6 +1102,54 @@ impl SyncTvServer {
         }
 
         self.shutdown_components(remaining_budget(deadline)).await;
+    }
+
+    async fn build_grpc_router(
+        &self,
+        config: &Config,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> anyhow::Result<axum::Router> {
+        synctv_api::grpc::build_axum_router(synctv_api::grpc::GrpcServerConfig {
+            config,
+            jwt_service: self.services.jwt_service.clone(),
+            user_service: self.services.user_service.clone(),
+            user_cache: self.services.user_cache.clone(),
+            room_service: self.services.room_service.clone(),
+            cluster_manager: self.services.cluster_manager.clone(),
+            redis_publish_tx: self.services.redis_publish_tx.clone(),
+            rate_limiter: self.services.rate_limiter.clone(),
+            rate_limit_config: self.services.rate_limit_config.clone(),
+            content_filter: self.services.content_filter.clone(),
+            connection_manager: self.services.connection_manager.clone(),
+            providers_manager: Some(self.services.providers_manager.clone()),
+            provider_instance_manager: self.services.provider_instance_manager.clone(),
+            user_provider_credential_repository: self
+                .services
+                .user_provider_credential_repository
+                .clone(),
+            settings_service: self.services.settings_service.clone(),
+            settings_registry: Some(self.services.settings_registry.clone()),
+            email_service: self.services.email_service.clone(),
+            email_token_service: self.services.email_token_service.clone(),
+            live_streaming_infrastructure: self.services.live_streaming_infrastructure.clone(),
+            publish_key_service: Some(self.services.publish_key_service.clone()),
+            notification_service: self.services.notification_service.clone(),
+            chat_service: Some(self.services.chat_service.clone()),
+            oauth2_service: self.services.oauth2_service.clone(),
+            audit_service: self.services.audit_service.clone(),
+            node_registry: self.services.node_registry.clone(),
+            redis_client: self.services.redis_client.clone(),
+            redis_conn: self.services.redis_conn.clone(),
+            shutdown_rx: Some(shutdown_rx),
+            builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
+                let addr = s.external_addr();
+                format!("stun:{}:{}", addr.ip(), addr.port())
+            }),
+            turn_health_checker: self.services.turn_health_checker.clone(),
+            credential_encryption: self.services.credential_encryption.clone(),
+            grpc_listener: None,
+        })
+        .await
     }
 
     /// Start unified REST + gRPC API server with graceful shutdown support
@@ -856,47 +1232,9 @@ impl SyncTvServer {
                 providers_manager: Some(self.services.providers_manager.clone()),
             },
         )?;
-        let grpc_router = synctv_api::grpc::build_axum_router(synctv_api::grpc::GrpcServerConfig {
-            config: &self.config,
-            jwt_service: self.services.jwt_service.clone(),
-            user_service: self.services.user_service.clone(),
-            user_cache: self.services.user_cache.clone(),
-            room_service: self.services.room_service.clone(),
-            cluster_manager: self.services.cluster_manager.clone(),
-            redis_publish_tx: self.services.redis_publish_tx.clone(),
-            rate_limiter: self.services.rate_limiter.clone(),
-            rate_limit_config: self.services.rate_limit_config.clone(),
-            content_filter: self.services.content_filter.clone(),
-            connection_manager: self.services.connection_manager.clone(),
-            providers_manager: Some(self.services.providers_manager.clone()),
-            provider_instance_manager: self.services.provider_instance_manager.clone(),
-            user_provider_credential_repository: self
-                .services
-                .user_provider_credential_repository
-                .clone(),
-            settings_service: self.services.settings_service.clone(),
-            settings_registry: Some(self.services.settings_registry.clone()),
-            email_service: self.services.email_service.clone(),
-            email_token_service: self.services.email_token_service.clone(),
-            live_streaming_infrastructure: self.services.live_streaming_infrastructure.clone(),
-            publish_key_service: Some(self.services.publish_key_service.clone()),
-            notification_service: self.services.notification_service.clone(),
-            chat_service: Some(self.services.chat_service.clone()),
-            oauth2_service: self.services.oauth2_service.clone(),
-            audit_service: self.services.audit_service.clone(),
-            node_registry: self.services.node_registry.clone(),
-            redis_client: self.services.redis_client.clone(),
-            redis_conn: self.services.redis_conn.clone(),
-            shutdown_rx: Some(shutdown_rx.clone()),
-            builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
-                let addr = s.external_addr();
-                format!("stun:{}:{}", addr.ip(), addr.port())
-            }),
-            turn_health_checker: self.services.turn_health_checker.clone(),
-            credential_encryption: self.services.credential_encryption.clone(),
-            grpc_listener: None,
-        })
-        .await?;
+        let grpc_router = self
+            .build_grpc_router(&self.config, shutdown_rx.clone())
+            .await?;
 
         // Parse and bind unified API address before spawning the task to propagate errors properly
         let http_addr: std::net::SocketAddr = api_address
@@ -956,6 +1294,205 @@ impl SyncTvServer {
         });
 
         Ok(handle)
+    }
+
+    async fn start_metrics_server(
+        &self,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+        let metrics_address = self.config.metrics_address();
+        let is_cluster_mode = self.config.cluster_runtime_enabled();
+        let ws_ticket_service = build_ws_ticket_service(
+            self.services.redis_conn.clone(),
+            &self.config.redis.key_prefix,
+            is_cluster_mode,
+        )?;
+        let proxy_http_client = synctv_proxy::build_proxy_http_client()?;
+        let proxy_slice_cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
+            build_proxy_slice_cache_config(&self.services.settings_registry),
+            proxy_http_client.clone(),
+        ));
+
+        let (_, http_state) = synctv_api::http::create_router_with_state_from_config(
+            synctv_api::http::RouterConfig {
+                config: Arc::new(self.config.clone()),
+                user_service: self.services.user_service.clone(),
+                user_cache: self.services.user_cache.clone(),
+                room_service: self.services.room_service.clone(),
+                content_filter: self.services.content_filter.clone(),
+                provider_instance_manager: self.services.provider_instance_manager.clone(),
+                user_provider_credential_repository: self
+                    .services
+                    .user_provider_credential_repository
+                    .clone(),
+                providers: self.services.providers.clone(),
+                cluster_manager: self.services.cluster_manager.clone(),
+                connection_manager: Arc::new(self.services.connection_manager.clone()),
+                jwt_service: self.services.jwt_service.clone(),
+                redis_publish_tx: self.services.redis_publish_tx.clone(),
+                oauth2_service: self.services.oauth2_service.clone(),
+                settings_service: Some(self.services.settings_service.clone()),
+                settings_registry: Some(self.services.settings_registry.clone()),
+                email_service: self.services.email_service.clone(),
+                email_token_service: self.services.email_token_service.clone(),
+                publish_key_service: Some(self.services.publish_key_service.clone()),
+                notification_service: self.services.notification_service.clone(),
+                chat_service: Some(self.services.chat_service.clone()),
+                audit_service: self.services.audit_service.clone(),
+                live_streaming_infrastructure: self.services.live_streaming_infrastructure.clone(),
+                rate_limiter: self.services.rate_limiter.clone(),
+                ws_ticket_service,
+                redis_conn: self.services.redis_conn.clone(),
+                builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
+                    let addr = s.external_addr();
+                    format!("stun:{}:{}", addr.ip(), addr.port())
+                }),
+                turn_health_checker: self.services.turn_health_checker.clone(),
+                credential_encryption: self.services.credential_encryption.clone(),
+                proxy_slice_cache,
+                proxy_http_client,
+                messaging_rate_limit_config: synctv_core::service::RateLimitConfig {
+                    chat_per_second: self.config.messaging_rate_limits.chat_per_second,
+                    danmaku_per_second: self.config.messaging_rate_limits.danmaku_per_second,
+                    window_seconds: self.config.messaging_rate_limits.window_seconds,
+                },
+                heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
+                providers_manager: Some(self.services.providers_manager.clone()),
+            },
+        )?;
+
+        let listener_addr: std::net::SocketAddr = metrics_address
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid metrics address '{metrics_address}': {e}"))?;
+        let listener = tokio::net::TcpListener::bind(listener_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to bind metrics address {listener_addr}: {e}"))?;
+
+        let metrics_app = synctv_api::http::health::create_metrics_router().with_state(http_state);
+        let tls_acceptor = if self.config.metrics.tls.enabled {
+            Some(tokio_rustls::TlsAcceptor::from(Arc::new(
+                load_metrics_tls_server_config(&self.config.metrics.tls).await?,
+            )))
+        } else {
+            None
+        };
+
+        info!(
+            "Metrics server listening on {}://{}",
+            if tls_acceptor.is_some() {
+                "https"
+            } else {
+                "http"
+            },
+            listener_addr
+        );
+
+        let handle = tokio::spawn(async move {
+            let mut rx = shutdown_rx;
+            let mut connections = JoinSet::new();
+
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = rx.changed() => {
+                        break;
+                    }
+                    accept_result = listener.accept() => {
+                        let (stream, peer_addr) = accept_result
+                            .map_err(|error| anyhow::anyhow!("Metrics server accept error: {error}"))?;
+                        let app = metrics_app.clone();
+                        if let Some(acceptor) = tls_acceptor.clone() {
+                            connections.spawn(async move {
+                                match acceptor.accept(stream).await {
+                                    Ok(tls_stream) => {
+                                        if let Err(error) = serve_metrics_connection(tls_stream, app).await {
+                                            warn!(peer = %peer_addr, error = %error, "metrics TLS connection failed");
+                                        }
+                                    }
+                                    Err(error) => {
+                                        warn!(peer = %peer_addr, error = %error, "metrics TLS handshake failed");
+                                    }
+                                }
+                            });
+                        } else {
+                            connections.spawn(async move {
+                                if let Err(error) = serve_metrics_connection(stream, app).await {
+                                    warn!(peer = %peer_addr, error = %error, "metrics connection failed");
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+
+            while let Some(join_result) = connections.join_next().await {
+                if let Err(error) = join_result {
+                    if error.is_panic() {
+                        std::panic::resume_unwind(error.into_panic());
+                    }
+                    warn!(error = %error, "metrics connection task ended unexpectedly");
+                }
+            }
+
+            info!("Metrics server shut down gracefully");
+            Ok(())
+        });
+
+        Ok(handle)
+    }
+
+    async fn start_management_server(
+        &self,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+        let client_api = Arc::new(
+            ClientApiImpl::new(
+                self.services.user_service.clone(),
+                self.services.room_service.clone(),
+                Arc::new(self.services.connection_manager.clone()),
+                Arc::new(self.config.clone()),
+                Some(self.services.publish_key_service.clone()),
+                self.services.jwt_service.clone(),
+                self.services.live_streaming_infrastructure.clone(),
+                Some(self.services.providers_manager.clone()),
+                Some(self.services.settings_registry.clone()),
+            )
+            .with_redis_publish_tx(self.services.redis_publish_tx.clone())
+            .with_redis_conn(self.services.redis_conn.clone())
+            .with_credential_encryption(self.services.credential_encryption.clone())
+            .with_credential_repo(self.services.user_provider_credential_repository.clone()),
+        );
+
+        let email_service = self.services.email_service.clone().unwrap_or_else(|| {
+            Arc::new(
+                synctv_core::service::EmailService::new(None)
+                    .expect("EmailService::new(None) should not fail"),
+            )
+        });
+        let admin_api = Arc::new(AdminApiImpl::new(
+            self.services.room_service.clone(),
+            self.services.user_service.clone(),
+            self.services.settings_service.clone(),
+            Some(self.services.settings_registry.clone()),
+            email_service,
+            Arc::new(self.services.connection_manager.clone()),
+            self.services.provider_instance_manager.clone(),
+            self.services.live_streaming_infrastructure.clone(),
+            Some(self.services.publish_key_service.clone()),
+            Arc::new(self.config.clone()),
+            self.services.redis_publish_tx.clone(),
+            self.services.audit_service.clone(),
+        ));
+
+        spawn_management_server(ManagementServerConfig {
+            config: Arc::new(self.config.clone()),
+            user_service: self.services.user_service.clone(),
+            admin_api,
+            client_api,
+            lifecycle_controller: self.lifecycle_controller.clone(),
+            shutdown_rx,
+        })
+        .await
     }
 }
 
@@ -1230,6 +1767,8 @@ mod tests {
             &cleanup_cancel,
             Some(cleanup_handle),
             Some(grpc_handle),
+            None,
+            None,
             tokio::time::Instant::now() + Duration::from_secs(5),
         )
         .await;
@@ -1276,6 +1815,8 @@ mod tests {
             &shutdown_tx,
             &cleanup_cancel,
             Some(cleanup_handle),
+            None,
+            None,
             None,
             tokio::time::Instant::now() + Duration::from_secs(1),
             {
@@ -1335,6 +1876,8 @@ mod tests {
             &shutdown_tx,
             &cleanup_cancel,
             Some(cleanup_handle),
+            None,
+            None,
             None,
             start + Duration::from_millis(50),
             async {},
@@ -1413,7 +1956,14 @@ mod tests {
             let _ = cleanup_rx.await;
         });
 
-        shutdown_runtime_phase(Some(api_handle), cleanup_handle, Duration::from_millis(60)).await;
+        shutdown_runtime_phase(
+            Some(api_handle),
+            None,
+            None,
+            cleanup_handle,
+            Duration::from_millis(60),
+        )
+        .await;
 
         assert!(
             api_dropped.load(Ordering::SeqCst),
@@ -1592,7 +2142,7 @@ mod tests {
                 if cluster_manager
                     .admin_event_tx()
                     .send(ClusterEvent::KickPublisher {
-                        event_id: nanoid::nanoid!(16),
+                        event_id: synctv_common::snanoid!(16),
                         room_id: RoomId::from_string("room-1".to_string()),
                         media_id: MediaId::from_string("media-1".to_string()),
                         reason: "room_deleted".to_string(),
@@ -1735,7 +2285,7 @@ mod tests {
                 if cluster_manager
                     .admin_event_tx()
                     .send(ClusterEvent::KickUserFromRoom {
-                        event_id: nanoid::nanoid!(16),
+                        event_id: synctv_common::snanoid!(16),
                         room_id: RoomId::from_string("room-1".to_string()),
                         user_id: UserId::from_string("publisher-user".to_string()),
                         reason: "removed".to_string(),

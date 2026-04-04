@@ -7,6 +7,82 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use super::id::{PlaylistId, RoomId, UserId};
+use super::query::SortDirection;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaylistListSortBy {
+    Name,
+    CreatedAt,
+    UpdatedAt,
+    #[default]
+    Position,
+}
+
+impl PlaylistListSortBy {
+    #[must_use]
+    pub const fn as_sql(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::CreatedAt => "created_at",
+            Self::UpdatedAt => "updated_at",
+            Self::Position => "position",
+        }
+    }
+}
+
+impl std::str::FromStr for PlaylistListSortBy {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "name" => Ok(Self::Name),
+            "created_at" | "createdat" => Ok(Self::CreatedAt),
+            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
+            "position" => Ok(Self::Position),
+            other => Err(format!("Unknown playlist list sort field: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for PlaylistListSortBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Name => "name",
+            Self::CreatedAt => "created_at",
+            Self::UpdatedAt => "updated_at",
+            Self::Position => "position",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistListQuery {
+    pub pagination: super::pagination::PageParams,
+    pub search: Option<String>,
+    pub source_provider: Option<String>,
+    pub provider_instance_name: Option<String>,
+    pub dynamic_only: Option<bool>,
+    #[serde(default)]
+    pub sort_by: PlaylistListSortBy,
+    #[serde(default)]
+    pub sort_direction: SortDirection,
+}
+
+impl Default for PlaylistListQuery {
+    fn default() -> Self {
+        Self {
+            pagination: super::pagination::PageParams::default(),
+            search: None,
+            source_provider: None,
+            provider_instance_name: None,
+            dynamic_only: None,
+            sort_by: PlaylistListSortBy::Position,
+            sort_direction: SortDirection::Asc,
+        }
+    }
+}
 
 /// Playlist (directory/folder)
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

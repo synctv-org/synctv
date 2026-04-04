@@ -44,6 +44,12 @@ type ValidatorFn<T> = Arc<dyn Fn(&T) -> Result<()> + Send + Sync>;
 /// This trait provides a unified interface for working with a single setting
 #[async_trait::async_trait]
 pub trait SettingProvider: Send + Sync {
+    /// Stable setting key in `group.name` format.
+    fn key(&self) -> &str;
+
+    /// Default raw value serialized using the setting's display representation.
+    fn default_raw(&self) -> String;
+
     /// Get raw string value
     fn get_raw(&self) -> Option<String>;
 
@@ -257,6 +263,21 @@ impl SettingsStorage {
         self.get_provider(key)
             .is_none_or(|p| p.is_valid_raw(value).is_ok())
     }
+
+    /// List all registered settings together with their default raw values.
+    ///
+    /// The returned vector is sorted by key to keep admin/API output stable.
+    #[must_use]
+    pub fn registered_defaults(&self) -> Vec<(String, String)> {
+        let mut entries: Vec<(String, String)> = self
+            .setting_providers
+            .read()
+            .values()
+            .map(|provider| (provider.key().to_string(), provider.default_raw()))
+            .collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        entries
+    }
 }
 
 /// Type-safe setting variable with lazy loading
@@ -438,6 +459,14 @@ where
     T: Clone + Display + std::str::FromStr + Send + Sync + 'static,
     <T as std::str::FromStr>::Err: std::error::Error + Send + Sync,
 {
+    fn key(&self) -> &str {
+        self.key
+    }
+
+    fn default_raw(&self) -> String {
+        self.default_value.to_string()
+    }
+
     fn get_raw(&self) -> Option<String> {
         self.storage.get_raw(self.key)
     }

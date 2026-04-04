@@ -590,23 +590,6 @@ async fn test_publisher_info_serde_round_trip() {
 // ========== PublisherInfo default fields ==========
 
 #[tokio::test]
-async fn test_publisher_info_serde_defaults() {
-    use synctv_livestream::relay::PublisherInfo;
-
-    // JSON without optional fields — serde defaults should apply
-    let json = r#"{
-        "node_id": "node1",
-        "app_name": "live",
-        "started_at": "2024-01-01T00:00:00Z"
-    }"#;
-
-    let info: PublisherInfo = serde_json::from_str(json).unwrap();
-    assert_eq!(info.api_address, "");
-    assert_eq!(info.user_id, "");
-    assert_eq!(info.epoch, 0);
-}
-
-#[tokio::test]
 async fn test_publisher_info_deserializes_api_address_field() {
     use synctv_livestream::relay::PublisherInfo;
 

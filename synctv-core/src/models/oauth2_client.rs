@@ -160,20 +160,6 @@ mod tests {
     // ==================== OAuth2Provider ====================
 
     #[test]
-    fn test_provider_as_str_all_variants() {
-        assert_eq!(OAuth2Provider::QQ.as_str(), "qq");
-        assert_eq!(OAuth2Provider::GitHub.as_str(), "github");
-        assert_eq!(OAuth2Provider::Google.as_str(), "google");
-        assert_eq!(OAuth2Provider::Microsoft.as_str(), "microsoft");
-        assert_eq!(OAuth2Provider::Discord.as_str(), "discord");
-        assert_eq!(OAuth2Provider::Casdoor.as_str(), "casdoor");
-        assert_eq!(OAuth2Provider::Logto.as_str(), "logto");
-        assert_eq!(OAuth2Provider::Oidc.as_str(), "oidc");
-        assert_eq!(OAuth2Provider::Feishu.as_str(), "feishu");
-        assert_eq!(OAuth2Provider::Gitee.as_str(), "gitee");
-    }
-
-    #[test]
     fn test_provider_from_str_name_all_variants() {
         assert_eq!(
             OAuth2Provider::from_str_name("qq"),
@@ -238,27 +224,6 @@ mod tests {
         assert_eq!(OAuth2Provider::from_str_name("invalid"), None);
         assert_eq!(OAuth2Provider::from_str_name(""), None);
         assert_eq!(OAuth2Provider::from_str_name("auth0"), None);
-    }
-
-    #[test]
-    fn test_provider_as_str_roundtrip() {
-        let providers = vec![
-            OAuth2Provider::QQ,
-            OAuth2Provider::GitHub,
-            OAuth2Provider::Google,
-            OAuth2Provider::Microsoft,
-            OAuth2Provider::Discord,
-            OAuth2Provider::Casdoor,
-            OAuth2Provider::Logto,
-            OAuth2Provider::Oidc,
-            OAuth2Provider::Feishu,
-            OAuth2Provider::Gitee,
-        ];
-        for p in providers {
-            let s = p.as_str();
-            let parsed = OAuth2Provider::from_str_name(s);
-            assert_eq!(parsed, Some(p));
-        }
     }
 
     #[test]

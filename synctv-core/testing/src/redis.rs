@@ -1,5 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, LazyLock};
@@ -24,6 +26,7 @@ const REDIS_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_REDIS_ACTIVE_PARALLELISM
 static REDIS_ACTIVE_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(redis_active_parallelism()));
 const TEST_RUN_LABEL: &str = "synctv.test.run_id";
+pub const REDIS_VERSION: &str = "8";
 
 static SHARED_REDIS: OnceCell<Arc<SharedRedisServer>> = OnceCell::const_new();
 
@@ -177,7 +180,7 @@ fn named_redis_request(container_name: &str) -> testcontainers::ContainerRequest
         .with_container_name(container_name.to_string())
         .with_label(TEST_RUN_LABEL, current_test_run_id())
         .with_reuse(ReuseDirective::Always)
-        .with_tag("7")
+        .with_tag(REDIS_VERSION)
         .with_cmd([
             // --- Disable persistence (ephemeral test data) ---
             "--save",
@@ -294,33 +297,70 @@ fn host_address_family(host: &str) -> Option<IpAddr> {
     normalized.parse::<IpAddr>().ok()
 }
 
+fn detect_primary_ipv4_address() -> Option<String> {
+    let socket = UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    socket.connect(("192.0.2.1", 80)).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V4(ip) if is_viable_host_ipv4(ip) => Some(ip.to_string()),
+        _ => None,
+    }
+}
+
+fn is_viable_host_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    !ip.is_loopback()
+        && !ip.is_link_local()
+        && !ip.is_unspecified()
+        && !ip.is_broadcast()
+        // RFC 2544 benchmarking / many local proxy virtual interfaces.
+        && !(a == 198 && matches!(b, 18 | 19))
+}
+
+fn push_candidate(candidates: &mut Vec<(String, u16)>, host: String, port: u16) {
+    if !candidates
+        .iter()
+        .any(|(existing_host, existing_port)| existing_host == &host && *existing_port == port)
+    {
+        candidates.push((host, port));
+    }
+}
+
 fn candidate_endpoints_for_host(
     host: &str,
     ipv4_port: Option<u16>,
     ipv6_port: Option<u16>,
 ) -> Vec<(String, u16)> {
     let mut candidates = Vec::new();
+    let local_ipv4 = detect_primary_ipv4_address();
 
     match host_address_family(host) {
         Some(IpAddr::V4(_)) => {
             if let Some(port) = ipv4_port {
-                candidates.push((host.to_string(), port));
+                push_candidate(&mut candidates, host.to_string(), port);
+                if host.starts_with("127.") {
+                    if let Some(local_ipv4) = local_ipv4.as_ref() {
+                        push_candidate(&mut candidates, local_ipv4.clone(), port);
+                    }
+                }
             }
             if let Some(port) = ipv6_port.filter(|port| Some(*port) != ipv4_port) {
-                candidates.push(("::1".to_string(), port));
+                push_candidate(&mut candidates, "::1".to_string(), port);
             }
         }
         Some(IpAddr::V6(_)) => {
             if let Some(port) = ipv6_port {
-                candidates.push((host.to_string(), port));
+                push_candidate(&mut candidates, host.to_string(), port);
             }
             if let Some(port) = ipv4_port.filter(|port| Some(*port) != ipv6_port) {
-                candidates.push(("127.0.0.1".to_string(), port));
+                push_candidate(&mut candidates, "127.0.0.1".to_string(), port);
+                if let Some(local_ipv4) = local_ipv4.as_ref() {
+                    push_candidate(&mut candidates, local_ipv4.clone(), port);
+                }
             }
         }
         None => {
             if let Some(port) = ipv6_port.filter(|_| host == "localhost") {
-                candidates.push(("::1".to_string(), port));
+                push_candidate(&mut candidates, "::1".to_string(), port);
             }
             if let Some(port) = ipv4_port {
                 let ipv4_host = if host == "localhost" {
@@ -328,12 +368,17 @@ fn candidate_endpoints_for_host(
                 } else {
                     host.to_string()
                 };
-                candidates.push((ipv4_host, port));
+                push_candidate(&mut candidates, ipv4_host, port);
+                if host == "localhost" {
+                    if let Some(local_ipv4) = local_ipv4.as_ref() {
+                        push_candidate(&mut candidates, local_ipv4.clone(), port);
+                    }
+                }
             }
             if let Some(port) =
                 ipv6_port.filter(|port| Some(*port) != ipv4_port && host != "localhost")
             {
-                candidates.push((host.to_string(), port));
+                push_candidate(&mut candidates, host.to_string(), port);
             }
         }
     }
@@ -395,6 +440,11 @@ fn cleanup_error_indicates_missing_container(err: &str) -> bool {
 
 fn docker_rm_force(container_ref: &str) -> Result<(), String> {
     docker_rm_force_with_program("docker", container_ref)
+}
+
+fn startup_error_is_retriable(err: &str) -> bool {
+    let err = err.to_ascii_lowercase();
+    err.contains("marked for removal") || err.contains("no such container")
 }
 
 fn docker_rm_force_with_program(program: &str, container_ref: &str) -> Result<(), String> {
@@ -667,9 +717,9 @@ async fn init_shared_redis_server() -> SharedRedisServer {
                 Ok(Ok(c)) => break c,
                 Ok(Err(e)) => {
                     let err_str = format!("{e}");
-                    // Retry on "container is marked for removal" (409) – Docker
-                    // may still be cleaning up a stale container from a previous run.
-                    if err_str.contains("marked for removal") || err_str.contains("409") {
+                    // Retry known Docker container lifecycle races while a named
+                    // shared container is being cleaned up or recreated.
+                    if startup_error_is_retriable(&err_str) {
                         last_start_error = err_str;
                         if std::time::Instant::now() >= start_deadline {
                             panic!("Failed to start Redis after retries: {last_start_error}");
@@ -931,6 +981,29 @@ mod tests {
     }
 
     #[test]
+    fn localhost_candidates_include_primary_ipv4_fallback_when_available() {
+        let candidates = candidate_endpoints_for_host("localhost", Some(6379), Some(16379));
+
+        assert!(
+            candidates.contains(&("127.0.0.1".to_string(), 6379)),
+            "localhost candidates should include loopback IPv4: {candidates:?}"
+        );
+        if let Some(local_ipv4) = detect_primary_ipv4_address() {
+            assert!(
+                candidates.contains(&(local_ipv4, 6379)),
+                "localhost candidates should include the primary IPv4 fallback: {candidates:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn viable_host_ipv4_rejects_proxy_benchmark_range() {
+        assert!(!is_viable_host_ipv4(Ipv4Addr::new(198, 18, 0, 1)));
+        assert!(!is_viable_host_ipv4(Ipv4Addr::new(198, 19, 255, 254)));
+        assert!(is_viable_host_ipv4(Ipv4Addr::new(192, 168, 0, 40)));
+    }
+
+    #[test]
     fn cleanup_marks_container_as_cleaned_up_on_success() {
         let mut cleaned_up = false;
 
@@ -1044,6 +1117,25 @@ mod tests {
             err.contains("failed to spawn `synctv-command-that-should-not-exist`"),
             "error should include the missing program: {err}"
         );
+    }
+
+    #[test]
+    fn startup_error_is_retriable_for_known_container_lifecycle_races() {
+        assert!(startup_error_is_retriable("No such container: abc123"));
+        assert!(startup_error_is_retriable(
+            "DockerResponseServerError { status_code: 404, message: \"No such container\" }"
+        ));
+        assert!(startup_error_is_retriable(
+            "container is marked for removal"
+        ));
+        assert!(startup_error_is_retriable(
+            "DockerResponseServerError { status_code: 409, message: \"container is marked for removal\" }"
+        ));
+        assert!(!startup_error_is_retriable(
+            "404 gateway from registry mirror"
+        ));
+        assert!(!startup_error_is_retriable("409 conflict during start"));
+        assert!(!startup_error_is_retriable("authentication failed"));
     }
 
     #[tokio::test]

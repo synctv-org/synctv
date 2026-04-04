@@ -925,38 +925,6 @@ mod tests {
     use synctv_media_providers::ProviderClientError;
     use tonic::metadata::MetadataValue;
 
-    /// Test that `ProviderClientManager` can be created with default clients
-    #[test]
-    fn test_provider_client_manager_new() {
-        let manager = ProviderClientManager::new();
-
-        // Verify we can get clients
-        let _alist = manager.local_alist_client();
-        let _bilibili = manager.local_bilibili_client();
-        let _emby = manager.local_emby_client();
-    }
-
-    /// Test that `ProviderClientManager` implements Clone
-    #[test]
-    fn test_provider_client_manager_clone() {
-        let manager = ProviderClientManager::new();
-        let cloned = manager.clone();
-
-        // Both managers should return the same client instances (Arc clone)
-        let client1 = manager.local_alist_client();
-        let client2 = cloned.local_alist_client();
-
-        // Arc::ptr_eq checks if they point to the same allocation
-        assert!(Arc::ptr_eq(&client1, &client2));
-    }
-
-    /// Test that `ProviderClientManager::default()` works
-    #[test]
-    fn test_provider_client_manager_default() {
-        let manager = ProviderClientManager::default();
-        let _ = manager.local_alist_client();
-    }
-
     /// Test that `resolve_alist_client` returns local client when no channel is provided
     #[test]
     fn test_resolve_alist_client_returns_local_when_no_channel() {

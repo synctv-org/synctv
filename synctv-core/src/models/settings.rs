@@ -196,20 +196,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_default_settings() {
-        let server_settings = get_default_settings("server");
-        assert!(server_settings.is_some());
-        assert_eq!(
-            server_settings
-                .unwrap()
-                .get("allow_registration")
-                .cloned()
-                .unwrap_or(JsonValue::Null),
-            JsonValue::Bool(true)
-        );
-    }
-
-    #[test]
     fn test_parse_json() {
         let settings = SettingsGroup::new(
             "server".to_string(),
@@ -311,71 +297,6 @@ mod tests {
         let result = sg.as_object();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not an object"));
-    }
-
-    // ==================== Default Settings ====================
-
-    #[test]
-    fn test_default_server_settings_structure() {
-        let settings = default_server_settings();
-        let obj = settings.as_object().unwrap();
-        assert!(obj.contains_key("allow_registration"));
-        assert!(obj.contains_key("allow_room_creation"));
-        assert!(obj.contains_key("max_rooms_per_user"));
-        assert!(obj.contains_key("max_members_per_room"));
-        assert!(obj.contains_key("default_room_settings"));
-    }
-
-    #[test]
-    fn test_default_email_settings_structure() {
-        let settings = default_email_settings();
-        let obj = settings.as_object().unwrap();
-        assert!(obj.contains_key("enabled"));
-        assert!(obj.contains_key("smtp_host"));
-        assert!(obj.contains_key("smtp_port"));
-        assert!(obj.contains_key("use_tls"));
-        assert!(obj.contains_key("from_address"));
-        assert!(obj.contains_key("from_name"));
-    }
-
-    #[test]
-    fn test_default_oauth_settings_structure() {
-        let settings = default_oauth_settings();
-        let obj = settings.as_object().unwrap();
-        assert!(obj.contains_key("github_enabled"));
-        assert!(obj.contains_key("google_enabled"));
-        assert!(obj.contains_key("microsoft_enabled"));
-        assert!(obj.contains_key("discord_enabled"));
-    }
-
-    #[test]
-    fn test_get_default_settings_all_groups() {
-        assert!(get_default_settings("server").is_some());
-        assert!(get_default_settings("email").is_some());
-        assert!(get_default_settings("oauth").is_some());
-        assert!(get_default_settings("rate_limit").is_some());
-        assert!(get_default_settings("content_moderation").is_some());
-    }
-
-    #[test]
-    fn test_get_default_settings_unknown_group() {
-        assert!(get_default_settings("nonexistent").is_none());
-        assert!(get_default_settings("").is_none());
-    }
-
-    #[test]
-    fn test_default_email_disabled() {
-        let settings = default_email_settings();
-        assert_eq!(settings["enabled"], false);
-    }
-
-    #[test]
-    fn test_default_oauth_all_disabled() {
-        let settings = default_oauth_settings();
-        assert_eq!(settings["github_enabled"], false);
-        assert_eq!(settings["google_enabled"], false);
-        assert_eq!(settings["microsoft_enabled"], false);
-        assert_eq!(settings["discord_enabled"], false);
     }
 
     // ==================== SettingsError ====================

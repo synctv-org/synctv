@@ -69,8 +69,8 @@ async fn scenario_password_change_invalidates_old_tokens() {
     let jwt_service = create_jwt_service();
 
     // 1. Register user
-    let username = format!("user_{}", nanoid::nanoid!(8));
-    let email = format!("{}@test.com", nanoid::nanoid!(8));
+    let username = format!("user_{}", synctv_common::snanoid!(8));
+    let email = format!("{}@test.com", synctv_common::snanoid!(8));
     let original_password = "OriginalPassword123!".to_string();
 
     let (user, _, _) = user_service
@@ -153,7 +153,7 @@ async fn scenario_ban_user_invalidates_tokens() {
     let jwt_service = create_jwt_service();
 
     // 1. Register and login user
-    let username = format!("banned_user_{}", nanoid::nanoid!(8));
+    let username = format!("banned_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
     user_service
@@ -212,7 +212,7 @@ async fn scenario_blacklisted_access_token_rejected() {
     let jwt_service = create_jwt_service();
 
     // 1. Register and login user
-    let username = format!("blacklist_user_{}", nanoid::nanoid!(8));
+    let username = format!("blacklist_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
     user_service
@@ -261,7 +261,7 @@ async fn scenario_refresh_token_validation() {
     let user_service = Arc::new(create_user_service(pool));
 
     // Register and login user
-    let username = format!("refresh_user_{}", nanoid::nanoid!(8));
+    let username = format!("refresh_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
     user_service
@@ -298,8 +298,8 @@ async fn scenario_complete_authentication_flow() {
     let jwt_service = create_jwt_service();
 
     // Step 1: Register new user
-    let username = format!("e2e_user_{}", nanoid::nanoid!(8));
-    let email = format!("{}@test.com", nanoid::nanoid!(8));
+    let username = format!("e2e_user_{}", synctv_common::snanoid!(8));
+    let email = format!("{}@test.com", synctv_common::snanoid!(8));
     let password = "SecurePassword123!".to_string();
 
     let (user, _, _) = user_service
@@ -362,7 +362,7 @@ async fn scenario_login_wrong_password_fails() {
     let user_service = Arc::new(create_user_service(pool));
 
     // Register user
-    let username = format!("wrong_pwd_user_{}", nanoid::nanoid!(8));
+    let username = format!("wrong_pwd_user_{}", synctv_common::snanoid!(8));
     let password = "CorrectPassword123!".to_string();
 
     user_service
@@ -387,7 +387,7 @@ async fn scenario_deleted_user_cannot_authenticate() {
     let jwt_service = create_jwt_service();
 
     // Register and login user
-    let username = format!("deleted_user_{}", nanoid::nanoid!(8));
+    let username = format!("deleted_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
     let (user, _, _) = user_service

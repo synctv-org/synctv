@@ -70,7 +70,7 @@ async fn test_service_expired_token_fails() {
     let user = user_repo.create(&make_user("svc_user_2")).await.unwrap();
 
     // Create a token that's already expired (bypass service to control expiry)
-    let token_str = nanoid::nanoid!(64);
+    let token_str = synctv_common::snanoid!(64);
     let expired_at = Utc::now() - chrono::Duration::hours(1);
     token_repo
         .create(

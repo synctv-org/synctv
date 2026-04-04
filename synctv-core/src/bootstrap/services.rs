@@ -1,6 +1,6 @@
 //! Service initialization and dependency injection
 
-use std::sync::Arc;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use sqlx::PgPool;
 use tracing::{error, info, warn};
@@ -100,6 +100,12 @@ pub struct Services {
     pub provider_invalidation_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Credential encryption for protecting sensitive data (optional)
     pub credential_encryption: Option<crate::service::CredentialEncryption>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InitServicesOptions {
+    pub provider_test_address_overrides: HashMap<String, SocketAddr>,
+    pub credential_encryption_hex_key_override: Option<String>,
 }
 
 impl Services {
@@ -203,6 +209,25 @@ pub async fn init_services(
     redis_handles: Option<RedisHandles>,
     cache_invalidation: Arc<CacheInvalidationService>,
     cache_invalidation_listener_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+) -> Result<Services, anyhow::Error> {
+    init_services_with_options(
+        pool,
+        config,
+        redis_handles,
+        cache_invalidation,
+        cache_invalidation_listener_task,
+        InitServicesOptions::default(),
+    )
+    .await
+}
+
+pub async fn init_services_with_options(
+    pool: PgPool,
+    config: &Config,
+    redis_handles: Option<RedisHandles>,
+    cache_invalidation: Arc<CacheInvalidationService>,
+    cache_invalidation_listener_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    options: InitServicesOptions,
 ) -> Result<Services, anyhow::Error> {
     info!("Initializing services...");
 
@@ -350,7 +375,8 @@ pub async fn init_services(
     info!("UserService initialized");
 
     // Initialize credential encryption (shared by both repositories and media providers)
-    let credential_encryption = init_credential_encryption();
+    let credential_encryption =
+        init_credential_encryption(options.credential_encryption_hex_key_override.as_deref());
     // Keep a clone for use by media providers (source_config cookie encryption)
     let credential_encryption_for_services = credential_encryption.clone();
 
@@ -407,9 +433,10 @@ pub async fn init_services(
 
     // Initialize RemoteProviderManager (with Redis for cross-replica cache invalidation when available)
     info!("Initializing RemoteProviderManager...");
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_address_overrides(
         provider_instance_repo.clone(),
         Some((*cache_invalidation).clone()),
+        options.provider_test_address_overrides,
     ));
 
     // Pre-warm cache with all enabled provider instances from database
@@ -956,16 +983,23 @@ fn build_publish_key_service(
 /// 2. Environment variable: `SYNCTV_CREDENTIAL_ENCRYPTION_KEY`
 ///
 /// The key must be a 64-character hex string (32 bytes).
-fn init_credential_encryption() -> Option<crate::service::CredentialEncryption> {
+fn init_credential_encryption(
+    hex_key_override: Option<&str>,
+) -> Option<crate::service::CredentialEncryption> {
     use crate::secrets::{SecretLoader, SecretSource};
 
-    // Try file first, then env var
-    let hex_key = SecretLoader::load_with_fallback(
-        "credential_encryption_key",
-        SecretSource::File("/run/secrets/credential_encryption_key"),
-        SecretSource::Env("SYNCTV_CREDENTIAL_ENCRYPTION_KEY"),
-    )
-    .ok()?;
+    let hex_key = match hex_key_override {
+        Some(hex_key) => hex_key.to_string(),
+        None => {
+            // Try file first, then env var
+            SecretLoader::load_with_fallback(
+                "credential_encryption_key",
+                SecretSource::File("/run/secrets/credential_encryption_key"),
+                SecretSource::Env("SYNCTV_CREDENTIAL_ENCRYPTION_KEY"),
+            )
+            .ok()?
+        }
+    };
 
     match crate::service::CredentialEncryption::from_hex_key(&hex_key) {
         Ok(enc) => {

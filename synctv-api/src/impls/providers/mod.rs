@@ -70,7 +70,7 @@ pub async fn get_provider_binds(
                 label_key: user_field_key.to_string(),
                 label_value,
                 created_at: c.created_at.timestamp(),
-                created_at_str: c.created_at.to_rfc3339(),
+                created_at_str: synctv_common::time::format_datetime_rfc3339(c.created_at),
             }
         })
         .collect();

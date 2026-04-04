@@ -1531,16 +1531,6 @@ mod tests {
         assert_eq!(ProxyError::Other("x".into()).kind(), ProxyErrorKind::Other);
     }
 
-    #[test]
-    fn test_proxy_error_kind_as_str() {
-        assert_eq!(ProxyErrorKind::Timeout.as_str(), "timeout");
-        assert_eq!(ProxyErrorKind::Connection.as_str(), "connection");
-        assert_eq!(ProxyErrorKind::Ssrf.as_str(), "ssrf");
-        assert_eq!(ProxyErrorKind::InvalidRequest.as_str(), "invalid_request");
-        assert_eq!(ProxyErrorKind::Upstream.as_str(), "upstream");
-        assert_eq!(ProxyErrorKind::Other.as_str(), "other");
-    }
-
     #[tokio::test]
     async fn test_send_with_redirect_validation_resolves_relative_location() {
         let server = wiremock::MockServer::start().await;

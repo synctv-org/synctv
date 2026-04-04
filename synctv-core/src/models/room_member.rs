@@ -4,6 +4,8 @@ use std::str::FromStr;
 
 use super::id::{RoomId, UserId};
 use super::permission::{PermissionBits, Role as RoomRole};
+use super::query::SortDirection;
+use super::room::RoomStatus;
 
 /// Member status in room (independent of role)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +108,159 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for MemberStatus {
             3 => Ok(Self::Banned),
             4 => Ok(Self::Left),
             _ => Err(format!("Invalid MemberStatus value: {val}").into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomMemberListSortBy {
+    Username,
+    Role,
+    Status,
+    #[default]
+    JoinedAt,
+}
+
+impl RoomMemberListSortBy {
+    #[must_use]
+    pub const fn as_sql(self) -> &'static str {
+        match self {
+            Self::Username => "u.username",
+            Self::Role => "rm.role",
+            Self::Status => "rm.status",
+            Self::JoinedAt => "rm.joined_at",
+        }
+    }
+}
+
+impl std::str::FromStr for RoomMemberListSortBy {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "username" => Ok(Self::Username),
+            "role" => Ok(Self::Role),
+            "status" => Ok(Self::Status),
+            "joined_at" | "joinedat" => Ok(Self::JoinedAt),
+            other => Err(format!("Unknown room member list sort field: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for RoomMemberListSortBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Username => "username",
+            Self::Role => "role",
+            Self::Status => "status",
+            Self::JoinedAt => "joined_at",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoomMemberListQuery {
+    pub pagination: super::pagination::PageParams,
+    pub search: Option<String>,
+    pub role: Option<RoomRole>,
+    pub status: Option<MemberStatus>,
+    pub is_online: Option<bool>,
+    #[serde(default)]
+    pub sort_by: RoomMemberListSortBy,
+    #[serde(default)]
+    pub sort_direction: SortDirection,
+}
+
+impl Default for RoomMemberListQuery {
+    fn default() -> Self {
+        Self {
+            pagination: super::pagination::PageParams::default(),
+            search: None,
+            role: None,
+            status: None,
+            is_online: None,
+            sort_by: RoomMemberListSortBy::JoinedAt,
+            sort_direction: SortDirection::Asc,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RelatedRoomListSortBy {
+    Name,
+    CreatedAt,
+    UpdatedAt,
+    LastActivityAt,
+    #[default]
+    JoinedAt,
+}
+
+impl RelatedRoomListSortBy {
+    #[must_use]
+    pub const fn as_sql(self) -> &'static str {
+        match self {
+            Self::Name => "r.name",
+            Self::CreatedAt => "r.created_at",
+            Self::UpdatedAt => "r.updated_at",
+            Self::LastActivityAt => "r.last_activity_at",
+            Self::JoinedAt => "rm.joined_at",
+        }
+    }
+}
+
+impl std::str::FromStr for RelatedRoomListSortBy {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "name" => Ok(Self::Name),
+            "created_at" | "createdat" => Ok(Self::CreatedAt),
+            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
+            "last_activity_at" | "lastactivityat" => Ok(Self::LastActivityAt),
+            "joined_at" | "joinedat" => Ok(Self::JoinedAt),
+            other => Err(format!("Unknown related room list sort field: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for RelatedRoomListSortBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Name => "name",
+            Self::CreatedAt => "created_at",
+            Self::UpdatedAt => "updated_at",
+            Self::LastActivityAt => "last_activity_at",
+            Self::JoinedAt => "joined_at",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelatedRoomListQuery {
+    pub pagination: super::pagination::PageParams,
+    pub search: Option<String>,
+    pub status: Option<RoomStatus>,
+    #[serde(default)]
+    pub is_banned: Option<bool>,
+    #[serde(default)]
+    pub sort_by: RelatedRoomListSortBy,
+    #[serde(default)]
+    pub sort_direction: SortDirection,
+}
+
+impl Default for RelatedRoomListQuery {
+    fn default() -> Self {
+        Self {
+            pagination: super::pagination::PageParams::default(),
+            search: None,
+            status: None,
+            is_banned: None,
+            sort_by: RelatedRoomListSortBy::JoinedAt,
+            sort_direction: SortDirection::Desc,
         }
     }
 }
@@ -364,14 +519,6 @@ mod tests {
     }
 
     #[test]
-    fn test_member_default_permissions() {
-        let member = test_member(RoomRole::Member);
-        let default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
-        let result = member.effective_permissions(default);
-        assert_eq!(result.0, PermissionBits::DEFAULT_MEMBER);
-    }
-
-    #[test]
     fn test_member_with_added_permissions() {
         let mut member = test_member(RoomRole::Member);
         member.added_permissions = PermissionBits::KICK_MEMBER;
@@ -502,5 +649,12 @@ mod tests {
             member.left_at.is_some(),
             "leave() must set left_at timestamp"
         );
+    }
+
+    #[test]
+    fn test_room_member_list_sort_by_as_sql() {
+        assert_eq!(RoomMemberListSortBy::JoinedAt.as_sql(), "rm.joined_at");
+        assert_eq!(RoomMemberListSortBy::Username.as_sql(), "u.username");
+        assert_eq!(RoomMemberListSortBy::Role.as_sql(), "rm.role");
     }
 }

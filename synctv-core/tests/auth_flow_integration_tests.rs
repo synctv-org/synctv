@@ -22,7 +22,7 @@ async fn test_complete_registration_flow() {
     let user_repo = UserRepository::new(pool.clone());
 
     // Step 1: Register user
-    let username = format!("test_user_{}", nanoid::nanoid!(10));
+    let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let email = format!("{username}@test.com");
     let password = "SecurePassword123!";
 
@@ -106,7 +106,7 @@ async fn test_login_with_wrong_password() {
     let user_repo = UserRepository::new(pool.clone());
 
     // Create user
-    let username = format!("test_user_{}", nanoid::nanoid!(10));
+    let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let password = "CorrectPassword123!";
     let password_hash = hash_password(password)
         .await
@@ -155,7 +155,7 @@ async fn test_login_unverified_user_rejected() {
     let user_repo = UserRepository::new(pool.clone());
 
     // Create unverified user
-    let username = format!("test_user_{}", nanoid::nanoid!(10));
+    let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let password = "Password123!";
     let password_hash = hash_password(password)
         .await
@@ -242,7 +242,7 @@ async fn test_password_change_invalidates_tokens() {
     let jwt_service = create_test_jwt_service();
 
     // Create user
-    let username = format!("test_user_{}", nanoid::nanoid!(10));
+    let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let old_password = "OldPassword123!";
     let password_hash = hash_password(old_password)
         .await
@@ -324,7 +324,7 @@ async fn test_concurrent_login_attempts() {
     let jwt_service = Arc::new(create_test_jwt_service());
 
     // Create user
-    let username = format!("test_user_{}", nanoid::nanoid!(10));
+    let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let password = "Password123!";
     let password_hash = hash_password(password)
         .await
@@ -396,7 +396,7 @@ async fn test_banned_user_login_rejected() {
     let user_repo = UserRepository::new(pool.clone());
 
     // Create banned user
-    let username = format!("test_user_{}", nanoid::nanoid!(10));
+    let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let password = "Password123!";
     let password_hash = hash_password(password)
         .await
@@ -445,7 +445,7 @@ async fn test_username_case_insensitive_login() {
     let user_repo = UserRepository::new(pool.clone());
 
     // Create user with lowercase username
-    let username = format!("testuser_{}", nanoid::nanoid!(10));
+    let username = format!("testuser_{}", synctv_common::snanoid!(10));
     let password = "Password123!";
     let password_hash = hash_password(password)
         .await

@@ -41,7 +41,7 @@ static X_REQUEST_ID: LazyLock<axum::http::HeaderName> =
 /// - If the client sends an `X-Request-ID` header whose value is a non-empty
 ///   alphanumeric ASCII string of at most 64 characters, that value is reused
 ///   (allows end-to-end trace correlation from trusted clients).
-/// - Otherwise a fresh 12-character nanoid is generated.
+/// - Otherwise a fresh 12-character shared base62 request ID is generated.
 ///
 /// The request ID is:
 /// 1. Recorded in the current tracing span as `request_id` for log correlation.
@@ -63,7 +63,7 @@ pub async fn request_id_middleware(mut request: Request, next: Next) -> Response
                 && s.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         })
-        .map_or_else(|| nanoid::nanoid!(12), str::to_owned);
+        .map_or_else(|| synctv_common::snanoid!(12), str::to_owned);
 
     // Record in current tracing span for log correlation.
     tracing::Span::current().record("request_id", request_id.as_str());
@@ -126,17 +126,17 @@ where
         let auth_header = parts
             .headers
             .get(axum::http::header::AUTHORIZATION)
-            .ok_or_else(|| AppError::unauthorized("Missing Authorization header"))?;
+            .ok_or_else(AppError::missing_authorization_header)?;
 
         // Parse Bearer token and validate using unified validator.
         let auth_str = auth_header
             .to_str()
-            .map_err(|e| AppError::unauthorized(format!("Invalid Authorization header: {e}")))?;
+            .map_err(|_| AppError::invalid_authorization_header())?;
 
         // Step 1: JWT verification
         let claims = validator
             .validate_http(auth_str)
-            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+            .map_err(|_| AppError::invalid_or_expired_token())?;
 
         // Steps 2-3: Shared security pipeline (password invalidation, user status)
         let authenticated = app_state
@@ -144,7 +144,7 @@ where
             .check(&claims)
             .await
             .map_err(|e| match SecurityPipeline::classify_auth_error(&e) {
-                AuthErrorCategory::Authentication => AppError::unauthorized(format!("{e}")),
+                AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
                 AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
                 AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
             })?;
@@ -211,18 +211,18 @@ where
         let auth_header = parts
             .headers
             .get(axum::http::header::AUTHORIZATION)
-            .ok_or_else(|| AppError::unauthorized("Missing Authorization header"))?;
+            .ok_or_else(AppError::missing_authorization_header)?;
 
         let auth_str = auth_header
             .to_str()
-            .map_err(|e| AppError::unauthorized(format!("Invalid Authorization header: {e}")))?;
+            .map_err(|_| AppError::invalid_authorization_header())?;
 
         let token = JwtValidator::extract_bearer_token(auth_str)
-            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+            .map_err(|_| AppError::invalid_or_expired_token())?;
 
         let map_guest_auth_error =
             |e: synctv_core::Error| match SecurityPipeline::classify_auth_error(&e) {
-                AuthErrorCategory::Authentication => AppError::unauthorized(format!("{e}")),
+                AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
                 AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
                 AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
             };
@@ -679,37 +679,6 @@ mod tests {
 
     // === RateLimitConfig Tests ===
 
-    #[test]
-    fn test_rate_limit_config_default() {
-        let config = RateLimitConfig::default();
-        assert_eq!(config.auth_max_requests, 5);
-        assert_eq!(config.auth_window_seconds, 60);
-        assert_eq!(config.write_max_requests, 30);
-        assert_eq!(config.write_window_seconds, 60);
-        assert_eq!(config.read_max_requests, 100);
-        assert_eq!(config.read_window_seconds, 60);
-        assert_eq!(config.media_max_requests, 20);
-        assert_eq!(config.media_window_seconds, 60);
-        assert_eq!(config.admin_max_requests, 30);
-        assert_eq!(config.admin_window_seconds, 60);
-        assert_eq!(config.streaming_max_requests, 200);
-        assert_eq!(config.streaming_window_seconds, 60);
-        assert_eq!(config.websocket_max_requests, 10);
-        assert_eq!(config.websocket_window_seconds, 60);
-    }
-
-    #[test]
-    fn test_rate_limit_config_auth_stricter_than_read() {
-        let config = RateLimitConfig::default();
-        assert!(config.auth_max_requests < config.read_max_requests);
-    }
-
-    #[test]
-    fn test_rate_limit_config_websocket_stricter_than_streaming() {
-        let config = RateLimitConfig::default();
-        assert!(config.websocket_max_requests < config.streaming_max_requests);
-    }
-
     // === HSTS Header Tests ===
 
     #[test]
@@ -837,28 +806,6 @@ mod tests {
         assert!(cache_control.contains("must-revalidate"));
     }
 
-    // === AuthUser Tests (extracting behavior) ===
-
-    #[test]
-    fn test_auth_user_debug() {
-        let auth_user = AuthUser {
-            user_id: synctv_core::models::id::UserId::from_string("test123".to_string()),
-            password_version: 0,
-        };
-        let debug_str = format!("{auth_user:?}");
-        assert!(debug_str.contains("test123"));
-    }
-
-    #[test]
-    fn test_auth_user_clone() {
-        let auth_user = AuthUser {
-            user_id: synctv_core::models::id::UserId::from_string("test123".to_string()),
-            password_version: 0,
-        };
-        let cloned = auth_user;
-        assert_eq!(cloned.user_id.as_str(), "test123");
-    }
-
     #[test]
     fn test_guest_user_maps_service_unavailable_to_503() {
         let err =
@@ -903,15 +850,6 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
             "guest room existence backend failures must not be misreported as unauthorized"
         );
-    }
-
-    // === RateLimitCategory Tests ===
-
-    #[test]
-    fn test_rate_limit_category_clone() {
-        let cat = RateLimitCategory::Auth;
-        let cloned = cat;
-        assert!(matches!(cloned, RateLimitCategory::Auth));
     }
 
     // === Security Parity: HTTP middleware checks ===

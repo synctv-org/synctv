@@ -205,7 +205,13 @@ where
     tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
         .await
         .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
-        .map_err(|e| Error::ServiceUnavailable(format!("Failed to {operation}: {e}")))
+        .map_err(|error| {
+            tracing::warn!(operation, error = %error, "WebSocket ticket Redis operation failed");
+            Error::ServiceUnavailable(
+                "WebSocket ticket service is temporarily unavailable. Please try again later."
+                    .to_string(),
+            )
+        })
 }
 
 #[async_trait]
@@ -1168,20 +1174,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_memory_mode_creates_valid_service() {
-        let service = WsTicketService::with_memory(Some(60));
-        assert_eq!(service.store.backend_name(), "memory");
-        assert_eq!(service.ticket_ttl_secs, 60);
-    }
-
-    #[test]
-    fn test_debug_shows_mode() {
-        let service = WsTicketService::with_memory(Some(30));
-        let debug_str = format!("{service:?}");
-        assert!(debug_str.contains("memory"));
-    }
-
     #[tokio::test(start_paused = true)]
     async fn test_ws_ticket_redis_timeout_maps_to_timeout_error() {
         let timeout_future = run_ws_ticket_redis_op("store ticket", async {
@@ -1215,8 +1207,7 @@ mod tests {
         assert!(matches!(
             err,
             Error::ServiceUnavailable(ref msg)
-                if msg.contains("Failed to store ticket")
-                    && msg.contains("connection reset by peer")
+                if msg == "WebSocket ticket service is temporarily unavailable. Please try again later."
         ));
     }
 

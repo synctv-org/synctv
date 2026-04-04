@@ -43,6 +43,7 @@ use std::fs;
 use std::path::Path;
 use tracing::{debug, warn};
 
+use crate::config::absolute_display_path;
 use crate::Result;
 
 /// Source for loading secrets
@@ -84,14 +85,18 @@ impl SecretLoader {
                     "Loading secret from file"
                 );
                 let content = fs::read_to_string(path).with_context(|| {
-                    format!("Failed to read secret '{name}' from file '{path}'")
+                    format!(
+                        "Failed to read secret '{name}' from file '{}'",
+                        absolute_display_path(Path::new(path))
+                    )
                 })?;
 
                 let trimmed = content.trim().to_string();
 
                 if trimmed.is_empty() {
                     return Err(crate::Error::Internal(format!(
-                        "Secret '{name}' from file '{path}' is empty"
+                        "Secret '{name}' from file '{}' is empty",
+                        absolute_display_path(Path::new(path))
                     )));
                 }
 

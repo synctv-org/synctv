@@ -23,6 +23,11 @@ fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
         target: Vec::new(),
         page: 1,
         page_size: 50,
+        search: String::new(),
+        source_provider: String::new(),
+        provider_instance_name: String::new(),
+        sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
+        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
     };
 
     let json = serde_json::to_value(&request).expect("serialize list request");

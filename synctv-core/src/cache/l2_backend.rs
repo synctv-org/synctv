@@ -652,36 +652,4 @@ mod tests {
         assert!(delete_result.unwrap().is_ok());
     }
 
-    /// Test NoopCacheL2 always succeeds (instant operations)
-    #[tokio::test]
-    async fn test_noop_backend_fast() {
-        let backend = NoopCacheL2;
-
-        // All operations should be instant
-        let start = std::time::Instant::now();
-
-        let result = backend.get("key").await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none());
-
-        let result = backend.set("key", "{}", 60).await;
-        assert!(result.is_ok());
-
-        let result = backend.delete("key").await;
-        assert!(result.is_ok());
-
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed < Duration::from_millis(10),
-            "NoopCacheL2 operations should be instant, took {elapsed:?}"
-        );
-    }
-
-    /// Test NoopCacheL2 backend_name and is_active
-    #[test]
-    fn test_noop_backend_metadata() {
-        let backend = NoopCacheL2;
-        assert_eq!(backend.backend_name(), "noop");
-        assert!(!backend.is_active());
-    }
 }

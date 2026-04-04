@@ -13,7 +13,7 @@ use synctv_cluster::HeartbeatResult;
 
 /// Default Redis version for test containers
 #[allow(dead_code)]
-const REDIS_VERSION: &str = "7";
+const REDIS_VERSION: &str = "8";
 
 fn docker_startup_timeout() -> Duration {
     std::env::var("SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS")

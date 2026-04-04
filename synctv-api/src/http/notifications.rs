@@ -32,6 +32,9 @@ pub struct ListNotificationsQuery {
     pub page_size: Option<i32>,
     pub is_read: Option<bool>,
     pub notification_type: Option<String>,
+    pub search: Option<String>,
+    pub sort_by: Option<String>,
+    pub sort_direction: Option<String>,
 }
 
 fn get_notification_api(
@@ -96,6 +99,16 @@ pub async fn list_notifications(
             Some(page_size),
             query.is_read,
             notification_type,
+            query.search.clone(),
+            match query.sort_by.as_deref() {
+                Some("title") => synctv_core::models::NotificationListSortBy::Title,
+                Some("updated_at") => synctv_core::models::NotificationListSortBy::UpdatedAt,
+                _ => synctv_core::models::NotificationListSortBy::CreatedAt,
+            },
+            match query.sort_direction.as_deref() {
+                Some("asc") => synctv_core::models::SortDirection::Asc,
+                _ => synctv_core::models::SortDirection::Desc,
+            },
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
@@ -266,6 +279,21 @@ pub async fn delete_notification(
         .map_err(crate::http::error::map_api_error)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ListNotificationsQuery;
+
+    #[test]
+    fn test_list_notifications_query_deserializes_search_and_sort() {
+        let query: ListNotificationsQuery =
+            serde_json::from_str(r#"{"search":"alert","sort_by":"title","sort_direction":"asc"}"#)
+                .unwrap();
+        assert_eq!(query.search.as_deref(), Some("alert"));
+        assert_eq!(query.sort_by.as_deref(), Some("title"));
+        assert_eq!(query.sort_direction.as_deref(), Some("asc"));
+    }
 }
 
 /// DELETE /api/notifications/read - Delete all read notifications

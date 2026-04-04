@@ -1,11 +1,48 @@
 //! Playlist operations: create, update, delete, list playlists
 
 use serde_json::Value as JsonValue;
-use synctv_core::models::{PermissionBits, UserId};
+use std::cmp::Ordering;
+use synctv_core::models::{
+    PermissionBits, Playlist, PlaylistListSortBy as CorePlaylistListSortBy,
+    SortDirection as CoreSortDirection, UserId,
+};
 
 use super::convert::playlist_to_proto;
 use super::ClientApiImpl;
 use crate::impls::ApiError;
+
+fn compare_playlists(
+    left: &Playlist,
+    right: &Playlist,
+    sort_by: CorePlaylistListSortBy,
+    sort_direction: CoreSortDirection,
+) -> Ordering {
+    let ordering = match sort_by {
+        CorePlaylistListSortBy::Name => left
+            .name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+            .then_with(|| left.position.cmp(&right.position)),
+        CorePlaylistListSortBy::CreatedAt => left
+            .created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.position.cmp(&right.position)),
+        CorePlaylistListSortBy::UpdatedAt => left
+            .updated_at
+            .cmp(&right.updated_at)
+            .then_with(|| left.position.cmp(&right.position)),
+        CorePlaylistListSortBy::Position => left.position.cmp(&right.position).then_with(|| {
+            left.name
+                .to_ascii_lowercase()
+                .cmp(&right.name.to_ascii_lowercase())
+        }),
+    };
+
+    match sort_direction {
+        CoreSortDirection::Asc => ordering,
+        CoreSortDirection::Desc => ordering.reverse(),
+    }
+}
 
 impl ClientApiImpl {
     pub async fn create_playlist(
@@ -239,46 +276,86 @@ impl ClientApiImpl {
         const DEFAULT_PAGE_SIZE: i32 = 50;
         const MAX_PAGE_SIZE: i32 = 100;
 
-        let page = if req.page <= 0 { 1 } else { req.page };
+        let page = req.page.max(1) as usize;
         let page_size = if req.page_size <= 0 {
-            DEFAULT_PAGE_SIZE
+            DEFAULT_PAGE_SIZE as usize
         } else {
-            req.page_size.min(MAX_PAGE_SIZE)
+            req.page_size.min(MAX_PAGE_SIZE) as usize
         };
-        let offset = i64::from(page - 1) * i64::from(page_size);
+        let search = (!req.search.is_empty()).then(|| req.search.to_ascii_lowercase());
+        let source_provider = (!req.source_provider.is_empty()).then_some(req.source_provider);
+        let provider_instance_name =
+            (!req.provider_instance_name.is_empty()).then_some(req.provider_instance_name);
+        let sort_by = match crate::proto::client::PlaylistListSortBy::try_from(req.sort_by) {
+            Ok(crate::proto::client::PlaylistListSortBy::Name) => CorePlaylistListSortBy::Name,
+            Ok(crate::proto::client::PlaylistListSortBy::CreatedAt) => {
+                CorePlaylistListSortBy::CreatedAt
+            }
+            Ok(crate::proto::client::PlaylistListSortBy::UpdatedAt) => {
+                CorePlaylistListSortBy::UpdatedAt
+            }
+            _ => CorePlaylistListSortBy::Position,
+        };
+        let sort_direction = match crate::proto::client::SortDirection::try_from(req.sort_direction)
+        {
+            Ok(crate::proto::client::SortDirection::Desc) => CoreSortDirection::Desc,
+            _ => CoreSortDirection::Asc,
+        };
 
-        let (playlists, total) = if req.parent_id.is_empty() {
-            // Get top-level playlists in room with pagination
-            let total = self
-                .room_service
+        let mut playlists = if req.parent_id.is_empty() {
+            self.room_service
                 .playlist_service()
-                .count_top_level_playlists(&rid)
+                .get_top_level_playlists(&rid)
                 .await
-                .map_err(ApiError::from)? as i32;
-            let playlists = self
-                .room_service
-                .playlist_service()
-                .get_top_level_playlists_paginated(&rid, i64::from(page_size), offset)
-                .await
-                .map_err(ApiError::from)?;
-            (playlists, total)
+                .map_err(ApiError::from)?
         } else {
-            // Get children of specific playlist with pagination
             let parent_id = synctv_core::models::PlaylistId::from_string(req.parent_id);
-            let total = self
+            let parent = self
                 .room_service
                 .playlist_service()
-                .count_children(&parent_id)
+                .get_playlist(&parent_id)
                 .await
-                .map_err(ApiError::from)? as i32;
-            let playlists = self
-                .room_service
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::NotFound("Parent playlist not found".to_string()))?;
+            if parent.room_id != rid {
+                return Err(ApiError::Authorization(
+                    "Parent playlist does not belong to this room".to_string(),
+                ));
+            }
+            self.room_service
                 .playlist_service()
-                .get_children_paginated(&parent_id, i64::from(page_size), offset)
+                .get_children(&parent_id)
                 .await
-                .map_err(ApiError::from)?;
-            (playlists, total)
+                .map_err(ApiError::from)?
         };
+
+        playlists.retain(|playlist| {
+            if let Some(search) = &search {
+                if !playlist.name.to_ascii_lowercase().contains(search) {
+                    return false;
+                }
+            }
+            if let Some(source_provider) = source_provider.as_deref() {
+                if playlist.source_provider.as_deref() != Some(source_provider) {
+                    return false;
+                }
+            }
+            if let Some(provider_instance_name) = provider_instance_name.as_deref() {
+                if playlist.provider_instance_name.as_deref() != Some(provider_instance_name) {
+                    return false;
+                }
+            }
+            if let Some(dynamic_only) = req.dynamic_only {
+                if playlist.is_dynamic() != dynamic_only {
+                    return false;
+                }
+            }
+            true
+        });
+        playlists.sort_by(|left, right| compare_playlists(left, right, sort_by, sort_direction));
+        let total = playlists.len() as i32;
+        let offset = (page - 1) * page_size;
+        let playlists: Vec<Playlist> = playlists.into_iter().skip(offset).take(page_size).collect();
 
         // Batch-fetch media counts to avoid N+1 queries.
         let playlist_ids: Vec<&str> = playlists.iter().map(|pl| pl.id.as_str()).collect();

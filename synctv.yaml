@@ -1,6 +1,6 @@
 # SyncTV Configuration Example
 #
-# Copy this file to config.yaml and modify as needed
+# Copy this file to synctv.yaml and modify as needed
 #
 # Configuration priority: defaults < config file < environment variables
 #
@@ -18,8 +18,6 @@ server:
   # Minimum: 1MB (1048576 bytes), Maximum: 1GB (1073741824 bytes).
   # Environment variable: SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES
   # grpc_max_message_size_bytes: 16777216
-  # Enable the /metrics Prometheus endpoint
-  metrics_enabled: false
   # Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation.
   # If empty, X-Forwarded-For headers are NOT trusted (socket address is used).
   # Example: ["10.0.0.0/8", "192.168.0.0/16"]
@@ -52,6 +50,32 @@ server:
   # Maximum time in seconds to wait for active connections to drain during shutdown.
   # Defaults to 30 seconds. Increase for deployments with many long-lived connections.
   shutdown_drain_timeout_seconds: 30
+
+time:
+  # Default IANA timezone used for human-readable time output and local datetime parsing.
+  # Resolution priority:
+  #   1. time.timezone
+  #   2. SYNCTV_TIME_TIMEZONE
+  #   3. TZ
+  #   4. system timezone
+  #   5. UTC
+  timezone: ""
+
+metrics:
+  # Dedicated metrics listener. When enabled, /metrics is not served on the API port.
+  enabled: false
+  host: "0.0.0.0"
+  port: 9090
+  auth:
+    mode: "bearer_token"
+    bearer_token: ""
+
+management:
+  enabled: true
+  transport: "unix"
+  port: 50052
+  # unix_socket_path: "/absolute/path/to/synctv.sock"
+  enable_reflection: false
 
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
@@ -139,6 +163,9 @@ jwt:
 logging:
   level: "info"
   format: "pretty"
+  # Optional fine-grained tracing filter. When set, this takes precedence over level.
+  # filter: "info,synctv=debug,synctv_core::service=trace"
+  backtrace: false
   # file_path: "/var/log/synctv/app.log"
 
 livestream:

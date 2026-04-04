@@ -42,7 +42,7 @@ pub async fn init_database_with_cancel(
     let database_url = config.database_url();
 
     // Log only host/port, not credentials
-    let masked_url = mask_database_url(database_url);
+    let masked_url = mask_database_url(&database_url);
     info!("Connecting to database: {}", masked_url);
 
     let statement_timeout_ms = DB_QUERY_TIMEOUT.as_millis();
@@ -69,7 +69,7 @@ pub async fn init_database_with_cancel(
                 Ok(true)
             })
         })
-        .connect(database_url)
+        .connect(&database_url)
         .await
         .map_err(|e| {
             error!("Failed to connect to database: {}", e);
@@ -128,8 +128,8 @@ async fn apply_session_settings(
 
 fn pg_client_min_messages_for_level(level: Level) -> &'static str {
     match level {
-        Level::TRACE | Level::DEBUG => "notice",
-        Level::INFO | Level::WARN => "warning",
+        Level::TRACE => "notice",
+        Level::DEBUG | Level::INFO | Level::WARN => "warning",
         Level::ERROR => "error",
     }
 }
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn pg_client_min_messages_matches_application_log_level_policy() {
         assert_eq!(pg_client_min_messages_for_level(Level::TRACE), "notice");
-        assert_eq!(pg_client_min_messages_for_level(Level::DEBUG), "notice");
+        assert_eq!(pg_client_min_messages_for_level(Level::DEBUG), "warning");
         assert_eq!(pg_client_min_messages_for_level(Level::INFO), "warning");
         assert_eq!(pg_client_min_messages_for_level(Level::WARN), "warning");
         assert_eq!(pg_client_min_messages_for_level(Level::ERROR), "error");
@@ -222,7 +222,7 @@ mod tests {
             .expect("effective log level should resolve");
 
         assert_eq!(effective, Level::DEBUG);
-        assert_eq!(pg_client_min_messages_for_level(effective), "notice");
+        assert_eq!(pg_client_min_messages_for_level(effective), "warning");
     }
 
     #[tokio::test]
@@ -263,6 +263,7 @@ mod tests {
                 connect_timeout_seconds: 5,
                 idle_timeout_seconds: 600,
                 max_lifetime_seconds: 1800,
+                ..crate::config::DatabaseConfig::default()
             },
             ..crate::Config::default()
         };
@@ -316,6 +317,7 @@ mod tests {
                 connect_timeout_seconds: 5,
                 idle_timeout_seconds: 600,
                 max_lifetime_seconds: 1800,
+                ..crate::config::DatabaseConfig::default()
             },
             logging: LoggingConfig {
                 level: "info".to_string(),
@@ -363,6 +365,7 @@ mod tests {
                 connect_timeout_seconds: 5,
                 idle_timeout_seconds: 600,
                 max_lifetime_seconds: 1800,
+                ..crate::config::DatabaseConfig::default()
             },
             logging: LoggingConfig {
                 level: "info".to_string(),
@@ -420,6 +423,7 @@ mod tests {
                 connect_timeout_seconds: 5,
                 idle_timeout_seconds: 600,
                 max_lifetime_seconds: 1800,
+                ..crate::config::DatabaseConfig::default()
             },
             ..crate::Config::default()
         };
@@ -451,6 +455,7 @@ mod tests {
                 connect_timeout_seconds: 5,
                 idle_timeout_seconds: 600,
                 max_lifetime_seconds: 1800,
+                ..crate::config::DatabaseConfig::default()
             },
             ..crate::Config::default()
         };

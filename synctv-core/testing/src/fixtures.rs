@@ -37,7 +37,7 @@ impl TestUser {
     /// Creates a new `TestUser` builder with default values
     pub fn new() -> Self {
         Self {
-            username: format!("test_user_{}", nanoid::nanoid!(10)),
+            username: format!("test_user_{}", synctv_common::snanoid!(10)),
             email: None,
             password: None,
             role: UserRole::User,
@@ -179,7 +179,7 @@ impl TestRoom {
     /// Creates a new `TestRoom` builder with default values
     pub fn new() -> Self {
         Self {
-            name: format!("Test Room {}", nanoid::nanoid!(6)),
+            name: format!("Test Room {}", synctv_common::snanoid!(6)),
             created_by: UserId::new(),
             status: synctv_core::models::RoomStatus::Active,
             description: String::new(),

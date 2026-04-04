@@ -90,7 +90,7 @@ async fn test_local_subscribe_and_broadcast() {
     use synctv_cluster::sync::ClusterEvent;
 
     let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),
         user_id: user_id.clone(),
         username: "test_user".to_string(),
@@ -173,7 +173,7 @@ async fn test_multiple_subscribers_receive_broadcasts() {
     use synctv_cluster::sync::ClusterEvent;
 
     let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),
         user_id: UserId::from_string("broadcaster".to_string()),
         username: "broadcaster".to_string(),
@@ -224,7 +224,7 @@ async fn test_connection_manager_works_standalone() {
     let conn_manager = ConnectionManager::new(limits);
 
     let user_id = UserId::from_string("user1".to_string());
-    let conn_id = format!("conn_{}", nanoid::nanoid!(8));
+    let conn_id = format!("conn_{}", synctv_common::snanoid!(8));
 
     // Register connection
     conn_manager
@@ -274,7 +274,7 @@ impl LocalMessageBroadcaster {
         tokio::sync::mpsc::Receiver<synctv_cluster::sync::ClusterEvent>,
         String,
     ) {
-        let connection_id = format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8));
+        let connection_id = format!("{}_{}", user_id.as_str(), synctv_common::snanoid!(8));
         let rx = self
             .message_hub
             .subscribe(room_id, user_id, connection_id.clone())
@@ -314,7 +314,7 @@ async fn test_local_message_broadcaster_basic() {
     use synctv_cluster::sync::ClusterEvent;
 
     let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),
         user_id: UserId::from_string("user1".to_string()),
         username: "user1".to_string(),
@@ -364,7 +364,7 @@ async fn test_local_message_broadcaster_multiple_subscribers() {
     use synctv_cluster::sync::ClusterEvent;
 
     let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),
         user_id: UserId::from_string("broadcaster".to_string()),
         username: "broadcaster".to_string(),
@@ -419,7 +419,7 @@ async fn test_lazy_cluster_manager_creation() {
                 redis_conn: None,
                 shared_redis_conn: None,
                 cluster_enabled: false,
-                node_id: format!("local_{}", nanoid::nanoid!(8)),
+                node_id: format!("local_{}", synctv_common::snanoid!(8)),
                 dedup_window: Duration::from_mins(1),
                 critical_channel_capacity: 100,
                 publish_channel_capacity: 1000,
@@ -502,7 +502,7 @@ async fn test_local_cluster_manager_supports_room_operations() {
     use synctv_core::models::PermissionBits;
 
     let event = ClusterEvent::UserJoined {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),
         user_id: user_id.clone(),
         username: "user1".to_string(),

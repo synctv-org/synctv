@@ -1,29 +1,35 @@
-use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 
-/// Expected length of all entity IDs (nanoid)
+/// Expected length of all entity IDs (shared base62 IDs)
 pub const ID_LENGTH: usize = 12;
 
-/// Generate a 12-character nanoid for entity IDs
+/// Generate a 12-character shared base62 ID for entity IDs
 pub fn generate_id() -> String {
-    nanoid!(ID_LENGTH)
+    synctv_common::snanoid!(ID_LENGTH)
 }
 
-/// Validate that an externally-supplied ID string has the expected length.
+/// Validate that an externally-supplied ID string uses the expected base62
+/// alphabet and length.
 ///
-/// Returns `Err` with a descriptive message when the length is wrong.
-fn validate_id_length(id: &str, type_name: &str) -> Result<(), String> {
-    if id.len() == ID_LENGTH {
+/// Returns `Err` with a descriptive message when validation fails.
+fn validate_id(id: &str, type_name: &str) -> Result<(), String> {
+    if id.len() != ID_LENGTH {
+        return Err(format!(
+            "invalid {type_name}: expected {ID_LENGTH} characters, got {}",
+            id.len()
+        ));
+    }
+
+    if synctv_common::id::is_valid_with_len(id, ID_LENGTH) {
         Ok(())
     } else {
         Err(format!(
-            "invalid {type_name}: expected {ID_LENGTH} characters, got {}",
-            id.len()
+            "invalid {type_name}: expected only ASCII alphanumeric characters"
         ))
     }
 }
 
-/// User ID type (CHAR(12) nanoid)
+/// User ID type (CHAR(12) shared base62 ID)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UserId(pub String);
@@ -40,10 +46,10 @@ impl UserId {
     }
 
     /// Create a `UserId` from an externally-supplied string, validating the
-    /// expected 12-character length.  Use this in API / gRPC handlers that
-    /// receive IDs from untrusted input.
+    /// expected base62 format. Use this in API / gRPC handlers that receive
+    /// IDs from untrusted input.
     pub fn from_string_validated(id: String) -> Result<Self, String> {
-        validate_id_length(&id, "UserId")?;
+        validate_id(&id, "UserId")?;
         Ok(Self(id))
     }
 
@@ -96,7 +102,7 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserId {
     }
 }
 
-/// Room ID type (CHAR(12) nanoid)
+/// Room ID type (CHAR(12) shared base62 ID)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RoomId(pub String);
@@ -113,10 +119,10 @@ impl RoomId {
     }
 
     /// Create a `RoomId` from an externally-supplied string, validating the
-    /// expected 12-character length.  Use this in API / gRPC handlers that
-    /// receive IDs from untrusted input.
+    /// expected base62 format. Use this in API / gRPC handlers that receive
+    /// IDs from untrusted input.
     pub fn from_string_validated(id: String) -> Result<Self, String> {
-        validate_id_length(&id, "RoomId")?;
+        validate_id(&id, "RoomId")?;
         Ok(Self(id))
     }
 
@@ -169,7 +175,7 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for RoomId {
     }
 }
 
-/// Media ID type (CHAR(12) nanoid)
+/// Media ID type (CHAR(12) shared base62 ID)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MediaId(pub String);
@@ -186,10 +192,10 @@ impl MediaId {
     }
 
     /// Create a `MediaId` from an externally-supplied string, validating the
-    /// expected 12-character length.  Use this in API / gRPC handlers that
-    /// receive IDs from untrusted input.
+    /// expected base62 format. Use this in API / gRPC handlers that receive
+    /// IDs from untrusted input.
     pub fn from_string_validated(id: String) -> Result<Self, String> {
-        validate_id_length(&id, "MediaId")?;
+        validate_id(&id, "MediaId")?;
         Ok(Self(id))
     }
 
@@ -242,7 +248,7 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for MediaId {
     }
 }
 
-/// Playlist ID type (CHAR(12) nanoid)
+/// Playlist ID type (CHAR(12) shared base62 ID)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PlaylistId(pub String);
@@ -259,10 +265,10 @@ impl PlaylistId {
     }
 
     /// Create a `PlaylistId` from an externally-supplied string, validating the
-    /// expected 12-character length.  Use this in API / gRPC handlers that
-    /// receive IDs from untrusted input.
+    /// expected base62 format. Use this in API / gRPC handlers that receive
+    /// IDs from untrusted input.
     pub fn from_string_validated(id: String) -> Result<Self, String> {
-        validate_id_length(&id, "PlaylistId")?;
+        validate_id(&id, "PlaylistId")?;
         Ok(Self(id))
     }
 
@@ -323,6 +329,9 @@ mod tests {
     fn test_generate_id() {
         let id = generate_id();
         assert_eq!(id.len(), 12);
+        assert!(synctv_common::id::is_valid(&id));
+        assert!(!id.contains('-'));
+        assert!(!id.contains('_'));
     }
 
     #[test]
@@ -350,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_string_validated_accepts_valid_length() {
+    fn test_from_string_validated_accepts_valid_base62_id() {
         let valid = "abcdefghijkl".to_string(); // 12 chars
         assert!(UserId::from_string_validated(valid.clone()).is_ok());
         assert!(RoomId::from_string_validated(valid.clone()).is_ok());
@@ -374,5 +383,15 @@ mod tests {
     #[test]
     fn test_from_string_validated_rejects_empty() {
         assert!(UserId::from_string_validated(String::new()).is_err());
+    }
+
+    #[test]
+    fn test_from_string_validated_rejects_non_base62_characters() {
+        for invalid in ["abc-defghijk", "abc_defghijk", "abc.defghijk"] {
+            assert!(UserId::from_string_validated(invalid.to_string()).is_err());
+            assert!(RoomId::from_string_validated(invalid.to_string()).is_err());
+            assert!(MediaId::from_string_validated(invalid.to_string()).is_err());
+            assert!(PlaylistId::from_string_validated(invalid.to_string()).is_err());
+        }
     }
 }

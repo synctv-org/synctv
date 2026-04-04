@@ -54,7 +54,6 @@ tracing-subscriber.workspace = true
 backon.workspace = true
 
 # Utilities
-nanoid.workspace = true
 
 # Encryption
 aes-gcm.workspace = true

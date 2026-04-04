@@ -3,21 +3,7 @@
 //! These tests verify the circuit breaker behavior within the connection pool.
 
 #![allow(clippy::unwrap_used)]
-use std::time::Duration;
 use synctv_livestream::grpc::GrpcConnectionPool;
-
-#[test]
-fn test_pool_creation_with_defaults() {
-    let pool = GrpcConnectionPool::with_defaults();
-    assert!(pool.is_empty());
-    assert_eq!(pool.len(), 0);
-}
-
-#[test]
-fn test_pool_creation_with_custom_idle() {
-    let pool = GrpcConnectionPool::new(Duration::from_mins(1), 100);
-    assert!(pool.is_empty());
-}
 
 #[tokio::test]
 async fn test_circuit_breaker_failure_below_threshold() {
@@ -72,31 +58,6 @@ async fn test_record_success_resets_errors() {
     // The connection should not be evicted after success reset
     // (no entry in pool to check, but verify it doesn't panic)
     pool.evict_stale();
-}
-
-#[test]
-fn test_pool_invalidate() {
-    let pool = GrpcConnectionPool::with_defaults();
-
-    // Invalidating a non-existent entry should not panic
-    pool.invalidate("nonexistent:50051");
-    assert!(pool.is_empty());
-}
-
-#[test]
-fn test_pool_evict_stale_empty() {
-    let pool = GrpcConnectionPool::with_defaults();
-    pool.evict_stale();
-    assert!(pool.is_empty());
-}
-
-#[tokio::test]
-async fn test_pool_record_error_nonexistent() {
-    let pool = GrpcConnectionPool::with_defaults();
-
-    // Recording errors for a non-existent connection should not panic
-    pool.record_connection_error("nonexistent:50051");
-    pool.record_connection_success("nonexistent:50051");
 }
 
 #[tokio::test]

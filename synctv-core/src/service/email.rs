@@ -36,8 +36,10 @@ pub fn mask_email(email: &str) -> String {
     }
 }
 
-fn map_email_send_failure(error: impl std::fmt::Display) -> Error {
-    Error::ServiceUnavailable(format!("Failed to send email: {error}"))
+fn map_email_send_failure(_error: impl std::fmt::Display) -> Error {
+    Error::ServiceUnavailable(
+        "Email delivery is temporarily unavailable. Please try again later.".to_string(),
+    )
 }
 
 /// Email verification error
@@ -691,9 +693,7 @@ impl EmailService {
             .as_ref()
             .ok_or_else(|| Error::Internal("Email service not configured".to_string()))?;
 
-        let sent_at = chrono::Utc::now()
-            .format("%Y-%m-%d %H:%M:%S UTC")
-            .to_string();
+        let sent_at = synctv_common::time::format_datetime_display(chrono::Utc::now());
         let (html_body, plain_text_body) = self
             .template_manager
             .render_test_email(&config.smtp_host, config.smtp_port, &sent_at)
@@ -1027,7 +1027,10 @@ mod tests {
         let err = map_email_send_failure("smtp connection refused");
         match err {
             Error::ServiceUnavailable(message) => {
-                assert!(message.contains("smtp connection refused"));
+                assert_eq!(
+                    message,
+                    "Email delivery is temporarily unavailable. Please try again later."
+                );
             }
             other => panic!("expected ServiceUnavailable, got: {other:?}"),
         }

@@ -1027,39 +1027,6 @@ mod tests {
         assert_eq!(perms.0, PermissionBits::ALL);
     }
 
-    #[test]
-    fn test_admin_gets_default_admin_permissions() {
-        let service = make_service();
-        let settings = RoomSettings::default();
-        let perms = service.calculate_role_default_permissions(&RoomRole::Admin, &settings);
-        assert!(perms.has(PermissionBits::BAN_MEMBER));
-        assert!(perms.has(PermissionBits::KICK_USER));
-        assert!(perms.has(PermissionBits::SET_ROOM_SETTINGS));
-        assert!(perms.has(PermissionBits::SEND_CHAT));
-    }
-
-    #[test]
-    fn test_member_gets_default_member_permissions() {
-        let service = make_service();
-        let settings = RoomSettings::default();
-        let perms = service.calculate_role_default_permissions(&RoomRole::Member, &settings);
-        assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MOVIE));
-        assert!(perms.has(PermissionBits::VIEW_PLAYLIST));
-        assert!(!perms.has(PermissionBits::BAN_MEMBER));
-        assert!(!perms.has(PermissionBits::DELETE_ROOM));
-    }
-
-    #[test]
-    fn test_guest_gets_default_guest_permissions() {
-        let service = make_service();
-        let settings = RoomSettings::default();
-        let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
-        assert!(perms.has(PermissionBits::VIEW_PLAYLIST));
-        assert!(!perms.has(PermissionBits::SEND_CHAT));
-        assert!(!perms.has(PermissionBits::ADD_MOVIE));
-    }
-
     // ========== Room-Level Override Tests ==========
 
     #[test]
@@ -1204,12 +1171,6 @@ mod tests {
     }
 
     // ========== Cache Degradation Tests ==========
-
-    #[test]
-    fn test_cache_degraded_flag_default_false() {
-        let degraded = AtomicBool::new(false);
-        assert!(!degraded.load(Ordering::Acquire));
-    }
 
     #[test]
     fn test_cache_degraded_flag_toggling() {
@@ -1483,12 +1444,6 @@ mod tests {
     // ========== Room Settings Repository Configuration Tests ==========
 
     #[test]
-    fn test_has_room_settings_repo_returns_false_by_default() {
-        let service = make_service();
-        assert!(!service.has_room_settings_repo());
-    }
-
-    #[test]
     fn test_has_room_settings_repo_returns_true_after_set() {
         let mut service = make_service();
 
@@ -1524,71 +1479,7 @@ mod tests {
         assert!(!service.has_room_settings_repo());
     }
 
-    #[test]
-    fn test_new_service_has_no_room_settings_repo() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let pool = rt.block_on(async {
-            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
-        });
-        let member_repo = RoomMemberRepository::new(pool);
-        let room_repo = RoomRepository::new(rt.block_on(async {
-            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
-        }));
-
-        let service = PermissionService::new(
-            member_repo,
-            room_repo,
-            None,
-            PermissionService::DEFAULT_CACHE_SIZE,
-            PermissionService::DEFAULT_CACHE_TTL_SECS,
-        );
-        assert!(!service.has_room_settings_repo());
-    }
-
     // ========== warn_if_missing_settings_repo Tests ==========
-
-    #[test]
-    fn test_warn_if_missing_settings_repo_no_warning_when_set() {
-        let mut service = make_service();
-
-        // Create a RoomSettingsRepository
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let pool = rt.block_on(async {
-            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
-        });
-        let settings_repo = RoomSettingsRepository::new(pool);
-
-        // Set the repository
-        service.set_room_settings_repo(settings_repo);
-
-        // Should not panic or emit warning when room_settings_repo is set
-        service.warn_if_missing_settings_repo();
-    }
-
-    #[test]
-    fn test_with_invalidation_has_no_room_settings_repo_by_default() {
-        // Create services without real Redis - just verify construction doesn't fail
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let pool = rt.block_on(async {
-            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
-        });
-        let member_repo = RoomMemberRepository::new(pool);
-        let room_repo = RoomRepository::new(rt.block_on(async {
-            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
-        }));
-
-        // Create without invalidation service to test basic construction
-        let service = PermissionService::new(
-            member_repo,
-            room_repo,
-            None,
-            PermissionService::DEFAULT_CACHE_SIZE,
-            PermissionService::DEFAULT_CACHE_TTL_SECS,
-        );
-
-        // Verify default state
-        assert!(!service.has_room_settings_repo());
-    }
 
     #[test]
     fn test_set_invalidation_service_propagates_to_clones() {

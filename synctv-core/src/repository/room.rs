@@ -3,7 +3,8 @@ use sqlx::{FromRow, PgPool, Row};
 use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
     models::{
-        MemberStatus, PageParams, Room, RoomId, RoomListQuery, RoomSettings, RoomStatus, UserId,
+        MemberStatus, PageParams, Room, RoomId, RoomListQuery, RoomListSortBy, RoomSettings,
+        RoomStatus, UserId,
     },
     Result,
 };
@@ -238,6 +239,18 @@ impl RoomRepository {
         qb
     }
 
+    fn build_order_by(query: &RoomListQuery) -> String {
+        let direction = query.sort_direction.as_sql();
+        match query.sort_by {
+            RoomListSortBy::Name => format!("r.name {direction}, r.id {direction}"),
+            RoomListSortBy::UpdatedAt => format!("r.updated_at {direction}, r.id {direction}"),
+            RoomListSortBy::LastActivityAt => {
+                format!("r.last_activity_at {direction} NULLS LAST, r.id {direction}")
+            }
+            RoomListSortBy::CreatedAt => format!("r.created_at {direction}, r.id {direction}"),
+        }
+    }
+
     /// List rooms with pagination and filters
     pub async fn list(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
         let limit = query.pagination.limit() as i64;
@@ -255,11 +268,12 @@ impl RoomRepository {
 
         // List query: $1=limit, $2=offset, then filter params start at $3
         let (list_where, _) = wb.build(3);
+        let order_by = Self::build_order_by(query);
         let list_sql = format!(
             "SELECT r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
              FROM rooms r
              WHERE {list_where}
-             ORDER BY r.created_at DESC
+             ORDER BY {order_by}
              LIMIT $1 OFFSET $2"
         );
         let list_qb = sqlx::query_as::<_, Room>(&list_sql)
@@ -268,6 +282,61 @@ impl RoomRepository {
         let rooms: Vec<Room> = Self::bind_filters(list_qb, query, &search_pattern)
             .fetch_all(&self.pool)
             .await?;
+
+        Ok((rooms, count))
+    }
+
+    /// List rooms related to a user, either by ownership or active membership.
+    pub async fn list_related_to_user(
+        &self,
+        user_id: &UserId,
+        query: &RoomListQuery,
+    ) -> Result<(Vec<Room>, i64)> {
+        let limit = query.pagination.limit() as i64;
+        let offset = query.pagination.offset() as i64;
+        let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
+        let wb = Self::build_room_list_conditions(query);
+        let relation_sql = "(r.created_by = $1 OR EXISTS (
+                SELECT 1
+                FROM room_members rm
+                WHERE rm.room_id = r.id
+                  AND rm.user_id = $1
+                  AND rm.left_at IS NULL
+            ))";
+
+        let (count_where, _) = wb.build(2);
+        let count_sql = format!(
+            "SELECT COUNT(*) as count
+             FROM rooms r
+             WHERE {relation_sql} AND {count_where}"
+        );
+        let count: i64 = Self::bind_filters_scalar(
+            sqlx::query_scalar(&count_sql).bind(user_id.as_str()),
+            query,
+            &search_pattern,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let (list_where, _) = wb.build(4);
+        let order_by = Self::build_order_by(query);
+        let list_sql = format!(
+            "SELECT r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
+             FROM rooms r
+             WHERE {relation_sql} AND {list_where}
+             ORDER BY {order_by}
+             LIMIT $2 OFFSET $3"
+        );
+        let rooms: Vec<Room> = Self::bind_filters(
+            sqlx::query_as::<_, Room>(&list_sql)
+                .bind(user_id.as_str())
+                .bind(limit)
+                .bind(offset),
+            query,
+            &search_pattern,
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         Ok((rooms, count))
     }
@@ -292,6 +361,7 @@ impl RoomRepository {
 
         // List query: $1=limit, $2=offset, then filter params start at $3
         let (list_where, _) = wb.build(3);
+        let order_by = Self::build_order_by(query);
         let list_sql = format!(
             r"
             SELECT
@@ -302,7 +372,7 @@ impl RoomRepository {
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE {list_where}
             GROUP BY r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
-            ORDER BY r.created_at DESC
+            ORDER BY {order_by}
             LIMIT $1 OFFSET $2
             "
         );
@@ -619,6 +689,8 @@ mod tests {
             search: None,
             pagination: PageParams::default(),
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = RoomRepository::build_room_list_conditions(&query);
 
@@ -636,6 +708,8 @@ mod tests {
             search: None,
             pagination: PageParams::default(),
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = RoomRepository::build_room_list_conditions(&query);
 
@@ -653,6 +727,8 @@ mod tests {
             search: None,
             pagination: PageParams::default(),
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = RoomRepository::build_room_list_conditions(&query);
 
@@ -668,6 +744,8 @@ mod tests {
             search: None,
             pagination: PageParams::default(),
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = RoomRepository::build_room_list_conditions(&query);
 
@@ -683,6 +761,8 @@ mod tests {
             search: None,
             pagination: PageParams::default(),
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = RoomRepository::build_room_list_conditions(&query);
 
@@ -698,6 +778,8 @@ mod tests {
             search: None,
             pagination: PageParams::default(),
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = RoomRepository::build_room_list_conditions(&query);
 
@@ -713,6 +795,8 @@ mod tests {
             search: Some("test".to_string()),
             pagination: PageParams::default(),
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = RoomRepository::build_room_list_conditions(&query);
 
@@ -731,6 +815,8 @@ mod tests {
             search: Some("room".to_string()),
             pagination: PageParams::default(),
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = RoomRepository::build_room_list_conditions(&query);
 
@@ -750,6 +836,8 @@ mod tests {
             search: Some("test".to_string()),
             pagination: PageParams::default(),
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = RoomRepository::build_room_list_conditions(&query);
 
@@ -763,6 +851,24 @@ mod tests {
         // List query uses $3 for the search param (after LIMIT $1 and OFFSET $2)
         assert!(list_sql.contains("$3"));
         assert_eq!(list_next, 4);
+    }
+
+    #[test]
+    fn test_room_list_order_clause_supports_name_ascending() {
+        let query = RoomListQuery {
+            status: None,
+            is_banned: None,
+            search: None,
+            sort_by: crate::models::RoomListSortBy::Name,
+            sort_direction: crate::models::SortDirection::Asc,
+            pagination: PageParams::default(),
+            creator_id: None,
+        };
+
+        assert_eq!(
+            RoomRepository::build_order_by(&query),
+            "r.name ASC, r.id ASC"
+        );
     }
 
     #[tokio::test]
@@ -1119,6 +1225,8 @@ mod tests {
             search: None,
             is_banned: None,
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let (rooms, total) = room_repo.list(&query).await.unwrap();
         assert_eq!(rooms.len(), 10);
@@ -1131,6 +1239,8 @@ mod tests {
             search: None,
             is_banned: None,
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let (rooms, total) = room_repo.list(&query).await.unwrap();
         assert_eq!(rooms.len(), 5);
@@ -1182,6 +1292,8 @@ mod tests {
             search: None,
             is_banned: None,
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let (rooms, _) = room_repo.list(&query).await.unwrap();
         assert!(rooms.iter().all(|r| r.status == RoomStatus::Active));
@@ -1193,6 +1305,8 @@ mod tests {
             search: None,
             is_banned: Some(false),
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let (rooms, _) = room_repo.list(&query).await.unwrap();
         assert!(rooms.iter().all(|r| !r.is_banned));
@@ -1204,6 +1318,8 @@ mod tests {
             search: Some("Active".to_string()),
             is_banned: None,
             creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let (rooms, _) = room_repo.list(&query).await.unwrap();
         assert!(rooms.iter().all(|r| r.name.contains("Active")));

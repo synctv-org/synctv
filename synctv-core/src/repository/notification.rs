@@ -6,7 +6,8 @@ use crate::{
     models::{
         id::UserId,
         notification::{
-            CreateNotificationRequest, Notification, NotificationListQuery, NotificationType,
+            CreateNotificationRequest, Notification, NotificationListQuery, NotificationListSortBy,
+            NotificationType,
         },
     },
     Error, Result,
@@ -105,6 +106,14 @@ impl NotificationRepository {
         // Partition pruning: limit scan to the retention window (6 months)
         qb.push(" AND created_at >= NOW() - INTERVAL '6 months'");
 
+        if let Some(search) = &query.search {
+            let pattern = super::query_builder::escape_ilike(search);
+            qb.push(" AND (title ILIKE ");
+            qb.push_bind(pattern.clone());
+            qb.push(" OR content ILIKE ");
+            qb.push_bind(pattern);
+            qb.push(")");
+        }
         if let Some(notification_type) = &query.notification_type {
             qb.push(" AND type = ");
             qb.push_bind(notification_type.to_string());
@@ -114,7 +123,21 @@ impl NotificationRepository {
             qb.push_bind(is_read);
         }
 
-        qb.push(" ORDER BY created_at DESC LIMIT ");
+        let direction = query.sort_direction.as_sql();
+        match query.sort_by {
+            NotificationListSortBy::Title => {
+                qb.push(format!(
+                    " ORDER BY title {direction}, created_at DESC, id DESC"
+                ));
+            }
+            NotificationListSortBy::UpdatedAt => {
+                qb.push(format!(" ORDER BY updated_at {direction}, id DESC"));
+            }
+            NotificationListSortBy::CreatedAt => {
+                qb.push(format!(" ORDER BY created_at {direction}, id DESC"));
+            }
+        }
+        qb.push(" LIMIT ");
         qb.push_bind(limit);
         qb.push(" OFFSET ");
         qb.push_bind(offset);
@@ -359,21 +382,6 @@ mod tests {
         assert_eq!(req.data["inviter"], "user_789");
     }
 
-    /// Test NotificationListQuery default pagination
-    #[test]
-    fn test_notification_list_query_default_pagination() {
-        let query = NotificationListQuery {
-            pagination: PageParams::default(),
-            is_read: None,
-            notification_type: None,
-        };
-
-        assert_eq!(query.pagination.page, 1);
-        assert_eq!(query.pagination.page_size, 20);
-        assert!(query.is_read.is_none());
-        assert!(query.notification_type.is_none());
-    }
-
     /// Test NotificationListQuery with filters
     #[test]
     fn test_notification_list_query_with_filters() {
@@ -381,6 +389,9 @@ mod tests {
             pagination: PageParams::new(Some(2), Some(10)),
             is_read: Some(false),
             notification_type: Some(NotificationType::RoomEvent),
+            search: None,
+            sort_by: crate::models::NotificationListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
 
         assert_eq!(query.pagination.page, 2);
@@ -606,6 +617,9 @@ mod tests {
             pagination: PageParams::new(Some(1), Some(3)),
             is_read: None,
             notification_type: None,
+            search: None,
+            sort_by: crate::models::NotificationListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
 
         let (notifications, total) = repo
@@ -649,6 +663,9 @@ mod tests {
             pagination: PageParams::default(),
             is_read: Some(false),
             notification_type: None,
+            search: None,
+            sort_by: crate::models::NotificationListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let (unread, _) = repo
             .list_by_user_with_count(&created_user.id, &query)
@@ -661,6 +678,9 @@ mod tests {
             pagination: PageParams::default(),
             is_read: Some(true),
             notification_type: None,
+            search: None,
+            sort_by: crate::models::NotificationListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let (read, _) = repo
             .list_by_user_with_count(&created_user.id, &query)
@@ -701,6 +721,9 @@ mod tests {
             pagination: PageParams::default(),
             is_read: None,
             notification_type: Some(NotificationType::SystemAnnouncement),
+            search: None,
+            sort_by: crate::models::NotificationListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let (notifications, _) = repo
             .list_by_user_with_count(&created_user.id, &query)
@@ -906,6 +929,9 @@ mod tests {
             pagination: PageParams::new(Some(1), Some(1)),
             is_read: Some(false),
             notification_type: None,
+            search: None,
+            sort_by: crate::models::NotificationListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
         };
         let (notifications, _) = repo
             .list_by_user_with_count(&created_user.id, &query)

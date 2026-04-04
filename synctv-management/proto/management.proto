@@ -1,0 +1,635 @@
+syntax = "proto3";
+
+package synctv.management;
+
+import "proto/admin.proto";
+import "proto/client.proto";
+import "proto/common.proto";
+
+service ManagementService {
+    // =========================
+    // Management commands
+    // =========================
+    rpc ListUsers(ListUsersRequest) returns (synctv.admin.ListUsersResponse);
+    rpc GetUser(GetUserRequest) returns (synctv.admin.GetUserResponse);
+    rpc GetUserByUsername(GetUserByUsernameRequest) returns (synctv.admin.GetUserResponse);
+    rpc AddAdmin(AddAdminRequest) returns (synctv.admin.AddAdminResponse);
+    rpc RemoveAdmin(RemoveAdminRequest) returns (synctv.admin.RemoveAdminResponse);
+    rpc ListAdmins(ListAdminsRequest) returns (synctv.admin.ListAdminsResponse);
+    rpc CreateUser(CreateUserRequest) returns (synctv.admin.CreateUserResponse);
+    rpc DeleteUser(DeleteUserRequest) returns (synctv.admin.DeleteUserResponse);
+    rpc BanUser(BanUserRequest) returns (synctv.admin.BanUserResponse);
+    rpc UnbanUser(UnbanUserRequest) returns (synctv.admin.UnbanUserResponse);
+    rpc ApproveUser(ApproveUserRequest) returns (synctv.admin.ApproveUserResponse);
+    rpc UpdateUserRole(UpdateUserRoleRequest) returns (synctv.admin.UpdateUserRoleResponse);
+    rpc UpdateUserPassword(UpdateUserPasswordRequest) returns (synctv.admin.UpdateUserPasswordResponse);
+    rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (synctv.admin.UpdateUserUsernameResponse);
+    rpc GetUserRooms(GetUserRoomsRequest) returns (synctv.admin.GetUserRoomsResponse);
+    rpc BatchBanUsers(BatchBanUsersRequest) returns (synctv.admin.BatchBanUsersResponse);
+    rpc BatchDeleteUsers(BatchDeleteUsersRequest) returns (synctv.admin.BatchDeleteUsersResponse);
+
+    rpc CreateRoom(CreateRoomRequest) returns (synctv.client.CreateRoomResponse);
+    rpc ListRooms(ListRoomsRequest) returns (synctv.admin.ListRoomsResponse);
+    rpc GetRoom(GetRoomRequest) returns (synctv.admin.GetRoomResponse);
+    rpc GetRoomMembers(GetRoomMembersRequest) returns (synctv.admin.GetRoomMembersResponse);
+    rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.client.UpdateMemberPermissionsResponse);
+    rpc KickMember(KickMemberRequest) returns (synctv.client.KickMemberResponse);
+    rpc BanMember(BanMemberRequest) returns (synctv.client.BanMemberResponse);
+    rpc UnbanMember(UnbanMemberRequest) returns (synctv.client.UnbanMemberResponse);
+    rpc GetRoomSettings(GetRoomSettingsRequest) returns (synctv.admin.GetRoomSettingsResponse);
+    rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (synctv.admin.UpdateRoomSettingsResponse);
+    rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (synctv.admin.ResetRoomSettingsResponse);
+    rpc UpdateRoomPassword(UpdateRoomPasswordRequest) returns (synctv.admin.UpdateRoomPasswordResponse);
+    rpc BanRoom(BanRoomRequest) returns (synctv.admin.BanRoomResponse);
+    rpc UnbanRoom(UnbanRoomRequest) returns (synctv.admin.UnbanRoomResponse);
+    rpc DeleteRoom(DeleteRoomRequest) returns (synctv.admin.DeleteRoomResponse);
+    rpc ApproveRoom(ApproveRoomRequest) returns (synctv.admin.ApproveRoomResponse);
+    rpc BatchBanRooms(BatchBanRoomsRequest) returns (synctv.admin.BatchBanRoomsResponse);
+    rpc BatchDeleteRooms(BatchDeleteRoomsRequest) returns (synctv.admin.BatchDeleteRoomsResponse);
+    rpc StartPlayback(StartPlaybackRequest) returns (synctv.client.StartPlaybackResponse);
+    rpc StopPlayback(StopPlaybackRequest) returns (synctv.client.StopPlaybackResponse);
+    rpc GetPlayback(GetPlaybackRequest) returns (synctv.client.GetPlaybackResponse);
+    rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.client.CreatePublishKeyResponse);
+    rpc GetStreamInfo(GetStreamInfoRequest) returns (synctv.client.GetStreamInfoResponse);
+    rpc ListRoomStreams(ListRoomStreamsRequest) returns (synctv.client.ListRoomStreamsResponse);
+
+    rpc ListPlaylists(ListPlaylistsRequest) returns (synctv.client.ListPlaylistsResponse);
+    rpc GetPlaylist(GetPlaylistRequest) returns (synctv.client.GetPlaylistResponse);
+    rpc CreatePlaylist(CreatePlaylistRequest) returns (synctv.client.CreatePlaylistResponse);
+    rpc UpdatePlaylist(UpdatePlaylistRequest) returns (synctv.client.UpdatePlaylistResponse);
+    rpc DeletePlaylist(DeletePlaylistRequest) returns (synctv.client.DeletePlaylistResponse);
+
+    rpc ListMedia(ListMediaRequest) returns (synctv.client.ListPlaylistItemsResponse);
+    rpc AddMedia(AddMediaRequest) returns (synctv.client.AddMediaResponse);
+    rpc AddDirectUrlMedia(AddDirectUrlMediaRequest) returns (synctv.client.AddMediaResponse);
+    rpc EditMedia(EditMediaRequest) returns (synctv.client.EditMediaResponse);
+    rpc DeleteMedia(DeleteMediaRequest) returns (synctv.client.DeleteMediaResponse);
+    rpc ReorderMediaBatch(ReorderMediaBatchRequest) returns (synctv.client.ReorderMediaBatchResponse);
+
+    rpc ListProviderInstances(ListProviderInstancesRequest) returns (synctv.admin.ListProviderInstancesResponse);
+    rpc AddProviderInstance(AddProviderInstanceRequest) returns (synctv.admin.AddProviderInstanceResponse);
+    rpc UpdateProviderInstance(UpdateProviderInstanceRequest) returns (synctv.admin.UpdateProviderInstanceResponse);
+    rpc DeleteProviderInstance(DeleteProviderInstanceRequest) returns (synctv.admin.DeleteProviderInstanceResponse);
+    rpc ReconnectProviderInstance(ReconnectProviderInstanceRequest) returns (synctv.admin.ReconnectProviderInstanceResponse);
+    rpc EnableProviderInstance(EnableProviderInstanceRequest) returns (synctv.admin.EnableProviderInstanceResponse);
+    rpc DisableProviderInstance(DisableProviderInstanceRequest) returns (synctv.admin.DisableProviderInstanceResponse);
+
+    rpc GetSettings(GetSettingsRequest) returns (synctv.admin.GetSettingsResponse);
+    rpc GetSettingsGroup(GetSettingsGroupRequest) returns (synctv.admin.GetSettingsGroupResponse);
+    rpc UpdateSettings(UpdateSettingsRequest) returns (synctv.admin.UpdateSettingsResponse);
+    rpc SendTestEmail(SendTestEmailRequest) returns (synctv.admin.SendTestEmailResponse);
+    rpc GetSystemStats(GetSystemStatsRequest) returns (synctv.admin.GetSystemStatsResponse);
+    rpc ListActiveStreams(ListActiveStreamsRequest) returns (synctv.admin.ListActiveStreamsResponse);
+    rpc KickStream(KickStreamRequest) returns (synctv.admin.KickStreamResponse);
+
+    // =========================
+    // Lifecycle
+    // =========================
+    rpc StopServer(StopServerRequest) returns (stream StopServerEvent);
+}
+
+enum UserRole {
+    USER_ROLE_UNSPECIFIED = 0;
+    USER_ROLE_USER = 1;
+    USER_ROLE_ADMIN = 2;
+    USER_ROLE_ROOT = 3;
+}
+
+enum UserStatus {
+    USER_STATUS_UNSPECIFIED = 0;
+    USER_STATUS_ACTIVE = 1;
+    USER_STATUS_PENDING = 2;
+    USER_STATUS_BANNED = 3;
+}
+
+enum RoomStatus {
+    ROOM_STATUS_UNSPECIFIED = 0;
+    ROOM_STATUS_ACTIVE = 1;
+    ROOM_STATUS_PENDING = 2;
+    ROOM_STATUS_CLOSED = 3;
+}
+
+enum ShutdownMode {
+    SHUTDOWN_MODE_UNSPECIFIED = 0;
+    SHUTDOWN_MODE_GRACEFUL = 1;
+    SHUTDOWN_MODE_FORCE = 2;
+}
+
+enum StopServerStage {
+    STOP_SERVER_STAGE_UNSPECIFIED = 0;
+    STOP_SERVER_STAGE_READY = 1;
+    STOP_SERVER_STAGE_SHUTDOWN_REQUESTED = 2;
+    STOP_SERVER_STAGE_RUNTIME_DRAINING = 3;
+    STOP_SERVER_STAGE_CONNECTION_DRAINING = 4;
+    STOP_SERVER_STAGE_COMPONENTS_SHUTTING_DOWN = 5;
+    STOP_SERVER_STAGE_FINALIZING = 6;
+    STOP_SERVER_STAGE_COMPLETED = 7;
+    STOP_SERVER_STAGE_FAILED = 8;
+}
+
+enum SortDirection {
+    SORT_DIRECTION_UNSPECIFIED = 0;
+    SORT_DIRECTION_ASC = 1;
+    SORT_DIRECTION_DESC = 2;
+}
+
+enum UserListSortBy {
+    USER_LIST_SORT_BY_UNSPECIFIED = 0;
+    USER_LIST_SORT_BY_CREATED_AT = 1;
+    USER_LIST_SORT_BY_UPDATED_AT = 2;
+    USER_LIST_SORT_BY_USERNAME = 3;
+    USER_LIST_SORT_BY_EMAIL = 4;
+    USER_LIST_SORT_BY_STATUS = 5;
+    USER_LIST_SORT_BY_ROLE = 6;
+}
+
+enum RoomListSortBy {
+    ROOM_LIST_SORT_BY_UNSPECIFIED = 0;
+    ROOM_LIST_SORT_BY_CREATED_AT = 1;
+    ROOM_LIST_SORT_BY_UPDATED_AT = 2;
+    ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 3;
+    ROOM_LIST_SORT_BY_NAME = 4;
+}
+
+enum RoomMemberListSortBy {
+    ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED = 0;
+    ROOM_MEMBER_LIST_SORT_BY_JOINED_AT = 1;
+    ROOM_MEMBER_LIST_SORT_BY_USERNAME = 2;
+    ROOM_MEMBER_LIST_SORT_BY_ROLE = 3;
+    ROOM_MEMBER_LIST_SORT_BY_STATUS = 4;
+}
+
+enum PlaylistListSortBy {
+    PLAYLIST_LIST_SORT_BY_UNSPECIFIED = 0;
+    PLAYLIST_LIST_SORT_BY_POSITION = 1;
+    PLAYLIST_LIST_SORT_BY_NAME = 2;
+    PLAYLIST_LIST_SORT_BY_CREATED_AT = 3;
+    PLAYLIST_LIST_SORT_BY_UPDATED_AT = 4;
+}
+
+enum MediaListSortBy {
+    MEDIA_LIST_SORT_BY_UNSPECIFIED = 0;
+    MEDIA_LIST_SORT_BY_POSITION = 1;
+    MEDIA_LIST_SORT_BY_NAME = 2;
+    MEDIA_LIST_SORT_BY_ADDED_AT = 3;
+    MEDIA_LIST_SORT_BY_UPDATED_AT = 4;
+    MEDIA_LIST_SORT_BY_SOURCE_PROVIDER = 5;
+    MEDIA_LIST_SORT_BY_PROVIDER_INSTANCE_NAME = 6;
+}
+
+enum RelatedRoomListSortBy {
+    RELATED_ROOM_LIST_SORT_BY_UNSPECIFIED = 0;
+    RELATED_ROOM_LIST_SORT_BY_JOINED_AT = 1;
+    RELATED_ROOM_LIST_SORT_BY_CREATED_AT = 2;
+    RELATED_ROOM_LIST_SORT_BY_UPDATED_AT = 3;
+    RELATED_ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 4;
+    RELATED_ROOM_LIST_SORT_BY_NAME = 5;
+}
+
+enum ProviderInstanceListSortBy {
+    PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED = 0;
+    PROVIDER_INSTANCE_LIST_SORT_BY_NAME = 1;
+    PROVIDER_INSTANCE_LIST_SORT_BY_ENDPOINT = 2;
+    PROVIDER_INSTANCE_LIST_SORT_BY_CREATED_AT = 3;
+    PROVIDER_INSTANCE_LIST_SORT_BY_UPDATED_AT = 4;
+}
+
+enum ActiveStreamListSortBy {
+    ACTIVE_STREAM_LIST_SORT_BY_UNSPECIFIED = 0;
+    ACTIVE_STREAM_LIST_SORT_BY_STARTED_AT = 1;
+    ACTIVE_STREAM_LIST_SORT_BY_ROOM_ID = 2;
+    ACTIVE_STREAM_LIST_SORT_BY_MEDIA_ID = 3;
+    ACTIVE_STREAM_LIST_SORT_BY_USER_ID = 4;
+    ACTIVE_STREAM_LIST_SORT_BY_NODE_ID = 5;
+}
+
+enum RoomStreamListSortBy {
+    ROOM_STREAM_LIST_SORT_BY_UNSPECIFIED = 0;
+    ROOM_STREAM_LIST_SORT_BY_MEDIA_ID = 1;
+}
+
+message ListUsersRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    UserStatus status = 3;
+    UserRole role = 4;
+    string search = 5;
+    UserListSortBy sort_by = 6;
+    SortDirection sort_direction = 7;
+}
+
+message GetUserRequest {
+    string user_id = 1;
+}
+
+message GetUserByUsernameRequest {
+    string username = 1;
+}
+
+message AddAdminRequest {
+    string user_id = 1;
+}
+
+message RemoveAdminRequest {
+    string user_id = 1;
+}
+
+message ListAdminsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    string search = 3;
+    UserListSortBy sort_by = 4;
+    SortDirection sort_direction = 5;
+}
+
+message CreateUserRequest {
+    string username = 1;
+    string email = 2;
+    string password = 3;
+    UserRole role = 4;
+    UserStatus status = 5;
+}
+
+message DeleteUserRequest {
+    string user_id = 1;
+}
+
+message BanUserRequest {
+    string user_id = 1;
+    string reason = 2;
+}
+
+message UnbanUserRequest {
+    string user_id = 1;
+}
+
+message ApproveUserRequest {
+    string user_id = 1;
+}
+
+message UpdateUserRoleRequest {
+    string user_id = 1;
+    UserRole role = 2;
+}
+
+message UpdateUserPasswordRequest {
+    string user_id = 1;
+    string new_password = 2;
+    string reason = 3;
+}
+
+message UpdateUserUsernameRequest {
+    string user_id = 1;
+    string new_username = 2;
+}
+
+message GetUserRoomsRequest {
+    string user_id = 1;
+    int32 page = 2;
+    int32 page_size = 3;
+    RoomStatus status = 4;
+    string search = 5;
+    optional bool is_banned = 6;
+    RoomListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
+}
+
+message BatchBanUsersRequest {
+    repeated string user_ids = 1;
+    string reason = 2;
+}
+
+message BatchDeleteUsersRequest {
+    repeated string user_ids = 1;
+}
+
+message CreateRoomRequest {
+    string actor_user_id = 1;
+    string name = 2;
+    string password = 3;
+    bytes settings_json = 4;
+    string description = 5;
+}
+
+message ListRoomsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    RoomStatus status = 3;
+    string search = 4;
+    string creator_id = 5;
+    optional bool is_banned = 6;
+    RoomListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
+}
+
+message GetRoomRequest {
+    string room_id = 1;
+}
+
+message GetRoomMembersRequest {
+    string room_id = 1;
+    int32 page = 2;
+    int32 page_size = 3;
+    string search = 4;
+    synctv.common.RoomMemberRole role = 5;
+    synctv.common.MemberStatus status = 6;
+    RoomMemberListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
+}
+
+message UpdateMemberPermissionsRequest {
+    string room_id = 1;
+    string user_id = 2;
+    synctv.common.RoomMemberRole role = 3;
+    uint64 added_permissions = 4;
+    uint64 removed_permissions = 5;
+    uint64 admin_added_permissions = 6;
+    uint64 admin_removed_permissions = 7;
+}
+
+message KickMemberRequest {
+    string room_id = 1;
+    string user_id = 2;
+}
+
+message BanMemberRequest {
+    string room_id = 1;
+    string user_id = 2;
+    string reason = 3;
+}
+
+message UnbanMemberRequest {
+    string room_id = 1;
+    string user_id = 2;
+}
+
+message GetRoomSettingsRequest {
+    string room_id = 1;
+}
+
+message UpdateRoomSettingsRequest {
+    string room_id = 1;
+    bytes settings_json = 2;
+}
+
+message ResetRoomSettingsRequest {
+    string room_id = 1;
+}
+
+message UpdateRoomPasswordRequest {
+    string room_id = 1;
+    optional string new_password = 2;
+    bool clear = 3;
+}
+
+message BanRoomRequest {
+    string room_id = 1;
+    string reason = 2;
+}
+
+message UnbanRoomRequest {
+    string room_id = 1;
+}
+
+message DeleteRoomRequest {
+    string room_id = 1;
+}
+
+message ApproveRoomRequest {
+    string room_id = 1;
+}
+
+message BatchBanRoomsRequest {
+    repeated string room_ids = 1;
+    string reason = 2;
+}
+
+message BatchDeleteRoomsRequest {
+    repeated string room_ids = 1;
+}
+
+message StartPlaybackRequest {
+    string room_id = 1;
+    string media_id = 2;
+    string playlist_id = 3;
+    bytes target_json = 4;
+}
+
+message StopPlaybackRequest {
+    string room_id = 1;
+}
+
+message GetPlaybackRequest {
+    string room_id = 1;
+}
+
+message CreatePublishKeyRequest {
+    string actor_user_id = 1;
+    string room_id = 2;
+    string media_id = 3;
+}
+
+message GetStreamInfoRequest {
+    string room_id = 1;
+    string media_id = 2;
+}
+
+message ListRoomStreamsRequest {
+    string room_id = 1;
+    int32 page = 2;
+    int32 page_size = 3;
+    string search = 4;
+    RoomStreamListSortBy sort_by = 5;
+    SortDirection sort_direction = 6;
+}
+
+message ListPlaylistsRequest {
+    string room_id = 1;
+    string parent_id = 2;
+    int32 page = 3;
+    int32 page_size = 4;
+    string search = 5;
+    string source_provider = 6;
+    string provider_instance_name = 7;
+    optional bool dynamic_only = 8;
+    PlaylistListSortBy sort_by = 9;
+    SortDirection sort_direction = 10;
+}
+
+message GetPlaylistRequest {
+    string room_id = 1;
+    string playlist_id = 2;
+}
+
+message CreatePlaylistRequest {
+    string actor_user_id = 1;
+    string room_id = 2;
+    string name = 3;
+    string parent_id = 4;
+    string source_provider = 5;
+    bytes source_config_json = 6;
+    string provider_instance_name = 7;
+}
+
+message UpdatePlaylistRequest {
+    string room_id = 1;
+    string playlist_id = 2;
+    optional string name = 3;
+    optional int32 position = 4;
+}
+
+message DeletePlaylistRequest {
+    string room_id = 1;
+    string playlist_id = 2;
+    bool force = 3;
+}
+
+message ListMediaRequest {
+    string room_id = 1;
+    string playlist_id = 2;
+    bytes target_json = 3;
+    int32 page = 4;
+    int32 page_size = 5;
+    string search = 6;
+    string source_provider = 7;
+    string provider_instance_name = 8;
+    MediaListSortBy sort_by = 9;
+    SortDirection sort_direction = 10;
+}
+
+message AddMediaRequest {
+    string actor_user_id = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    string provider = 4;
+    string provider_instance_name = 5;
+    bytes source_config_json = 6;
+    string title = 7;
+}
+
+message AddDirectUrlMediaRequest {
+    string actor_user_id = 1;
+    string room_id = 2;
+    string url = 3;
+    string playlist_id = 4;
+    string title = 5;
+}
+
+message EditMediaRequest {
+    string room_id = 1;
+    string media_id = 2;
+    string title = 3;
+}
+
+message DeleteMediaRequest {
+    string room_id = 1;
+    string media_id = 2;
+    bool force = 3;
+}
+
+message MediaReorderUpdate {
+    string media_id = 1;
+    int32 position = 2;
+}
+
+message ReorderMediaBatchRequest {
+    string room_id = 1;
+    repeated MediaReorderUpdate updates = 2;
+}
+
+message ListProviderInstancesRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    string provider_type = 3;
+    string search = 4;
+    optional bool enabled = 5;
+    optional bool tls = 6;
+    ProviderInstanceListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
+}
+
+message AddProviderInstanceRequest {
+    string name = 1;
+    string endpoint = 2;
+    string comment = 3;
+    uint32 timeout_seconds = 4;
+    bool tls = 5;
+    bool insecure_tls = 6;
+    repeated string providers = 7;
+    bytes config_json = 8;
+}
+
+message UpdateProviderInstanceRequest {
+    string name = 1;
+    optional string endpoint = 2;
+    optional string comment = 3;
+    bool clear_comment = 4;
+    optional uint32 timeout_seconds = 5;
+    optional bool tls = 6;
+    optional bool insecure_tls = 7;
+    repeated string providers = 8;
+    bytes config_json = 9;
+}
+
+message DeleteProviderInstanceRequest {
+    string name = 1;
+}
+
+message ReconnectProviderInstanceRequest {
+    string name = 1;
+}
+
+message EnableProviderInstanceRequest {
+    string name = 1;
+}
+
+message DisableProviderInstanceRequest {
+    string name = 1;
+}
+
+message GetSettingsRequest {}
+
+message GetSettingsGroupRequest {
+    string group = 1;
+}
+
+message UpdateSettingsRequest {
+    string group = 1;
+    map<string, string> settings = 2;
+}
+
+message SendTestEmailRequest {
+    string to = 1;
+}
+
+message GetSystemStatsRequest {}
+
+message ListActiveStreamsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    string room_id = 3;
+    string user_id = 4;
+    string node_id = 5;
+    string search = 6;
+    ActiveStreamListSortBy sort_by = 7;
+    SortDirection sort_direction = 8;
+}
+
+message KickStreamRequest {
+    string room_id = 1;
+    string media_id = 2;
+    string reason = 3;
+}
+
+message StopServerRequest {
+    ShutdownMode mode = 1;
+}
+
+message StopServerEvent {
+    uint64 sequence = 1;
+    StopServerStage stage = 2;
+    ShutdownMode mode = 3;
+    string message = 4;
+    bool terminal = 5;
+    int64 unix_millis = 6;
+}

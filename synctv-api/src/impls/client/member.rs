@@ -26,18 +26,74 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
-        // E8 fix: Use database-level pagination instead of loading all members
-        // Safely convert i32 to u32 (negative values default to safe values)
-        let page = u32::try_from(req.page).unwrap_or(1);
-        let page_size = u32::try_from(req.page_size)
-            .ok()
-            .filter(|&ps| ps > 0)
-            .map_or(50, |ps| ps.min(100));
-        let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
-
+        let role = match req
+            .role
+            .and_then(|value| synctv_proto::common::RoomMemberRole::try_from(value).ok())
+        {
+            Some(synctv_proto::common::RoomMemberRole::Guest) => {
+                Some(synctv_core::models::RoomRole::Guest)
+            }
+            Some(synctv_proto::common::RoomMemberRole::Member) => {
+                Some(synctv_core::models::RoomRole::Member)
+            }
+            Some(synctv_proto::common::RoomMemberRole::Admin) => {
+                Some(synctv_core::models::RoomRole::Admin)
+            }
+            Some(synctv_proto::common::RoomMemberRole::Creator) => {
+                Some(synctv_core::models::RoomRole::Creator)
+            }
+            _ => None,
+        };
+        let status = match req
+            .status
+            .and_then(|value| synctv_proto::common::MemberStatus::try_from(value).ok())
+        {
+            Some(synctv_proto::common::MemberStatus::Active) => {
+                Some(synctv_core::models::MemberStatus::Active)
+            }
+            Some(synctv_proto::common::MemberStatus::Pending) => {
+                Some(synctv_core::models::MemberStatus::Pending)
+            }
+            Some(synctv_proto::common::MemberStatus::Banned) => {
+                Some(synctv_core::models::MemberStatus::Banned)
+            }
+            Some(synctv_proto::common::MemberStatus::Left) => {
+                Some(synctv_core::models::MemberStatus::Left)
+            }
+            _ => None,
+        };
+        let query = synctv_core::models::RoomMemberListQuery {
+            pagination: synctv_core::models::PageParams::new(
+                Some(u32::try_from(req.page).unwrap_or(1)),
+                Some(u32::try_from(req.page_size).unwrap_or(50)),
+            ),
+            search: (!req.search.is_empty()).then_some(req.search),
+            role,
+            status,
+            is_online: None,
+            sort_by: match crate::proto::client::RoomMemberListSortBy::try_from(req.sort_by) {
+                Ok(crate::proto::client::RoomMemberListSortBy::Username) => {
+                    synctv_core::models::RoomMemberListSortBy::Username
+                }
+                Ok(crate::proto::client::RoomMemberListSortBy::Role) => {
+                    synctv_core::models::RoomMemberListSortBy::Role
+                }
+                Ok(crate::proto::client::RoomMemberListSortBy::Status) => {
+                    synctv_core::models::RoomMemberListSortBy::Status
+                }
+                _ => synctv_core::models::RoomMemberListSortBy::JoinedAt,
+            },
+            sort_direction: match crate::proto::client::SortDirection::try_from(req.sort_direction)
+            {
+                Ok(crate::proto::client::SortDirection::Desc) => {
+                    synctv_core::models::SortDirection::Desc
+                }
+                _ => synctv_core::models::SortDirection::Asc,
+            },
+        };
         let (members, total) = self
             .room_service
-            .get_room_members_paginated(&rid, pagination)
+            .get_room_members_query(&rid, query)
             .await
             .map_err(ApiError::from)?;
 
@@ -268,7 +324,7 @@ impl ClientApiImpl {
         if let Some(cluster_event) = cluster_event {
             cluster_event.publish(synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: rid.clone(),
                     user_id: target_uid.clone(),
                     reason: "kicked".to_string(),
@@ -342,7 +398,7 @@ impl ClientApiImpl {
         if let Some(cluster_event) = cluster_event {
             cluster_event.publish(synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: rid.clone(),
                     user_id: target_uid.clone(),
                     reason: "banned".to_string(),

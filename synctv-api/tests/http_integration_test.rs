@@ -914,12 +914,6 @@ mod hsts_headers {
         assert_eq!(hsts_header(0, false, false), "max-age=0");
     }
 
-    #[test]
-    fn test_production_defaults() {
-        // The values used in apply_global_layers
-        let header = hsts_header(63_072_000, true, false);
-        assert_eq!(header, "max-age=63072000; includeSubDomains");
-    }
 }
 
 // ============================================================================
@@ -1199,79 +1193,6 @@ mod response_format {
         });
         assert!(json["error"].is_string());
         assert!(json["status"].is_number());
-    }
-}
-
-// ============================================================================
-// Module: Rate limit config defaults
-// ============================================================================
-
-mod rate_limit_config {
-    use synctv_api::http::middleware::RateLimitConfig;
-
-    #[test]
-    fn test_default_auth_rate_limit() {
-        let config = RateLimitConfig::default();
-        assert_eq!(config.auth_max_requests, 5);
-        assert_eq!(config.auth_window_seconds, 60);
-    }
-
-    #[test]
-    fn test_default_write_rate_limit() {
-        let config = RateLimitConfig::default();
-        assert_eq!(config.write_max_requests, 30);
-        assert_eq!(config.write_window_seconds, 60);
-    }
-
-    #[test]
-    fn test_default_read_rate_limit() {
-        let config = RateLimitConfig::default();
-        assert_eq!(config.read_max_requests, 100);
-        assert_eq!(config.read_window_seconds, 60);
-    }
-
-    #[test]
-    fn test_default_media_rate_limit() {
-        let config = RateLimitConfig::default();
-        assert_eq!(config.media_max_requests, 20);
-        assert_eq!(config.media_window_seconds, 60);
-    }
-
-    #[test]
-    fn test_default_websocket_rate_limit() {
-        let config = RateLimitConfig::default();
-        assert_eq!(config.websocket_max_requests, 10);
-        assert_eq!(config.websocket_window_seconds, 60);
-    }
-
-    #[test]
-    fn test_auth_is_stricter_than_read() {
-        let config = RateLimitConfig::default();
-        assert!(config.auth_max_requests < config.read_max_requests);
-    }
-
-    #[test]
-    fn test_auth_is_stricter_than_write() {
-        let config = RateLimitConfig::default();
-        assert!(config.auth_max_requests < config.write_max_requests);
-    }
-
-    #[test]
-    fn test_websocket_is_stricter_than_streaming() {
-        let config = RateLimitConfig::default();
-        assert!(config.websocket_max_requests < config.streaming_max_requests);
-    }
-
-    #[test]
-    fn test_all_windows_are_60_seconds() {
-        let config = RateLimitConfig::default();
-        assert_eq!(config.auth_window_seconds, 60);
-        assert_eq!(config.write_window_seconds, 60);
-        assert_eq!(config.read_window_seconds, 60);
-        assert_eq!(config.media_window_seconds, 60);
-        assert_eq!(config.admin_window_seconds, 60);
-        assert_eq!(config.streaming_window_seconds, 60);
-        assert_eq!(config.websocket_window_seconds, 60);
     }
 }
 

@@ -1,7 +1,7 @@
-//! Test QRLoginStatus enum values for compatibility with synctv-media-providers
+//! Test QRLoginStatus enum values stay aligned with synctv-media-providers.
 //!
 //! This test verifies that the QRLoginStatus enum values match the
-//! QRCodeStatus enum values in synctv-media-providers for wire compatibility.
+//! QRCodeStatus enum values in synctv-media-providers for the shared wire contract.
 
 use synctv_proto::providers::bilibili::QrLoginStatus;
 
@@ -104,7 +104,7 @@ fn test_qr_login_status_from_str_name() {
     assert_eq!(QrLoginStatus::from_str_name("INVALID"), None);
 }
 
-/// Test backward compatibility: QRStatusResponse uses enumeration type
+/// Test that `QrStatusResponse` stores `QrLoginStatus` numeric values.
 #[test]
 fn test_qr_status_response_uses_enum() {
     use synctv_proto::providers::bilibili::QrStatusResponse;

@@ -45,7 +45,7 @@ pub struct SegmentInfo {
     pub sequence: u64,
     /// Segment duration in milliseconds
     pub duration: i64,
-    /// TS filename (nanoid, e.g., "a1b2c3d4e5f6")
+    /// TS filename (base62 ID, e.g., "a1b2c3d4e5f6")
     pub ts_name: String,
     /// Whether this is a discontinuity point
     pub discontinuity: bool,
@@ -1013,8 +1013,8 @@ impl StreamProcessor {
         };
         let ts_data_len = ts_data.len();
 
-        // Generate TS filename using nanoid (12 chars, like Go's SortUUID)
-        let ts_name = nanoid::nanoid!(12);
+        // Generate TS filename using the shared base62 ID generator (12 chars)
+        let ts_name = synctv_common::snanoid!(12);
 
         // Write segment to storage with retry using structured (app, stream, name)
         let storage = self.segment_manager.storage().clone();

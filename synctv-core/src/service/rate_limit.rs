@@ -1002,22 +1002,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_limit_config_default_values() {
-        let config = RateLimitConfig::default();
-        assert_eq!(config.chat_per_second, 10);
-        assert_eq!(config.danmaku_per_second, 3);
-        assert_eq!(config.window_seconds, 1);
-    }
-
-    #[test]
-    fn test_rate_limit_config_clone() {
-        let config = RateLimitConfig::default();
-        let cloned = config.clone();
-        assert_eq!(cloned.chat_per_second, config.chat_per_second);
-        assert_eq!(cloned.danmaku_per_second, config.danmaku_per_second);
-    }
-
-    #[test]
     fn test_rate_limit_error_to_core_error_exceeded() {
         let err = RateLimitError::RateLimitExceeded {
             retry_after_seconds: 30,

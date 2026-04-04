@@ -47,6 +47,57 @@ static USER_LEFT_RETRY_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
 
 use crate::proto::client::{ClientMessage, ServerMessage};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RealtimeJoinError {
+    PermissionDenied(String),
+    RateLimited(String),
+    ServiceUnavailable(String),
+    Internal(String),
+}
+
+impl RealtimeJoinError {
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::PermissionDenied(message) => message,
+            Self::RateLimited(message)
+            | Self::ServiceUnavailable(message)
+            | Self::Internal(message) => message,
+        }
+    }
+}
+
+impl From<String> for RealtimeJoinError {
+    fn from(message: String) -> Self {
+        classify_realtime_join_error_message(message)
+    }
+}
+
+impl From<RealtimeJoinError> for String {
+    fn from(error: RealtimeJoinError) -> Self {
+        error.to_string()
+    }
+}
+
+impl std::fmt::Display for RealtimeJoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for RealtimeJoinError {}
+
+fn classify_realtime_join_error_message(message: String) -> RealtimeJoinError {
+    match crate::impls::classify_error(&message) {
+        crate::impls::ErrorKind::RateLimited => RealtimeJoinError::RateLimited(message),
+        crate::impls::ErrorKind::ServiceUnavailable => {
+            RealtimeJoinError::ServiceUnavailable(message)
+        }
+        crate::impls::ErrorKind::PermissionDenied => RealtimeJoinError::PermissionDenied(message),
+        _ => RealtimeJoinError::Internal(message),
+    }
+}
+
 /// Default TTL for membership cache entries (30 seconds).
 ///
 /// This TTL is chosen to balance between:
@@ -403,7 +454,7 @@ impl Clone for StreamMessageHandler {
 impl StreamMessageHandler {
     #[must_use]
     pub fn generate_connection_id(user_id: &UserId) -> String {
-        format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8))
+        format!("{}_{}", user_id.as_str(), synctv_common::snanoid!(8))
     }
 
     fn error_server_message(error: impl Into<crate::impls::ApiError>) -> ServerMessage {
@@ -643,7 +694,9 @@ impl StreamMessageHandler {
         self.membership_cache.invalidate(&cache_key);
     }
 
-    async fn final_realtime_admission_denial_reason(&self) -> Result<Option<&'static str>, String> {
+    async fn final_realtime_admission_denial_reason(
+        &self,
+    ) -> Result<Option<&'static str>, RealtimeJoinError> {
         let user = self
             .room_service
             .user_service()
@@ -656,7 +709,9 @@ impl StreamMessageHandler {
                     user_id = %self.user_id.as_str(),
                     "Failed to re-validate user access during pre_join; rejecting connection because final admission must fail closed"
                 );
-                "User re-validation temporarily unavailable".to_string()
+                RealtimeJoinError::ServiceUnavailable(
+                    "User re-validation temporarily unavailable".to_string(),
+                )
             })?;
 
         if user.status == UserStatus::Banned || user.status == UserStatus::Pending {
@@ -673,7 +728,9 @@ impl StreamMessageHandler {
                 user_id = %self.user_id.as_str(),
                 "Failed to re-validate room access during pre_join; rejecting connection because final admission must fail closed"
             );
-            "Room re-validation temporarily unavailable".to_string()
+            RealtimeJoinError::ServiceUnavailable(
+                "Room re-validation temporarily unavailable".to_string(),
+            )
         })?;
 
         if room.is_banned {
@@ -700,7 +757,9 @@ impl StreamMessageHandler {
                 user_id = %self.user_id.as_str(),
                 "Failed to re-validate membership during pre_join; rejecting connection because final admission must fail closed"
             );
-            return Err("Membership re-validation temporarily unavailable".to_string());
+            return Err(RealtimeJoinError::ServiceUnavailable(
+                "Membership re-validation temporarily unavailable".to_string(),
+            ));
         }
 
         Ok(None)
@@ -712,14 +771,14 @@ impl StreamMessageHandler {
     /// violations surface as a proper gRPC error instead of silently failing
     /// inside a background task.  After a successful `pre_join`, call
     /// [`run_after_join`] to enter the message loop.
-    pub async fn pre_join(&self) -> Result<(), String> {
+    pub async fn pre_join(&self) -> Result<(), RealtimeJoinError> {
         if let Err(e) = self
             .connection_manager
             .register(self.connection_id.clone(), self.user_id.clone())
             .await
         {
             tracing::warn!("Failed to register connection: {}", e);
-            return Err(e);
+            return Err(classify_realtime_join_error_message(e));
         }
 
         self.pre_join_after_registration().await
@@ -729,7 +788,7 @@ impl StreamMessageHandler {
     ///
     /// This is used by transports that need an early registration/backpressure
     /// step before they can finish reading the room-scoped handshake.
-    pub async fn pre_join_after_registration(&self) -> Result<(), String> {
+    pub async fn pre_join_after_registration(&self) -> Result<(), RealtimeJoinError> {
         if let Err(e) = self
             .connection_manager
             .join_room(&self.connection_id, self.room_id.clone())
@@ -738,7 +797,7 @@ impl StreamMessageHandler {
             self.connection_manager
                 .unregister(&self.connection_id)
                 .await;
-            return Err(e);
+            return Err(classify_realtime_join_error_message(e));
         }
 
         let denial_reason = match self.final_realtime_admission_denial_reason().await {
@@ -758,7 +817,7 @@ impl StreamMessageHandler {
             self.connection_manager
                 .unregister(&self.connection_id)
                 .await;
-            return Err(reason.to_string());
+            return Err(RealtimeJoinError::PermissionDenied(reason.to_string()));
         }
 
         if let Err(error) = self.cache_room_event_subscription().await {
@@ -773,7 +832,7 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    async fn cache_room_event_subscription(&self) -> Result<(), String> {
+    async fn cache_room_event_subscription(&self) -> Result<(), RealtimeJoinError> {
         let mut pending_rx = self.pending_room_event_rx.lock().await;
         if pending_rx.is_some() {
             return Ok(());
@@ -790,7 +849,9 @@ impl StreamMessageHandler {
             .map_err(|e| {
                 self.skip_cleanup_user_left
                     .store(true, std::sync::atomic::Ordering::Relaxed);
-                format!("Failed to subscribe to cluster events during pre_join: {e}")
+                RealtimeJoinError::Internal(format!(
+                    "Failed to subscribe to cluster events during pre_join: {e}"
+                ))
             })?;
         *pending_rx = Some(event_rx);
 
@@ -834,7 +895,7 @@ impl StreamMessageHandler {
     /// If you need to check connection limits *before* returning a response stream
     /// (e.g. in gRPC), call [`pre_join`] first and then [`run_after_join`].
     pub async fn run<S: StreamMessage>(&self, stream: &mut S) -> Result<(), String> {
-        self.pre_join().await?;
+        self.pre_join().await.map_err(String::from)?;
         self.run_after_join(stream).await
     }
 
@@ -1542,7 +1603,7 @@ impl StreamMessageHandler {
         };
 
         let event = ClusterEvent::UserJoined {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: self.room_id.clone(),
             user_id: self.user_id.clone(),
             username: self.username.clone(),
@@ -1609,7 +1670,7 @@ impl StreamMessageHandler {
 
                 // Broadcast WebRtcLeave so other peers know this user dropped
                 let leave_event = ClusterEvent::WebRTCLeave {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: self.room_id.clone(),
                     user_id: self.user_id.clone(),
                     conn_id: self.connection_id.clone(),
@@ -1697,7 +1758,7 @@ impl StreamMessageHandler {
         // Previously, unregistering first could leave the hub with a stale subscriber
         // if the broadcast was delayed or had no receivers.
         let event = ClusterEvent::UserLeft {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: self.room_id.clone(),
             user_id: self.user_id.clone(),
             username: self.username.clone(),
@@ -1763,7 +1824,7 @@ impl StreamMessageHandler {
                                     .await;
 
                                 let retry_event = ClusterEvent::UserLeft {
-                                    event_id: nanoid::nanoid!(16),
+                                    event_id: synctv_common::snanoid!(16),
                                     room_id: room_id.clone(),
                                     user_id: user_id.clone(),
                                     username: username.clone(),
@@ -1860,7 +1921,7 @@ impl StreamMessageHandler {
             .register(self.connection_id.clone(), self.user_id.clone())
             .await?;
 
-        self.pre_join_after_registration().await?;
+        self.pre_join_after_registration().await.map_err(String::from)?;
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let room_id_str = self.room_id.as_str().to_string();
@@ -1944,7 +2005,8 @@ impl StreamMessageHandler {
                                     }
                                 }
 
-                                let is_room_deleted = matches!(event, ClusterEvent::RoomDeleted { .. });
+                                let is_room_shutdown =
+                                    matches!(event, ClusterEvent::RoomDeleted { .. } | ClusterEvent::RoomBanned { .. });
 
                                 for msg in cluster_event_to_server_messages(&event, &room_id_str) {
                                     if let Err(e) = sender.send(msg) {
@@ -1954,13 +2016,13 @@ impl StreamMessageHandler {
                                     }
                                 }
 
-                                // After delivering RoomDeleted, trigger cancellation so
+                                // After delivering a terminal room-wide admin event, trigger cancellation so
                                 // cleanup fires only after the event has been forwarded.
                                 // This prevents the race where the cleanup task fires
                                 // before the critical event reaches the client.
-                                if is_room_deleted {
+                                if is_room_shutdown {
                                     tracing::info!(
-                                        "RoomDeleted event delivered in start(), triggering cleanup"
+                                        "Terminal room event delivered in start(), triggering cleanup"
                                     );
                                     event_token.cancel();
                                     break;
@@ -2406,7 +2468,7 @@ impl StreamMessageHandler {
 
         // Use the filtered content from ChatService (content filtering already applied)
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: self.room_id.clone(),
             user_id: self.user_id.clone(),
             username: self.username.clone(),
@@ -2447,7 +2509,7 @@ impl StreamMessageHandler {
         color: Option<String>,
     ) -> Result<(), String> {
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: self.room_id.clone(),
             user_id: self.user_id.clone(),
             username: self.username.clone(),
@@ -2499,7 +2561,7 @@ impl StreamMessageHandler {
 
         // P2P relay path: forward offer to target peer via cluster
         let event = ClusterEvent::WebRTCSignaling {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: self.room_id.clone(),
             message_type: "offer".to_string(),
             from: format!("{}|{}", self.user_id.as_str(), conn_id),
@@ -2554,7 +2616,7 @@ impl StreamMessageHandler {
 
         // Create event with server-set 'from' field
         let event = ClusterEvent::WebRTCSignaling {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: self.room_id.clone(),
             message_type: "answer".to_string(),
             from: format!("{}|{}", self.user_id.as_str(), conn_id),
@@ -2609,7 +2671,7 @@ impl StreamMessageHandler {
 
         // P2P relay path: forward ICE candidate to target peer via cluster
         let event = ClusterEvent::WebRTCSignaling {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: self.room_id.clone(),
             message_type: "ice_candidate".to_string(),
             from: format!("{}|{}", self.user_id.as_str(), conn_id),
@@ -2682,7 +2744,7 @@ impl StreamMessageHandler {
 
         // Broadcast Join event to all RTC-joined users in the room
         let event = ClusterEvent::WebRTCJoin {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: self.room_id.clone(),
             user_id: self.user_id.clone(),
             conn_id,
@@ -2743,7 +2805,7 @@ impl StreamMessageHandler {
 
         // Broadcast Leave event to all RTC-joined users in the room
         let event = ClusterEvent::WebRTCLeave {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: self.room_id.clone(),
             user_id: self.user_id.clone(),
             conn_id,
@@ -2867,7 +2929,7 @@ impl StreamMessageHandler {
                         // Local-only broadcast (no Redis) -- progress reports are
                         // high-frequency and only relevant to same-replica clients.
                         let event = synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
-                            event_id: nanoid::nanoid!(16),
+                            event_id: synctv_common::snanoid!(16),
                             room_id: self.room_id.clone(),
                             user_id: self.user_id.clone(),
                             username: self.username.clone(),
@@ -3016,7 +3078,7 @@ fn cluster_event_to_server_messages(
             ..
         } => vec![ServerMessage {
             message: Some(Message::Chat(ChatMessageReceive {
-                id: nanoid::nanoid!(12),
+                id: synctv_common::snanoid!(12),
                 room_id: room_id.to_string(),
                 user_id: user_id.as_str().to_string(),
                 username: username.clone(),
@@ -3330,6 +3392,15 @@ fn cluster_event_to_server_messages(
                 })),
             }]
         }
+        ClusterEvent::RoomBanned { .. } => {
+            vec![ServerMessage {
+                message: Some(Message::Error(ErrorMessage {
+                    message: "Room has been banned".to_string(),
+                    code: crate::impls::error_codes::FORBIDDEN,
+                    detail: String::new(),
+                })),
+            }]
+        }
         ClusterEvent::KickPublisher { .. }
         | ClusterEvent::KickUser { .. }
         | ClusterEvent::KickUserFromRoom { .. }
@@ -3421,7 +3492,9 @@ fn disconnect_signal_requires_skip_cleanup(
 ) -> bool {
     match signal {
         synctv_cluster::sync::DisconnectSignal::Connection(conn_id) => conn_id == connection_id,
-        synctv_cluster::sync::DisconnectSignal::User(uid) => uid == user_id,
+        // A global user disconnect (ban/delete) must still let cleanup emit a
+        // room-scoped UserLeft for the connection's current room.
+        synctv_cluster::sync::DisconnectSignal::User(_uid) => false,
         synctv_cluster::sync::DisconnectSignal::Room(rid) => rid == room_id,
         synctv_cluster::sync::DisconnectSignal::UserFromRoom {
             user_id: uid,
@@ -3437,7 +3510,10 @@ fn admin_event_requires_skip_cleanup(
     room_id: &RoomId,
 ) -> bool {
     match event {
-        ClusterEvent::KickUser { user_id: uid, .. } => uid == user_id,
+        // A global KickUser must still allow connection cleanup to publish a
+        // room-scoped UserLeft on the affected room.
+        ClusterEvent::KickUser { user_id: _uid, .. } => false,
+        ClusterEvent::RoomBanned { room_id: rid, .. } => rid == room_id,
         ClusterEvent::KickUserFromRoom {
             user_id: uid,
             room_id: rid,
@@ -4846,6 +4922,26 @@ mod tests {
     }
 
     #[test]
+    fn test_room_banned_event_conversion() {
+        let event = ClusterEvent::RoomBanned {
+            event_id: "evt11b".to_string(),
+            room_id: room_id(),
+            banned_by: user_id(),
+            timestamp: now(),
+        };
+
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
+            Some(Message::Error(e)) => {
+                assert!(e.message.contains("banned"));
+                assert_eq!(e.code, crate::impls::error_codes::FORBIDDEN);
+            }
+            other => panic!("Expected Error message for RoomBanned, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_system_notification_event_conversion() {
         let event = ClusterEvent::SystemNotification {
             event_id: "evt12".to_string(),
@@ -4883,6 +4979,17 @@ mod tests {
             timestamp: now(),
         };
         assert!(cluster_event_to_server_messages(&event, "room_test").is_empty());
+
+        let event = ClusterEvent::RoomBanned {
+            event_id: "evt15".to_string(),
+            room_id: room_id(),
+            banned_by: user_id(),
+            timestamp: now(),
+        };
+        assert_eq!(
+            cluster_event_to_server_messages(&event, "room_test").len(),
+            1
+        );
     }
 
     // ========== ProtoCodec Tests ==========
@@ -4966,16 +5073,6 @@ mod tests {
         // Drop all permits
         drop(permits);
         assert_eq!(config.available_permits(), 10, "All permits restored");
-    }
-
-    #[test]
-    fn test_resource_exhausted_error_code() {
-        // Test that RESOURCE_EXHAUSTED error code is properly defined
-        assert_eq!(
-            crate::impls::error_codes::RESOURCE_EXHAUSTED,
-            2002,
-            "RESOURCE_EXHAUSTED should be error code 2002"
-        );
     }
 
     #[test]
@@ -5695,6 +5792,26 @@ mod tests {
         assert_eq!(super::initial_realtime_join_denial_reason(&lookup), None);
     }
 
+    #[test]
+    fn test_realtime_join_error_from_string_classifies_capacity_errors() {
+        let error = super::RealtimeJoinError::from("realtime room capacity exceeded".to_string());
+
+        assert!(matches!(
+            error,
+            super::RealtimeJoinError::RateLimited(message)
+            if message == "realtime room capacity exceeded"
+        ));
+    }
+
+    #[test]
+    fn test_realtime_join_error_into_string_preserves_message() {
+        let message = String::from(super::RealtimeJoinError::PermissionDenied(
+            "Not a member of this room".to_string(),
+        ));
+
+        assert_eq!(message, "Not a member of this room");
+    }
+
     #[tokio::test]
     async fn test_pre_join_after_registration_fails_closed_when_membership_revalidation_unavailable(
     ) {
@@ -5718,7 +5835,7 @@ mod tests {
             .expect_err("membership revalidation outages must reject final realtime admission");
 
         assert!(
-            error.contains("temporarily unavailable"),
+            error.to_string().contains("temporarily unavailable"),
             "expected retryable membership revalidation error, got: {error}"
         );
         assert_eq!(
@@ -5815,7 +5932,7 @@ mod tests {
             .expect_err("closed room must fail final realtime admission");
 
         assert!(
-            error.contains("closed"),
+            error.to_string().contains("closed"),
             "expected closed-room error, got: {error}"
         );
         assert_eq!(connection_manager.connection_count(), 0);
@@ -5901,7 +6018,7 @@ mod tests {
             .expect_err("banned user must fail final realtime admission");
 
         assert!(
-            error.contains("no longer allowed"),
+            error.to_string().contains("no longer allowed"),
             "expected banned-user error, got: {error}"
         );
         assert_eq!(connection_manager.connection_count(), 0);
@@ -5994,7 +6111,9 @@ mod tests {
         .expect_err("subscription caching failure must reject final realtime admission");
 
         assert!(
-            error.contains("Failed to subscribe to cluster events during pre_join"),
+            error
+                .to_string()
+                .contains("Failed to subscribe to cluster events during pre_join"),
             "expected room subscription caching error, got: {error}"
         );
         assert_eq!(
@@ -6023,7 +6142,7 @@ mod tests {
     }
 
     #[test]
-    fn test_disconnect_signal_requires_skip_cleanup_for_targeted_server_disconnects() {
+    fn test_disconnect_signal_requires_skip_cleanup_only_for_room_scoped_or_redundant_exits() {
         let rid = room_id();
         let uid = user_id();
         let connection_id = "conn-123";
@@ -6034,7 +6153,7 @@ mod tests {
             &rid,
             connection_id,
         ));
-        assert!(super::disconnect_signal_requires_skip_cleanup(
+        assert!(!super::disconnect_signal_requires_skip_cleanup(
             &synctv_cluster::sync::DisconnectSignal::User(uid.clone()),
             &uid,
             &rid,
@@ -6058,12 +6177,12 @@ mod tests {
     }
 
     #[test]
-    fn test_admin_event_requires_skip_cleanup_for_forced_exit_events() {
+    fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exits() {
         let rid = room_id();
         let uid = user_id();
         let now = chrono::Utc::now();
 
-        assert!(super::admin_event_requires_skip_cleanup(
+        assert!(!super::admin_event_requires_skip_cleanup(
             &ClusterEvent::KickUser {
                 event_id: "evt-1".to_string(),
                 user_id: uid.clone(),
@@ -6090,6 +6209,16 @@ mod tests {
                 room_id: rid.clone(),
                 user_id: uid.clone(),
                 username: "tester".to_string(),
+                timestamp: now,
+            },
+            &uid,
+            &rid,
+        ));
+        assert!(super::admin_event_requires_skip_cleanup(
+            &ClusterEvent::RoomBanned {
+                event_id: "evt-4".to_string(),
+                room_id: rid.clone(),
+                banned_by: uid.clone(),
                 timestamp: now,
             },
             &uid,

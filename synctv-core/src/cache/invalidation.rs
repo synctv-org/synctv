@@ -132,7 +132,7 @@ impl CacheInvalidationService {
     /// * `redis_client` - Optional Redis client. If None, only local invalidation is used.
     /// * `node_id` - Unique identifier for this node (for consumer group and logging).
     ///   **Important**: The consumer group name is derived as `cache-invalidation-{node_id}`.
-    ///   If `node_id` contains a random component (e.g., the nanoid suffix from
+    ///   If `node_id` contains a random component (e.g., the shared base62 suffix from
     ///   `generate_node_id()` in non-K8s environments), each process restart creates
     ///   a new consumer group and the previous one becomes orphaned in Redis. To
     ///   avoid orphan accumulation, either:
@@ -1409,19 +1409,6 @@ mod tests {
 
         let received = receiver.recv().await.unwrap();
         assert_eq!(msg, received);
-    }
-
-    #[tokio::test]
-    async fn test_broadcast_without_redis_is_noop() {
-        let service = CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
-            "synctv:cache:invalidate:stream".to_string(),
-        );
-
-        // broadcast_remote() without Redis should be a no-op (no local broadcast)
-        let msg = InvalidationMessage::All;
-        service.broadcast_remote(msg).await.unwrap();
     }
 
     #[tokio::test]

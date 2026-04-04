@@ -1,0 +1,52 @@
+{{- if and .Values.metrics.enabled .Values.metrics.vmServiceScrape.enabled }}
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: {{ include "synctv.fullname" . }}
+  namespace: {{ .Values.metrics.vmServiceScrape.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    {{- with .Values.metrics.vmServiceScrape.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "synctv.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.metrics.path | default "/metrics" }}
+      interval: {{ .Values.metrics.vmServiceScrape.interval | default "30s" }}
+      {{- with .Values.metrics.vmServiceScrape.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- if .Values.metrics.tls.enabled }}
+      scheme: https
+      tlsConfig:
+        serverName: {{ include "synctv.metricsTlsServerName" . }}
+        ca:
+          secret:
+            name: {{ include "synctv.metricsTlsSecretName" . }}
+            key: ca.crt
+      {{- end }}
+      {{- if eq (.Values.metrics.auth.mode | default "bearer_token") "kubernetes" }}
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      {{- else if eq (.Values.metrics.auth.mode | default "bearer_token") "bearer_token" }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "synctv.secretName" . }}
+          key: SYNCTV_METRICS_AUTH_BEARER_TOKEN
+      {{- else if eq (.Values.metrics.auth.mode | default "bearer_token") "basic" }}
+      basicAuth:
+        username:
+          name: {{ include "synctv.secretName" . }}
+          key: SYNCTV_METRICS_AUTH_BASIC_USERNAME
+        password:
+          name: {{ include "synctv.secretName" . }}
+          key: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
+      {{- end }}
+{{- end }}

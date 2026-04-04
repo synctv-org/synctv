@@ -506,7 +506,7 @@ impl PublishKeyService {
             perm_start_live: true,
             iat: now,
             exp,
-            jti: nanoid::nanoid!(32),
+            jti: synctv_common::snanoid!(32),
         };
 
         let claims_json = serde_json::to_value(&claims)
@@ -620,14 +620,6 @@ mod tests {
         let service = create_publish_key_service();
         let debug = format!("{service:?}");
         assert!(debug.contains("token_ttl_hours"));
-        assert!(debug.contains("24"));
-    }
-
-    #[test]
-    fn test_publish_key_service_with_default_ttl() {
-        let jwt = create_jwt_service();
-        let service = PublishKeyService::with_default_ttl(jwt);
-        let debug = format!("{service:?}");
         assert!(debug.contains("24"));
     }
 

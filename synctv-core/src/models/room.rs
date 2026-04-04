@@ -5,6 +5,7 @@ use std::fmt::Display;
 
 use super::id::{RoomId, UserId};
 use super::permission::PermissionBits;
+use super::query::SortDirection;
 use crate::Error;
 
 /// Room lifecycle status (independent of ban state)
@@ -334,6 +335,54 @@ pub struct RoomWithSettings {
     pub settings: RoomSettingsJson,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomListSortBy {
+    Name,
+    UpdatedAt,
+    LastActivityAt,
+    #[default]
+    CreatedAt,
+}
+
+impl RoomListSortBy {
+    #[must_use]
+    pub const fn as_sql(self) -> &'static str {
+        match self {
+            Self::Name => "r.name",
+            Self::UpdatedAt => "r.updated_at",
+            Self::LastActivityAt => "r.last_activity_at",
+            Self::CreatedAt => "r.created_at",
+        }
+    }
+}
+
+impl std::str::FromStr for RoomListSortBy {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "name" => Ok(Self::Name),
+            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
+            "last_activity_at" | "lastactivityat" => Ok(Self::LastActivityAt),
+            "created_at" | "createdat" => Ok(Self::CreatedAt),
+            other => Err(format!("Unknown room list sort field: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for RoomListSortBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Name => "name",
+            Self::UpdatedAt => "updated_at",
+            Self::LastActivityAt => "last_activity_at",
+            Self::CreatedAt => "created_at",
+        };
+        f.write_str(value)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomListQuery {
     pub pagination: super::pagination::PageParams,
@@ -344,6 +393,10 @@ pub struct RoomListQuery {
     pub is_banned: Option<bool>,
     /// Filter by creator
     pub creator_id: Option<String>,
+    #[serde(default)]
+    pub sort_by: RoomListSortBy,
+    #[serde(default)]
+    pub sort_direction: SortDirection,
 }
 
 impl Default for RoomListQuery {
@@ -354,6 +407,8 @@ impl Default for RoomListQuery {
             search: None,
             is_banned: Some(false), // By default, exclude banned rooms
             creator_id: None,
+            sort_by: RoomListSortBy::CreatedAt,
+            sort_direction: SortDirection::Desc,
         }
     }
 }

@@ -139,6 +139,43 @@ impl RoomMemberRole {
         }
     }
 }
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MemberStatus {
+    Unspecified = 0,
+    Active = 1,
+    Pending = 2,
+    Banned = 3,
+    Left = 4,
+}
+impl MemberStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "MEMBER_STATUS_UNSPECIFIED",
+            Self::Active => "MEMBER_STATUS_ACTIVE",
+            Self::Pending => "MEMBER_STATUS_PENDING",
+            Self::Banned => "MEMBER_STATUS_BANNED",
+            Self::Left => "MEMBER_STATUS_LEFT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "MEMBER_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "MEMBER_STATUS_ACTIVE" => Some(Self::Active),
+            "MEMBER_STATUS_PENDING" => Some(Self::Pending),
+            "MEMBER_STATUS_BANNED" => Some(Self::Banned),
+            "MEMBER_STATUS_LEFT" => Some(Self::Left),
+            _ => None,
+        }
+    }
+}
 /// Room lifecycle status (independent of ban state)
 /// Banned state is tracked via is_banned field on Room message
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -171,6 +208,37 @@ impl RoomStatus {
             "ROOM_STATUS_ACTIVE" => Some(Self::Active),
             "ROOM_STATUS_PENDING" => Some(Self::Pending),
             "ROOM_STATUS_CLOSED" => Some(Self::Closed),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ListSortDirection {
+    Unspecified = 0,
+    Asc = 1,
+    Desc = 2,
+}
+impl ListSortDirection {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LIST_SORT_DIRECTION_UNSPECIFIED",
+            Self::Asc => "LIST_SORT_DIRECTION_ASC",
+            Self::Desc => "LIST_SORT_DIRECTION_DESC",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LIST_SORT_DIRECTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "LIST_SORT_DIRECTION_ASC" => Some(Self::Asc),
+            "LIST_SORT_DIRECTION_DESC" => Some(Self::Desc),
             _ => None,
         }
     }

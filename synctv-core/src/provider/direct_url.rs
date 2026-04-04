@@ -125,6 +125,76 @@ impl TryFrom<&Value> for DirectUrlSourceConfig {
     }
 }
 
+fn parse_embedded_playback_result(value: &Value) -> Result<Option<PlaybackResult>, ProviderError> {
+    let Some(playback_infos_value) = value.get("playback_infos") else {
+        return Ok(None);
+    };
+    let playback_infos_model: HashMap<String, crate::models::media::PlaybackInfo> =
+        serde_json::from_value(playback_infos_value.clone()).map_err(|error| {
+            ProviderError::InvalidConfig(format!(
+                "Failed to parse DirectUrl embedded playback_infos: {error}"
+            ))
+        })?;
+    let default_mode = value
+        .get("default_mode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ProviderError::InvalidConfig(
+                "DirectUrl embedded playback result missing default_mode".to_string(),
+            )
+        })?
+        .to_string();
+    let metadata = value
+        .get("metadata")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| {
+            ProviderError::InvalidConfig(format!(
+                "Failed to parse DirectUrl embedded metadata: {error}"
+            ))
+        })?
+        .unwrap_or_default();
+
+    let playback_infos = playback_infos_model
+        .into_iter()
+        .map(|(mode_name, info)| {
+            let format = info.format.clone();
+            let subtitles = info
+                .subtitles
+                .into_iter()
+                .map(|sub| super::traits::SubtitleTrack {
+                    language: sub.language,
+                    name: sub.name,
+                    url: sub
+                        .urls
+                        .get(sub.default_url_index)
+                        .map(|url| url.url.clone())
+                        .unwrap_or_default(),
+                    format: format.clone(),
+                })
+                .collect();
+            (
+                mode_name,
+                PlaybackInfo {
+                    urls: info.urls.into_iter().map(|url| url.url).collect(),
+                    format,
+                    headers: std::collections::HashMap::new(),
+                    subtitles,
+                    expires_at: None,
+                    cors_proxy_required: false,
+                },
+            )
+        })
+        .collect();
+
+    Ok(Some(PlaybackResult {
+        playback_infos,
+        default_mode,
+        metadata,
+    }))
+}
+
 // ProviderProxy implementation for DirectUrl
 //
 // Supported sub_paths (same pattern as other providers):
@@ -212,6 +282,10 @@ impl MediaProvider for DirectUrlProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
+        if let Some(result) = parse_embedded_playback_result(source_config)? {
+            return Ok(result);
+        }
+
         let config = DirectUrlSourceConfig::try_from(source_config)?;
 
         // Build cache key from URL hash
@@ -285,6 +359,7 @@ impl MediaProvider for DirectUrlProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::media::{PlaybackInfo as ModelPlaybackInfo, PlaybackUrl};
 
     #[test]
     fn test_detect_format() {
@@ -449,5 +524,42 @@ mod tests {
         let mut headers = HashMap::new();
         headers.insert("PRIORITY".to_string(), "u=5".to_string());
         assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_generate_playback_accepts_embedded_playback_result_source_config() {
+        let provider = DirectUrlProvider::new();
+        let source_config = serde_json::json!({
+            "playback_infos": {
+                "direct": ModelPlaybackInfo {
+                    urls: vec![PlaybackUrl::simple(
+                        "1080p".to_string(),
+                        "https://example.com/video.mp4".to_string()
+                    )],
+                    default_url_index: 0,
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    format: "mp4".to_string(),
+                }
+            },
+            "default_mode": "direct",
+            "metadata": {
+                "filename": "video.mp4"
+            }
+        });
+
+        let result = provider
+            .generate_playback(&ProviderContext::new("synctv"), &source_config)
+            .await
+            .expect("embedded playback result source config should be supported");
+
+        assert_eq!(result.default_mode, "direct");
+        assert_eq!(
+            result.playback_infos["direct"].urls,
+            vec!["https://example.com/video.mp4".to_string()]
+        );
+        assert_eq!(result.playback_infos["direct"].format, "mp4");
+        assert_eq!(result.metadata.get("filename"), Some(&json!("video.mp4")));
     }
 }

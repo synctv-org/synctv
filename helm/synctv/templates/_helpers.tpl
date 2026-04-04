@@ -90,3 +90,156 @@ Return the ConfigMap name
 {{- printf "%s-config" (include "synctv.fullname" .) }}
 {{- end }}
 {{- end }}
+
+{{/*
+Return the metrics TLS secret name
+*/}}
+{{- define "synctv.metricsTlsSecretName" -}}
+{{- printf "%s-metrics-tls" (include "synctv.fullname" .) }}
+{{- end }}
+
+{{/*
+Return the metrics TLS self-signed issuer name
+*/}}
+{{- define "synctv.metricsTlsIssuerName" -}}
+{{- printf "%s-metrics-selfsigned" (include "synctv.fullname" .) }}
+{{- end }}
+
+{{/*
+Return the metrics TLS server name used by scrape clients
+*/}}
+{{- define "synctv.metricsTlsServerName" -}}
+{{- printf "%s.%s.svc.cluster.local" (include "synctv.fullname" .) .Release.Namespace }}
+{{- end }}
+
+{{/*
+PostgreSQL deployment mode
+*/}}
+{{- define "synctv.postgresql.mode" -}}
+{{- .Values.postgresql.mode | default "standard" -}}
+{{- end }}
+
+{{/*
+Redis deployment mode
+*/}}
+{{- define "synctv.redis.mode" -}}
+{{- .Values.redis.mode | default "standard" -}}
+{{- end }}
+
+{{/*
+Managed PostgreSQL service/statefulset name
+*/}}
+{{- define "synctv.postgresql.fullname" -}}
+{{- printf "%s-postgresql" (include "synctv.fullname" .) -}}
+{{- end }}
+
+{{/*
+Managed Redis service/statefulset name
+*/}}
+{{- define "synctv.redis.fullname" -}}
+{{- printf "%s-redis" (include "synctv.fullname" .) -}}
+{{- end }}
+
+{{/*
+KubeBlocks PostgreSQL cluster name
+*/}}
+{{- define "synctv.postgresql.kubeblocks.clusterName" -}}
+{{- .Values.postgresql.kubeblocks.clusterName | default (printf "%s-pg" (include "synctv.fullname" .)) -}}
+{{- end }}
+
+{{/*
+KubeBlocks Redis cluster name
+*/}}
+{{- define "synctv.redis.kubeblocks.clusterName" -}}
+{{- .Values.redis.kubeblocks.clusterName | default (printf "%s-redis" (include "synctv.fullname" .)) -}}
+{{- end }}
+
+{{/*
+PostgreSQL connection host for SyncTV
+*/}}
+{{- define "synctv.postgresql.host" -}}
+{{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" -}}
+{{- printf "%s-postgresql-postgresql" (include "synctv.postgresql.kubeblocks.clusterName" .) -}}
+{{- else -}}
+{{ include "synctv.postgresql.fullname" . }}
+{{- end -}}
+{{- end }}
+
+{{/*
+PostgreSQL connection port for SyncTV
+*/}}
+{{- define "synctv.postgresql.port" -}}
+{{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" -}}
+5432
+{{- else -}}
+{{- .Values.postgresql.standard.service.port | default 5432 -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Redis connection host for SyncTV
+*/}}
+{{- define "synctv.redis.host" -}}
+{{- if eq (include "synctv.redis.mode" .) "kubeblocks" -}}
+{{- printf "%s-redis-redis" (include "synctv.redis.kubeblocks.clusterName" .) -}}
+{{- else -}}
+{{ include "synctv.redis.fullname" . }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Redis connection port for SyncTV
+*/}}
+{{- define "synctv.redis.port" -}}
+{{- if eq (include "synctv.redis.mode" .) "kubeblocks" -}}
+6379
+{{- else -}}
+{{- .Values.redis.standard.service.port | default 6379 -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+PostgreSQL app username for SyncTV
+*/}}
+{{- define "synctv.postgresql.appUsername" -}}
+{{- .Values.postgresql.standard.auth.username | default "synctv" -}}
+{{- end }}
+
+{{/*
+PostgreSQL app database name for SyncTV
+*/}}
+{{- define "synctv.postgresql.database" -}}
+{{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" -}}
+postgres
+{{- else -}}
+{{- .Values.postgresql.standard.auth.database | default "synctv" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Redis username for SyncTV when statically configured
+*/}}
+{{- define "synctv.redis.username" -}}
+{{- .Values.redis.standard.auth.username | default "" -}}
+{{- end }}
+
+{{/*
+Redis logical database index for SyncTV
+*/}}
+{{- define "synctv.redis.database" -}}
+{{- .Values.redis.standard.auth.database | default 0 -}}
+{{- end }}
+
+{{/*
+Secret containing KubeBlocks PostgreSQL superuser credentials
+*/}}
+{{- define "synctv.postgresql.kubeblocks.superuserSecretName" -}}
+{{- printf "%s-postgresql-account-postgres" (include "synctv.postgresql.kubeblocks.clusterName" .) -}}
+{{- end }}
+
+{{/*
+KubeBlocks Redis generated credential secret name
+*/}}
+{{- define "synctv.redis.kubeblocks.secretName" -}}
+{{- printf "%s-redis-account-default" (include "synctv.redis.kubeblocks.clusterName" .) -}}
+{{- end }}

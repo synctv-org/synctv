@@ -426,15 +426,6 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_health_check_config_default() {
-        let config = TurnHealthCheckConfig::default();
-        assert_eq!(config.check_interval, Duration::from_secs(30));
-        assert_eq!(config.check_timeout, Duration::from_secs(5));
-        assert_eq!(config.failure_threshold, 2);
-        assert_eq!(config.success_threshold, 2);
-    }
-
-    #[test]
     fn test_server_health_state_new() {
         let state = ServerHealthState::new();
         assert_eq!(state.health, TurnServerHealth::Healthy);

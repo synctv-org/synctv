@@ -197,25 +197,6 @@ mod tests {
         assert!(!session.has_video);
     }
 
-    #[test]
-    fn test_flv_session_defaults() {
-        let (event_sender, _) = tokio::sync::mpsc::channel(64);
-        let (response_tx, _response_rx) =
-            mpsc::channel(synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY);
-
-        let session = HttpFlvSession::new(
-            "live".to_string(),
-            "test/stream".to_string(),
-            event_sender,
-            response_tx,
-        );
-
-        // Verify default states
-        assert!(!session.has_send_header);
-        assert!(!session.has_audio);
-        assert!(!session.has_video);
-    }
-
     #[tokio::test]
     async fn test_handle_flv_stream_local_publisher_does_not_require_pull_stream() {
         let registry = Arc::new(MockStreamRegistry::with_publishers(

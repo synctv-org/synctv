@@ -9,7 +9,7 @@ use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::models::PermissionBits;
 
 fn event_id() -> String {
-    nanoid::nanoid!(16)
+    synctv_common::snanoid!(16)
 }
 
 // ============================================================================

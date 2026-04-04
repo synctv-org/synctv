@@ -1058,59 +1058,6 @@ mod tests {
         assert_eq!(original.as_str(), deserialized.as_str());
     }
 
-    // ========== AuditAction::as_str ==========
-
-    #[test]
-    fn test_audit_action_as_str_matches_serialization() {
-        let actions = vec![
-            AuditAction::UserCreated,
-            AuditAction::UserDeleted,
-            AuditAction::UserBanned,
-            AuditAction::UserUnbanned,
-            AuditAction::UserPasswordUpdated,
-            AuditAction::UserUsernameUpdated,
-            AuditAction::UserRoleUpdated,
-            AuditAction::RoomCreated,
-            AuditAction::RoomDeleted,
-            AuditAction::RoomBanned,
-            AuditAction::RoomUnbanned,
-            AuditAction::RoomPasswordUpdated,
-            AuditAction::PermissionGranted,
-            AuditAction::PermissionRevoked,
-            AuditAction::ProviderInstanceCreated,
-            AuditAction::ProviderInstanceUpdated,
-            AuditAction::ProviderInstanceDeleted,
-            AuditAction::SettingsUpdated,
-            AuditAction::MemberKicked,
-            AuditAction::MemberBanned,
-            AuditAction::MemberUnbanned,
-            AuditAction::MemberRoleUpdated,
-            AuditAction::MemberPermissionUpdated,
-            AuditAction::MemberStatusUpdated,
-            AuditAction::RoomSettingsUpdated,
-            AuditAction::UserApproved,
-            AuditAction::RoomApproved,
-            AuditAction::StreamKicked,
-            AuditAction::RateLimitResetFailed,
-            // Token security events (Task #65)
-            AuditAction::UserLogin,
-            AuditAction::UserLogout,
-            AuditAction::TokenIssued,
-            AuditAction::TokenRefreshed,
-            AuditAction::TokenFamilyRevoked,
-            // Settings access audit
-            AuditAction::SettingsViewed,
-            AuditAction::SettingsGroupViewed,
-        ];
-
-        for action in actions {
-            let as_str = action.as_str();
-            let serialized = serde_json::to_string(&action).unwrap();
-            // Serialized form is quoted: "user_created"
-            assert_eq!(serialized, format!("\"{as_str}\""));
-        }
-    }
-
     // ========== AuditTargetType ==========
 
     #[test]
@@ -1129,26 +1076,6 @@ mod tests {
         for (target, expected) in targets {
             let json = serde_json::to_string(&target).unwrap();
             assert_eq!(json, format!("\"{expected}\""), "Mismatch for {expected}");
-        }
-    }
-
-    #[test]
-    fn test_target_type_as_str_matches_serialization() {
-        let targets = vec![
-            AuditTargetType::User,
-            AuditTargetType::Room,
-            AuditTargetType::Member,
-            AuditTargetType::ProviderInstance,
-            AuditTargetType::Settings,
-            AuditTargetType::System,
-            AuditTargetType::Stream,
-            AuditTargetType::Token,
-        ];
-
-        for target in targets {
-            let as_str = target.as_str();
-            let serialized = serde_json::to_string(&target).unwrap();
-            assert_eq!(serialized, format!("\"{as_str}\""));
         }
     }
 

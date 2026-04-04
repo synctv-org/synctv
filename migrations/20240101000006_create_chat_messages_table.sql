@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 -- Comments
 COMMENT ON TABLE chat_messages IS 'Persistent chat messages (partitioned by day, retention configurable)';
-COMMENT ON COLUMN chat_messages.id IS '12-character nanoid';
+COMMENT ON COLUMN chat_messages.id IS '12-character base62 ID';
 COMMENT ON COLUMN chat_messages.content IS 'Message content (HTML sanitized)';
 
 -- ============================================================================
@@ -243,4 +243,3 @@ SELECT create_chat_message_partitions(30) AS initial_partitions;
 -- and periodic background task (ChatPartitionManager) handle partition availability.
 DROP TRIGGER IF EXISTS trigger_auto_create_chat_partition ON chat_messages;
 DROP FUNCTION IF EXISTS auto_create_chat_message_partition();
-

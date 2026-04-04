@@ -32,10 +32,10 @@ FROM debian:bookworm-slim
 
 # OCI image labels
 LABEL org.opencontainers.image.title="SyncTV" \
-      org.opencontainers.image.description="Distributed video synchronization platform with real-time streaming" \
-      org.opencontainers.image.url="https://github.com/synctv-org/synctv" \
-      org.opencontainers.image.source="https://github.com/synctv-org/synctv" \
-      org.opencontainers.image.licenses="MIT"
+    org.opencontainers.image.description="Distributed video synchronization platform with real-time streaming" \
+    org.opencontainers.image.url="https://github.com/synctv-org/synctv" \
+    org.opencontainers.image.source="https://github.com/synctv-org/synctv" \
+    org.opencontainers.image.licenses="MIT"
 
 # Install runtime dependencies (curl needed for healthcheck)
 RUN apt-get update && apt-get install -y \
@@ -46,9 +46,9 @@ RUN apt-get update && apt-get install -y \
 RUN useradd -m -u 1000 synctv
 
 # Create necessary directories
-RUN mkdir -p /app /app/keys /app/config
+RUN mkdir -p /app /app/keys /app/config /run/synctv
 
-RUN chown -R synctv:synctv /app
+RUN chown -R synctv:synctv /app /run/synctv
 
 # Set working directory
 WORKDIR /app
@@ -62,19 +62,16 @@ COPY --from=builder \
 USER synctv
 
 # Expose ports
-# 8080: HTTP API (also serves HLS via /api/room/movie/live/hls/*)
-# 50051: gRPC API
+# 8080: HTTP API + public gRPC (also serves HLS via /api/room/movie/live/hls/*)
 # 1935: RTMP (livestream)
 # 3478/udp: STUN (WebRTC)
-EXPOSE 8080 50051 1935 3478/udp
-
-# Set environment variables
-ENV SYNCTV_LOGGING_LEVEL=info
-ENV SYNCTV_LOGGING_BACKTRACE=true
+EXPOSE 8080 1935 3478/udp
 
 # Health check against the HTTP health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD ["curl", "-f", "http://localhost:8080/health/ready"]
 
 # Run the application
-CMD ["/app/synctv"]
+ENTRYPOINT ["/app/synctv"]
+
+CMD [ "serve" ]

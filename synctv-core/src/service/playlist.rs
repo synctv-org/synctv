@@ -158,16 +158,39 @@ impl PlaylistService {
         user_id: UserId,
         request: CreatePlaylistRequest,
     ) -> Result<Playlist> {
+        self.create_playlist_internal(room_id, user_id, request, false)
+            .await
+    }
+
+    /// Management-only playlist creation that bypasses room membership permission checks.
+    pub async fn admin_create_playlist(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        request: CreatePlaylistRequest,
+    ) -> Result<Playlist> {
+        self.create_playlist_internal(room_id, actor_user_id, request, true)
+            .await
+    }
+
+    async fn create_playlist_internal(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: CreatePlaylistRequest,
+        bypass_room_permissions: bool,
+    ) -> Result<Playlist> {
         if request.name.chars().count() > 255 {
             return Err(Error::InvalidInput(
                 "Playlist name cannot exceed 255 characters".to_string(),
             ));
         }
 
-        // Check permission
-        self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::ADD_MOVIE)
-            .await?;
+        if !bypass_room_permissions {
+            self.permission_service
+                .check_permission(&room_id, &user_id, PermissionBits::ADD_MOVIE)
+                .await?;
+        }
 
         // Verify parent exists and belongs to room
         if let Some(ref parent_id) = request.parent_id {
@@ -319,13 +342,37 @@ impl PlaylistService {
         user_id: UserId,
         request: SetPlaylistRequest,
     ) -> Result<Playlist> {
-        // Renaming and reordering existing playlist entries requires REORDER_PLAYLIST,
-        // not ADD_MEDIA. Users who can only add media should not be able to rename or
-        // reorder items they do not own. REORDER_PLAYLIST is an admin-level permission
-        // (included in DEFAULT_ADMIN but not DEFAULT_MEMBER).
-        self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
-            .await?;
+        self.set_playlist_internal(room_id, user_id, request, false)
+            .await
+    }
+
+    /// Management-only playlist update that bypasses room membership permission checks.
+    pub async fn admin_set_playlist(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        request: SetPlaylistRequest,
+    ) -> Result<Playlist> {
+        self.set_playlist_internal(room_id, actor_user_id, request, true)
+            .await
+    }
+
+    async fn set_playlist_internal(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: SetPlaylistRequest,
+        bypass_room_permissions: bool,
+    ) -> Result<Playlist> {
+        if !bypass_room_permissions {
+            // Renaming and reordering existing playlist entries requires REORDER_PLAYLIST,
+            // not ADD_MEDIA. Users who can only add media should not be able to rename or
+            // reorder items they do not own. REORDER_PLAYLIST is an admin-level permission
+            // (included in DEFAULT_ADMIN but not DEFAULT_MEMBER).
+            self.permission_service
+                .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
+                .await?;
+        }
 
         // Retry loop with optimistic locking
         const MAX_RETRIES: u32 = 3;
@@ -412,11 +459,33 @@ impl PlaylistService {
         user_id: UserId,
         playlist_id: PlaylistId,
     ) -> Result<()> {
-        // Check permission (admin or creator)
-        if !self
-            .permission_service
-            .is_admin_or_creator(&room_id, &user_id)
-            .await?
+        self.delete_playlist_internal(room_id, user_id, playlist_id, false)
+            .await
+    }
+
+    /// Management-only playlist deletion that bypasses room membership permission checks.
+    pub async fn admin_delete_playlist(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        playlist_id: PlaylistId,
+    ) -> Result<()> {
+        self.delete_playlist_internal(room_id, actor_user_id, playlist_id, true)
+            .await
+    }
+
+    async fn delete_playlist_internal(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        playlist_id: PlaylistId,
+        bypass_room_permissions: bool,
+    ) -> Result<()> {
+        if !bypass_room_permissions
+            && !self
+                .permission_service
+                .is_admin_or_creator(&room_id, &user_id)
+                .await?
         {
             return Err(Error::Authorization(
                 "Only admins or creators can delete playlists".to_string(),

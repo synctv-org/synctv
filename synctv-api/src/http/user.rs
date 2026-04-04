@@ -134,7 +134,12 @@ pub async fn update_user(
         tag = "User",
         params(
             ("page" = Option<i32>, Query, description = "Page number"),
-            ("page_size" = Option<i32>, Query, description = "Page size")
+            ("page_size" = Option<i32>, Query, description = "Page size"),
+            ("search" = Option<String>, Query, description = "Search by room name or description"),
+            ("status" = Option<String>, Query, description = "Filter by room status: active, pending, closed"),
+            ("is_banned" = Option<bool>, Query, description = "Filter by room ban state"),
+            ("sort_by" = Option<String>, Query, description = "Sort by: joined_at, created_at, updated_at, last_activity_at, name"),
+            ("sort_direction" = Option<String>, Query, description = "Sort direction: asc or desc")
         ),
         responses(
             (status = 200, description = "Joined rooms", body = ListParticipatedRoomsResponse),
@@ -154,9 +159,37 @@ pub async fn get_joined_rooms(
     let page_size_opt = params.get("page_size").and_then(|v| v.parse().ok());
     let (page, page_size) = super::validation::validate_pagination(page_opt, page_size_opt);
 
+    let req = crate::proto::client::ListParticipatedRoomsRequest {
+        page,
+        page_size,
+        search: params.get("search").cloned().unwrap_or_default(),
+        status: match params.get("status").map(String::as_str) {
+            Some("active") => synctv_proto::common::RoomStatus::Active as i32,
+            Some("pending") => synctv_proto::common::RoomStatus::Pending as i32,
+            Some("closed") => synctv_proto::common::RoomStatus::Closed as i32,
+            _ => synctv_proto::common::RoomStatus::Unspecified as i32,
+        },
+        is_banned: params
+            .get("is_banned")
+            .and_then(|value| value.parse::<bool>().ok()),
+        sort_by: match params.get("sort_by").map(String::as_str) {
+            Some("name") => crate::proto::client::RelatedRoomListSortBy::Name as i32,
+            Some("created_at") => crate::proto::client::RelatedRoomListSortBy::CreatedAt as i32,
+            Some("updated_at") => crate::proto::client::RelatedRoomListSortBy::UpdatedAt as i32,
+            Some("last_activity_at") => {
+                crate::proto::client::RelatedRoomListSortBy::LastActivityAt as i32
+            }
+            _ => crate::proto::client::RelatedRoomListSortBy::JoinedAt as i32,
+        },
+        sort_direction: match params.get("sort_direction").map(String::as_str) {
+            Some("asc") => crate::proto::client::SortDirection::Asc as i32,
+            _ => crate::proto::client::SortDirection::Desc as i32,
+        },
+    };
+
     let response = state
         .client_api
-        .get_joined_rooms(&auth.user_id.to_string(), page, page_size)
+        .get_joined_rooms(&auth.user_id.to_string(), req)
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -263,7 +296,30 @@ pub async fn list_created_rooms(
     let page_size_opt = params.get("page_size").and_then(|v| v.parse().ok());
     let (page, page_size) = super::validation::validate_pagination(page_opt, page_size_opt);
 
-    let req = crate::proto::client::ListCreatedRoomsRequest { page, page_size };
+    let req = crate::proto::client::ListCreatedRoomsRequest {
+        page,
+        page_size,
+        search: params.get("search").cloned().unwrap_or_default(),
+        status: match params.get("status").map(String::as_str) {
+            Some("active") => synctv_proto::common::RoomStatus::Active as i32,
+            Some("pending") => synctv_proto::common::RoomStatus::Pending as i32,
+            Some("closed") => synctv_proto::common::RoomStatus::Closed as i32,
+            _ => synctv_proto::common::RoomStatus::Unspecified as i32,
+        },
+        is_banned: params
+            .get("is_banned")
+            .and_then(|value| value.parse::<bool>().ok()),
+        sort_by: match params.get("sort_by").map(String::as_str) {
+            Some("name") => crate::proto::client::RoomListSortBy::Name as i32,
+            Some("updated_at") => crate::proto::client::RoomListSortBy::UpdatedAt as i32,
+            Some("last_activity_at") => crate::proto::client::RoomListSortBy::LastActivityAt as i32,
+            _ => crate::proto::client::RoomListSortBy::CreatedAt as i32,
+        },
+        sort_direction: match params.get("sort_direction").map(String::as_str) {
+            Some("asc") => crate::proto::client::SortDirection::Asc as i32,
+            _ => crate::proto::client::SortDirection::Desc as i32,
+        },
+    };
     let response = state
         .client_api
         .list_created_rooms(&auth.user_id.to_string(), req)

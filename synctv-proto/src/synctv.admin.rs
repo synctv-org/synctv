@@ -174,9 +174,23 @@ pub struct SendTestEmailResponse {
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListProviderInstancesRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListProviderInstancesRequest {
+    #[prost(int32, tag = "1")]
+    pub page: i32,
+    #[prost(int32, tag = "2")]
+    pub page_size: i32,
     /// Optional filter by media provider type
-    #[prost(string, tag = "1")]
+    #[prost(string, tag = "3")]
     pub provider_type: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(bool, optional, tag = "5")]
+    pub enabled: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag = "6")]
+    pub tls: ::core::option::Option<bool>,
+    #[prost(enumeration = "ProviderInstanceListSortBy", tag = "7")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "8")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -378,6 +392,9 @@ pub struct CreateUserRequest {
     /// Default: USER_ROLE_USER
     #[prost(enumeration = "super::common::UserRole", tag = "4")]
     pub role: i32,
+    /// Optional explicit initial status
+    #[prost(enumeration = "super::common::UserStatus", tag = "5")]
+    pub status: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -423,6 +440,10 @@ pub struct ListUsersRequest {
     /// Search by username or email
     #[prost(string, tag = "5")]
     pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "UserListSortBy", tag = "6")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "7")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -463,7 +484,6 @@ pub struct UpdateUserPasswordRequest {
     pub user_id: ::prost::alloc::string::String,
     /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars
     #[prost(string, tag = "2")]
-    #[serde(alias = "password")]
     pub new_password: ::prost::alloc::string::String,
     /// Audit trail: why the password was reset. Validation: max 500 chars
     #[prost(string, tag = "3")]
@@ -489,7 +509,6 @@ pub struct UpdateUserUsernameRequest {
     pub user_id: ::prost::alloc::string::String,
     /// Validation: min 3, max 32 chars, pattern: \[\\p{L}\p{N}\_-\]+
     #[prost(string, tag = "2")]
-    #[serde(alias = "username")]
     pub new_username: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -571,6 +590,16 @@ pub struct GetUserRoomsRequest {
     /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "3")]
     pub page_size: i32,
+    #[prost(enumeration = "super::common::RoomStatus", tag = "4")]
+    pub status: i32,
+    #[prost(string, tag = "5")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(bool, optional, tag = "6")]
+    pub is_banned: ::core::option::Option<bool>,
+    #[prost(enumeration = "RoomListSortBy", tag = "7")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "8")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -622,6 +651,10 @@ pub struct ListRoomsRequest {
     /// Optional filter by ban status (true = banned only, false = not banned, absent = all)
     #[prost(bool, optional, tag = "6")]
     pub is_banned: ::core::option::Option<bool>,
+    #[prost(enumeration = "RoomListSortBy", tag = "7")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "8")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -717,7 +750,6 @@ pub struct UpdateRoomPasswordRequest {
     /// Empty to remove password. SECURITY: Plaintext - requires TLS.
     #[prost(string, tag = "2")]
     #[serde(default)]
-    #[serde(alias = "password")]
     pub new_password: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -811,6 +843,16 @@ pub struct GetRoomMembersRequest {
     /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "3")]
     pub page_size: i32,
+    #[prost(string, tag = "4")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "super::common::RoomMemberRole", tag = "5")]
+    pub role: i32,
+    #[prost(enumeration = "super::common::MemberStatus", tag = "6")]
+    pub status: i32,
+    #[prost(enumeration = "RoomMemberListSortBy", tag = "7")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "8")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -857,8 +899,19 @@ pub struct RemoveAdminResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListAdminsRequest))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListAdminsRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListAdminsRequest {
+    #[prost(int32, tag = "1")]
+    pub page: i32,
+    #[prost(int32, tag = "2")]
+    pub page_size: i32,
+    #[prost(string, tag = "3")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "UserListSortBy", tag = "4")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "5")]
+    pub sort_direction: i32,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListAdminsResponse))]
@@ -904,9 +957,23 @@ pub struct GetSystemStatsResponse {
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListActiveStreamsRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListActiveStreamsRequest {
+    #[prost(int32, tag = "1")]
+    pub page: i32,
+    #[prost(int32, tag = "2")]
+    pub page_size: i32,
     /// optional filter by room
-    #[prost(string, tag = "1")]
+    #[prost(string, tag = "3")]
     pub room_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub user_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub node_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "ActiveStreamListSortBy", tag = "7")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "8")]
+    pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -1111,6 +1178,237 @@ impl ProviderInstanceStatus {
             "PROVIDER_INSTANCE_STATUS_CONNECTED" => Some(Self::Connected),
             "PROVIDER_INSTANCE_STATUS_DISCONNECTED" => Some(Self::Disconnected),
             "PROVIDER_INSTANCE_STATUS_ERROR" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_SortDirection))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SortDirection {
+    Unspecified = 0,
+    Asc = 1,
+    Desc = 2,
+}
+impl SortDirection {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SORT_DIRECTION_UNSPECIFIED",
+            Self::Asc => "SORT_DIRECTION_ASC",
+            Self::Desc => "SORT_DIRECTION_DESC",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SORT_DIRECTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "SORT_DIRECTION_ASC" => Some(Self::Asc),
+            "SORT_DIRECTION_DESC" => Some(Self::Desc),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_UserListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum UserListSortBy {
+    Unspecified = 0,
+    CreatedAt = 1,
+    UpdatedAt = 2,
+    Username = 3,
+    Email = 4,
+    Status = 5,
+    Role = 6,
+}
+impl UserListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "USER_LIST_SORT_BY_UNSPECIFIED",
+            Self::CreatedAt => "USER_LIST_SORT_BY_CREATED_AT",
+            Self::UpdatedAt => "USER_LIST_SORT_BY_UPDATED_AT",
+            Self::Username => "USER_LIST_SORT_BY_USERNAME",
+            Self::Email => "USER_LIST_SORT_BY_EMAIL",
+            Self::Status => "USER_LIST_SORT_BY_STATUS",
+            Self::Role => "USER_LIST_SORT_BY_ROLE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "USER_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "USER_LIST_SORT_BY_CREATED_AT" => Some(Self::CreatedAt),
+            "USER_LIST_SORT_BY_UPDATED_AT" => Some(Self::UpdatedAt),
+            "USER_LIST_SORT_BY_USERNAME" => Some(Self::Username),
+            "USER_LIST_SORT_BY_EMAIL" => Some(Self::Email),
+            "USER_LIST_SORT_BY_STATUS" => Some(Self::Status),
+            "USER_LIST_SORT_BY_ROLE" => Some(Self::Role),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_RoomListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RoomListSortBy {
+    Unspecified = 0,
+    CreatedAt = 1,
+    UpdatedAt = 2,
+    LastActivityAt = 3,
+    Name = 4,
+}
+impl RoomListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ROOM_LIST_SORT_BY_UNSPECIFIED",
+            Self::CreatedAt => "ROOM_LIST_SORT_BY_CREATED_AT",
+            Self::UpdatedAt => "ROOM_LIST_SORT_BY_UPDATED_AT",
+            Self::LastActivityAt => "ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT",
+            Self::Name => "ROOM_LIST_SORT_BY_NAME",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ROOM_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "ROOM_LIST_SORT_BY_CREATED_AT" => Some(Self::CreatedAt),
+            "ROOM_LIST_SORT_BY_UPDATED_AT" => Some(Self::UpdatedAt),
+            "ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT" => Some(Self::LastActivityAt),
+            "ROOM_LIST_SORT_BY_NAME" => Some(Self::Name),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_RoomMemberListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RoomMemberListSortBy {
+    Unspecified = 0,
+    JoinedAt = 1,
+    Username = 2,
+    Role = 3,
+    Status = 4,
+}
+impl RoomMemberListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED",
+            Self::JoinedAt => "ROOM_MEMBER_LIST_SORT_BY_JOINED_AT",
+            Self::Username => "ROOM_MEMBER_LIST_SORT_BY_USERNAME",
+            Self::Role => "ROOM_MEMBER_LIST_SORT_BY_ROLE",
+            Self::Status => "ROOM_MEMBER_LIST_SORT_BY_STATUS",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "ROOM_MEMBER_LIST_SORT_BY_JOINED_AT" => Some(Self::JoinedAt),
+            "ROOM_MEMBER_LIST_SORT_BY_USERNAME" => Some(Self::Username),
+            "ROOM_MEMBER_LIST_SORT_BY_ROLE" => Some(Self::Role),
+            "ROOM_MEMBER_LIST_SORT_BY_STATUS" => Some(Self::Status),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ProviderInstanceListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ProviderInstanceListSortBy {
+    Unspecified = 0,
+    Name = 1,
+    Endpoint = 2,
+    CreatedAt = 3,
+    UpdatedAt = 4,
+}
+impl ProviderInstanceListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED",
+            Self::Name => "PROVIDER_INSTANCE_LIST_SORT_BY_NAME",
+            Self::Endpoint => "PROVIDER_INSTANCE_LIST_SORT_BY_ENDPOINT",
+            Self::CreatedAt => "PROVIDER_INSTANCE_LIST_SORT_BY_CREATED_AT",
+            Self::UpdatedAt => "PROVIDER_INSTANCE_LIST_SORT_BY_UPDATED_AT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "PROVIDER_INSTANCE_LIST_SORT_BY_NAME" => Some(Self::Name),
+            "PROVIDER_INSTANCE_LIST_SORT_BY_ENDPOINT" => Some(Self::Endpoint),
+            "PROVIDER_INSTANCE_LIST_SORT_BY_CREATED_AT" => Some(Self::CreatedAt),
+            "PROVIDER_INSTANCE_LIST_SORT_BY_UPDATED_AT" => Some(Self::UpdatedAt),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ActiveStreamListSortBy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActiveStreamListSortBy {
+    Unspecified = 0,
+    StartedAt = 1,
+    RoomId = 2,
+    MediaId = 3,
+    UserId = 4,
+    NodeId = 5,
+}
+impl ActiveStreamListSortBy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVE_STREAM_LIST_SORT_BY_UNSPECIFIED",
+            Self::StartedAt => "ACTIVE_STREAM_LIST_SORT_BY_STARTED_AT",
+            Self::RoomId => "ACTIVE_STREAM_LIST_SORT_BY_ROOM_ID",
+            Self::MediaId => "ACTIVE_STREAM_LIST_SORT_BY_MEDIA_ID",
+            Self::UserId => "ACTIVE_STREAM_LIST_SORT_BY_USER_ID",
+            Self::NodeId => "ACTIVE_STREAM_LIST_SORT_BY_NODE_ID",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVE_STREAM_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVE_STREAM_LIST_SORT_BY_STARTED_AT" => Some(Self::StartedAt),
+            "ACTIVE_STREAM_LIST_SORT_BY_ROOM_ID" => Some(Self::RoomId),
+            "ACTIVE_STREAM_LIST_SORT_BY_MEDIA_ID" => Some(Self::MediaId),
+            "ACTIVE_STREAM_LIST_SORT_BY_USER_ID" => Some(Self::UserId),
+            "ACTIVE_STREAM_LIST_SORT_BY_NODE_ID" => Some(Self::NodeId),
             _ => None,
         }
     }

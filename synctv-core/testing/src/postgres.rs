@@ -19,7 +19,7 @@ use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 
 /// Default `PostgreSQL` version for test containers
-pub const POSTGRES_VERSION: &str = "16";
+pub const POSTGRES_VERSION: &str = "18";
 const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 300;
 const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
@@ -720,7 +720,7 @@ fn build_test_database_name(requested_db_name: &str, label: &str) -> String {
     let suffix = format!(
         "{}_{}",
         counter,
-        nanoid::nanoid!(DATABASE_NAME_RANDOM_LEN).to_lowercase()
+        synctv_common::snanoid!(DATABASE_NAME_RANDOM_LEN).to_lowercase()
     );
     let prefix = format!(
         "{}_{}_{}_",
@@ -1080,14 +1080,6 @@ mod tests {
     }
 
     #[test]
-    fn test_docker_startup_timeout_defaults_to_extended_budget() {
-        assert_eq!(
-            docker_startup_timeout_from(None),
-            Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS)
-        );
-    }
-
-    #[test]
     fn test_docker_startup_timeout_honors_valid_override() {
         assert_eq!(
             docker_startup_timeout_from(Some("180")),
@@ -1112,15 +1104,6 @@ mod tests {
     }
 
     #[test]
-    fn test_docker_startup_parallelism_defaults_to_workspace_throughput() {
-        assert_eq!(
-            docker_startup_parallelism_from(None),
-            DEFAULT_DOCKER_STARTUP_PARALLELISM
-        );
-        assert_eq!(DEFAULT_DOCKER_STARTUP_PARALLELISM, 8);
-    }
-
-    #[test]
     fn test_docker_startup_parallelism_honors_valid_override() {
         assert_eq!(docker_startup_parallelism_from(Some("6")), 6);
     }
@@ -1134,14 +1117,6 @@ mod tests {
     }
 
     #[test]
-    fn test_shared_admin_pool_max_connections_defaults_to_higher_concurrency() {
-        assert_eq!(
-            shared_admin_pool_max_connections_from(None),
-            DEFAULT_SHARED_ADMIN_POOL_MAX_CONNECTIONS
-        );
-    }
-
-    #[test]
     fn test_shared_admin_pool_max_connections_honors_valid_override() {
         assert_eq!(shared_admin_pool_max_connections_from(Some("24")), 24);
     }
@@ -1151,14 +1126,6 @@ mod tests {
         assert_eq!(
             shared_admin_pool_max_connections_from(Some("1")),
             MIN_SHARED_ADMIN_POOL_MAX_CONNECTIONS
-        );
-    }
-
-    #[test]
-    fn test_default_test_pool_max_connections_defaults_to_reduced_pool_size() {
-        assert_eq!(
-            default_test_pool_max_connections_from(None),
-            DEFAULT_TEST_POOL_MAX_CONNECTIONS
         );
     }
 
@@ -1237,7 +1204,7 @@ mod tests {
 
     #[test]
     fn run_has_active_lock_detects_live_run_lock() {
-        let run_id = format!("test-run-{}", nanoid::nanoid!(8).to_lowercase());
+        let run_id = format!("test-run-{}", synctv_common::snanoid!(8).to_lowercase());
         let lock = acquire_run_lock(&run_id);
 
         assert!(

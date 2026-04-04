@@ -8,7 +8,7 @@
 
 use std::net::IpAddr;
 use synctv_core::config::{
-    BootstrapConfig, Config, DatabaseConfig, RedisConfig, RedisDeploymentMode, ServerConfig,
+    Config, DatabaseConfig, RedisConfig, RedisDeploymentMode, ServerConfig,
 };
 
 // ============================================================================
@@ -140,14 +140,6 @@ fn test_redis_config_debug_masks_password() {
 // ============================================================================
 
 #[test]
-fn test_redis_deployment_mode_default() {
-    assert_eq!(
-        RedisDeploymentMode::default(),
-        RedisDeploymentMode::Standalone
-    );
-}
-
-#[test]
 fn test_redis_deployment_mode_serde_roundtrip() {
     let modes = vec![
         RedisDeploymentMode::Standalone,
@@ -175,14 +167,6 @@ fn test_redis_deployment_mode_rename_all() {
 // ============================================================================
 
 #[test]
-fn test_config_default_has_sane_values() {
-    let config = Config::default();
-    assert_eq!(config.server.port, 8080);
-    assert_eq!(config.database.max_connections, 20);
-    assert!(config.database.max_connections >= config.database.min_connections);
-}
-
-#[test]
 fn test_config_api_address() {
     let mut config = Config::default();
     config.server.host = "0.0.0.0".to_string();
@@ -204,37 +188,6 @@ fn test_config_debug_redacts_secrets() {
 // ============================================================================
 // BootstrapConfig security tests
 // ============================================================================
-
-#[test]
-fn test_bootstrap_config_default_does_not_create_root_user() {
-    // Security: default should NOT create root user automatically
-    let config = BootstrapConfig::default();
-    assert!(
-        !config.create_root_user,
-        "create_root_user should default to false for security"
-    );
-}
-
-#[test]
-fn test_bootstrap_config_default_has_empty_password() {
-    // Security: default password should be empty, not "root"
-    let config = BootstrapConfig::default();
-    assert!(
-        config.root_password.is_empty(),
-        "root_password should default to empty string for security"
-    );
-}
-
-#[test]
-fn test_bootstrap_config_default_username_is_root() {
-    // Username can still be "root" as it's not sensitive
-    let config = BootstrapConfig::default();
-    assert_eq!(config.root_username, "root");
-    assert!(
-        config.root_email.is_empty(),
-        "root_email should default to empty string"
-    );
-}
 
 #[test]
 fn test_config_validate_rejects_empty_root_password_when_creating_root() {

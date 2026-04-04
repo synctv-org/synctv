@@ -34,7 +34,7 @@ async fn test_critical_events_high_priority() {
 
     // Send a critical event (PermissionChanged is marked as critical)
     let critical_event = ClusterEvent::PermissionChanged {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),
         target_user_id: user_id.clone(),
         target_username: "listener".to_string(),

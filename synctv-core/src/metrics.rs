@@ -1252,7 +1252,7 @@ pub fn normalize_path(path: &str) -> String {
     result.join("/")
 }
 
-/// Check if a path segment looks like a dynamic ID (UUID, numeric, or nanoid).
+/// Check if a path segment looks like a dynamic ID (UUID, numeric, or base62 ID).
 fn is_dynamic_segment(segment: &str) -> bool {
     // UUID format: 8-4-4-4-12 hex chars (with hyphens, 36 chars total)
     if segment.len() == 36 && segment.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {

@@ -1,0 +1,35 @@
+{{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" }}
+apiVersion: apps.kubeblocks.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "synctv.postgresql.kubeblocks.clusterName" . }}
+spec:
+  terminationPolicy: {{ .Values.postgresql.kubeblocks.terminationPolicy | default "Delete" }}
+  clusterDef: {{ .Values.postgresql.kubeblocks.clusterDef | default "postgresql" }}
+  topology: {{ .Values.postgresql.kubeblocks.topology | default "replication" }}
+  componentSpecs:
+    - name: postgresql
+      componentDef: {{ .Values.postgresql.kubeblocks.componentDef | default "postgresql" | quote }}
+      {{- if .Values.postgresql.kubeblocks.serviceVersion }}
+      serviceVersion: {{ .Values.postgresql.kubeblocks.serviceVersion | quote }}
+      {{- end }}
+      disableExporter: {{ .Values.postgresql.kubeblocks.disableExporter | default true }}
+      replicas: {{ .Values.postgresql.kubeblocks.replicas | default 2 }}
+      podUpdatePolicy: PreferInPlace
+      env:
+        - name: PG_MODE
+          value: {{ .Values.postgresql.kubeblocks.topology | default "replication" | quote }}
+      resources:
+        {{- toYaml (.Values.postgresql.kubeblocks.resources | default (dict "requests" (dict "cpu" "500m" "memory" "512Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | nindent 8 }}
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            {{- with (.Values.postgresql.kubeblocks.storage.storageClass | default .Values.global.storageClass) }}
+            storageClassName: {{ . | quote }}
+            {{- end }}
+            resources:
+              requests:
+                storage: {{ .Values.postgresql.kubeblocks.storage.size | default "20Gi" }}
+{{- end }}

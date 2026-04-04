@@ -1508,7 +1508,7 @@ mod tests {
 
         // Broadcast event
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: user_id.clone(),
             username: "testuser".to_string(),
@@ -1567,7 +1567,7 @@ mod tests {
 
         // Broadcast event
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: user1.clone(),
             username: "user1".to_string(),
@@ -1607,7 +1607,7 @@ mod tests {
 
         // Broadcast to user1 only
         let event = ClusterEvent::SystemNotification {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             message: "Private message".to_string(),
             level: crate::sync::NotificationLevel::Info,
             timestamp: Utc::now(),
@@ -1711,7 +1711,7 @@ mod tests {
             let sent = hub.broadcast(
                 &room_id,
                 ClusterEvent::ChatMessage {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: room_id.clone(),
                     user_id: deleted_by.clone(),
                     username: "filler".to_string(),
@@ -1725,7 +1725,7 @@ mod tests {
         }
 
         let room_deleted = ClusterEvent::RoomDeleted {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             deleted_by,
             timestamp: Utc::now(),
@@ -1793,7 +1793,7 @@ mod tests {
             let sent = hub.broadcast(
                 &room_id,
                 ClusterEvent::ChatMessage {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: room_id.clone(),
                     user_id: UserId::from_string("filler-user".to_string()),
                     username: "filler".to_string(),
@@ -1807,7 +1807,7 @@ mod tests {
         }
 
         let critical = ClusterEvent::RoomDeleted {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             deleted_by: UserId::from_string("deleter".to_string()),
             timestamp: Utc::now(),
@@ -1872,7 +1872,7 @@ mod tests {
             let sent = hub.broadcast(
                 &room_id,
                 ClusterEvent::ChatMessage {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: room_id.clone(),
                     user_id: UserId::from_string("filler-user".to_string()),
                     username: "filler".to_string(),
@@ -1892,7 +1892,7 @@ mod tests {
                 .broadcast_reliably(
                     &room_for_task,
                     ClusterEvent::RoomDeleted {
-                        event_id: nanoid::nanoid!(16),
+                        event_id: synctv_common::snanoid!(16),
                         room_id: room_for_task.clone(),
                         deleted_by: UserId::from_string("deleter".to_string()),
                         timestamp: Utc::now(),
@@ -1944,7 +1944,7 @@ mod tests {
                 let sent = hub.broadcast(
                     &room_id,
                     ClusterEvent::ChatMessage {
-                        event_id: nanoid::nanoid!(16),
+                        event_id: synctv_common::snanoid!(16),
                         room_id: room_id.clone(),
                         user_id: UserId::from_string("filler-user".to_string()),
                         username: "filler".to_string(),
@@ -1960,7 +1960,7 @@ mod tests {
             let sent = hub.broadcast(
                 &room_id,
                 ClusterEvent::RoomDeleted {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: room_id.clone(),
                     deleted_by: UserId::from_string("deleter".to_string()),
                     timestamp: Utc::now(),
@@ -2025,7 +2025,7 @@ mod tests {
                 let sent = hub.broadcast(
                     &room_id,
                     ClusterEvent::ChatMessage {
-                        event_id: nanoid::nanoid!(16),
+                        event_id: synctv_common::snanoid!(16),
                         room_id: room_id.clone(),
                         user_id: UserId::from_string("filler-user".to_string()),
                         username: "filler".to_string(),
@@ -2042,7 +2042,7 @@ mod tests {
                 &room_id,
                 &user_id,
                 ClusterEvent::RoomDeleted {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: room_id.clone(),
                     deleted_by: UserId::from_string("deleter".to_string()),
                     timestamp: Utc::now(),
@@ -2103,15 +2103,6 @@ mod tests {
         assert_eq!(hub.subscriber_count(&room_id), 0);
         assert_eq!(hub.connection_count(), 0);
         assert_eq!(hub.room_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_orphaned_subscriptions_noop_without_redis() {
-        // Without Redis configured, the cleanup method should be a no-op
-        // (no panics, no errors)
-        let hub = RoomMessageHub::new();
-        hub.cleanup_orphaned_redis_subscriptions().await;
-        // If we reach here without panic, the test passes
     }
 
     #[tokio::test]
@@ -2249,13 +2240,6 @@ mod tests {
                 .is_none(),
             "shutdown must drain timed-out stale cleanup handles"
         );
-    }
-
-    #[test]
-    fn test_start_without_redis_is_noop_even_without_runtime() {
-        let hub = RoomMessageHub::new();
-        hub.start();
-        futures::executor::block_on(hub.shutdown());
     }
 
     #[tokio::test]

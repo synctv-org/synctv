@@ -56,8 +56,8 @@ async fn insert_user(pool: &PgPool, user: &User) -> User {
 fn make_user(status: UserStatus, password_version: i32) -> User {
     User {
         id: UserId::new(),
-        username: format!("test_user_{}", nanoid::nanoid!(8)),
-        email: Some(format!("{}@test.com", nanoid::nanoid!(8))),
+        username: format!("test_user_{}", synctv_common::snanoid!(8)),
+        email: Some(format!("{}@test.com", synctv_common::snanoid!(8))),
         password_hash: "$argon2id$v=19$m=16384,t=3,p=1$fake$fakehash".to_string(),
         role: UserRole::User,
         status,
@@ -77,7 +77,7 @@ fn make_claims(user_id: &UserId, pv: i32) -> Claims {
     Claims {
         sub: user_id.as_str().to_string(),
         typ: "access".to_string(),
-        jti: nanoid::nanoid!(16),
+        jti: synctv_common::snanoid!(16),
         iat: now.timestamp(),
         exp: (now + chrono::Duration::hours(1)).timestamp(),
         pv,

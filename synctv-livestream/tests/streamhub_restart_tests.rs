@@ -14,8 +14,8 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(250);
-const LEGACY_STOP_TIMEOUT: Duration = Duration::from_millis(100);
-const RELAXED_STOP_TIMEOUT: Duration = Duration::from_millis(500);
+const TIGHT_STOP_TIMEOUT: Duration = Duration::from_millis(100);
+const STOP_COMPLETION_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Simulates the two-phase cleanup protocol used during `StreamHub` restart.
 ///
@@ -86,7 +86,7 @@ async fn test_two_phase_cleanup_timeout() {
         .expect("receiver should observe the stop request");
 
     // Wait with short timeout (should timeout)
-    let result = tokio::time::timeout(LEGACY_STOP_TIMEOUT, stop_done_rx).await;
+    let result = tokio::time::timeout(TIGHT_STOP_TIMEOUT, stop_done_rx).await;
     assert!(result.is_err(), "Should timeout when stop takes too long");
 
     // Clean up
@@ -338,21 +338,18 @@ async fn test_restarting_flag_set_before_stop_request() {
 }
 
 // ============================================================================
-// D5: Verify stop_all timeout is sufficient (5 seconds, not 100ms)
+// Stop completion timeout behavior
 // ============================================================================
 
-/// D5 fix verification: the cleanup timeout must comfortably exceed the legacy
-/// 100ms window, without making the regression test itself slow.
-///
-/// The original 100ms timeout was too short for streams that need to cleanly
-/// disconnect from remote servers. This test verifies that a slow stop_all()
-/// completes within the 5-second window instead of timing out.
+/// Cleanup should complete successfully when it exceeds the tight timeout used
+/// by the timeout-path test but still fits within the normal stop completion
+/// budget used during restart.
 #[tokio::test]
-async fn test_stop_all_timeout_sufficient_for_slow_cleanup() {
+async fn test_stop_all_completes_with_reasonable_cleanup_delay() {
     let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
 
-    // Spawn a receiver that is slower than the legacy 100ms timeout but still
-    // comfortably within the relaxed timeout.
+    // Use a delay that would fail the tight timeout test but should still be
+    // accepted during normal restart cleanup.
     let receiver_handle = tokio::spawn(async move {
         while let Some(stop_done_tx) = stop_streams_rx.recv().await {
             tokio::time::sleep(Duration::from_millis(150)).await;
@@ -364,42 +361,14 @@ async fn test_stop_all_timeout_sufficient_for_slow_cleanup() {
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
-    let result = tokio::time::timeout(RELAXED_STOP_TIMEOUT, stop_done_rx).await;
+    let result = tokio::time::timeout(STOP_COMPLETION_TIMEOUT, stop_done_rx).await;
 
     assert!(
         result.is_ok(),
-        "cleanup slower than the legacy timeout should complete within the relaxed timeout"
+        "cleanup should complete within the restart stop-completion timeout"
     );
 
     // Clean up
-    drop(stop_streams_tx);
-    let _ = receiver_handle.await;
-}
-
-/// D5: the old 100ms timeout would fail for cleanup taking slightly longer
-/// than 100ms. Keep the regression fast by using a 120ms cleanup.
-#[tokio::test]
-async fn test_stop_all_handles_moderate_cleanup_time() {
-    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
-
-    // Spawn a receiver with 120ms cleanup (would fail with 100ms timeout).
-    let receiver_handle = tokio::spawn(async move {
-        while let Some(stop_done_tx) = stop_streams_rx.recv().await {
-            tokio::time::sleep(Duration::from_millis(120)).await;
-            let _ = stop_done_tx.send(());
-        }
-    });
-
-    let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
-    stop_streams_tx.send(stop_done_tx).await.unwrap();
-
-    let result = tokio::time::timeout(RELAXED_STOP_TIMEOUT, stop_done_rx).await;
-
-    assert!(
-        result.is_ok(),
-        "cleanup just above the legacy timeout should succeed with the relaxed timeout"
-    );
-
     drop(stop_streams_tx);
     let _ = receiver_handle.await;
 }

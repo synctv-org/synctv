@@ -486,7 +486,7 @@ impl JwtService {
                 TokenType::Refresh => "refresh".to_string(),
                 TokenType::Guest => "guest".to_string(),
             },
-            jti: nanoid::nanoid!(16),
+            jti: synctv_common::snanoid!(16),
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
             pv: password_version,
@@ -587,13 +587,13 @@ impl JwtService {
     ) -> Result<String> {
         let now = Utc::now();
         let duration = Duration::hours(self.guest_token_duration_hours as i64);
-        let session_id = nanoid::nanoid!(16); // Generate random session ID
+        let session_id = synctv_common::snanoid!(16); // Generate random session ID
 
         let guest_claims = GuestClaims {
             sub: format!("guest:{}:{}", room_id.as_str(), session_id),
             room_id: room_id.as_str().to_string(),
             session_id,
-            jti: nanoid::nanoid!(16), // Unique JWT ID for individual token revocation
+            jti: synctv_common::snanoid!(16), // Unique JWT ID for individual token revocation
             typ: "guest".to_string(),
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
@@ -695,7 +695,7 @@ impl JwtService {
         let mut claims_with_standard = claims.clone();
         if let Some(obj) = claims_with_standard.as_object_mut() {
             obj.entry("jti".to_string())
-                .or_insert_with(|| serde_json::Value::String(nanoid::nanoid!(16)));
+                .or_insert_with(|| serde_json::Value::String(synctv_common::snanoid!(16)));
 
             obj.entry("iat".to_string())
                 .or_insert_with(|| serde_json::Value::Number(now.timestamp().into()));

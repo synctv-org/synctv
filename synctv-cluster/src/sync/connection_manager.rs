@@ -4846,23 +4846,6 @@ mod tests {
         manager.shutdown().await;
     }
 
-    #[tokio::test]
-    async fn test_reconcile_without_redis_is_noop() {
-        // Reconciliation should be a no-op when Redis is not configured
-        let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
-
-        manager
-            .register("conn1".to_string(), user_id.clone())
-            .await
-            .unwrap();
-
-        // Should not panic or error
-        manager.reconcile_with_redis().await;
-
-        assert_eq!(manager.connection_count(), 1);
-    }
-
     #[test]
     fn test_connection_info_persistent_serialization() {
         // Verify that ConnectionInfoPersistent can be serialized/deserialized

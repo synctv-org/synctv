@@ -63,7 +63,7 @@ spec:
               name: monitoring
       ports:
         - protocol: TCP
-          port: {{ .Values.config.server.port }}
+          port: {{ .Values.metrics.port | default 9090 }}
     {{- end }}
   {{- end }}
   {{- if has "Egress" .Values.networkPolicy.policyTypes }}
@@ -82,22 +82,33 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              {{- range $key, $value := .Values.networkPolicy.postgresSelector }}
-              {{ $key }}: {{ $value | quote }}
+              {{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" }}
+              app.kubernetes.io/instance: {{ include "synctv.postgresql.kubeblocks.clusterName" . | quote }}
+              apps.kubeblocks.io/component-name: "postgresql"
+              kubeblocks.io/role: "primary"
+              {{- else }}
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+              app.kubernetes.io/name: {{ include "synctv.name" . | quote }}
+              app.kubernetes.io/component: "postgresql"
               {{- end }}
       ports:
         - protocol: TCP
-          port: {{ .Values.config.database.port }}
+          port: {{ include "synctv.postgresql.port" . }}
     # Allow Redis
     - to:
         - podSelector:
             matchLabels:
-              {{- range $key, $value := .Values.networkPolicy.redisSelector }}
-              {{ $key }}: {{ $value | quote }}
+              {{- if eq (include "synctv.redis.mode" .) "kubeblocks" }}
+              app.kubernetes.io/instance: {{ include "synctv.redis.kubeblocks.clusterName" . | quote }}
+              apps.kubeblocks.io/component-name: "redis"
+              {{- else }}
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+              app.kubernetes.io/name: {{ include "synctv.name" . | quote }}
+              app.kubernetes.io/component: "redis"
               {{- end }}
       ports:
         - protocol: TCP
-          port: {{ .Values.config.redis.port }}
+          port: {{ include "synctv.redis.port" . }}
     # Allow internal cluster traffic (shared API port)
     - to:
         - podSelector:

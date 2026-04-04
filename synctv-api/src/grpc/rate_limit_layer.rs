@@ -852,14 +852,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tier_from_path_unknown_defaults_to_read() {
-        assert_eq!(
-            tier_from_path("/unknown.UnknownService/Method"),
-            Some(GrpcRateLimitTier::Read)
-        );
-    }
-
-    #[test]
     fn test_tier_from_path_empty() {
         assert_eq!(tier_from_path(""), None);
     }

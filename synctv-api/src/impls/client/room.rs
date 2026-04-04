@@ -10,6 +10,89 @@ use super::convert::{
 use super::ClientApiImpl;
 use super::{validate_password_for_set, validate_password_for_verify};
 
+fn build_public_room_list_query(
+    req: crate::proto::client::ListRoomsRequest,
+) -> synctv_core::models::RoomListQuery {
+    let page = if req.page > 0 { req.page as u32 } else { 1 };
+    let page_size = if req.page_size > 0 {
+        (req.page_size as u32).min(100)
+    } else {
+        20
+    };
+
+    synctv_core::models::RoomListQuery {
+        pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
+        search: (!req.search.is_empty()).then_some(req.search),
+        status: Some(synctv_core::models::RoomStatus::Active),
+        is_banned: Some(false),
+        sort_by: match crate::proto::client::RoomListSortBy::try_from(req.sort_by) {
+            Ok(crate::proto::client::RoomListSortBy::Name) => {
+                synctv_core::models::RoomListSortBy::Name
+            }
+            Ok(crate::proto::client::RoomListSortBy::UpdatedAt) => {
+                synctv_core::models::RoomListSortBy::UpdatedAt
+            }
+            Ok(crate::proto::client::RoomListSortBy::LastActivityAt) => {
+                synctv_core::models::RoomListSortBy::LastActivityAt
+            }
+            _ => synctv_core::models::RoomListSortBy::CreatedAt,
+        },
+        sort_direction: match crate::proto::client::SortDirection::try_from(req.sort_direction) {
+            Ok(crate::proto::client::SortDirection::Asc) => synctv_core::models::SortDirection::Asc,
+            _ => synctv_core::models::SortDirection::Desc,
+        },
+        ..Default::default()
+    }
+}
+
+fn build_participated_room_list_query(
+    req: crate::proto::client::ListParticipatedRoomsRequest,
+) -> synctv_core::models::RelatedRoomListQuery {
+    let page = if req.page > 0 { req.page as u32 } else { 1 };
+    let page_size = if req.page_size > 0 {
+        (req.page_size as u32).min(100)
+    } else {
+        20
+    };
+
+    synctv_core::models::RelatedRoomListQuery {
+        pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
+        search: (!req.search.is_empty()).then_some(req.search),
+        status: match synctv_proto::common::RoomStatus::try_from(req.status) {
+            Ok(synctv_proto::common::RoomStatus::Active) => {
+                Some(synctv_core::models::RoomStatus::Active)
+            }
+            Ok(synctv_proto::common::RoomStatus::Pending) => {
+                Some(synctv_core::models::RoomStatus::Pending)
+            }
+            Ok(synctv_proto::common::RoomStatus::Closed) => {
+                Some(synctv_core::models::RoomStatus::Closed)
+            }
+            _ => None,
+        },
+        is_banned: req.is_banned,
+        sort_by: match crate::proto::client::RelatedRoomListSortBy::try_from(req.sort_by) {
+            Ok(crate::proto::client::RelatedRoomListSortBy::Name) => {
+                synctv_core::models::RelatedRoomListSortBy::Name
+            }
+            Ok(crate::proto::client::RelatedRoomListSortBy::CreatedAt) => {
+                synctv_core::models::RelatedRoomListSortBy::CreatedAt
+            }
+            Ok(crate::proto::client::RelatedRoomListSortBy::UpdatedAt) => {
+                synctv_core::models::RelatedRoomListSortBy::UpdatedAt
+            }
+            Ok(crate::proto::client::RelatedRoomListSortBy::LastActivityAt) => {
+                synctv_core::models::RelatedRoomListSortBy::LastActivityAt
+            }
+            _ => synctv_core::models::RelatedRoomListSortBy::JoinedAt,
+        },
+        sort_direction: match crate::proto::client::SortDirection::try_from(req.sort_direction) {
+            Ok(crate::proto::client::SortDirection::Asc) => synctv_core::models::SortDirection::Asc,
+            _ => synctv_core::models::SortDirection::Desc,
+        },
+    }
+}
+
 impl ClientApiImpl {
     /// Get the currently playing media for a room.
     ///
@@ -40,20 +123,7 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::ListRoomsRequest,
     ) -> Result<crate::proto::client::ListRoomsResponse, ApiError> {
-        // Clamp negative i32 values to valid u32 range before passing to PageParams.
-        // Without this, -1i32 as u32 wraps to u32::MAX, causing absurd page numbers.
-        let page = u32::try_from(req.page).unwrap_or(1);
-        let page_size = u32::try_from(req.page_size).unwrap_or(1).min(100);
-
-        let mut query = synctv_core::models::RoomListQuery {
-            pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
-            status: Some(synctv_core::models::RoomStatus::Active),
-            is_banned: Some(false),
-            ..Default::default()
-        };
-        if !req.search.is_empty() {
-            query.search = Some(req.search);
-        }
+        let query = build_public_room_list_query(req);
         let (rooms, total) = self
             .room_service
             .list_rooms(&query)
@@ -83,17 +153,13 @@ impl ClientApiImpl {
     pub async fn get_joined_rooms(
         &self,
         user_id: &str,
-        page: i32,
-        page_size: i32,
+        req: crate::proto::client::ListParticipatedRoomsRequest,
     ) -> Result<crate::proto::client::ListParticipatedRoomsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        // Clamp negative i32 values to valid u32 range and cap page_size to 100.
-        let page = u32::try_from(page).unwrap_or(1);
-        let page_size = u32::try_from(page_size).unwrap_or(1).min(100);
-        let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
+        let query = build_participated_room_list_query(req);
         let (rooms, total) = self
             .room_service
-            .list_joined_rooms_with_details(&uid, pagination)
+            .list_joined_rooms_with_query(&uid, &query)
             .await
             .map_err(ApiError::from)?;
 
@@ -189,7 +255,7 @@ impl ClientApiImpl {
         if let Some(cluster_event) = cluster_event {
             cluster_event.publish(synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::RoomCreated {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: room.id.clone(),
                     room_name: room.name.clone(),
                     creator_id: uid,
@@ -347,7 +413,7 @@ impl ClientApiImpl {
         if let Some(cluster_event) = cluster_event {
             cluster_event.publish(synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::UserLeft {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: rid,
                     user_id: uid,
                     username,
@@ -383,7 +449,7 @@ impl ClientApiImpl {
         if let Some(cluster_event) = cluster_event {
             cluster_event.publish(synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::RoomDeleted {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: rid.clone(),
                     deleted_by: uid,
                     timestamp: chrono::Utc::now(),
@@ -437,7 +503,7 @@ impl ClientApiImpl {
         if let Some(cluster_event) = cluster_event {
             cluster_event.publish(synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: rid.clone(),
                     user_id: uid,
                     username,
@@ -648,7 +714,7 @@ impl ClientApiImpl {
                 tx,
                 synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
-                        event_id: nanoid::nanoid!(16),
+                        event_id: synctv_common::snanoid!(16),
                         room_id: rid,
                         user_id: uid,
                         username,
@@ -672,20 +738,50 @@ impl ClientApiImpl {
         req: crate::proto::client::ListCreatedRoomsRequest,
     ) -> Result<crate::proto::client::ListCreatedRoomsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-
-        let pagination = synctv_core::models::PageParams::new(
-            Some(u32::try_from(req.page).unwrap_or(1)),
-            Some(
-                u32::try_from(req.page_size)
-                    .ok()
-                    .filter(|&ps| ps > 0 && ps <= 50)
-                    .unwrap_or(10),
+        let query = synctv_core::models::RoomListQuery {
+            pagination: synctv_core::models::PageParams::new(
+                Some(u32::try_from(req.page).unwrap_or(1).max(1)),
+                Some(u32::try_from(req.page_size).unwrap_or(20).clamp(1, 100)),
             ),
-        );
+            status: match synctv_proto::common::RoomStatus::try_from(req.status) {
+                Ok(synctv_proto::common::RoomStatus::Active) => {
+                    Some(synctv_core::models::RoomStatus::Active)
+                }
+                Ok(synctv_proto::common::RoomStatus::Pending) => {
+                    Some(synctv_core::models::RoomStatus::Pending)
+                }
+                Ok(synctv_proto::common::RoomStatus::Closed) => {
+                    Some(synctv_core::models::RoomStatus::Closed)
+                }
+                _ => None,
+            },
+            search: (!req.search.is_empty()).then_some(req.search),
+            is_banned: req.is_banned,
+            creator_id: Some(uid.as_str().to_string()),
+            sort_by: match crate::proto::client::RoomListSortBy::try_from(req.sort_by) {
+                Ok(crate::proto::client::RoomListSortBy::Name) => {
+                    synctv_core::models::RoomListSortBy::Name
+                }
+                Ok(crate::proto::client::RoomListSortBy::UpdatedAt) => {
+                    synctv_core::models::RoomListSortBy::UpdatedAt
+                }
+                Ok(crate::proto::client::RoomListSortBy::LastActivityAt) => {
+                    synctv_core::models::RoomListSortBy::LastActivityAt
+                }
+                _ => synctv_core::models::RoomListSortBy::CreatedAt,
+            },
+            sort_direction: match crate::proto::client::SortDirection::try_from(req.sort_direction)
+            {
+                Ok(crate::proto::client::SortDirection::Asc) => {
+                    synctv_core::models::SortDirection::Asc
+                }
+                _ => synctv_core::models::SortDirection::Desc,
+            },
+        };
 
         let (rooms_with_count, total) = self
             .room_service
-            .list_rooms_by_creator_with_count(&uid, pagination)
+            .list_rooms_with_count(&query)
             .await
             .map_err(ApiError::from)?;
 
@@ -799,6 +895,7 @@ impl ClientApiImpl {
             status: Some(synctv_core::models::RoomStatus::Active),
             is_banned: Some(false),
             creator_id: None,
+            ..Default::default()
         };
 
         let (rooms, _total) = self
@@ -877,8 +974,7 @@ impl ClientApiImpl {
         // Cursor-based keyset pagination using (created_at, id) composite key.
         // Cursor format: "<rfc3339_created_at>|<id>"
         let cursor = if let Some((ts_str, id)) = req.cursor.split_once('|') {
-            let ts = chrono::DateTime::parse_from_rfc3339(ts_str)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
+            let ts = synctv_common::time::parse_datetime_to_utc(ts_str)
                 .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
             Some((ts, id))
         } else {
@@ -889,7 +985,13 @@ impl ClientApiImpl {
             .get_chat_history_cursor(&rid, cursor.as_ref().map(|(ts, id)| (*ts, *id)), limit)
             .await
             .map_err(ApiError::from)?;
-        let next_cursor_str = next.map(|(ts, id)| format!("{}|{}", ts.to_rfc3339(), id));
+        let next_cursor_str = next.map(|(ts, id)| {
+            format!(
+                "{}|{}",
+                synctv_common::time::format_datetime_rfc3339(ts),
+                id
+            )
+        });
 
         // Collect unique user IDs to batch fetch usernames
         let user_ids: Vec<synctv_core::models::UserId> = messages
@@ -942,5 +1044,61 @@ impl ClientApiImpl {
             messages: proto_messages,
             next_cursor: next_cursor_str.unwrap_or_default(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_participated_room_list_query, build_public_room_list_query};
+
+    #[test]
+    fn build_public_room_list_query_maps_sorting_and_defaults() {
+        let query = build_public_room_list_query(crate::proto::client::ListRoomsRequest {
+            page: 0,
+            page_size: 0,
+            search: "alpha".to_string(),
+            sort_by: crate::proto::client::RoomListSortBy::Name as i32,
+            sort_direction: crate::proto::client::SortDirection::Asc as i32,
+        });
+
+        assert_eq!(query.pagination.page, 1);
+        assert_eq!(query.pagination.page_size, 20);
+        assert_eq!(query.search.as_deref(), Some("alpha"));
+        assert_eq!(query.status, Some(synctv_core::models::RoomStatus::Active));
+        assert_eq!(query.is_banned, Some(false));
+        assert_eq!(query.sort_by, synctv_core::models::RoomListSortBy::Name);
+        assert_eq!(
+            query.sort_direction,
+            synctv_core::models::SortDirection::Asc
+        );
+    }
+
+    #[test]
+    fn build_participated_room_list_query_maps_filters_sorting_and_defaults() {
+        let query = build_participated_room_list_query(
+            crate::proto::client::ListParticipatedRoomsRequest {
+                page: 0,
+                page_size: 0,
+                search: "alpha".to_string(),
+                status: synctv_proto::common::RoomStatus::Closed as i32,
+                is_banned: Some(false),
+                sort_by: crate::proto::client::RelatedRoomListSortBy::Name as i32,
+                sort_direction: crate::proto::client::SortDirection::Asc as i32,
+            },
+        );
+
+        assert_eq!(query.pagination.page, 1);
+        assert_eq!(query.pagination.page_size, 20);
+        assert_eq!(query.search.as_deref(), Some("alpha"));
+        assert_eq!(query.status, Some(synctv_core::models::RoomStatus::Closed));
+        assert_eq!(query.is_banned, Some(false));
+        assert_eq!(
+            query.sort_by,
+            synctv_core::models::RelatedRoomListSortBy::Name
+        );
+        assert_eq!(
+            query.sort_direction,
+            synctv_core::models::SortDirection::Asc
+        );
     }
 }

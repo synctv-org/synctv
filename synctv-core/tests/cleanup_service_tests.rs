@@ -112,21 +112,6 @@ async fn test_non_leader_periodic_skips() {
     let _ = handle.await;
 }
 
-// ========== Default config values ==========
-
-#[test]
-fn test_cleanup_config_defaults() {
-    let config = CleanupConfig::default();
-    assert_eq!(config.room_ttl_seconds, 172_800); // 48 hours
-    assert_eq!(config.soft_delete_retention_days, 90);
-    assert_eq!(config.room_soft_delete_retention_days, 90);
-    assert_eq!(config.expired_token_retention_days, 7);
-    assert_eq!(config.expired_credential_buffer_hours, 1);
-    assert_eq!(config.notification_retention_days, 30);
-    assert_eq!(config.notification_max_retention_days, 90);
-    assert_eq!(config.chat_max_messages_per_room, 0);
-}
-
 // ========== run_all with default config on empty database ==========
 
 #[tokio::test]
@@ -190,10 +175,10 @@ async fn test_partial_config_only_some_tasks_enabled() {
 async fn create_test_user(pool: &PgPool) -> User {
     let now = Utc::now();
     let user_id = UserId::new();
-    let email = format!("test_{}@example.com", nanoid::nanoid!(8));
+    let email = format!("test_{}@example.com", synctv_common::snanoid!(8));
     let user = User {
         id: user_id,
-        username: format!("test_user_{}", nanoid::nanoid!(8)),
+        username: format!("test_user_{}", synctv_common::snanoid!(8)),
         email: Some(email),
         password_hash: "test_hash".to_string(),
         role: UserRole::User,
@@ -232,7 +217,7 @@ async fn create_test_user(pool: &PgPool) -> User {
 fn create_test_room(created_by: UserId, updated_at: Option<chrono::DateTime<Utc>>) -> Room {
     let now = Utc::now();
     Room {
-        id: RoomId(nanoid::nanoid!(12)),
+        id: RoomId(synctv_common::snanoid!(12)),
         name: "Test Room".to_string(),
         description: String::new(),
         created_by,

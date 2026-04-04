@@ -11,7 +11,7 @@ use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig, Config,
     ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig, HttpRateLimitConfig,
     JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig, MessagingRateLimitConfig,
-    OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig, WebRTCConfig,
+    OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig, TimeConfig, WebRTCConfig,
 };
 
 /// Create a minimal standalone config for testing (no Redis, no cluster mode)
@@ -21,14 +21,18 @@ fn standalone_test_config() -> Config {
             host: "127.0.0.1".to_string(),
             port: 8080,
             enable_reflection: false,
-            metrics_enabled: false,
-            metrics_bearer_token: String::new(),
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
             cluster_secret: String::new(), // No cluster secret for standalone mode
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
+        },
+        time: TimeConfig::default(),
+        metrics: synctv_core::config::MetricsConfig::default(),
+        management: synctv_core::config::ManagementConfig {
+            enabled: false,
+            ..synctv_core::config::ManagementConfig::default()
         },
         database: DatabaseConfig::default(),
         redis: RedisConfig::default(), // Empty Redis URL for standalone
@@ -95,14 +99,18 @@ fn cluster_test_config() -> Config {
             host: "127.0.0.1".to_string(),
             port: 8080,
             enable_reflection: false,
-            metrics_enabled: false,
-            metrics_bearer_token: String::new(),
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
             cluster_secret: "test-cluster-secret-key-1234567890".to_string(),
             advertise_host: "127.0.0.1".to_string(),
             shutdown_drain_timeout_seconds: 30,
+        },
+        time: TimeConfig::default(),
+        metrics: synctv_core::config::MetricsConfig::default(),
+        management: synctv_core::config::ManagementConfig {
+            enabled: true,
+            ..synctv_core::config::ManagementConfig::default()
         },
         database: DatabaseConfig::default(),
         redis: RedisConfig {

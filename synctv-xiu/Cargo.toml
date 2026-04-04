@@ -10,6 +10,7 @@ default = []
 oss = ["dep:opendal"]
 
 [dependencies]
+synctv-common.workspace = true
 # Byte manipulation
 byteorder.workspace = true
 bytes.workspace = true
@@ -51,7 +52,6 @@ parking_lot.workspace = true
 lru.workspace = true
 
 # IDs
-nanoid.workspace = true
 uuid.workspace = true
 
 # HTTP

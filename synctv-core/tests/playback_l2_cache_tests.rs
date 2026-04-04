@@ -664,7 +664,10 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
     )
     .unwrap();
 
-    let cache_stream = format!("test:playback:invalidate:stream:{}", nanoid::nanoid!(8));
+    let cache_stream = format!(
+        "test:playback:invalidate:stream:{}",
+        synctv_common::snanoid!(8)
+    );
     let (redis_host, redis_port) = redis_container.host_port(6379).await;
     let redis_url = if redis_host.contains(':') && !redis_host.starts_with('[') {
         format!("redis://[{redis_host}]:{redis_port}")

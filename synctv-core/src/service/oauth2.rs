@@ -570,7 +570,7 @@ impl OAuth2Service {
         };
 
         // Generate state token
-        let state_token = nanoid::nanoid!(32);
+        let state_token = synctv_common::snanoid!(32);
 
         // Generate authorization URL with PKCE challenge (lock is NOT held here)
         let (auth_url, pkce_verifier) = provider
@@ -909,7 +909,7 @@ impl OAuth2Service {
 
         let (base_username, candidates) = user_service
             .oauth2_username_candidates(&user_info.provider_user_id, &user_info.username)?;
-        let random_password = nanoid::nanoid!(32);
+        let random_password = synctv_common::snanoid!(32);
         let password_hash = crate::service::auth::hash_password(&random_password).await?;
         let user_email = user_info.email.clone();
 
@@ -1594,7 +1594,7 @@ mod tests {
         assert!(auth_url.contains("https://provider.example.com/auth"));
         assert!(auth_url.contains("state="));
 
-        // State token should be a 32-char nanoid
+        // State token should be a 32-char shared base62 token
         assert_eq!(state_token.len(), 32);
 
         // State should be stored and consumable

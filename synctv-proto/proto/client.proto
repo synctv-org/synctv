@@ -293,6 +293,8 @@ message ListRoomsRequest {
     int32 page = 1; // Validation: >= 1
     int32 page_size = 2; // Validation: max 100, default 20
     string search = 3; // Optional search by name/description
+    RoomListSortBy sort_by = 4;
+    SortDirection sort_direction = 5;
 }
 
 message ListRoomsResponse {
@@ -323,6 +325,55 @@ message GetRoomSettingsResponse {
     bytes settings = 1; // JSON settings
 }
 
+enum SortDirection {
+    SORT_DIRECTION_UNSPECIFIED = 0;
+    SORT_DIRECTION_ASC = 1;
+    SORT_DIRECTION_DESC = 2;
+}
+
+enum RoomMemberListSortBy {
+    ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED = 0;
+    ROOM_MEMBER_LIST_SORT_BY_JOINED_AT = 1;
+    ROOM_MEMBER_LIST_SORT_BY_USERNAME = 2;
+    ROOM_MEMBER_LIST_SORT_BY_ROLE = 3;
+    ROOM_MEMBER_LIST_SORT_BY_STATUS = 4;
+}
+
+enum RoomListSortBy {
+    ROOM_LIST_SORT_BY_UNSPECIFIED = 0;
+    ROOM_LIST_SORT_BY_CREATED_AT = 1;
+    ROOM_LIST_SORT_BY_UPDATED_AT = 2;
+    ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 3;
+    ROOM_LIST_SORT_BY_NAME = 4;
+}
+
+enum PlaylistListSortBy {
+    PLAYLIST_LIST_SORT_BY_UNSPECIFIED = 0;
+    PLAYLIST_LIST_SORT_BY_POSITION = 1;
+    PLAYLIST_LIST_SORT_BY_NAME = 2;
+    PLAYLIST_LIST_SORT_BY_CREATED_AT = 3;
+    PLAYLIST_LIST_SORT_BY_UPDATED_AT = 4;
+}
+
+enum MediaListSortBy {
+    MEDIA_LIST_SORT_BY_UNSPECIFIED = 0;
+    MEDIA_LIST_SORT_BY_POSITION = 1;
+    MEDIA_LIST_SORT_BY_NAME = 2;
+    MEDIA_LIST_SORT_BY_ADDED_AT = 3;
+    MEDIA_LIST_SORT_BY_UPDATED_AT = 4;
+    MEDIA_LIST_SORT_BY_SOURCE_PROVIDER = 5;
+    MEDIA_LIST_SORT_BY_PROVIDER_INSTANCE_NAME = 6;
+}
+
+enum RelatedRoomListSortBy {
+    RELATED_ROOM_LIST_SORT_BY_UNSPECIFIED = 0;
+    RELATED_ROOM_LIST_SORT_BY_JOINED_AT = 1;
+    RELATED_ROOM_LIST_SORT_BY_CREATED_AT = 2;
+    RELATED_ROOM_LIST_SORT_BY_UPDATED_AT = 3;
+    RELATED_ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 4;
+    RELATED_ROOM_LIST_SORT_BY_NAME = 5;
+}
+
 // Reset room settings to default
 message ResetRoomSettingsRequest {}
 
@@ -346,11 +397,23 @@ message CheckRoomPasswordResponse {
     bool valid = 1;
 }
 
+enum NotificationListSortBy {
+    NOTIFICATION_LIST_SORT_BY_UNSPECIFIED = 0;
+    NOTIFICATION_LIST_SORT_BY_CREATED_AT = 1;
+    NOTIFICATION_LIST_SORT_BY_UPDATED_AT = 2;
+    NOTIFICATION_LIST_SORT_BY_TITLE = 3;
+}
+
 // Room Members Messages
 // Note: room_id extracted from x-room-id metadata
 message GetRoomMembersRequest {
     int32 page = 1;      // Page number (default 1). Validation: >= 1
     int32 page_size = 2;  // Items per page (default 50). Validation: max 100
+    string search = 3;
+    optional synctv.common.RoomMemberRole role = 4;
+    optional synctv.common.MemberStatus status = 5;
+    RoomMemberListSortBy sort_by = 6;
+    SortDirection sort_direction = 7;
 }
 
 message GetRoomMembersResponse {
@@ -451,6 +514,12 @@ message ListPlaylistsRequest {
     string parent_id = 1; // Optional parent ID to get children of specific playlist
     int32 page = 2;       // Page number (default 1). Validation: >= 1
     int32 page_size = 3;  // Items per page (default 50). Validation: max 100
+    string search = 4;
+    string source_provider = 5;
+    string provider_instance_name = 6;
+    optional bool dynamic_only = 7;
+    PlaylistListSortBy sort_by = 8;
+    SortDirection sort_direction = 9;
 }
 
 message ListPlaylistsResponse {
@@ -520,6 +589,11 @@ message ListPlaylistItemsRequest {
     bytes target = 2; // Provider-facing browse target payload (empty for room root or dynamic root)
     int32 page = 3; // Page number (default 1). Validation: >= 1
     int32 page_size = 4; // Items per page (default 50). Validation: max 100
+    string search = 5;
+    string source_provider = 6;
+    string provider_instance_name = 7;
+    MediaListSortBy sort_by = 8;
+    SortDirection sort_direction = 9;
 }
 
 message ListPlaylistItemsResponse {
@@ -938,6 +1012,11 @@ message SetPasswordResponse {
 message ListCreatedRoomsRequest {
     int32 page = 1; // Validation: >= 1
     int32 page_size = 2; // Validation: max 100, default 20
+    string search = 3;
+    synctv.common.RoomStatus status = 4;
+    optional bool is_banned = 5;
+    RoomListSortBy sort_by = 6;
+    SortDirection sort_direction = 7;
 }
 
 message ListCreatedRoomsResponse {
@@ -948,6 +1027,11 @@ message ListCreatedRoomsResponse {
 message ListParticipatedRoomsRequest {
     int32 page = 1; // Validation: >= 1
     int32 page_size = 2; // Validation: max 100, default 20
+    string search = 3;
+    synctv.common.RoomStatus status = 4;
+    optional bool is_banned = 5;
+    RelatedRoomListSortBy sort_by = 6;
+    SortDirection sort_direction = 7;
 }
 
 message ListParticipatedRoomsResponse {
@@ -1347,6 +1431,9 @@ message ListNotificationsRequest {
     int32 page_size = 2;  // Items per page (default 20). Validation: max 100
     optional bool is_read = 3; // Filter by read status
     optional NotificationType notification_type = 4; // Filter by type
+    string search = 5; // Search by title or content
+    NotificationListSortBy sort_by = 6;
+    SortDirection sort_direction = 7;
 }
 
 message ListNotificationsResponse {

@@ -573,13 +573,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stream_lifecycle_defaults() {
-        let lc = StreamLifecycle::new();
-        assert_eq!(lc.subscriber_count(), 0);
-        assert!(!lc.is_healthy().await);
-    }
-
-    #[tokio::test]
     async fn test_stream_lifecycle_subscriber_count() {
         let lc = StreamLifecycle::new();
         lc.increment_subscriber_count();

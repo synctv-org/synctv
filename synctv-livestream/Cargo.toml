@@ -52,7 +52,6 @@ serde.workspace = true
 serde_json.workspace = true
 hostname.workspace = true
 uuid.workspace = true
-nanoid.workspace = true
 url.workspace = true
 
 # Logging

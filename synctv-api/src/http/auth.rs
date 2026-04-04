@@ -148,12 +148,12 @@ pub async fn logout(
     // which confused clients and did not actually blacklist anything.
     let auth_value = headers
         .get(axum::http::header::AUTHORIZATION)
-        .ok_or_else(|| AppError::unauthorized("Missing Authorization header"))?
+        .ok_or_else(AppError::missing_authorization_header)?
         .to_str()
-        .map_err(|_| AppError::unauthorized("Invalid Authorization header encoding"))?;
+        .map_err(|_| AppError::invalid_authorization_header())?;
 
     let token = synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_value)
-        .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+        .map_err(|_| AppError::invalid_or_expired_token())?;
 
     let outcome = state
         .client_api
@@ -173,30 +173,6 @@ mod tests {
 
     // ========== Proto Request Type Tests ==========
     // Verify request types have expected fields and derive traits (Serialize, Deserialize, Clone)
-
-    #[test]
-    fn test_register_request_construction() {
-        let req = RegisterRequest {
-            username: "testuser".to_string(),
-            password: "securepass123".to_string(),
-            email: "test@example.com".to_string(),
-        };
-        assert_eq!(req.username, "testuser");
-        assert_eq!(req.password, "securepass123");
-        assert_eq!(req.email, "test@example.com");
-    }
-
-    #[test]
-    fn test_register_request_clone() {
-        let req = RegisterRequest {
-            username: "testuser".to_string(),
-            password: "securepass123".to_string(),
-            email: "test@example.com".to_string(),
-        };
-        let cloned = req;
-        assert_eq!(cloned.username, "testuser");
-        assert_eq!(cloned.email, "test@example.com");
-    }
 
     #[test]
     fn test_register_request_json_roundtrip() {

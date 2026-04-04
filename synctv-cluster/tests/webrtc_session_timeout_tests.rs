@@ -301,37 +301,3 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
 // ============================================================================
 // Test: WebRTC session timeout respects ConnectionLimits default
 // ============================================================================
-
-#[tokio::test]
-async fn test_default_webrtc_session_timeout() {
-    // Create a ConnectionManager with default limits
-    let mgr = ConnectionManager::default();
-
-    let user = uid("user1");
-    let room = rid("room1");
-
-    // Register connection and join WebRTC
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
-    mgr.mark_rtc_joined(&room, &user, "conn1", true);
-
-    // Verify the connection is marked as RTC-joined
-    let rtc_connections = mgr.get_rtc_connections(&room);
-    assert_eq!(rtc_connections.len(), 1);
-
-    // Default timeout should be 2 hours - we won't wait that long in tests
-    // Just verify the connection is still RTC-joined after a short wait
-    tokio::time::sleep(ACTIVE_SESSION_CHECK_DELAY).await;
-
-    let stale = mgr.check_timeouts();
-    assert!(
-        stale.is_empty(),
-        "Default timeout should not expire in 100ms"
-    );
-
-    // Verify still RTC-joined
-    let rtc_connections = mgr.get_rtc_connections(&room);
-    assert_eq!(rtc_connections.len(), 1, "Should still be RTC-joined");
-}

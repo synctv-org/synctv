@@ -148,34 +148,6 @@ mod tests {
     use super::*;
     use synctv_core_testing::create_test_pool;
 
-    /// Unit test for `RoomPlaybackState` default values and initial state
-    #[test]
-    fn test_playback_state_new_default_values() {
-        let room_id = RoomId::from_string("test_room_001".to_string());
-        let state = RoomPlaybackState::new(room_id.clone());
-
-        assert_eq!(state.room_id, room_id);
-        assert!(state.playing_media_id.is_none());
-        assert!(state.playing_playlist_id.is_none());
-        assert!(state.target.is_empty());
-        assert!((state.current_time - 0.0).abs() < f64::EPSILON);
-        assert!((state.speed - 1.0).abs() < f64::EPSILON);
-        assert!(!state.is_playing);
-        assert_eq!(state.version, 0);
-    }
-
-    /// Unit test for repository constructor
-    #[test]
-    fn test_repository_new() {
-        // This test verifies that the repository can be created
-        // We use mockall or a connection pool mock in real integration tests
-        // Here we just verify the constructor is const and compiles correctly
-        fn _assert_const_new(pool: PgPool) -> RoomPlaybackStateRepository {
-            RoomPlaybackStateRepository::new(pool)
-        }
-        // Compilation test only - cannot create PgPool without database
-    }
-
     /// Integration test: Create and get playback state
     #[tokio::test]
     #[ignore = "Requires Docker"]

@@ -174,6 +174,15 @@ impl RemoteProviderManager {
         Self::new_with_options(repository, cache_invalidation, HashMap::new())
     }
 
+    #[must_use]
+    pub fn new_with_address_overrides(
+        repository: Arc<ProviderInstanceRepository>,
+        cache_invalidation: Option<CacheInvalidationService>,
+        address_overrides: HashMap<String, SocketAddr>,
+    ) -> Self {
+        Self::new_with_options(repository, cache_invalidation, address_overrides)
+    }
+
     fn new_with_options(
         repository: Arc<ProviderInstanceRepository>,
         cache_invalidation: Option<CacheInvalidationService>,
@@ -198,17 +207,6 @@ impl RemoteProviderManager {
             invalidation_listener_task: Arc::new(tokio::sync::Mutex::new(None)),
             address_overrides: Arc::new(address_overrides),
         }
-    }
-
-    #[cfg(debug_assertions)]
-    #[must_use]
-    #[doc(hidden)]
-    pub fn new_with_test_address_overrides(
-        repository: Arc<ProviderInstanceRepository>,
-        cache_invalidation: Option<CacheInvalidationService>,
-        address_overrides: HashMap<String, SocketAddr>,
-    ) -> Self {
-        Self::new_with_options(repository, cache_invalidation, address_overrides)
     }
 
     /// Initialize manager by pre-warming the cache with all enabled instances from database.

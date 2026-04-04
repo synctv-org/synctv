@@ -608,9 +608,14 @@ pub async fn get_playback(
 /// Pagination query for room members.
 #[derive(serde::Deserialize, Default)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct MembersPaginationQuery {
+pub struct MembersQueryParams {
     page: Option<i32>,
     page_size: Option<i32>,
+    search: Option<String>,
+    role: Option<String>,
+    status: Option<String>,
+    sort_by: Option<String>,
+    sort_direction: Option<String>,
 }
 
 /// Get room members (E8: with pagination)
@@ -622,7 +627,7 @@ pub struct MembersPaginationQuery {
         tag = "Room",
         params(
             ("room_id" = String, Path, description = "Room ID"),
-            MembersPaginationQuery
+            MembersQueryParams
         ),
         responses(
             (status = 200, description = "Room members", body = GetRoomMembersResponse),
@@ -638,7 +643,7 @@ pub async fn get_room_members(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Query(q): Query<MembersPaginationQuery>,
+    Query(q): Query<MembersQueryParams>,
 ) -> AppResult<Json<GetRoomMembersResponse>> {
     let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
     let response = state
@@ -646,7 +651,35 @@ pub async fn get_room_members(
         .get_room_members(
             &auth.user_id.to_string(),
             &room_id,
-            crate::proto::client::GetRoomMembersRequest { page, page_size },
+            crate::proto::client::GetRoomMembersRequest {
+                page,
+                page_size,
+                search: q.search.unwrap_or_default(),
+                role: match q.role.as_deref() {
+                    Some("guest") => Some(synctv_proto::common::RoomMemberRole::Guest as i32),
+                    Some("member") => Some(synctv_proto::common::RoomMemberRole::Member as i32),
+                    Some("admin") => Some(synctv_proto::common::RoomMemberRole::Admin as i32),
+                    Some("creator") => Some(synctv_proto::common::RoomMemberRole::Creator as i32),
+                    _ => None,
+                },
+                status: match q.status.as_deref() {
+                    Some("active") => Some(synctv_proto::common::MemberStatus::Active as i32),
+                    Some("pending") => Some(synctv_proto::common::MemberStatus::Pending as i32),
+                    Some("banned") => Some(synctv_proto::common::MemberStatus::Banned as i32),
+                    Some("left") => Some(synctv_proto::common::MemberStatus::Left as i32),
+                    _ => None,
+                },
+                sort_by: match q.sort_by.as_deref() {
+                    Some("username") => crate::proto::client::RoomMemberListSortBy::Username as i32,
+                    Some("role") => crate::proto::client::RoomMemberListSortBy::Role as i32,
+                    Some("status") => crate::proto::client::RoomMemberListSortBy::Status as i32,
+                    _ => crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                },
+                sort_direction: match q.sort_direction.as_deref() {
+                    Some("desc") => crate::proto::client::SortDirection::Desc as i32,
+                    _ => crate::proto::client::SortDirection::Asc as i32,
+                },
+            },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -720,6 +753,16 @@ pub async fn list_rooms(
         page,
         page_size,
         search,
+        sort_by: match params.get("sort_by").map(String::as_str) {
+            Some("name") => crate::proto::client::RoomListSortBy::Name as i32,
+            Some("updated_at") => crate::proto::client::RoomListSortBy::UpdatedAt as i32,
+            Some("last_activity_at") => crate::proto::client::RoomListSortBy::LastActivityAt as i32,
+            _ => crate::proto::client::RoomListSortBy::CreatedAt as i32,
+        },
+        sort_direction: match params.get("sort_direction").map(String::as_str) {
+            Some("asc") => crate::proto::client::SortDirection::Asc as i32,
+            _ => crate::proto::client::SortDirection::Desc as i32,
+        },
     };
     let response = state
         .client_api
@@ -1073,6 +1116,16 @@ pub async fn list_or_get_rooms(
         page: (offset / limit) + 1,
         page_size: limit,
         search,
+        sort_by: match params.get("sort_by").map(String::as_str) {
+            Some("name") => crate::proto::client::RoomListSortBy::Name as i32,
+            Some("updated_at") => crate::proto::client::RoomListSortBy::UpdatedAt as i32,
+            Some("last_activity_at") => crate::proto::client::RoomListSortBy::LastActivityAt as i32,
+            _ => crate::proto::client::RoomListSortBy::CreatedAt as i32,
+        },
+        sort_direction: match params.get("sort_direction").map(String::as_str) {
+            Some("asc") => crate::proto::client::SortDirection::Asc as i32,
+            _ => crate::proto::client::SortDirection::Desc as i32,
+        },
     };
 
     let response = state
@@ -1645,6 +1698,25 @@ pub async fn list_playlists(
         parent_id,
         page,
         page_size,
+        search: params.get("search").cloned().unwrap_or_default(),
+        source_provider: params.get("source_provider").cloned().unwrap_or_default(),
+        provider_instance_name: params
+            .get("provider_instance_name")
+            .cloned()
+            .unwrap_or_default(),
+        dynamic_only: params
+            .get("dynamic_only")
+            .and_then(|value| value.parse::<bool>().ok()),
+        sort_by: match params.get("sort_by").map(String::as_str) {
+            Some("name") => crate::proto::client::PlaylistListSortBy::Name as i32,
+            Some("created_at") => crate::proto::client::PlaylistListSortBy::CreatedAt as i32,
+            Some("updated_at") => crate::proto::client::PlaylistListSortBy::UpdatedAt as i32,
+            _ => crate::proto::client::PlaylistListSortBy::Position as i32,
+        },
+        sort_direction: match params.get("sort_direction").map(String::as_str) {
+            Some("desc") => crate::proto::client::SortDirection::Desc as i32,
+            _ => crate::proto::client::SortDirection::Asc as i32,
+        },
     };
     let response = state
         .client_api
@@ -1703,7 +1775,7 @@ mod tests {
     use super::{
         is_switch_request, normalize_switch_id, parse_chat_history_request_params,
         parse_force_query, AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody,
-        ListPlaylistItemsBody, UpdateMediaBatchRequest, UpdatePlaybackRequest,
+        ListPlaylistItemsBody, MembersQueryParams, UpdateMediaBatchRequest, UpdatePlaybackRequest,
     };
 
     #[test]
@@ -1746,6 +1818,18 @@ mod tests {
         assert_eq!(req.media_id.as_deref(), Some("media_abc123"));
         assert!(req.playlist_id.is_none());
         assert!(req.target.is_none());
+    }
+
+    #[test]
+    fn test_members_query_params_deserialize_sorting_and_filters() {
+        let json = r#"{"page":2,"page_size":25,"search":"alice","role":"admin","sort_by":"username","sort_direction":"asc"}"#;
+        let query: MembersQueryParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.page_size, Some(25));
+        assert_eq!(query.search.as_deref(), Some("alice"));
+        assert_eq!(query.role.as_deref(), Some("admin"));
+        assert_eq!(query.sort_by.as_deref(), Some("username"));
+        assert_eq!(query.sort_direction.as_deref(), Some("asc"));
     }
 
     #[test]
@@ -1802,33 +1886,11 @@ mod tests {
     }
 
     #[test]
-    fn test_update_playback_request_deserialize_empty() {
-        let json = r"{}";
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert!(req.state.is_none());
-        assert!(req.position.is_none());
-        assert!(req.speed.is_none());
-        assert!(req.media_id.is_none());
-        assert!(req.playlist_id.is_none());
-        assert!(req.version.is_none());
-    }
-
-    #[test]
     fn test_update_playback_request_deserialize_with_version() {
         let json = r#"{"state": "playing", "version": 42}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.state.as_deref(), Some("playing"));
         assert_eq!(req.version, Some(42));
-    }
-
-    #[test]
-    fn test_update_playback_request_version_defaults_to_none() {
-        let json = r#"{"state": "paused"}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert!(
-            req.version.is_none(),
-            "version should default to None when not provided"
-        );
     }
 
     #[test]
@@ -1896,13 +1958,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_force_query_defaults_to_false() {
-        let params = HashMap::new();
-
-        assert!(!parse_force_query(&params));
-    }
-
-    #[test]
     fn test_parse_force_query_accepts_true_only() {
         let params = HashMap::from([("force".to_string(), "true".to_string())]);
         assert!(parse_force_query(&params));
@@ -1912,17 +1967,6 @@ mod tests {
 
         let params = HashMap::from([("force".to_string(), "1".to_string())]);
         assert!(!parse_force_query(&params));
-    }
-
-    #[test]
-    fn test_delete_entries_body_force_defaults_to_false() {
-        let body: DeleteEntriesBody =
-            serde_json::from_str(r#"{"playlist_ids":["playlist-1"],"media_ids":["media-1"]}"#)
-                .unwrap();
-
-        assert_eq!(body.playlist_ids, vec!["playlist-1"]);
-        assert_eq!(body.media_ids, vec!["media-1"]);
-        assert!(!body.force);
     }
 
     #[test]

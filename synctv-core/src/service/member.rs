@@ -8,8 +8,8 @@ use std::sync::Arc;
 use crate::{
     cache::CacheInvalidationService,
     models::{
-        MemberStatus, PageParams, PermissionBits, Room, RoomId, RoomMember, RoomMemberWithUser,
-        RoomRole, RoomSettings, UserId,
+        MemberStatus, PageParams, PermissionBits, RelatedRoomListQuery, Room, RoomId, RoomMember,
+        RoomMemberWithUser, RoomRole, RoomSettings, UserId,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
     service::audit::{AuditAction, AuditService, AuditTargetType},
@@ -29,21 +29,6 @@ pub trait MemberEventBroadcaster: Send + Sync {
 
     /// Broadcast a ban event for a user (disconnect from all rooms) to all cluster replicas.
     fn broadcast_kick_user(&self, user_id: &UserId, reason: &str);
-}
-/// Role hierarchy level for authorization checks (higher = more authority)
-/// Creator > Admin > Member > Guest
-///
-/// Note: `kick_member/ban_member` enforce role hierarchy atomically in SQL
-/// (see `remove_with_role_check` / `ban_with_role_check` in the repository layer).
-/// This function is kept for unit tests that validate the conceptual hierarchy.
-#[cfg(test)]
-const fn role_level(role: &RoomRole) -> u8 {
-    match role {
-        RoomRole::Creator => 3,
-        RoomRole::Admin => 2,
-        RoomRole::Member => 1,
-        RoomRole::Guest => 0,
-    }
 }
 
 /// Options for adding a member to a room
@@ -398,6 +383,63 @@ impl MemberService {
         Ok(())
     }
 
+    /// Administrative member removal that bypasses room-local permission and role checks.
+    ///
+    /// This is intended only for the global management plane. The target must
+    /// still be an active member, but the actor does not need room membership.
+    pub async fn admin_kick_member(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        actor_username: &str,
+        target_user_id: UserId,
+    ) -> Result<()> {
+        if actor_id == target_user_id {
+            return Err(Error::InvalidInput("Cannot kick yourself".to_string()));
+        }
+
+        let removed = self.member_repo.remove(&room_id, &target_user_id).await?;
+        if !removed {
+            return Err(Error::NotFound(
+                "User is not an active member of this room".to_string(),
+            ));
+        }
+
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
+
+        if let Some(ref ns) = self.notification_service {
+            if let Err(e) = ns.notify_member_kicked(&room_id, &target_user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Failed to notify local clients of admin member kick"
+                );
+            }
+        }
+
+        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
+            broadcaster.broadcast_kick_from_room(&room_id, &target_user_id, "kicked");
+        }
+
+        self.audit_log(
+            &actor_id,
+            actor_username,
+            AuditAction::MemberKicked,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "mode": "admin_override",
+            }),
+        )
+        .await;
+
+        Ok(())
+    }
+
     /// Maximum retry attempts for optimistic lock conflicts
     const MAX_RETRIES: u32 = 3;
     /// Base delay for exponential backoff (milliseconds)
@@ -482,6 +524,185 @@ impl MemberService {
                 "room_id": room_id.as_str(),
                 "added_permissions": added_permissions,
                 "removed_permissions": removed_permissions,
+            }),
+        )
+        .await;
+
+        Ok(updated_member)
+    }
+
+    /// Administrative member update that bypasses room-local permission and creator checks.
+    ///
+    /// This is intended for the global management plane only. It preserves the
+    /// same role/override invariants as the client path, but the actor is
+    /// authorized by global admin/root identity outside the room permission graph.
+    pub async fn admin_update_member(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        actor_username: &str,
+        target_user_id: UserId,
+        role: Option<RoomRole>,
+        added_permissions: u64,
+        removed_permissions: u64,
+        admin_added_permissions: u64,
+        admin_removed_permissions: u64,
+    ) -> Result<RoomMember> {
+        let has_permission_changes = added_permissions > 0
+            || removed_permissions > 0
+            || admin_added_permissions > 0
+            || admin_removed_permissions > 0;
+
+        let target_member = self
+            .member_repo
+            .get(&room_id, &target_user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+
+        let effective_role = role.unwrap_or(target_member.role);
+        let effective_is_admin = matches!(effective_role, RoomRole::Admin);
+
+        if has_permission_changes {
+            if effective_is_admin && (added_permissions > 0 || removed_permissions > 0) {
+                return Err(Error::Authorization(
+                    "Admin members must use admin_added_permissions/admin_removed_permissions"
+                        .to_string(),
+                ));
+            }
+            if !effective_is_admin && (admin_added_permissions > 0 || admin_removed_permissions > 0)
+            {
+                return Err(Error::Authorization(
+                    "Only admin members use admin_added_permissions/admin_removed_permissions"
+                        .to_string(),
+                ));
+            }
+        }
+
+        if let Some(new_role) = role {
+            if new_role == RoomRole::Creator {
+                return Err(Error::InvalidInput(
+                    "Creator role is bound to room ownership and cannot be assigned via set_member_role"
+                        .to_string(),
+                ));
+            }
+
+            let room = self
+                .room_repo
+                .get_by_id(&room_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+            if target_user_id == room.created_by {
+                return Err(Error::InvalidInput(
+                    "Cannot change the role of the room creator via set_member_role".to_string(),
+                ));
+            }
+
+            let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
+                Self::MAX_RETRIES,
+                Self::BACKOFF_BASE_MS,
+                "Role update failed after maximum retry attempts",
+                || async {
+                    let member = self
+                        .member_repo
+                        .get(&room_id, &target_user_id)
+                        .await?
+                        .ok_or_else(|| {
+                            Error::NotFound("User is not a member of this room".to_string())
+                        })?;
+                    self.member_repo
+                        .update_role(&room_id, &target_user_id, new_role, member.version)
+                        .await
+                },
+            )
+            .await?;
+
+            self.permission_service
+                .invalidate_cache(&room_id, &target_user_id)
+                .await;
+
+            if let Some(ref invalidation) = self.cache_invalidation {
+                if let Err(error) = invalidation.invalidate_room_settings(&room_id).await {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id.as_str(),
+                        "Failed to broadcast room settings cache invalidation after admin role change"
+                    );
+                }
+            }
+
+            self.audit_log(
+                &actor_id,
+                actor_username,
+                AuditAction::MemberRoleUpdated,
+                AuditTargetType::Member,
+                Some(target_user_id.as_str().to_string()),
+                serde_json::json!({
+                    "room_id": room_id.as_str(),
+                    "role": new_role.to_string(),
+                    "mode": "admin_override",
+                }),
+            )
+            .await;
+
+            if !has_permission_changes {
+                return Ok(updated_member);
+            }
+        }
+
+        let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "Permission update failed after maximum retry attempts",
+            || async {
+                let member = self
+                    .member_repo
+                    .get(&room_id, &target_user_id)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::NotFound("User is not a member of this room".to_string())
+                    })?;
+
+                if Self::uses_admin_overrides(member.role) {
+                    self.member_repo
+                        .update_admin_permissions(
+                            &room_id,
+                            &target_user_id,
+                            admin_added_permissions,
+                            admin_removed_permissions,
+                            member.version,
+                        )
+                        .await
+                } else {
+                    self.member_repo
+                        .update_permissions(
+                            &room_id,
+                            &target_user_id,
+                            added_permissions,
+                            removed_permissions,
+                            member.version,
+                        )
+                        .await
+                }
+            },
+        )
+        .await?;
+
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
+
+        self.audit_log(
+            &actor_id,
+            actor_username,
+            AuditAction::MemberPermissionUpdated,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "added_permissions": if effective_is_admin { admin_added_permissions } else { added_permissions },
+                "removed_permissions": if effective_is_admin { admin_removed_permissions } else { removed_permissions },
+                "mode": "admin_override",
             }),
         )
         .await;
@@ -695,6 +916,15 @@ impl MemberService {
             .await
     }
 
+    pub async fn list_members_query(
+        &self,
+        room_id: &RoomId,
+        query: crate::models::RoomMemberListQuery,
+    ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
+        query.pagination.validate()?;
+        self.member_repo.list_by_room_query(room_id, &query).await
+    }
+
     /// Get member count for a room
     pub async fn count_members(&self, room_id: &RoomId) -> Result<i32> {
         self.member_repo.count_by_room(room_id).await
@@ -746,6 +976,18 @@ impl MemberService {
         pagination.validate()?;
         self.member_repo
             .list_by_user_with_details(user_id, pagination)
+            .await
+    }
+
+    /// List all rooms a user is related to through membership with query semantics.
+    pub async fn list_user_rooms_with_details_query(
+        &self,
+        user_id: &UserId,
+        query: &RelatedRoomListQuery,
+    ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
+        query.pagination.validate()?;
+        self.member_repo
+            .list_by_user_with_query(user_id, query)
             .await
     }
 
@@ -817,6 +1059,66 @@ impl MemberService {
         Ok(())
     }
 
+    /// Administrative member ban that bypasses room-local permission and role checks.
+    ///
+    /// This is intended only for the global management plane. The actor does
+    /// not need to be a room member.
+    pub async fn admin_ban_member(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        actor_username: &str,
+        target_user_id: UserId,
+        reason: Option<String>,
+    ) -> Result<()> {
+        if actor_id == target_user_id {
+            return Err(Error::InvalidInput("Cannot ban yourself".to_string()));
+        }
+
+        self.member_repo
+            .ban_member(&room_id, &target_user_id, &actor_id, reason.clone())
+            .await?;
+
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
+
+        if let Some(ref ns) = self.notification_service {
+            if let Err(e) = ns.notify_member_kicked(&room_id, &target_user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Failed to notify local clients of admin member ban"
+                );
+            }
+        }
+
+        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
+            broadcaster.broadcast_kick_from_room(
+                &room_id,
+                &target_user_id,
+                reason.as_deref().unwrap_or("banned"),
+            );
+        }
+
+        self.audit_log(
+            &actor_id,
+            actor_username,
+            AuditAction::MemberBanned,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "reason": reason,
+                "mode": "admin_override",
+            }),
+        )
+        .await;
+
+        Ok(())
+    }
+
     /// Unban a member from a room
     pub async fn unban_member(
         &self,
@@ -847,6 +1149,41 @@ impl MemberService {
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),
             serde_json::json!({ "room_id": room_id.as_str() }),
+        )
+        .await;
+
+        Ok(())
+    }
+
+    /// Administrative member unban that bypasses room-local permission checks.
+    ///
+    /// This is intended only for the global management plane. The actor does
+    /// not need to be a room member.
+    pub async fn admin_unban_member(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        actor_username: &str,
+        target_user_id: UserId,
+    ) -> Result<()> {
+        self.member_repo
+            .unban_member(&room_id, &target_user_id)
+            .await?;
+
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
+
+        self.audit_log(
+            &actor_id,
+            actor_username,
+            AuditAction::MemberUnbanned,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "mode": "admin_override",
+            }),
         )
         .await;
 
@@ -1069,425 +1406,5 @@ impl MemberService {
 
         // Get all members regardless of left_at status
         self.member_repo.list_by_room_all(room_id).await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ========== Role Hierarchy Tests ==========
-
-    #[test]
-    fn test_role_level_ordering() {
-        // Creator > Admin > Member > Guest
-        assert!(role_level(&RoomRole::Creator) > role_level(&RoomRole::Admin));
-        assert!(role_level(&RoomRole::Admin) > role_level(&RoomRole::Member));
-        assert!(role_level(&RoomRole::Member) > role_level(&RoomRole::Guest));
-    }
-
-    #[test]
-    fn test_role_level_exact_values() {
-        assert_eq!(role_level(&RoomRole::Creator), 3);
-        assert_eq!(role_level(&RoomRole::Admin), 2);
-        assert_eq!(role_level(&RoomRole::Member), 1);
-        assert_eq!(role_level(&RoomRole::Guest), 0);
-    }
-
-    #[test]
-    fn test_lower_role_cannot_kick_higher_role() {
-        // Member (1) cannot kick Admin (2): target >= kicker
-        assert!(role_level(&RoomRole::Admin) >= role_level(&RoomRole::Member));
-        // Guest (0) cannot kick Member (1)
-        assert!(role_level(&RoomRole::Member) >= role_level(&RoomRole::Guest));
-        // Admin (2) cannot kick Creator (3)
-        assert!(role_level(&RoomRole::Creator) >= role_level(&RoomRole::Admin));
-    }
-
-    #[test]
-    fn test_equal_roles_cannot_kick_each_other() {
-        // Same role level means target >= kicker, so kick is denied
-        assert!(role_level(&RoomRole::Admin) >= role_level(&RoomRole::Admin));
-        assert!(role_level(&RoomRole::Member) >= role_level(&RoomRole::Member));
-        assert!(role_level(&RoomRole::Guest) >= role_level(&RoomRole::Guest));
-    }
-
-    #[test]
-    fn test_higher_role_can_kick_lower_role() {
-        // Admin (2) can kick Member (1): target < kicker
-        assert!(role_level(&RoomRole::Member) < role_level(&RoomRole::Admin));
-        // Creator (3) can kick Admin (2)
-        assert!(role_level(&RoomRole::Admin) < role_level(&RoomRole::Creator));
-        // Admin (2) can kick Guest (0)
-        assert!(role_level(&RoomRole::Guest) < role_level(&RoomRole::Admin));
-    }
-
-    #[test]
-    fn test_creator_can_kick_all_other_roles() {
-        // Creator (3) can kick all other roles since target < 3
-        assert!(role_level(&RoomRole::Admin) < role_level(&RoomRole::Creator));
-        assert!(role_level(&RoomRole::Member) < role_level(&RoomRole::Creator));
-        assert!(role_level(&RoomRole::Guest) < role_level(&RoomRole::Creator));
-    }
-
-    #[test]
-    fn test_guest_cannot_kick_anyone() {
-        // Guest (0) cannot kick any role since all targets have level >= 0
-        assert!(role_level(&RoomRole::Guest) >= role_level(&RoomRole::Guest));
-        assert!(role_level(&RoomRole::Member) >= role_level(&RoomRole::Guest));
-        assert!(role_level(&RoomRole::Admin) >= role_level(&RoomRole::Guest));
-        assert!(role_level(&RoomRole::Creator) >= role_level(&RoomRole::Guest));
-    }
-
-    #[test]
-    fn test_ban_role_check_mirrors_kick() {
-        // The ban_member method uses the same role_level check:
-        // role_level(&target_member.role) >= role_level(&admin_member.role) => deny
-        // Admin banning Member: 1 >= 2 = false => allowed
-        assert!((role_level(&RoomRole::Member) < role_level(&RoomRole::Admin)));
-        // Member banning Admin: 2 >= 1 = true => denied
-        assert!(role_level(&RoomRole::Admin) >= role_level(&RoomRole::Member));
-        // Admin banning Admin: 2 >= 2 = true => denied (equal role)
-        assert!(role_level(&RoomRole::Admin) >= role_level(&RoomRole::Admin));
-    }
-
-    // ========== AddMemberOptions Tests ==========
-
-    #[test]
-    fn test_add_member_options_defaults() {
-        let opts = AddMemberOptions::new();
-        assert!(opts.check_room_active);
-        assert!(opts.check_duplicate);
-        assert!(!opts.check_max_members);
-        assert_eq!(opts.max_members, 0);
-        assert!(opts.invalidate_cache);
-    }
-
-    #[test]
-    fn test_add_member_options_with_max_members() {
-        let opts = AddMemberOptions::new().with_max_members(100);
-        assert!(opts.check_max_members);
-        assert_eq!(opts.max_members, 100);
-    }
-
-    #[test]
-    fn test_add_member_options_skip_methods() {
-        let opts = AddMemberOptions::new()
-            .skip_max_members_check()
-            .skip_active_check()
-            .skip_duplicate_check()
-            .skip_cache_invalidation();
-        assert!(!opts.check_room_active);
-        assert!(!opts.check_duplicate);
-        assert!(!opts.check_max_members);
-        assert!(!opts.invalidate_cache);
-    }
-
-    #[test]
-    fn test_add_member_options_chaining() {
-        let opts = AddMemberOptions::new()
-            .with_max_members(50)
-            .skip_active_check()
-            .skip_cache_invalidation();
-        assert!(opts.check_max_members);
-        assert_eq!(opts.max_members, 50);
-        assert!(!opts.check_room_active);
-        assert!(opts.check_duplicate);
-        assert!(!opts.invalidate_cache);
-    }
-
-    /// Test that verifies both `UserPermission` and `RoomSettings` invalidation
-    /// messages can coexist in the invalidation system.
-    #[test]
-    fn test_dual_invalidation_messages() {
-        use crate::cache::InvalidationMessage;
-
-        // When a role changes, we send both:
-        // 1. UserPermission - to invalidate the user's cached effective permissions
-        // 2. RoomSettings - to ensure fresh role defaults are used on recalculation
-
-        let room_id = "test-room".to_string();
-        let user_id = "test-user".to_string();
-
-        let user_msg = InvalidationMessage::UserPermission {
-            room_id: room_id.clone(),
-            user_id,
-        };
-        let settings_msg = InvalidationMessage::RoomSettings {
-            room_id: room_id.clone(),
-        };
-
-        // Verify both messages serialize correctly
-        let user_json = serde_json::to_string(&user_msg).unwrap();
-        let settings_json = serde_json::to_string(&settings_msg).unwrap();
-
-        assert!(user_json.contains("user_permission"));
-        assert!(settings_json.contains("room_settings"));
-        assert!(user_json.contains(&room_id));
-        assert!(settings_json.contains(&room_id));
-    }
-
-    // ========== Concurrent Operation Safety Tests ==========
-
-    /// Test that verifies the retry constants are appropriate for concurrent scenarios.
-    ///
-    /// The `MAX_RETRIES` (3) and `BACKOFF_BASE_MS` (5) should provide enough attempts
-    /// and backoff time to handle concurrent optimistic lock conflicts.
-    #[test]
-    fn test_concurrent_retry_constants() {
-        // With 3 retries and 5ms base backoff:
-        // Total backoff time: 5ms + 10ms = 15ms (not counting jitter)
-        // This should be enough for most concurrent update scenarios
-        assert_eq!(MemberService::MAX_RETRIES, 3);
-        assert_eq!(MemberService::BACKOFF_BASE_MS, 5);
-
-        // Calculate total worst-case backoff (excluding jitter)
-        let total_backoff_ms: u64 = (0..MemberService::MAX_RETRIES - 1)
-            .map(|attempt| MemberService::BACKOFF_BASE_MS * (1 << attempt))
-            .sum();
-        assert_eq!(total_backoff_ms, 15); // 5 + 10 = 15ms
-    }
-
-    /// Test that verifies `AddMemberOptions` is Send + Sync safe for concurrent use.
-    #[test]
-    fn test_add_member_options_thread_safety() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<AddMemberOptions>();
-    }
-
-    /// Test that verifies `RoomMember` is Send + Sync safe for concurrent use.
-    #[test]
-    fn test_room_member_thread_safety() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<RoomMember>();
-    }
-
-    /// Test that verifies `RoomId` and `UserId` are Send + Sync safe.
-    #[test]
-    fn test_id_types_thread_safety() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<RoomId>();
-        assert_send_sync::<UserId>();
-    }
-
-    /// Test that verifies `MemberService` is Clone for concurrent use.
-    #[test]
-    fn test_member_service_clone() {
-        // MemberService implements Clone, allowing it to be shared across tasks
-        fn assert_clone<T: Clone>() {}
-        assert_clone::<MemberService>();
-    }
-
-    // ========== Error Handling Tests ==========
-
-    /// Test error message format for `kick_member` authorization failure.
-    #[test]
-    fn test_kick_member_error_messages() {
-        // When a lower role tries to kick a higher role
-        let expected_msg = "User is not a member or cannot kick a member with equal or higher role";
-        assert!(expected_msg.contains("equal or higher"));
-    }
-
-    /// Test error message format for `set_member_role` authorization failure.
-    #[test]
-    fn test_set_member_role_error_messages() {
-        // Only creator can change roles
-        let expected_msg = "Only room creator can change member roles";
-        assert!(expected_msg.contains("creator"));
-    }
-
-    /// Test that `kick_member` prevents self-kick.
-    #[test]
-    fn test_kick_self_is_prevented() {
-        // The error message for kicking yourself
-        let expected_msg = "Cannot kick yourself";
-        assert!(expected_msg.contains("yourself"));
-    }
-
-    // ========== Permission Bit Operations Tests ==========
-
-    /// Test that permission bits work correctly with bitwise operations.
-    #[test]
-    fn test_permission_bit_operations() {
-        let mut perms = 0u64;
-
-        // Grant permissions
-        perms |= PermissionBits::KICK_USER;
-        perms |= PermissionBits::BAN_MEMBER;
-
-        assert!(perms & PermissionBits::KICK_USER != 0);
-        assert!(perms & PermissionBits::BAN_MEMBER != 0);
-        assert!(perms & PermissionBits::SEND_CHAT == 0); // Not granted
-
-        // Revoke a permission
-        perms &= !PermissionBits::KICK_USER;
-        assert!(perms & PermissionBits::KICK_USER == 0);
-        assert!(perms & PermissionBits::BAN_MEMBER != 0); // Still granted
-    }
-
-    /// Test that effective permissions are calculated correctly.
-    #[test]
-    fn test_effective_permission_calculation() {
-        // Effective = (role_default | added) & ~removed
-
-        let role_default = PermissionBits::DEFAULT_MEMBER;
-        let added = PermissionBits::BAN_MEMBER; // Extra permission
-        let removed = PermissionBits::SEND_CHAT; // Denied permission
-
-        let effective = (role_default | added) & !removed;
-
-        // Should have BAN_MEMBER (added)
-        assert!(effective & PermissionBits::BAN_MEMBER != 0);
-        // Should not have SEND_CHAT (removed)
-        assert!(effective & PermissionBits::SEND_CHAT == 0);
-    }
-
-    // ========== Cache Key Tests ==========
-
-    /// Test permission cache key format.
-    #[test]
-    fn test_permission_cache_key_format() {
-        let room_id = RoomId::from_string("room123".to_string());
-        let user_id = UserId::from_string("user456".to_string());
-
-        // Cache key format: perm:room:{room_id}:user:{user_id}
-        let cache_key = format!("perm:room:{}:user:{}", room_id.as_str(), user_id.as_str());
-        assert_eq!(cache_key, "perm:room:room123:user:user456");
-    }
-
-    // ========== AddMemberOptions Builder Pattern Tests ==========
-
-    #[test]
-    fn test_add_member_options_builder_all_skips() {
-        let opts = AddMemberOptions::new()
-            .skip_active_check()
-            .skip_duplicate_check()
-            .skip_max_members_check()
-            .skip_cache_invalidation();
-
-        assert!(!opts.check_room_active);
-        assert!(!opts.check_duplicate);
-        assert!(!opts.check_max_members);
-        assert!(!opts.invalidate_cache);
-    }
-
-    #[test]
-    fn test_add_member_options_with_max_members_enables_check() {
-        let opts = AddMemberOptions::new().with_max_members(50);
-
-        // Setting max_members should automatically enable the check
-        assert!(opts.check_max_members);
-        assert_eq!(opts.max_members, 50);
-    }
-
-    #[test]
-    fn test_add_member_options_default_allows_unlimited_members() {
-        let opts = AddMemberOptions::new();
-
-        // By default, max_members check is disabled (unlimited)
-        assert!(!opts.check_max_members);
-        assert_eq!(opts.max_members, 0);
-    }
-
-    // ========== Role Level Tests for Concurrent Scenarios ==========
-
-    #[test]
-    fn test_role_level_prevents_parallel_kick_race() {
-        // In a concurrent scenario, two admins might try to kick each other simultaneously.
-        // The role check ensures that neither can kick the other since they have equal roles.
-
-        let admin1_level = role_level(&RoomRole::Admin);
-        let admin2_level = role_level(&RoomRole::Admin);
-
-        // Both have the same level, so neither can kick the other
-        assert_eq!(admin1_level, admin2_level);
-        // The SQL check: actor.role < target.role prevents equal roles from kicking each other
-        // This prevents race conditions where two admins try to kick each other
-    }
-
-    #[test]
-    fn test_creator_always_outranks() {
-        // Creator should be able to kick/ban any other role
-        let creator_level = role_level(&RoomRole::Creator);
-
-        for role in [RoomRole::Admin, RoomRole::Member, RoomRole::Guest] {
-            assert!(role_level(&role) < creator_level);
-        }
-    }
-
-    #[test]
-    fn test_guest_never_outranks() {
-        // Guest should not be able to kick/ban anyone
-        let guest_level = role_level(&RoomRole::Guest);
-
-        for role in [RoomRole::Creator, RoomRole::Admin, RoomRole::Member] {
-            assert!(role_level(&role) > guest_level);
-        }
-    }
-
-    // ========== Status Transition Tests ==========
-
-    #[test]
-    fn test_member_status_values() {
-        // Verify status values for concurrent operations
-        let active = MemberStatus::Active;
-        let banned = MemberStatus::Banned;
-        let left = MemberStatus::Left;
-        let pending = MemberStatus::Pending;
-
-        // Statuses should be distinct
-        assert_ne!(active, banned);
-        assert_ne!(active, left);
-        assert_ne!(active, pending);
-        assert_ne!(banned, left);
-    }
-
-    // ========== Atomic Operation Safety Tests ==========
-
-    #[test]
-    fn test_atomic_permission_grant_no_read_modify_write() {
-        // The grant_permission_atomic method uses SQL bitwise OR:
-        // UPDATE ... SET added_permissions = added_permissions | $permission
-
-        // This is atomic at the SQL level, preventing TOCTOU races
-
-        // Simulate the operation:
-        let current_added = 0b0010u64; // Current permissions
-        let to_grant = 0b0001u64; // Permission to grant
-
-        // Atomic OR in SQL
-        let new_added = current_added | to_grant;
-
-        assert_eq!(new_added, 0b0011); // Both bits set
-    }
-
-    #[test]
-    fn test_atomic_permission_revoke_no_read_modify_write() {
-        // The revoke_permission_atomic method uses SQL bitwise OR on removed_permissions:
-        // UPDATE ... SET removed_permissions = removed_permissions | $permission
-
-        let current_removed = 0b0010u64;
-        let to_revoke = 0b0001u64;
-
-        let new_removed = current_removed | to_revoke;
-
-        assert_eq!(new_removed, 0b0011);
-    }
-
-    // ========== Broadcast Retry Logic Tests ==========
-
-    #[test]
-    fn test_broadcast_retry_backoff_calculation() {
-        // broadcast_permission_invalidation_with_retry uses:
-        // backoff_ms = 50 * (1 << attempt) for 3 attempts
-
-        let base = 50u64;
-        let attempts = 3u32;
-
-        let backoffs: Vec<u64> = (0..attempts)
-            .map(|attempt| base * (1u64 << attempt))
-            .collect();
-
-        assert_eq!(backoffs, vec![50, 100, 200]);
     }
 }

@@ -43,7 +43,7 @@ async fn test_create_and_get_token() {
 
     let user = user_repo.create(&make_user("token_user_1")).await.unwrap();
 
-    let token_str = nanoid::nanoid!(32);
+    let token_str = synctv_common::snanoid!(32);
     let expires_at = Utc::now() + Duration::hours(24);
 
     let created = token_repo
@@ -78,7 +78,7 @@ async fn test_mark_token_as_used() {
 
     let user = user_repo.create(&make_user("token_user_2")).await.unwrap();
 
-    let token_str = nanoid::nanoid!(32);
+    let token_str = synctv_common::snanoid!(32);
     let expires_at = Utc::now() + Duration::hours(24);
 
     token_repo
@@ -109,7 +109,7 @@ async fn test_validate_and_consume_valid_token() {
 
     let user = user_repo.create(&make_user("token_user_3")).await.unwrap();
 
-    let token_str = nanoid::nanoid!(32);
+    let token_str = synctv_common::snanoid!(32);
     let expires_at = Utc::now() + Duration::hours(24);
 
     token_repo
@@ -150,7 +150,7 @@ async fn test_validate_wrong_type_fails() {
 
     let user = user_repo.create(&make_user("token_user_4")).await.unwrap();
 
-    let token_str = nanoid::nanoid!(32);
+    let token_str = synctv_common::snanoid!(32);
     let expires_at = Utc::now() + Duration::hours(24);
 
     // Create as EmailVerification
@@ -191,7 +191,7 @@ async fn test_expired_token_not_consumable() {
 
     let user = user_repo.create(&make_user("token_user_5")).await.unwrap();
 
-    let token_str = nanoid::nanoid!(32);
+    let token_str = synctv_common::snanoid!(32);
     // Set expiry in the past
     let expires_at = Utc::now() - Duration::hours(1);
 
@@ -224,7 +224,7 @@ async fn test_cleanup_expired_tokens() {
 
     // Create some expired tokens
     for i in 0..3 {
-        let token_str = nanoid::nanoid!(32);
+        let token_str = synctv_common::snanoid!(32);
         let expires_at = Utc::now() - Duration::hours(i + 1);
         token_repo
             .create(
@@ -238,7 +238,7 @@ async fn test_cleanup_expired_tokens() {
     }
 
     // Create one valid token
-    let valid_token = nanoid::nanoid!(32);
+    let valid_token = synctv_common::snanoid!(32);
     let valid_expires = Utc::now() + Duration::hours(24);
     token_repo
         .create(
@@ -270,7 +270,7 @@ async fn test_delete_user_tokens() {
 
     // Create multiple unused tokens
     for _ in 0..3 {
-        let token_str = nanoid::nanoid!(32);
+        let token_str = synctv_common::snanoid!(32);
         let expires_at = Utc::now() + Duration::hours(24);
         token_repo
             .create(

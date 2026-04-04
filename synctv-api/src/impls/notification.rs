@@ -6,13 +6,15 @@ use std::sync::Arc;
 use synctv_core::models::id::UserId;
 use synctv_core::models::notification::{
     MarkAllAsReadRequest, MarkAsReadRequest, Notification, NotificationListQuery,
-    NotificationType as CoreNotificationType,
+    NotificationListSortBy, NotificationType as CoreNotificationType,
 };
+use synctv_core::models::SortDirection as CoreSortDirection;
 use synctv_core::models::{PageParams, MAX_PAGE_SIZE};
 use synctv_core::service::UserNotificationService;
 use uuid::Uuid;
 
 use crate::impls::ApiError;
+use crate::proto::client::SortDirection as ProtoSortDirection;
 use crate::proto::client::{NotificationProto, NotificationType as ProtoNotificationType};
 
 /// Convert a domain Notification to a proto `NotificationProto`.
@@ -151,12 +153,22 @@ impl NotificationApiImpl {
         page_size: Option<i32>,
         is_read: Option<bool>,
         notification_type: Option<CoreNotificationType>,
+        search: Option<String>,
+        sort_by: NotificationListSortBy,
+        sort_direction: CoreSortDirection,
     ) -> Result<ListNotificationsResult, ApiError> {
         let pagination = normalize_notification_pagination(page, page_size)?;
         let query = NotificationListQuery {
             pagination,
             is_read,
             notification_type,
+            search: search.and_then(|value| {
+                let trimmed = value.trim().to_string();
+                (!trimmed.is_empty()).then_some(trimmed)
+            }),
+            sort_by,
+            sort_direction,
+            ..Default::default()
         };
 
         let (notifications, total) = self
@@ -235,6 +247,13 @@ impl NotificationApiImpl {
             .await
             .map(|_| ())
             .map_err(map_notification_mutation_error)
+    }
+}
+
+pub fn proto_sort_direction_to_core(sort_direction: i32) -> CoreSortDirection {
+    match ProtoSortDirection::try_from(sort_direction) {
+        Ok(ProtoSortDirection::Asc) => CoreSortDirection::Asc,
+        _ => CoreSortDirection::Desc,
     }
 }
 

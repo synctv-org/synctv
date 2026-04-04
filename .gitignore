@@ -12,7 +12,7 @@ target/
 *.pem
 *.key
 .env
-config.yaml
+synctv.yaml
 keys/
 
 AGENTS.md

@@ -112,7 +112,7 @@ impl Default for ClusterConfig {
             redis_conn: None,
             shared_redis_conn: None,
             cluster_enabled: false,
-            node_id: format!("node_{}", nanoid::nanoid!(8)),
+            node_id: format!("node_{}", synctv_common::snanoid!(8)),
             dedup_window: Duration::from_mins(15),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
@@ -999,7 +999,7 @@ impl ClusterManager {
         room_id: RoomId,
         user_id: UserId,
     ) -> crate::Result<(tokio::sync::mpsc::Receiver<ClusterEvent>, ConnectionId)> {
-        let connection_id = format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8));
+        let connection_id = format!("{}_{}", user_id.as_str(), synctv_common::snanoid!(8));
         self.subscribe_with_id(room_id, user_id, connection_id)
             .await
     }
@@ -1172,7 +1172,7 @@ mod tests {
 
         // Broadcast event
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: user_id.clone(),
             username: "user1".to_string(),
@@ -1233,7 +1233,7 @@ mod tests {
 
         // Send a KickPublisher event through the admin channel
         let event = ClusterEvent::KickPublisher {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: RoomId::from_string("room1".to_string()),
             media_id: synctv_core::models::MediaId::from_string("media1".to_string()),
             reason: "user_banned".to_string(),
@@ -1286,7 +1286,7 @@ mod tests {
 
         // Send event
         let event = ClusterEvent::KickPublisher {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: RoomId::from_string("room1".to_string()),
             media_id: synctv_core::models::MediaId::from_string("media1".to_string()),
             reason: "room_deleted".to_string(),
@@ -1348,7 +1348,7 @@ mod tests {
 
         // Broadcast should work locally
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: user_id.clone(),
             username: "user1".to_string(),
@@ -1416,7 +1416,7 @@ mod tests {
             .expect("subscribe should succeed");
 
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: user_id.clone(),
             username: "user2".to_string(),
@@ -1637,7 +1637,7 @@ mod tests {
         critical_tx
             .try_send(PublishRequest {
                 event: ClusterEvent::KickUser {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     user_id: UserId::from_string("pre-filled".to_string()),
                     reason: "fill queue".to_string(),
                     timestamp: Utc::now(),
@@ -1652,7 +1652,7 @@ mod tests {
             .store(false, Ordering::Release);
 
         let event = ClusterEvent::KickUser {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             user_id: UserId::from_string("late-critical".to_string()),
             reason: "must not start new retry after drain closes".to_string(),
             timestamp: Utc::now(),
@@ -1738,7 +1738,7 @@ mod tests {
         manager.shutdown_started.store(true, Ordering::Release);
 
         let event = ClusterEvent::KickUser {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             user_id: UserId::from_string("shutdown-user".to_string()),
             reason: "must propagate during draining".to_string(),
             timestamp: Utc::now(),
@@ -1787,7 +1787,7 @@ mod tests {
         manager.shutdown_started.store(true, Ordering::Release);
 
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id,
             user_id,
             username: "shutdown".to_string(),
@@ -1874,7 +1874,7 @@ mod tests {
 
         // Broadcast should work in non-quarantined state
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: user_id.clone(),
             username: "test_user".to_string(),
@@ -2036,7 +2036,7 @@ mod tests {
         normal_tx
             .try_send(PublishRequest {
                 event: ClusterEvent::ChatMessage {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: RoomId::from_string("room-buffer".to_string()),
                     user_id: UserId::from_string("user-buffer".to_string()),
                     username: "buffer".to_string(),
@@ -2052,7 +2052,7 @@ mod tests {
         manager.redis_critical_tx = None;
 
         let critical_event = ClusterEvent::KickUser {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             user_id: UserId::from_string("user-critical".to_string()),
             reason: "must not drop".to_string(),
             timestamp: Utc::now(),
@@ -2113,7 +2113,7 @@ mod tests {
         manager.redis_critical_tx = Some(critical_tx);
 
         let event = ClusterEvent::UserLeft {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id,
             user_id,
             username: "publish-only".to_string(),
@@ -2163,7 +2163,7 @@ mod tests {
         let mut admin_rx = manager.subscribe_admin_events();
 
         let event = ClusterEvent::UserNotification {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             user_id: UserId::from_string("notify-user".to_string()),
             notification_id: "notification-1".to_string(),
             title: "title".to_string(),

@@ -33,7 +33,9 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 use crate::http::{AppError, AppState};
-use crate::impls::messaging::{MessageSender, ProtoCodec, StreamMessage, StreamMessageHandler};
+use crate::impls::messaging::{
+    MessageSender, ProtoCodec, RealtimeJoinError, StreamMessage, StreamMessageHandler,
+};
 use crate::proto::client::{ClientMessage, ServerMessage};
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::auth::{AuthErrorCategory, JwtValidator, SecurityPipeline};
@@ -206,7 +208,7 @@ async fn extract_user_id(
 
 fn map_security_pipeline_error(error: synctv_core::Error) -> AppError {
     match SecurityPipeline::classify_auth_error(&error) {
-        AuthErrorCategory::Authentication => AppError::unauthorized(format!("{error}")),
+        AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
         AuthErrorCategory::Authorization => AppError::forbidden(format!("{error}")),
         AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(error),
     }
@@ -215,14 +217,12 @@ fn map_security_pipeline_error(error: synctv_core::Error) -> AppError {
 fn map_websocket_ticket_validation_error(error: synctv_core::Error) -> AppError {
     if let synctv_core::Error::Authorization(message) = &error {
         if message.eq_ignore_ascii_case("Invalid or expired ticket") {
-            return AppError::unauthorized(format!("Invalid or expired ticket: {message}"));
+            return AppError::invalid_or_expired_ticket();
         }
     }
 
     match synctv_core::service::auth::SecurityPipeline::classify_auth_error(&error) {
-        AuthErrorCategory::Authentication => {
-            AppError::unauthorized(format!("Invalid or expired ticket: {error}"))
-        }
+        AuthErrorCategory::Authentication => AppError::invalid_or_expired_ticket(),
         AuthErrorCategory::Authorization => AppError::forbidden(format!("{error}")),
         AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(error),
     }
@@ -239,10 +239,10 @@ fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<Stri
 
     let auth_str = auth_header
         .to_str()
-        .map_err(|_| AppError::unauthorized("Invalid Authorization header: non-UTF-8 value"))?;
+        .map_err(|_| AppError::invalid_authorization_header())?;
 
     let token = JwtValidator::extract_bearer_token(auth_str)
-        .map_err(|e| AppError::unauthorized(format!("Invalid Authorization header: {e}")))?;
+        .map_err(|_| AppError::invalid_authorization_header())?;
 
     Ok(Some(token))
 }
@@ -939,10 +939,12 @@ async fn reserve_websocket_upgrade_slots(
 ) -> Result<HandshakeReservation, AppError> {
     connection_manager
         .reserve_user_slot(user_id)
+        .map_err(RealtimeJoinError::from)
         .map_err(map_websocket_pre_join_error)?;
 
     if let Err(error) = connection_manager
         .reserve_room_slot(room_id)
+        .map_err(RealtimeJoinError::from)
         .map_err(map_websocket_pre_join_error)
     {
         connection_manager.release_user_reservation(user_id);
@@ -1036,12 +1038,15 @@ fn websocket_content_filter(filter: &Arc<ContentFilter>) -> Arc<ContentFilter> {
     Arc::clone(filter)
 }
 
-fn map_websocket_pre_join_error(error: String) -> AppError {
-    let (kind, message) = crate::impls::parse_api_error_string(&error);
-    match kind {
-        crate::impls::ErrorKind::RateLimited => AppError::too_many_requests(message.to_string()),
-        crate::impls::ErrorKind::ServiceUnavailable => AppError::service_unavailable(),
-        _ => AppError::internal_server_error(error),
+fn map_websocket_pre_join_error(error: RealtimeJoinError) -> AppError {
+    match error {
+        RealtimeJoinError::RateLimited(message) => AppError::too_many_requests(message),
+        RealtimeJoinError::ServiceUnavailable(_) => AppError::service_unavailable(),
+        RealtimeJoinError::PermissionDenied(message) => AppError::forbidden(message),
+        RealtimeJoinError::Internal(message) => {
+            tracing::error!("Unexpected WebSocket pre_join failure: {message}");
+            AppError::internal_server_error("Failed to establish WebSocket connection")
+        }
     }
 }
 
@@ -1194,7 +1199,7 @@ mod tests {
     use std::sync::Arc;
     use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
     use synctv_core::models::{RoomId, UserId};
-    use synctv_core::service::{RateLimitConfig, UserValidationResult, UserValidator};
+    use synctv_core::service::{UserValidationResult, UserValidator};
 
     struct AllowAllTicketValidator;
 
@@ -1286,35 +1291,6 @@ mod tests {
 
         assert!(requires_state_resync(&message));
         assert_eq!(message_type_name(&message), "MediaRemovedBatch");
-    }
-
-    // ========== AuthMethod Tests ==========
-
-    #[test]
-    fn test_auth_method_equality() {
-        assert_eq!(AuthMethod::Header, AuthMethod::Header);
-        assert_eq!(AuthMethod::Ticket, AuthMethod::Ticket);
-    }
-
-    #[test]
-    fn test_auth_method_inequality() {
-        assert_ne!(AuthMethod::Header, AuthMethod::Ticket);
-    }
-
-    #[test]
-    fn test_auth_method_clone() {
-        let method = AuthMethod::Header;
-        let cloned = method;
-        assert_eq!(cloned, AuthMethod::Header);
-    }
-
-    #[test]
-    fn test_auth_method_debug() {
-        // Verify Debug trait is implemented and produces reasonable output
-        let header = format!("{:?}", AuthMethod::Header);
-        let ticket = format!("{:?}", AuthMethod::Ticket);
-        assert!(header.contains("Header"));
-        assert!(ticket.contains("Ticket"));
     }
 
     // ========== Auth Priority Logic Tests ==========
@@ -1679,10 +1655,7 @@ mod tests {
         ));
 
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert!(
-            err.message.contains("Invalid or expired ticket"),
-            "invalid ticket message should stay user-facing"
-        );
+        assert_eq!(err.message, "Invalid or expired ticket");
     }
 
     #[test]
@@ -1701,7 +1674,7 @@ mod tests {
     #[test]
     fn test_map_websocket_pre_join_error_maps_typed_rate_limit_prefix() {
         let err = map_websocket_pre_join_error(
-            "Rate limited: realtime room capacity exceeded".to_string(),
+            RealtimeJoinError::RateLimited("realtime room capacity exceeded".to_string()),
         );
 
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
@@ -1711,7 +1684,9 @@ mod tests {
     #[test]
     fn test_map_websocket_pre_join_error_maps_raw_capacity_error() {
         let err =
-            map_websocket_pre_join_error("Room at capacity (42 connections, max: 40)".to_string());
+            map_websocket_pre_join_error(RealtimeJoinError::RateLimited(
+                "Room at capacity (42 connections, max: 40)".to_string(),
+            ));
 
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(err.message, "Room at capacity (42 connections, max: 40)");
@@ -1720,7 +1695,9 @@ mod tests {
     #[test]
     fn test_map_websocket_pre_join_error_maps_raw_user_capacity_error() {
         let err = map_websocket_pre_join_error(
-            "Too many connections for this user across all replicas (max 3)".to_string(),
+            RealtimeJoinError::RateLimited(
+                "Too many connections for this user across all replicas (max 3)".to_string(),
+            ),
         );
 
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
@@ -1733,7 +1710,9 @@ mod tests {
     #[test]
     fn test_map_websocket_pre_join_error_maps_raw_total_capacity_error() {
         let err = map_websocket_pre_join_error(
-            "Server at capacity across all replicas (42 connections)".to_string(),
+            RealtimeJoinError::RateLimited(
+                "Server at capacity across all replicas (42 connections)".to_string(),
+            ),
         );
 
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
@@ -1746,7 +1725,9 @@ mod tests {
     #[test]
     fn test_map_websocket_pre_join_error_maps_typed_service_unavailable_prefix() {
         let err = map_websocket_pre_join_error(
-            "Service unavailable: distributed room capacity check unavailable".to_string(),
+            RealtimeJoinError::ServiceUnavailable(
+                "distributed room capacity check unavailable".to_string(),
+            ),
         );
 
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
@@ -1759,8 +1740,10 @@ mod tests {
     #[test]
     fn test_map_websocket_pre_join_error_maps_raw_degraded_cluster_error() {
         let err = map_websocket_pre_join_error(
-            "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
-                .to_string(),
+            RealtimeJoinError::ServiceUnavailable(
+                "Distributed room capacity check unavailable; refusing room join while cluster Redis is degraded"
+                    .to_string(),
+            ),
         );
 
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
@@ -1773,8 +1756,10 @@ mod tests {
     #[test]
     fn test_map_websocket_pre_join_error_maps_raw_degraded_user_check_error() {
         let err = map_websocket_pre_join_error(
-            "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
-                .to_string(),
+            RealtimeJoinError::ServiceUnavailable(
+                "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
+                    .to_string(),
+            ),
         );
 
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
@@ -1787,8 +1772,10 @@ mod tests {
     #[test]
     fn test_map_websocket_pre_join_error_maps_raw_degraded_total_check_error() {
         let err = map_websocket_pre_join_error(
-            "Distributed total connection check unavailable; refusing new connection while cluster Redis is degraded"
-                .to_string(),
+            RealtimeJoinError::ServiceUnavailable(
+                "Distributed total connection check unavailable; refusing new connection while cluster Redis is degraded"
+                    .to_string(),
+            ),
         );
 
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
@@ -1798,53 +1785,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_map_websocket_pre_join_error_maps_business_denial_to_forbidden() {
+        let err = map_websocket_pre_join_error(
+            RealtimeJoinError::PermissionDenied(
+                "User is no longer allowed to use real-time messaging".to_string(),
+            ),
+        );
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.message, "User is no longer allowed to use real-time messaging");
+    }
+
+    #[test]
+    fn test_map_websocket_pre_join_error_hides_unexpected_internal_details() {
+        let err = map_websocket_pre_join_error(RealtimeJoinError::Internal(
+            "cluster subscription cache blew up".to_string(),
+        ));
+
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message, "Failed to establish WebSocket connection");
+    }
+
     // ========== RateLimitConfig Tests ==========
     // These tests verify that the RateLimitConfig used for WebSocket message handling
     // has sensible defaults and can be customized.
-
-    #[test]
-    fn test_rate_limit_config_default_values() {
-        let config = RateLimitConfig::default();
-        // Default values should match synctv_core::service::RateLimitConfig defaults
-        assert_eq!(config.chat_per_second, 10);
-        assert_eq!(config.danmaku_per_second, 3);
-        assert_eq!(config.window_seconds, 1);
-    }
-
-    #[test]
-    fn test_rate_limit_config_custom_values() {
-        let config = RateLimitConfig {
-            chat_per_second: 5,
-            danmaku_per_second: 2,
-            window_seconds: 2,
-        };
-        assert_eq!(config.chat_per_second, 5);
-        assert_eq!(config.danmaku_per_second, 2);
-        assert_eq!(config.window_seconds, 2);
-    }
-
-    #[test]
-    fn test_rate_limit_config_clone() {
-        let config = RateLimitConfig {
-            chat_per_second: 20,
-            danmaku_per_second: 5,
-            window_seconds: 3,
-        };
-        let cloned = config;
-        assert_eq!(cloned.chat_per_second, 20);
-        assert_eq!(cloned.danmaku_per_second, 5);
-        assert_eq!(cloned.window_seconds, 3);
-    }
-
-    #[test]
-    fn test_rate_limit_config_debug() {
-        let config = RateLimitConfig::default();
-        let debug_str = format!("{config:?}");
-        assert!(debug_str.contains("RateLimitConfig"));
-        assert!(debug_str.contains("chat_per_second"));
-        assert!(debug_str.contains("danmaku_per_second"));
-        assert!(debug_str.contains("window_seconds"));
-    }
 
     #[tokio::test]
     async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence() {

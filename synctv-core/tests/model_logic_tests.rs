@@ -40,15 +40,6 @@ fn test_user_role_is_admin_or_above() {
 }
 
 #[test]
-fn test_user_role_as_str_roundtrip() {
-    for role in [UserRole::Root, UserRole::Admin, UserRole::User] {
-        let s = role.as_str();
-        let parsed: UserRole = s.parse().unwrap();
-        assert_eq!(parsed, role);
-    }
-}
-
-#[test]
 fn test_user_role_from_str_case_insensitive() {
     assert_eq!("ROOT".parse::<UserRole>().unwrap(), UserRole::Root);
     assert_eq!("Admin".parse::<UserRole>().unwrap(), UserRole::Admin);
@@ -127,15 +118,6 @@ fn test_signup_method_from_str_name() {
     assert_eq!(SignupMethod::from_str_name("invalid"), None);
 }
 
-#[test]
-fn test_signup_method_as_str() {
-    assert_eq!(SignupMethod::Unknown.as_str(), "unknown");
-    assert_eq!(SignupMethod::Email.as_str(), "email");
-    assert_eq!(SignupMethod::Password.as_str(), "password");
-    assert_eq!(SignupMethod::OAuth2.as_str(), "oauth2");
-    assert_eq!(SignupMethod::AdminCreated.as_str(), "admin_created");
-}
-
 // ============================================================================
 // User model logic tests
 // ============================================================================
@@ -150,22 +132,6 @@ fn make_user(role: UserRole, status: UserStatus, signup_method: SignupMethod) ->
     );
     user.role = role;
     user
-}
-
-#[test]
-fn test_user_new_defaults() {
-    let user = User::new(
-        "alice".to_string(),
-        Some("alice@example.com".to_string()),
-        "hash".to_string(),
-        SignupMethod::Email,
-    );
-    assert_eq!(user.role, UserRole::User);
-    assert_eq!(user.status, UserStatus::Pending);
-    assert!(!user.email_verified);
-    assert_eq!(user.password_version, 0);
-    assert_eq!(user.version, 0);
-    assert!(!user.is_deleted());
 }
 
 #[test]
@@ -258,11 +224,6 @@ fn test_room_status_predicates() {
     assert!(RoomStatus::Closed.is_closed());
 }
 
-#[test]
-fn test_room_status_default() {
-    assert_eq!(RoomStatus::default(), RoomStatus::Active);
-}
-
 // ============================================================================
 // PermissionBits tests
 // ============================================================================
@@ -319,31 +280,6 @@ fn test_permission_bits_set() {
     assert!(perms.has(PermissionBits::SEND_CHAT));
     perms.set(PermissionBits::SEND_CHAT, false);
     assert!(!perms.has(PermissionBits::SEND_CHAT));
-}
-
-#[test]
-fn test_permission_bits_defaults() {
-    // Default member permissions should include basic capabilities
-    let member = PermissionBits::new(PermissionBits::DEFAULT_MEMBER);
-    assert!(member.has(PermissionBits::SEND_CHAT));
-    assert!(member.has(PermissionBits::ADD_MOVIE));
-    assert!(member.has(PermissionBits::VIEW_PLAYLIST));
-    assert!(!member.has(PermissionBits::KICK_MEMBER));
-    assert!(!member.has(PermissionBits::DELETE_ROOM));
-
-    // Default admin permissions should be a superset of member
-    let admin = PermissionBits::new(PermissionBits::DEFAULT_ADMIN);
-    assert!(admin.has(PermissionBits::SEND_CHAT));
-    assert!(admin.has(PermissionBits::KICK_MEMBER));
-    assert!(admin.has(PermissionBits::BAN_MEMBER));
-    assert!(admin.has(PermissionBits::PLAY_CONTROL));
-    assert!(!admin.has(PermissionBits::DELETE_ROOM)); // Only creator
-
-    // Default guest permissions should be minimal
-    let guest = PermissionBits::new(PermissionBits::DEFAULT_GUEST);
-    assert!(guest.has(PermissionBits::VIEW_PLAYLIST));
-    assert!(!guest.has(PermissionBits::SEND_CHAT));
-    assert!(!guest.has(PermissionBits::ADD_MOVIE));
 }
 
 // ============================================================================

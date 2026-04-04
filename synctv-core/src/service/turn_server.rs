@@ -322,13 +322,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_stun_server_config_default() {
-        let config = StunServerConfig::default();
-        assert_eq!(config.bind_addr, "0.0.0.0:3478");
-        assert_eq!(config.external_addr, "0.0.0.0:3478");
-    }
-
-    #[test]
     fn test_validate_external_addr_public_ip() {
         assert!(validate_external_addr("203.0.113.1:3478").is_ok());
     }

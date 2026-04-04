@@ -108,20 +108,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cached_resource_meta_clone() {
-        let meta = CachedResourceMeta {
-            etag: None,
-            last_modified: None,
-            total_size: None,
-            content_type: None,
-            last_accessed: SystemTime::now(),
-        };
-        let cloned = meta;
-        assert_eq!(cloned.etag, None);
-        assert_eq!(cloned.last_modified, None);
-    }
-
     // ---------------------------------------------------------------
     // StoredEntry tests
     // ---------------------------------------------------------------

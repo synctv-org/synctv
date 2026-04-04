@@ -1813,6 +1813,7 @@ impl RedisPubSub {
                 &event,
                 ClusterEvent::KickPublisher { .. }
                     | ClusterEvent::KickUserFromRoom { .. }
+                    | ClusterEvent::RoomBanned { .. }
                     | ClusterEvent::UserLeft { .. }
             ) {
                 let _ = self.admin_event_tx.send(event.clone());
@@ -1837,7 +1838,9 @@ impl RedisPubSub {
                             "Invalidated permission cache on UserLeft (cross-replica)"
                         );
                     }
-                    ClusterEvent::RoomSettingsChanged { .. } | ClusterEvent::RoomDeleted { .. } => {
+                    ClusterEvent::RoomSettingsChanged { .. }
+                    | ClusterEvent::RoomDeleted { .. }
+                    | ClusterEvent::RoomBanned { .. } => {
                         perm_svc.invalidate_room_cache(&room_id).await;
                         debug!(
                             room_id = %room_id.as_str(),
@@ -1859,7 +1862,7 @@ impl RedisPubSub {
                             room_id: room_id.as_str().to_string(),
                         }]);
                     }
-                    ClusterEvent::RoomDeleted { .. } => {
+                    ClusterEvent::RoomDeleted { .. } | ClusterEvent::RoomBanned { .. } => {
                         // Invalidate both room cache and playback state cache
                         self.invalidate_cache_targets(&[CacheTarget::Room {
                             room_id: room_id.as_str().to_string(),
@@ -1885,11 +1888,14 @@ impl RedisPubSub {
                 }
             }
 
-            // Handle RoomDeleted: broadcast to local subscribers then clean up the room.
+            // Handle terminal room-wide admin events before dropping local room state.
             // Critical delivery must complete before local senders are dropped;
-            // otherwise the queued RoomDeleted notification can be lost for slow
-            // subscribers even though the room cleanup proceeds.
-            if matches!(&event, ClusterEvent::RoomDeleted { .. }) {
+            // otherwise the queued notification can be lost for slow subscribers
+            // even though the room cleanup proceeds.
+            if matches!(
+                &event,
+                ClusterEvent::RoomDeleted { .. } | ClusterEvent::RoomBanned { .. }
+            ) {
                 let sent_count = self.message_hub.broadcast_reliably(&room_id, event).await;
                 // Remove all local subscriptions for the deleted room
                 self.message_hub.remove_room(&room_id);
@@ -2304,7 +2310,7 @@ mod tests {
     #[test]
     fn test_event_envelope_serialization() {
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: RoomId::from_string("room123".to_string()),
             user_id: UserId::from_string("user456".to_string()),
             username: "testuser".to_string(),
@@ -2344,7 +2350,7 @@ mod tests {
             let sent = message_hub.broadcast(
                 &room_id,
                 ClusterEvent::ChatMessage {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: room_id.clone(),
                     user_id: user_id.clone(),
                     username: "filler".to_string(),
@@ -2371,7 +2377,7 @@ mod tests {
         .expect("pubsub should be created");
 
         let event = ClusterEvent::RoomDeleted {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             deleted_by: user_id.clone(),
             timestamp: Utc::now(),
@@ -2430,7 +2436,7 @@ mod tests {
         use testcontainers_modules::redis::Redis;
 
         /// Default Redis version for test containers
-        const REDIS_VERSION: &str = "7";
+        const REDIS_VERSION: &str = "8";
 
         let redis_container = Redis::default()
             .with_tag(REDIS_VERSION)
@@ -2531,7 +2537,7 @@ mod tests {
 
         // Publish event from node1
         let event = ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
             user_id: user_id.clone(),
             username: "testuser".to_string(),
@@ -2817,7 +2823,7 @@ mod tests {
         use testcontainers_modules::redis::Redis;
 
         /// Default Redis version for test containers
-        const REDIS_VERSION: &str = "7";
+        const REDIS_VERSION: &str = "8";
 
         let redis_container = Redis::default()
             .with_tag(REDIS_VERSION)
@@ -2937,7 +2943,7 @@ mod tests {
             &publish_tx1,
             &mut rx1,
             || ClusterEvent::ChatMessage {
-                event_id: nanoid::nanoid!(16),
+                event_id: synctv_common::snanoid!(16),
                 room_id: room1_id.clone(),
                 user_id: user1_id.clone(),
                 username: "testuser1".to_string(),
@@ -2963,7 +2969,7 @@ mod tests {
             &publish_tx1,
             &mut rx2,
             || ClusterEvent::ChatMessage {
-                event_id: nanoid::nanoid!(16),
+                event_id: synctv_common::snanoid!(16),
                 room_id: room2_id.clone(),
                 user_id: user2_id.clone(),
                 username: "testuser2".to_string(),
@@ -3115,7 +3121,7 @@ mod tests {
             .dispatch_event(
                 "synctv:room:dispatch-room",
                 ClusterEvent::WebRTCSignaling {
-                    event_id: nanoid::nanoid!(16),
+                    event_id: synctv_common::snanoid!(16),
                     room_id: room_id.clone(),
                     message_type: "offer".to_string(),
                     from: "user1|conn1".to_string(),

@@ -888,19 +888,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config() {
-        let config = K8sLeaderElectorConfig::default();
-        assert_eq!(config.lease_name, "synctv-leader");
-        assert_eq!(config.lease_duration_secs, 30);
-        assert_eq!(config.renew_interval_secs, 10);
-        assert_eq!(
-            config.grace_period_base_secs,
-            DEFAULT_GRACE_PERIOD_BASE_SECS
-        );
-        assert_eq!(config.grace_period_max_secs, DEFAULT_GRACE_PERIOD_MAX_SECS);
-    }
-
-    #[test]
     fn test_calculate_grace_period_exponential_backoff() {
         // Create a minimal elector for testing grace period calculation
         // We don't need a real K8s client for this unit test

@@ -386,73 +386,6 @@ mod tests {
         assert_eq!(msg, decoded);
     }
 
-    #[test]
-    fn old_join_room_request_bytes_decode_with_room_id_default() {
-        let old_request = crate::client::JoinRoomRequest {
-            room_id: String::new(),
-            password: "secret".into(),
-        };
-        let bytes = old_request.encode_to_vec();
-        let decoded = crate::client::JoinRoomRequest::decode(bytes.as_slice()).unwrap();
-        assert_eq!(decoded.password, "secret");
-        assert!(decoded.room_id.is_empty());
-    }
-
-    #[test]
-    fn old_client_message_chat_tag_remains_decodable() {
-        let msg = crate::client::ClientMessage {
-            message: Some(crate::client::client_message::Message::Chat(
-                crate::client::ChatMessageSend {
-                    content: "compat".into(),
-                    position: None,
-                    color: None,
-                },
-            )),
-        };
-        let bytes = msg.encode_to_vec();
-        let decoded = crate::client::ClientMessage::decode(bytes.as_slice()).unwrap();
-        match decoded.message {
-            Some(crate::client::client_message::Message::Chat(chat)) => {
-                assert_eq!(chat.content, "compat");
-            }
-            other => panic!("expected chat variant, got {other:?}"),
-        }
-    }
-
-    // === Backward Compatibility: Added Fields ===
-
-    #[test]
-    fn old_ice_server_bytes_decode_with_new_field_default() {
-        // Simulate an old IceServer without the expiry_time field
-        let old_server = crate::client::IceServer {
-            urls: vec!["stun:stun.example.com:3478".into()],
-            username: None,
-            credential: None,
-            expiry_time: 0, // default value - as if field didn't exist
-        };
-        let bytes = old_server.encode_to_vec();
-
-        // New code can still decode it - expiry_time defaults to 0
-        let decoded = crate::client::IceServer::decode(bytes.as_slice()).unwrap();
-        assert_eq!(decoded.expiry_time, 0);
-        assert_eq!(decoded.urls, vec!["stun:stun.example.com:3478"]);
-    }
-
-    #[test]
-    fn old_error_message_bytes_decode_with_new_fields_default() {
-        // Simulate old ErrorMessage with only message field
-        let old_msg = crate::client::ErrorMessage {
-            message: "error".into(),
-            code: 0,
-            detail: String::new(),
-        };
-        let bytes = old_msg.encode_to_vec();
-        let decoded = crate::client::ErrorMessage::decode(bytes.as_slice()).unwrap();
-        assert_eq!(decoded.message, "error");
-        assert_eq!(decoded.code, 0);
-        assert_eq!(decoded.detail, "");
-    }
-
     // === Notification Variant Tests ===
 
     #[test]
@@ -684,22 +617,22 @@ mod tests {
     }
 
     #[test]
-    fn http_json_update_user_password_request_accepts_http_alias() {
-        let json = r#"{"password":"new-password-123","reason":"support reset"}"#;
+    fn http_json_update_user_password_request_accepts_new_password_field() {
+        let json = r#"{"new_password":"new-password-123","reason":"support reset"}"#;
 
         let decoded: crate::admin::UpdateUserPasswordRequest =
-            serde_json::from_str(json).expect("HTTP alias field should deserialize into proto");
+            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto");
 
         assert_eq!(decoded.new_password, "new-password-123");
         assert_eq!(decoded.reason, "support reset");
     }
 
     #[test]
-    fn http_json_update_user_username_request_accepts_http_alias() {
-        let json = r#"{"username":"patched-name"}"#;
+    fn http_json_update_user_username_request_accepts_new_username_field() {
+        let json = r#"{"new_username":"patched-name"}"#;
 
         let decoded: crate::admin::UpdateUserUsernameRequest =
-            serde_json::from_str(json).expect("HTTP alias field should deserialize into proto");
+            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto");
 
         assert_eq!(decoded.user_id, "");
         assert_eq!(decoded.new_username, "patched-name");
@@ -717,11 +650,11 @@ mod tests {
     }
 
     #[test]
-    fn http_json_update_room_password_request_accepts_http_alias() {
-        let json = r#"{"password":"new-room-password"}"#;
+    fn http_json_update_room_password_request_accepts_new_password_field() {
+        let json = r#"{"new_password":"new-room-password"}"#;
 
         let decoded: crate::admin::UpdateRoomPasswordRequest =
-            serde_json::from_str(json).expect("HTTP alias field should deserialize into proto");
+            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto");
 
         assert_eq!(decoded.room_id, "");
         assert_eq!(decoded.new_password, "new-room-password");

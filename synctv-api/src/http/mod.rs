@@ -6,6 +6,7 @@ pub mod auth;
 pub mod email_verification;
 pub mod error;
 pub mod health;
+pub mod metrics_auth;
 pub mod middleware;
 pub mod notifications;
 pub mod oauth2;
@@ -145,6 +146,7 @@ pub struct AppState {
     pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
     /// Shared outbound HTTP client used by proxy handlers.
     pub proxy_http_client: reqwest::Client,
+    pub metrics_access_controller: Arc<metrics_auth::MetricsAccessController>,
 }
 
 pub struct ProxyCacheLifecycleRuntime {
@@ -261,6 +263,8 @@ fn build_app_state(config: RouterConfig) -> AppState {
             config.connection_manager.clone(),
             config.provider_instance_manager.clone(),
             config.live_streaming_infrastructure.clone(),
+            config.publish_key_service.clone(),
+            config.config.clone(),
             config.redis_publish_tx.clone(),
             config.audit_service.clone(),
         ))
@@ -363,6 +367,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         proxy_signing_key,
         proxy_slice_cache,
         proxy_http_client,
+        metrics_access_controller: Arc::new(metrics_auth::MetricsAccessController::new()),
     }
 }
 
@@ -634,14 +639,8 @@ fn register_all_routes_for_test(state: AppState) -> Router<AppState> {
 }
 
 fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, Router<AppState>) {
-    let health_router = if state.config.server.metrics_enabled {
-        health::create_health_router_with_metrics()
-    } else {
-        health::create_health_router()
-    };
-
     let mut timeout_router = Router::new()
-        .merge(health_router)
+        .merge(health::create_health_router())
         .merge(openapi_router())
         .merge(public::create_public_router())
         .merge(publish_key::create_publish_key_router().route_layer(
@@ -1401,6 +1400,31 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "request should reach the registered route and follow the normal auth path; playback PATCH is not gated by websocket-runtime-only middleware"
         );
+    }
+
+    #[tokio::test]
+    async fn test_main_router_does_not_expose_metrics_endpoint() {
+        let mut state = test_app_state();
+        Arc::make_mut(&mut state.router_config).config = Arc::new({
+            let mut config = (*state.config).clone();
+            config.metrics.enabled = true;
+            config.metrics.auth.mode = synctv_core::config::MetricsAuthMode::BearerToken;
+            config.metrics.auth.bearer_token = "metrics-secret".to_string();
+            config
+        });
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

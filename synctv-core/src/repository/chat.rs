@@ -48,7 +48,7 @@ impl ChatRepository {
     ///
     /// Returns at most `limit` messages (capped at 100) ordered by
     /// `(created_at DESC, id DESC)`. The cursor is a composite of
-    /// `(cursor_created_at, cursor_id)` — this avoids using nanoid string
+    /// `(cursor_created_at, cursor_id)` — this avoids relying on base62 ID string
     /// comparison which is NOT lexicographically sortable by time.
     ///
     /// Returns `(messages, next_cursor)` where `next_cursor` is the

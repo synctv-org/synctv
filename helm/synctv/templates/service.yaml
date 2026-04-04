@@ -5,10 +5,11 @@ metadata:
   labels:
     {{- include "synctv.labels" . | nindent 4 }}
   {{- $annotations := dict }}
-  {{- if .Values.metrics.enabled }}
+  {{- if and .Values.metrics.enabled .Values.metrics.scrapeAnnotations.enabled }}
   {{- $_ := set $annotations "prometheus.io/scrape" "true" }}
-  {{- $_ := set $annotations "prometheus.io/port" (.Values.metrics.port | default .Values.config.server.port | toString) }}
+  {{- $_ := set $annotations "prometheus.io/port" (.Values.metrics.port | default 9090 | toString) }}
   {{- $_ := set $annotations "prometheus.io/path" (.Values.metrics.path | default "/metrics") }}
+  {{- $_ := set $annotations "prometheus.io/scheme" (ternary "https" "http" (.Values.metrics.tls.enabled | default false)) }}
   {{- end }}
   {{- with .Values.service.annotations }}
   {{- range $k, $v := . }}
@@ -39,6 +40,12 @@ spec:
       targetPort: api
       protocol: TCP
       name: api
+    {{- if .Values.metrics.enabled }}
+    - port: {{ .Values.metrics.port | default 9090 }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+    {{- end }}
     - port: {{ .Values.config.livestream.rtmpPort }}
       targetPort: rtmp
       protocol: TCP

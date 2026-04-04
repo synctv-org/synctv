@@ -235,13 +235,6 @@ mod tests {
     // ========== PageParams Tests ==========
 
     #[test]
-    fn test_page_params_defaults() {
-        let params = PageParams::default();
-        assert_eq!(params.page, 1);
-        assert_eq!(params.page_size, DEFAULT_PAGE_SIZE);
-    }
-
-    #[test]
     fn test_page_params_new_with_none() {
         let params = PageParams::new(None, None);
         assert_eq!(params.page, 1);

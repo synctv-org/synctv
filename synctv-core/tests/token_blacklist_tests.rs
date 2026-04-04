@@ -14,7 +14,7 @@ use synctv_core_testing::create_test_pool;
 async fn test_pg_family_revocation_survives_cleanup_until_marker_expires() {
     let (_container, pool) = create_test_pool().await;
     let store = PgTokenBlacklistStore::new(pool);
-    let key = format!("family:pg_cleanup_guard:{}", nanoid::nanoid!(8));
+    let key = format!("family:pg_cleanup_guard:{}", synctv_common::snanoid!(8));
     let timestamp = chrono::Utc::now().timestamp();
 
     store
@@ -35,7 +35,7 @@ async fn test_pg_family_revocation_survives_cleanup_until_marker_expires() {
 async fn test_pg_family_revocation_timestamp_is_stable_across_reads() {
     let (_container, pool) = create_test_pool().await;
     let store = PgTokenBlacklistStore::new(pool);
-    let key = format!("family:pg_stable_ts:{}", nanoid::nanoid!(8));
+    let key = format!("family:pg_stable_ts:{}", synctv_common::snanoid!(8));
     let timestamp = chrono::Utc::now().timestamp();
 
     store
@@ -60,7 +60,7 @@ async fn test_pg_family_revocation_timestamp_is_stable_across_reads() {
 async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
     let (_container, pool) = create_test_pool().await;
     let store = PgTokenBlacklistStore::new(pool.clone());
-    let key = format!("family:pg_atomicity_guard:{}", nanoid::nanoid!(8));
+    let key = format!("family:pg_atomicity_guard:{}", synctv_common::snanoid!(8));
     let timestamp = chrono::Utc::now().timestamp();
 
     let trigger_fn_sql = r"

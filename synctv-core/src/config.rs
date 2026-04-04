@@ -1,10 +1,169 @@
-use config::{Config as ConfigBuilder, ConfigError, File};
+use config::{ConfigError, FileFormat};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use synctv_common::time as common_time;
 
 fn process_env(name: &str) -> Option<String> {
     std::env::var(name).ok()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn absolute_env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+        })
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+pub fn absolute_display_path(path: &Path) -> String {
+    if path.is_absolute() {
+        return path.display().to_string();
+    }
+
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+pub fn default_management_runtime_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        return user_home_dir()
+            .map(|home| {
+                home.join("Library")
+                    .join("Application Support")
+                    .join("synctv")
+                    .join("run")
+            })
+            .unwrap_or_else(|| std::env::temp_dir().join("synctv").join("run"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return absolute_env_path("XDG_RUNTIME_DIR")
+            .map(|dir| dir.join("synctv"))
+            .or_else(|| {
+                user_home_dir()
+                    .map(|home| home.join(".local").join("state").join("synctv").join("run"))
+            })
+            .unwrap_or_else(|| std::env::temp_dir().join("synctv").join("run"));
+    }
+
+    #[cfg(windows)]
+    {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| user_home_dir().map(|home| home.join("AppData").join("Local")))
+            .unwrap_or_else(std::env::temp_dir)
+            .join("synctv")
+            .join("run");
+    }
+
+    #[allow(unreachable_code)]
+    std::env::temp_dir().join("synctv").join("run")
+}
+
+pub fn default_management_unix_socket_path() -> PathBuf {
+    default_management_runtime_dir().join("synctv.sock")
+}
+
+pub fn default_config_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    push_config_path_variants(&mut paths, Path::new("synctv"));
+
+    #[cfg(target_os = "macos")]
+    if let Some(home) = user_home_dir() {
+        push_config_path_variants(
+            &mut paths,
+            &home
+                .join("Library")
+                .join("Application Support")
+                .join("synctv")
+                .join("synctv"),
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(xdg_config_home) = absolute_env_path("XDG_CONFIG_HOME") {
+            push_config_path_variants(&mut paths, &xdg_config_home.join("synctv").join("synctv"));
+        } else if let Some(home) = user_home_dir() {
+            push_config_path_variants(
+                &mut paths,
+                &home.join(".config").join("synctv").join("synctv"),
+            );
+        }
+        push_config_path_variants(&mut paths, Path::new("/etc/synctv/synctv"));
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+        {
+            push_config_path_variants(&mut paths, &appdata.join("synctv").join("synctv"));
+        } else if let Some(home) = user_home_dir() {
+            push_config_path_variants(
+                &mut paths,
+                &home
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("synctv")
+                    .join("synctv"),
+            );
+        }
+    }
+
+    push_config_path_variants(&mut paths, Path::new("/config/synctv"));
+    paths
+}
+
+fn push_config_path_variants(paths: &mut Vec<PathBuf>, base_path_without_extension: &Path) {
+    for extension in ["yaml", "yml", "json", "toml"] {
+        push_unique_path(paths, base_path_without_extension.with_extension(extension));
+    }
+}
+
+fn config_file_format_for_path(path: &Path) -> Result<FileFormat, ConfigError> {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("yaml") | Some("yml") => Ok(FileFormat::Yaml),
+        Some("json") => Ok(FileFormat::Json),
+        Some("toml") => Ok(FileFormat::Toml),
+        Some(ext) => Err(ConfigError::Message(format!(
+            "unsupported config file extension '.{ext}' for {} (expected .yaml, .yml, .json, or .toml)",
+            absolute_display_path(path)
+        ))),
+        None => Err(ConfigError::Message(format!(
+            "config file {} is missing an extension (expected .yaml, .yml, .json, or .toml)",
+            absolute_display_path(path)
+        ))),
+    }
 }
 
 pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
@@ -35,6 +194,9 @@ pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
 #[serde(default)]
 pub struct Config {
     pub server: ServerConfig,
+    pub time: TimeConfig,
+    pub metrics: MetricsConfig,
+    pub management: ManagementConfig,
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
     pub jwt: JwtConfig,
@@ -59,6 +221,9 @@ impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
             .field("server", &self.server)
+            .field("time", &self.time)
+            .field("metrics", &self.metrics)
+            .field("management", &self.management)
             .field("database", &"<redacted>")
             .field("redis", &self.redis)
             .field("jwt", &"<redacted>")
@@ -79,6 +244,20 @@ impl std::fmt::Debug for Config {
             .field("grpc_rate_limits", &self.grpc_rate_limits)
             .finish()
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimeConfig {
+    /// Default IANA timezone used for human-readable formatting and local datetime parsing.
+    ///
+    /// Resolution priority:
+    /// 1. `time.timezone` from config file
+    /// 2. `SYNCTV_TIME_TIMEZONE`
+    /// 3. `TZ`
+    /// 4. system timezone
+    /// 5. `UTC`
+    pub timezone: String,
 }
 
 /// Domain-level messaging rate limits for chat and danmaku.
@@ -108,14 +287,10 @@ impl Default for MessagingRateLimitConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub enable_reflection: bool,
-    /// Enable the `/metrics` Prometheus endpoint.
-    /// Defaults to `false`. In Kubernetes, set via Helm `metrics.enabled`.
-    pub metrics_enabled: bool,
     /// Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation.
     /// When set, X-Forwarded-For/X-Real-IP headers are only trusted from these addresses.
     /// Example: ["10.0.0.0/8", "192.168.0.0/16"] for internal load balancers.
@@ -137,14 +312,6 @@ pub struct ServerConfig {
     /// Maximum time in seconds to wait for active connections to drain during shutdown.
     /// Defaults to 30 seconds. Increase for deployments with many long-lived connections.
     pub shutdown_drain_timeout_seconds: u64,
-    /// Bearer token required to access the `/metrics` Prometheus endpoint.
-    /// When `server.metrics_enabled=true`, requests to `/metrics` must include
-    /// `Authorization: Bearer <token>` with this value. Startup validation
-    /// refuses to enable metrics when this token is empty.
-    ///
-    /// The empty default is only valid while metrics are disabled.
-    /// Set via `SYNCTV_SERVER_METRICS_BEARER_TOKEN` env var or config file.
-    pub metrics_bearer_token: String,
     /// Maximum gRPC message size in bytes for both incoming (decoding) and
     /// outgoing (encoding) messages. Prevents OOM attacks from oversized messages.
     /// Default: 16777216 (16 MB). Minimum: 1048576 (1 MB).
@@ -158,14 +325,190 @@ impl Default for ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 8080,
             enable_reflection: true,
-            metrics_enabled: false,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
             cluster_secret: String::new(),
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
-            metrics_bearer_token: String::new(),
             grpc_max_message_size_bytes: 16 * 1024 * 1024, // 16 MB default
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetricsTlsConfig {
+    /// Enable TLS for the dedicated metrics listener.
+    pub enabled: bool,
+    /// PEM-encoded certificate chain served by the metrics listener.
+    pub cert_path: String,
+    /// PEM-encoded private key for the metrics listener.
+    pub key_path: String,
+}
+
+impl Default for MetricsTlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_path: String::new(),
+            key_path: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricsAuthMode {
+    BearerToken,
+    Basic,
+    Kubernetes,
+}
+
+impl Default for MetricsAuthMode {
+    fn default() -> Self {
+        Self::BearerToken
+    }
+}
+
+impl std::str::FromStr for MetricsAuthMode {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "bearer_token" => Ok(Self::BearerToken),
+            "basic" => Ok(Self::Basic),
+            "kubernetes" => Ok(Self::Kubernetes),
+            _ => Err(ConfigError::Message(format!(
+                "metrics.auth.mode '{value}' must be one of: bearer_token, basic, kubernetes"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetricsKubernetesAuthConfig {
+    /// Optional audience forwarded to Kubernetes TokenReview.
+    pub audience: String,
+    /// Authentication cache TTL in seconds.
+    pub authentication_cache_ttl_seconds: u64,
+    /// Authorization cache TTL in seconds.
+    pub authorization_cache_ttl_seconds: u64,
+}
+
+impl Default for MetricsKubernetesAuthConfig {
+    fn default() -> Self {
+        Self {
+            audience: String::new(),
+            authentication_cache_ttl_seconds: 60,
+            authorization_cache_ttl_seconds: 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetricsAuthConfig {
+    /// Authentication mode for `/metrics`.
+    pub mode: MetricsAuthMode,
+    /// Static bearer token used when `mode=bearer_token`.
+    pub bearer_token: String,
+    /// Static username used when `mode=basic`.
+    pub basic_username: String,
+    /// Static password used when `mode=basic`.
+    pub basic_password: String,
+    /// Kubernetes TokenReview + SubjectAccessReview settings.
+    pub kubernetes: MetricsKubernetesAuthConfig,
+}
+
+impl Default for MetricsAuthConfig {
+    fn default() -> Self {
+        Self {
+            mode: MetricsAuthMode::BearerToken,
+            bearer_token: String::new(),
+            basic_username: String::new(),
+            basic_password: String::new(),
+            kubernetes: MetricsKubernetesAuthConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetricsConfig {
+    /// Enable the dedicated `/metrics` Prometheus listener.
+    pub enabled: bool,
+    /// Host/interface for the dedicated metrics listener.
+    pub host: String,
+    /// Port for the dedicated metrics listener.
+    pub port: u16,
+    /// Metrics listener TLS configuration.
+    pub tls: MetricsTlsConfig,
+    /// Metrics endpoint authentication configuration.
+    pub auth: MetricsAuthConfig,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: "0.0.0.0".to_string(),
+            port: 9090,
+            tls: MetricsTlsConfig::default(),
+            auth: MetricsAuthConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagementTransport {
+    Tcp,
+    Unix,
+}
+
+impl Default for ManagementTransport {
+    fn default() -> Self {
+        Self::Tcp
+    }
+}
+
+impl std::str::FromStr for ManagementTransport {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "tcp" => Ok(Self::Tcp),
+            "unix" => Ok(Self::Unix),
+            _ => Err(ConfigError::Message(format!(
+                "management.transport '{value}' must be either 'tcp' or 'unix'"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ManagementConfig {
+    pub enabled: bool,
+    pub transport: ManagementTransport,
+    pub port: u16,
+    pub unix_socket_path: String,
+    pub enable_reflection: bool,
+}
+
+impl Default for ManagementConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            transport: if cfg!(unix) {
+                ManagementTransport::Unix
+            } else {
+                ManagementTransport::Tcp
+            },
+            port: 50052,
+            unix_socket_path: default_management_unix_socket_path().display().to_string(),
+            enable_reflection: false,
         }
     }
 }
@@ -204,6 +547,11 @@ impl ServerConfig {
 #[serde(default)]
 pub struct DatabaseConfig {
     pub url: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub name: String,
     pub max_connections: u32,
     pub min_connections: u32,
     pub connect_timeout_seconds: u64,
@@ -236,6 +584,11 @@ impl std::fmt::Debug for DatabaseConfig {
 
         f.debug_struct("DatabaseConfig")
             .field("url", &masked_url)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("name", &self.name)
             .field("max_connections", &self.max_connections)
             .field("min_connections", &self.min_connections)
             .field("connect_timeout_seconds", &self.connect_timeout_seconds)
@@ -249,6 +602,11 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             url: "postgresql://synctv:synctv@localhost:5432/synctv".to_string(),
+            host: String::new(),
+            port: 0,
+            username: String::new(),
+            password: String::new(),
+            name: String::new(),
             max_connections: 20,
             min_connections: 5,
             connect_timeout_seconds: 10,
@@ -278,6 +636,11 @@ pub enum RedisDeploymentMode {
 #[serde(default)]
 pub struct RedisConfig {
     pub url: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub database: i64,
     pub connect_timeout_seconds: u64,
     pub key_prefix: String,
     /// Deployment mode: standalone (default) or sentinel
@@ -337,6 +700,11 @@ impl std::fmt::Debug for RedisConfig {
             .collect();
         f.debug_struct("RedisConfig")
             .field("url", &masked_url)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("database", &self.database)
             .field("connect_timeout_seconds", &self.connect_timeout_seconds)
             .field("key_prefix", &self.key_prefix)
             .field("deployment_mode", &self.deployment_mode)
@@ -350,6 +718,11 @@ impl Default for RedisConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
+            host: String::new(),
+            port: 0,
+            username: String::new(),
+            password: String::new(),
+            database: 0,
             connect_timeout_seconds: 5,
             key_prefix: "synctv:".to_string(),
             deployment_mode: RedisDeploymentMode::Standalone,
@@ -725,56 +1098,130 @@ impl Config {
             env.get(name).cloned()
         };
 
-        let mut builder = ConfigBuilder::builder();
-
-        // Always seed the builder with the fully-populated default config first,
-        // then layer file values and finally explicit environment overrides on top.
-        // Without this, partial config files must redundantly specify every nested
-        // field because deserialization happens against only the file source.
-        builder = builder.add_source(config::Config::try_from(&Self::default())?);
-
-        // Load config file if provided
-        if let Some(path) = config_file {
-            if Path::new(path).exists() {
-                builder = builder.add_source(File::new(path, config::FileFormat::Yaml));
-            }
-        }
-
-        let config = builder.build()?;
-        let mut config: Self = config.try_deserialize()?;
+        let mut config = match config_file {
+            Some(path) if Path::new(path).exists() => Self::load_config_file(path)?,
+            _ => Self::default(),
+        };
 
         // Apply SYNCTV_* environment variable overrides (single underscore format).
         // We don't use the config crate's Environment source because its separator
         // cannot distinguish nesting from underscores within field names.
         // Instead, every SYNCTV_ env var is mapped explicitly here.
         config.apply_env_overrides_with(&get_env)?;
-        Self::reject_unknown_synctv_env_vars(env, &seen_env_keys.into_inner());
+        config.resolve_time_defaults_with(&get_env)?;
+        Self::emit_unknown_synctv_env_var_warnings(env, &seen_env_keys.into_inner());
 
         Ok(config)
     }
 
-    fn reject_unknown_synctv_env_vars(
+    fn emit_unknown_config_file_warnings(path: &Path, unknown_keys: &[String]) {
+        if !unknown_keys.is_empty() {
+            eprintln!(
+                "Warning: ignoring unsupported config file key(s) in {}: {}",
+                absolute_display_path(path),
+                unknown_keys.join(", ")
+            );
+        }
+    }
+
+    fn load_config_file(path: &str) -> Result<Self, ConfigError> {
+        let path = Path::new(path);
+        let (config, unknown_keys) = Self::deserialize_config_file(path)?;
+        Self::emit_unknown_config_file_warnings(path, &unknown_keys);
+        Ok(config)
+    }
+
+    #[cfg(test)]
+    fn collect_unknown_config_file_keys(path: &str) -> Result<Vec<String>, ConfigError> {
+        let path = Path::new(path);
+        let (_, unknown_keys) = Self::deserialize_config_file(path)?;
+        Ok(unknown_keys)
+    }
+
+    fn deserialize_config_file(path: &Path) -> Result<(Self, Vec<String>), ConfigError> {
+        let contents = std::fs::read_to_string(path).map_err(|error| {
+            ConfigError::Message(format!(
+                "failed to read config file {}: {error}",
+                absolute_display_path(path)
+            ))
+        })?;
+        let format = config_file_format_for_path(path)?;
+        Self::deserialize_config_contents(&contents, format)
+    }
+
+    fn finalize_unknown_keys(mut unknown_keys: Vec<String>) -> Vec<String> {
+        unknown_keys.sort_unstable();
+        unknown_keys.dedup();
+        unknown_keys
+    }
+
+    fn deserialize_config_contents(
+        contents: &str,
+        format: FileFormat,
+    ) -> Result<(Self, Vec<String>), ConfigError> {
+        let mut unknown_keys = Vec::new();
+        let config = match format {
+            FileFormat::Yaml => {
+                let deserializer = serde_yaml::Deserializer::from_str(contents);
+                serde_ignored::deserialize::<_, _, Self>(deserializer, |path| {
+                    unknown_keys.push(path.to_string());
+                })
+                .map_err(|error| ConfigError::Message(error.to_string()))?
+            }
+            FileFormat::Json => {
+                let mut deserializer = serde_json::Deserializer::from_str(contents);
+                serde_ignored::deserialize::<_, _, Self>(&mut deserializer, |path| {
+                    unknown_keys.push(path.to_string());
+                })
+                .map_err(|error| ConfigError::Message(error.to_string()))?
+            }
+            FileFormat::Toml => {
+                let deserializer = toml::Deserializer::parse(contents)
+                    .map_err(|error| ConfigError::Message(error.to_string()))?;
+                serde_ignored::deserialize::<_, _, Self>(deserializer, |path| {
+                    unknown_keys.push(path.to_string());
+                })
+                .map_err(|error| ConfigError::Message(error.to_string()))?
+            }
+            _ => {
+                return Err(ConfigError::Message(
+                    "unsupported config file format".to_string(),
+                ));
+            }
+        };
+
+        Ok((config, Self::finalize_unknown_keys(unknown_keys)))
+    }
+
+    fn emit_unknown_synctv_env_var_warnings(
         env: &HashMap<String, String>,
         seen_env_keys: &std::collections::HashSet<String>,
     ) {
-        let mut unknown_keys: Vec<&str> = env
-            .keys()
-            .filter_map(|key| {
-                if key.starts_with("SYNCTV_") && !seen_env_keys.contains(key) {
-                    Some(key.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        unknown_keys.sort_unstable();
+        let unknown_keys = Self::collect_unknown_synctv_env_vars(env, seen_env_keys);
 
         if !unknown_keys.is_empty() {
-            tracing::warn!(
-                unsupported = %unknown_keys.join(", "),
-                "Ignoring unsupported SYNCTV_ environment variable(s)"
+            eprintln!(
+                "Warning: ignoring unsupported SYNCTV_ environment variable(s): {}",
+                unknown_keys.join(", ")
             );
         }
+    }
+
+    fn collect_unknown_synctv_env_vars(
+        env: &HashMap<String, String>,
+        seen_env_keys: &std::collections::HashSet<String>,
+    ) -> Vec<String> {
+        let mut unknown_keys: Vec<String> = env
+            .keys()
+            .filter(|key| {
+                key.starts_with("SYNCTV_")
+                    && !seen_env_keys.contains(*key)
+                    && !is_cli_only_synctv_env_var(key)
+            })
+            .cloned()
+            .collect();
+        unknown_keys.sort_unstable();
+        unknown_keys
     }
 
     /// Load from environment variables only (for Docker/K8s)
@@ -799,14 +1246,52 @@ impl Config {
 
     /// Get database URL
     #[must_use]
-    pub fn database_url(&self) -> &str {
-        &self.database.url
+    pub fn database_url(&self) -> String {
+        if !self.database.url.trim().is_empty() {
+            return self.database.url.clone();
+        }
+
+        if self.database.host.trim().is_empty()
+            || self.database.port == 0
+            || self.database.username.trim().is_empty()
+            || self.database.name.trim().is_empty()
+        {
+            return String::new();
+        }
+
+        format!(
+            "postgresql://{}:{}@{}:{}/{}",
+            self.database.username,
+            self.database.password,
+            self.database.host,
+            self.database.port,
+            self.database.name
+        )
     }
 
     /// Get Redis URL
     #[must_use]
-    pub fn redis_url(&self) -> &str {
-        &self.redis.url
+    pub fn redis_url(&self) -> String {
+        if !self.redis.url.trim().is_empty() {
+            return self.redis.url.clone();
+        }
+
+        if self.redis.host.trim().is_empty() || self.redis.port == 0 {
+            return String::new();
+        }
+
+        let authority = if !self.redis.username.is_empty() {
+            format!(
+                "{}:{}@{}:{}",
+                self.redis.username, self.redis.password, self.redis.host, self.redis.port
+            )
+        } else if !self.redis.password.is_empty() {
+            format!(":{}@{}:{}", self.redis.password, self.redis.host, self.redis.port)
+        } else {
+            format!("{}:{}", self.redis.host, self.redis.port)
+        };
+
+        format!("redis://{authority}/{}", self.redis.database)
     }
 
     /// Whether cross-replica cluster runtime is enabled.
@@ -825,6 +1310,30 @@ impl Config {
     #[must_use]
     pub fn api_address(&self) -> String {
         format!("{}:{}", self.server.host, self.server.port)
+    }
+
+    /// Get dedicated metrics address.
+    #[must_use]
+    pub fn metrics_address(&self) -> String {
+        format!("{}:{}", self.metrics.host, self.metrics.port)
+    }
+
+    /// Get the dedicated management endpoint used by local/operational CLI commands.
+    #[must_use]
+    pub fn management_endpoint(&self) -> String {
+        match self.management.transport {
+            ManagementTransport::Tcp => format!("http://127.0.0.1:{}", self.management.port),
+            ManagementTransport::Unix => format!("unix://{}", self.management.unix_socket_path),
+        }
+    }
+
+    /// Get the management listener target for logs and binding.
+    #[must_use]
+    pub fn management_bind_target(&self) -> String {
+        match self.management.transport {
+            ManagementTransport::Tcp => format!("127.0.0.1:{}", self.management.port),
+            ManagementTransport::Unix => self.management.unix_socket_path.clone(),
+        }
     }
 
     /// Resolve the advertise host for cluster node registration.
@@ -980,16 +1489,15 @@ impl Config {
             }
         };
 
+        // -- Time --
+        env_override_str("SYNCTV_TIME_TIMEZONE", &mut self.time.timezone);
+
         // -- Server --
         env_override_str("SYNCTV_SERVER_HOST", &mut self.server.host);
         env_override_parse("SYNCTV_SERVER_PORT", &mut self.server.port)?;
         env_override_bool(
             "SYNCTV_SERVER_ENABLE_REFLECTION",
             &mut self.server.enable_reflection,
-        )?;
-        env_override_bool(
-            "SYNCTV_SERVER_METRICS_ENABLED",
-            &mut self.server.metrics_enabled,
         )?;
         env_override_csv(
             "SYNCTV_SERVER_TRUSTED_PROXIES",
@@ -1011,17 +1519,80 @@ impl Config {
             "SYNCTV_SERVER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS",
             &mut self.server.shutdown_drain_timeout_seconds,
         )?;
-        env_override_str(
-            "SYNCTV_SERVER_METRICS_BEARER_TOKEN",
-            &mut self.server.metrics_bearer_token,
-        );
         env_override_parse(
             "SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES",
             &mut self.server.grpc_max_message_size_bytes,
         )?;
 
+        // -- Metrics --
+        env_override_bool("SYNCTV_METRICS_ENABLED", &mut self.metrics.enabled)?;
+        env_override_str("SYNCTV_METRICS_HOST", &mut self.metrics.host);
+        env_override_parse("SYNCTV_METRICS_PORT", &mut self.metrics.port)?;
+        env_override_bool("SYNCTV_METRICS_TLS_ENABLED", &mut self.metrics.tls.enabled)?;
+        env_override_str(
+            "SYNCTV_METRICS_TLS_CERT_PATH",
+            &mut self.metrics.tls.cert_path,
+        );
+        env_override_str(
+            "SYNCTV_METRICS_TLS_KEY_PATH",
+            &mut self.metrics.tls.key_path,
+        );
+        env_override_enum("SYNCTV_METRICS_AUTH_MODE", &mut |val| {
+            self.metrics.auth.mode = val.parse()?;
+            Ok(())
+        })?;
+        env_override_str(
+            "SYNCTV_METRICS_AUTH_BEARER_TOKEN",
+            &mut self.metrics.auth.bearer_token,
+        );
+        env_override_str(
+            "SYNCTV_METRICS_AUTH_BASIC_USERNAME",
+            &mut self.metrics.auth.basic_username,
+        );
+        env_override_str(
+            "SYNCTV_METRICS_AUTH_BASIC_PASSWORD",
+            &mut self.metrics.auth.basic_password,
+        );
+        env_override_str(
+            "SYNCTV_METRICS_AUTH_KUBERNETES_AUDIENCE",
+            &mut self.metrics.auth.kubernetes.audience,
+        );
+        env_override_parse(
+            "SYNCTV_METRICS_AUTH_KUBERNETES_AUTHENTICATION_CACHE_TTL_SECONDS",
+            &mut self
+                .metrics
+                .auth
+                .kubernetes
+                .authentication_cache_ttl_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_METRICS_AUTH_KUBERNETES_AUTHORIZATION_CACHE_TTL_SECONDS",
+            &mut self.metrics.auth.kubernetes.authorization_cache_ttl_seconds,
+        )?;
+
+        // -- Management --
+        env_override_bool("SYNCTV_MANAGEMENT_ENABLED", &mut self.management.enabled)?;
+        env_override_enum("SYNCTV_MANAGEMENT_TRANSPORT", &mut |val| {
+            self.management.transport = val.parse()?;
+            Ok(())
+        })?;
+        env_override_parse("SYNCTV_MANAGEMENT_PORT", &mut self.management.port)?;
+        env_override_str(
+            "SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH",
+            &mut self.management.unix_socket_path,
+        );
+        env_override_bool(
+            "SYNCTV_MANAGEMENT_ENABLE_REFLECTION",
+            &mut self.management.enable_reflection,
+        )?;
+
         // -- Database --
         env_override_str("SYNCTV_DATABASE_URL", &mut self.database.url);
+        env_override_str("SYNCTV_DATABASE_HOST", &mut self.database.host);
+        env_override_parse("SYNCTV_DATABASE_PORT", &mut self.database.port)?;
+        env_override_str("SYNCTV_DATABASE_USER", &mut self.database.username);
+        env_override_str("SYNCTV_DATABASE_PASSWORD", &mut self.database.password);
+        env_override_str("SYNCTV_DATABASE_NAME", &mut self.database.name);
         env_override_parse(
             "SYNCTV_DATABASE_MAX_CONNECTIONS",
             &mut self.database.max_connections,
@@ -1045,6 +1616,11 @@ impl Config {
 
         // -- Redis --
         env_override_str("SYNCTV_REDIS_URL", &mut self.redis.url);
+        env_override_str("SYNCTV_REDIS_HOST", &mut self.redis.host);
+        env_override_parse("SYNCTV_REDIS_PORT", &mut self.redis.port)?;
+        env_override_str("SYNCTV_REDIS_USER", &mut self.redis.username);
+        env_override_str("SYNCTV_REDIS_PASSWORD", &mut self.redis.password);
+        env_override_parse("SYNCTV_REDIS_DATABASE", &mut self.redis.database)?;
         env_override_parse(
             "SYNCTV_REDIS_CONNECT_TIMEOUT_SECONDS",
             &mut self.redis.connect_timeout_seconds,
@@ -1479,6 +2055,79 @@ impl Config {
         Ok(())
     }
 
+    fn resolve_time_defaults_with(
+        &mut self,
+        get_env: &impl Fn(&str) -> Option<String>,
+    ) -> Result<(), ConfigError> {
+        let resolved = common_time::resolve_timezone_name_with(
+            Some(self.time.timezone.as_str()).filter(|value| !value.trim().is_empty()),
+            get_env,
+        )
+        .map_err(|error| ConfigError::Message(error.to_string()))?;
+        self.time.timezone = resolved;
+        Ok(())
+    }
+
+    fn database_split_config_present(&self) -> bool {
+        !self.database.host.trim().is_empty()
+            || self.database.port != 0
+            || !self.database.username.trim().is_empty()
+            || !self.database.password.trim().is_empty()
+            || !self.database.name.trim().is_empty()
+    }
+
+    fn validate_database_split_config(&self, errors: &mut Vec<String>) {
+        if self.database.host.trim().is_empty() {
+            errors.push(
+                "database.host must be set when using split database configuration".to_string(),
+            );
+        }
+        if self.database.port == 0 {
+            errors.push(
+                "database.port must be greater than 0 when using split database configuration"
+                    .to_string(),
+            );
+        }
+        if self.database.username.trim().is_empty() {
+            errors.push(
+                "database.username must be set when using split database configuration"
+                    .to_string(),
+            );
+        }
+        if self.database.password.trim().is_empty() {
+            errors.push(
+                "database.password must be set when using split database configuration"
+                    .to_string(),
+            );
+        }
+        if self.database.name.trim().is_empty() {
+            errors.push(
+                "database.name must be set when using split database configuration".to_string(),
+            );
+        }
+    }
+
+    fn redis_split_config_present(&self) -> bool {
+        !self.redis.host.trim().is_empty()
+            || self.redis.port != 0
+            || !self.redis.username.trim().is_empty()
+            || !self.redis.password.trim().is_empty()
+            || self.redis.database != 0
+    }
+
+    fn validate_redis_split_config(&self, errors: &mut Vec<String>) {
+        if self.redis.host.trim().is_empty() {
+            errors
+                .push("redis.host must be set when using split redis configuration".to_string());
+        }
+        if self.redis.port == 0 {
+            errors.push(
+                "redis.port must be greater than 0 when using split redis configuration"
+                    .to_string(),
+            );
+        }
+    }
+
     /// Validate configuration at startup (fail fast on misconfigurations)
     pub fn validate(&self) -> Result<(), Vec<String>> {
         self.validate_with_env(&process_env)
@@ -1524,20 +2173,97 @@ impl Config {
         if self.database.max_lifetime_seconds == 0 {
             errors.push("database.max_lifetime_seconds must be greater than 0".to_string());
         }
-        if self.database.url.is_empty() {
-            errors.push("database.url must not be empty".to_string());
+        let database_url_present = !self.database.url.trim().is_empty();
+        let database_split_present = self.database_split_config_present();
+        if database_url_present && database_split_present {
+            errors.push(
+                "database.url is mutually exclusive with database.host/port/user/password/name"
+                    .to_string(),
+            );
+        }
+        if !database_url_present && !database_split_present {
+            errors.push(
+                "database configuration requires either database.url or database.host/port/user/password/name"
+                    .to_string(),
+            );
+        }
+        if !database_url_present && database_split_present {
+            self.validate_database_split_config(&mut errors);
         }
 
         if self.server.shutdown_drain_timeout_seconds == 0 {
             errors.push("server.shutdown_drain_timeout_seconds must be greater than 0".to_string());
         }
 
-        if self.server.metrics_enabled && self.server.metrics_bearer_token.is_empty() {
-            errors.push(
-                "server.metrics_bearer_token must be set when server.metrics_enabled=true. \
-                 Refusing to expose /metrics without authentication."
-                    .to_string(),
-            );
+        if self.metrics.enabled {
+            match self.metrics.auth.mode {
+                MetricsAuthMode::BearerToken => {
+                    if self.metrics.auth.bearer_token.trim().is_empty() {
+                        errors.push(
+                            "metrics.auth.bearer_token must be set when metrics.enabled=true \
+                             and metrics.auth.mode='bearer_token'"
+                                .to_string(),
+                        );
+                    }
+                }
+                MetricsAuthMode::Basic => {
+                    if self.metrics.auth.basic_username.trim().is_empty() {
+                        errors.push(
+                            "metrics.auth.basic_username must be set when metrics.enabled=true \
+                             and metrics.auth.mode='basic'"
+                                .to_string(),
+                        );
+                    }
+                    if self.metrics.auth.basic_password.trim().is_empty() {
+                        errors.push(
+                            "metrics.auth.basic_password must be set when metrics.enabled=true \
+                             and metrics.auth.mode='basic'"
+                                .to_string(),
+                        );
+                    }
+                }
+                MetricsAuthMode::Kubernetes => {
+                    #[cfg(not(feature = "k8s"))]
+                    errors.push(
+                        "metrics.auth.mode='kubernetes' requires the 'k8s' feature to be compiled in"
+                            .to_string(),
+                    );
+
+                    if self
+                        .metrics
+                        .auth
+                        .kubernetes
+                        .authentication_cache_ttl_seconds
+                        == 0
+                    {
+                        errors.push(
+                            "metrics.auth.kubernetes.authentication_cache_ttl_seconds must be greater than 0"
+                                .to_string(),
+                        );
+                    }
+                    if self.metrics.auth.kubernetes.authorization_cache_ttl_seconds == 0 {
+                        errors.push(
+                            "metrics.auth.kubernetes.authorization_cache_ttl_seconds must be greater than 0"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+
+            if self.metrics.tls.enabled {
+                if self.metrics.tls.cert_path.trim().is_empty() {
+                    errors.push(
+                        "metrics.tls.cert_path must be set when metrics.tls.enabled=true"
+                            .to_string(),
+                    );
+                }
+                if self.metrics.tls.key_path.trim().is_empty() {
+                    errors.push(
+                        "metrics.tls.key_path must be set when metrics.tls.enabled=true"
+                            .to_string(),
+                    );
+                }
+            }
         }
 
         if crate::logging::parse_log_level(&self.logging.level).is_err() {
@@ -1623,6 +2349,36 @@ impl Config {
             ));
         }
 
+        if self.metrics.enabled {
+            if self.metrics.port == 0 {
+                errors.push("metrics.port must be between 1 and 65535, got 0".to_string());
+            }
+            if self.metrics.port == self.server.port {
+                errors.push(format!(
+                    "metrics bind target ({}) must be different from server.host:port ({})",
+                    self.metrics_address(),
+                    self.api_address()
+                ));
+            }
+            if self.metrics.port == self.livestream.rtmp_port {
+                errors.push(format!(
+                    "metrics bind target ({}) must be different from livestream port ({})",
+                    self.metrics_address(),
+                    self.livestream.rtmp_port
+                ));
+            }
+            if self.management.enabled
+                && matches!(self.management.transport, ManagementTransport::Tcp)
+                && self.metrics.port == self.management.port
+            {
+                errors.push(format!(
+                    "metrics bind target ({}) must be different from management bind target ({})",
+                    self.metrics_address(),
+                    self.management_bind_target()
+                ));
+            }
+        }
+
         // Validate gRPC max message size (prevent OOM attacks)
         const MIN_GRPC_MESSAGE_SIZE: usize = 1024 * 1024; // 1 MB minimum
         const MAX_GRPC_MESSAGE_SIZE: usize = 1024 * 1024 * 1024; // 1 GB maximum
@@ -1637,6 +2393,39 @@ impl Config {
                 "server.grpc_max_message_size_bytes ({}) must be at most {} (1 GB)",
                 self.server.grpc_max_message_size_bytes, MAX_GRPC_MESSAGE_SIZE
             ));
+        }
+
+        if self.management.enabled {
+            match self.management.transport {
+                ManagementTransport::Tcp => {
+                    if self.management.port == self.server.port {
+                        errors.push(format!(
+                            "management bind target ({}) must be different from server.host:port ({})",
+                            self.management_bind_target(),
+                            self.api_address()
+                        ));
+                    }
+                }
+                ManagementTransport::Unix => {
+                    if self.management.unix_socket_path.trim().is_empty() {
+                        errors.push(
+                            "management.unix_socket_path must not be empty when transport=unix"
+                                .to_string(),
+                        );
+                    } else if !Path::new(&self.management.unix_socket_path).is_absolute() {
+                        errors.push(
+                            "management.unix_socket_path must be an absolute path".to_string(),
+                        );
+                    }
+
+                    if !cfg!(unix) {
+                        errors.push(
+                            "management.transport=unix is only supported on unix-like platforms"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
         }
 
         // Validate trusted_proxies CIDR format
@@ -1721,7 +2510,19 @@ impl Config {
         }
 
         // Log info when Redis is not configured in standalone mode.
-        if self.redis.url.is_empty() && !self.cluster_runtime_enabled() {
+        let redis_url_present = !self.redis.url.trim().is_empty();
+        let redis_split_present = self.redis_split_config_present();
+        if redis_url_present && redis_split_present {
+            errors.push(
+                "redis.url is mutually exclusive with redis.host/port/user/password/database"
+                    .to_string(),
+            );
+        }
+        if !redis_url_present && redis_split_present {
+            self.validate_redis_split_config(&mut errors);
+        }
+
+        if !redis_url_present && !redis_split_present && !self.cluster_runtime_enabled() {
             tracing::info!(
                 "Redis is not configured — running in standalone mode with in-memory fallbacks. \
                  All features work, but data (rate limits, brute-force counters, token blacklist) \
@@ -1877,7 +2678,7 @@ impl Config {
         // without Redis causes silent data loss and broken multi-replica coordination.
         let cluster_mode_active = self.cluster_runtime_enabled();
         let redis_backend_configured = match self.redis.deployment_mode {
-            RedisDeploymentMode::Standalone => !self.redis.url.is_empty(),
+            RedisDeploymentMode::Standalone => redis_url_present || redis_split_present,
             RedisDeploymentMode::Sentinel => {
                 self.redis
                     .sentinel_master_name
@@ -2106,6 +2907,10 @@ impl Config {
             Err(errors)
         }
     }
+}
+
+fn is_cli_only_synctv_env_var(key: &str) -> bool {
+    matches!(key, "SYNCTV_MANAGEMENT_ENDPOINT")
 }
 
 /// Connection limits configuration
@@ -2487,41 +3292,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_config() {
-        let config = Config::from_env_map(&HashMap::new()).unwrap_or_else(|_| Config {
-            server: ServerConfig::default(),
-            database: DatabaseConfig::default(),
-            redis: RedisConfig::default(),
-            jwt: JwtConfig::default(),
-            logging: LoggingConfig::default(),
-            livestream: LivestreamConfig::default(),
-            oauth2: OAuth2Config::default(),
-            email: EmailConfig::default(),
-            media_providers: MediaProvidersConfig::default(),
-            webrtc: WebRTCConfig::default(),
-            connection_limits: ConnectionLimitsConfig::default(),
-            bootstrap: BootstrapConfig::default(),
-            cluster: ClusterChannelConfig::default(),
-            password_complexity: PasswordComplexityConfig::default(),
-            buffer_sizes: BufferSizesConfig::default(),
-            cache: CacheConfig::default(),
-            messaging_rate_limits: MessagingRateLimitConfig::default(),
-            http_rate_limits: HttpRateLimitConfig::default(),
-            grpc_rate_limits: GrpcRateLimitConfig::default(),
-        });
-
-        assert!(!config.database_url().is_empty());
-        // Redis URL defaults to empty (standalone mode without Redis)
-        assert!(config.redis_url().is_empty());
-        assert!(config.server.port > 0);
-        assert!(config.webrtc.enable_builtin_stun);
-        // Default is false for security - operators must explicitly enable root creation
-        assert!(!config.bootstrap.create_root_user);
-        // Default gRPC message size limit is 16 MB
-        assert_eq!(config.server.grpc_max_message_size_bytes, 16 * 1024 * 1024);
-    }
-
-    #[test]
     fn test_grpc_message_size_validation() {
         let mut config = valid_prod_config();
 
@@ -2580,8 +3350,6 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
                 enable_reflection: true,
-                metrics_enabled: false,
-                metrics_bearer_token: String::new(),
                 grpc_max_message_size_bytes: 16 * 1024 * 1024,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
@@ -2589,6 +3357,9 @@ mod tests {
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
             },
+            time: TimeConfig::default(),
+            metrics: MetricsConfig::default(),
+            management: ManagementConfig::default(),
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),
             jwt: JwtConfig::default(),
@@ -2610,6 +3381,45 @@ mod tests {
         };
 
         assert_eq!(config.api_address(), "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_metrics_address() {
+        let config = Config {
+            server: ServerConfig::default(),
+            time: TimeConfig::default(),
+            metrics: MetricsConfig {
+                enabled: true,
+                host: "127.0.0.1".to_string(),
+                port: 9090,
+                tls: MetricsTlsConfig::default(),
+                auth: MetricsAuthConfig {
+                    bearer_token: "metrics-secret".to_string(),
+                    ..MetricsAuthConfig::default()
+                },
+            },
+            management: ManagementConfig::default(),
+            database: DatabaseConfig::default(),
+            redis: RedisConfig::default(),
+            jwt: JwtConfig::default(),
+            logging: LoggingConfig::default(),
+            livestream: LivestreamConfig::default(),
+            oauth2: OAuth2Config::default(),
+            email: EmailConfig::default(),
+            media_providers: MediaProvidersConfig::default(),
+            webrtc: WebRTCConfig::default(),
+            connection_limits: ConnectionLimitsConfig::default(),
+            bootstrap: BootstrapConfig::default(),
+            cluster: ClusterChannelConfig::default(),
+            password_complexity: PasswordComplexityConfig::default(),
+            buffer_sizes: BufferSizesConfig::default(),
+            cache: CacheConfig::default(),
+            messaging_rate_limits: MessagingRateLimitConfig::default(),
+            http_rate_limits: HttpRateLimitConfig::default(),
+            grpc_rate_limits: GrpcRateLimitConfig::default(),
+        };
+
+        assert_eq!(config.metrics_address(), "127.0.0.1:9090");
     }
 
     #[test]
@@ -2704,11 +3514,11 @@ mod tests {
 
     #[test]
     fn test_from_env_rejects_invalid_boolean_override() {
-        let error = Config::from_env_map(&env_map(&[("SYNCTV_SERVER_METRICS_ENABLED", "maybe")]))
+        let error = Config::from_env_map(&env_map(&[("SYNCTV_METRICS_ENABLED", "maybe")]))
             .expect_err("invalid boolean override must fail closed");
 
         let message = error.to_string();
-        assert!(message.contains("SYNCTV_SERVER_METRICS_ENABLED"));
+        assert!(message.contains("SYNCTV_METRICS_ENABLED"));
         assert!(message.contains("maybe"));
     }
 
@@ -2756,14 +3566,34 @@ mod tests {
         assert_eq!(config.server.port, 18080);
     }
 
+    #[test]
+    fn test_collect_unknown_synctv_env_vars_only_returns_unhandled_synctv_keys() {
+        let env = env_map(&[
+            ("SYNCTV_SERVER_PORT", "18080"),
+            ("SYNCTV_UNKNOWN_FLAG", "1"),
+            ("SYNCTV_ANOTHER_UNKNOWN", "2"),
+            ("SYNCTV_MANAGEMENT_ENDPOINT", "unix:///tmp/synctv.sock"),
+            ("PATH", "/usr/bin"),
+        ]);
+        let seen = std::collections::HashSet::from(["SYNCTV_SERVER_PORT".to_string()]);
+
+        let unknown = Config::collect_unknown_synctv_env_vars(&env, &seen);
+
+        assert_eq!(
+            unknown,
+            vec![
+                "SYNCTV_ANOTHER_UNKNOWN".to_string(),
+                "SYNCTV_UNKNOWN_FLAG".to_string()
+            ]
+        );
+    }
+
     /// Helper to create a valid production config for validation tests
     fn valid_prod_config() -> Config {
         Config {
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
                 port: 8080,
-                metrics_enabled: false,
-                metrics_bearer_token: String::new(),
                 grpc_max_message_size_bytes: 16 * 1024 * 1024,
                 enable_reflection: false,
                 trusted_proxies: Vec::new(),
@@ -2772,6 +3602,9 @@ mod tests {
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
             },
+            time: TimeConfig::default(),
+            metrics: MetricsConfig::default(),
+            management: ManagementConfig::default(),
             database: DatabaseConfig::default(),
             redis: RedisConfig {
                 url: "redis://localhost:6379".to_string(),
@@ -3052,16 +3885,23 @@ jwt:
         )
         .expect("write config");
 
-        let error = Config::from_file(path.to_str().expect("utf-8 path"))
-            .expect_err("unknown split-port file keys must fail closed");
+        let unknown_keys =
+            Config::collect_unknown_config_file_keys(path.to_str().expect("utf-8 path"))
+                .expect("unknown split-port keys should be collected");
+        let config = Config::from_file(path.to_str().expect("utf-8 path"))
+            .expect("unknown split-port file keys should warn and fall back to defaults");
         let _ = std::fs::remove_file(&path);
 
-        let message = error.to_string();
-        assert!(message.contains("unknown field"));
         assert!(
-            message.contains("grpc_port") || message.contains("http_port"),
-            "unknown split-port key should be named in error: {message}"
+            unknown_keys.contains(&"server.grpc_port".to_string()),
+            "server.grpc_port should be reported as unknown: {unknown_keys:?}"
         );
+        assert!(
+            unknown_keys.contains(&"server.http_port".to_string()),
+            "server.http_port should be reported as unknown: {unknown_keys:?}"
+        );
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, ServerConfig::default().port);
     }
 
     #[test]
@@ -3274,6 +4114,60 @@ jwt:
     }
 
     #[test]
+    fn test_validate_database_url_is_mutually_exclusive_with_split_database_fields() {
+        let mut config = valid_prod_config();
+        config.database.url = "postgresql://user:pass@db.example.com:5432/synctv".to_string();
+        config.database.host = "db.example.com".to_string();
+
+        let errors = config.validate().expect_err("database URL and split fields must be exclusive");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("database.url is mutually exclusive")));
+    }
+
+    #[test]
+    fn test_validate_redis_url_is_mutually_exclusive_with_split_redis_fields() {
+        let mut config = valid_prod_config();
+        config.redis.url = "redis://:secret@redis.example.com:6379/0".to_string();
+        config.redis.host = "redis.example.com".to_string();
+
+        let errors = config.validate().expect_err("redis URL and split fields must be exclusive");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("redis.url is mutually exclusive")));
+    }
+
+    #[test]
+    fn test_validate_split_database_config_requires_all_fields() {
+        let mut config = valid_prod_config();
+        config.database.url.clear();
+        config.database.host = "db.example.com".to_string();
+        config.database.port = 5432;
+        config.database.username = "synctv".to_string();
+        config.database.password.clear();
+        config.database.name.clear();
+
+        let errors = config
+            .validate()
+            .expect_err("incomplete split database config must fail");
+        assert!(errors.iter().any(|e| e.contains("database.password must be set")));
+        assert!(errors.iter().any(|e| e.contains("database.name must be set")));
+    }
+
+    #[test]
+    fn test_validate_split_redis_config_requires_host_and_port() {
+        let mut config = valid_prod_config();
+        config.redis.url.clear();
+        config.redis.host = "redis.example.com".to_string();
+        config.redis.port = 0;
+
+        let errors = config
+            .validate()
+            .expect_err("incomplete split redis config must fail");
+        assert!(errors.iter().any(|e| e.contains("redis.port must be greater than 0")));
+    }
+
+    #[test]
     fn test_from_env_overrides_logging_filter_and_backtrace() {
         let config = Config::from_env_map(&env_map(&[
             ("SYNCTV_LOGGING_FILTER", "info,synctv=debug"),
@@ -3283,6 +4177,184 @@ jwt:
 
         assert_eq!(config.logging.filter.as_deref(), Some("info,synctv=debug"));
         assert!(config.logging.backtrace);
+    }
+
+    #[test]
+    fn test_from_env_resolves_timezone_from_synctv_env() {
+        let config = Config::from_env_map(&env_map(&[("SYNCTV_TIME_TIMEZONE", "Asia/Shanghai")]))
+            .expect("SYNCTV_TIME_TIMEZONE should resolve");
+
+        assert_eq!(config.time.timezone, "Asia/Shanghai");
+    }
+
+    #[test]
+    fn test_from_env_resolves_timezone_from_tz_fallback() {
+        let config = Config::from_env_map(&env_map(&[("TZ", "America/New_York")]))
+            .expect("TZ fallback should resolve");
+
+        assert_eq!(config.time.timezone, "America/New_York");
+    }
+
+    #[test]
+    fn test_management_tcp_endpoint_is_always_loopback() {
+        let mut config = Config::default();
+        config.management.transport = ManagementTransport::Tcp;
+        config.management.port = 50099;
+
+        assert_eq!(config.management_endpoint(), "http://127.0.0.1:50099");
+        assert_eq!(config.management_bind_target(), "127.0.0.1:50099");
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn test_validate_rejects_unix_management_transport_on_unsupported_platform() {
+        let mut config = Config::default();
+        config.jwt.secret = "12345678901234567890123456789012".to_string();
+        config.management.transport = ManagementTransport::Unix;
+        config.management.unix_socket_path = "C:/synctv/synctv.sock".to_string();
+
+        let errors = config
+            .validate()
+            .expect_err("unix management transport must be rejected on unsupported platforms");
+
+        assert!(errors.iter().any(|error| {
+            error.contains("management.transport=unix")
+                && error.contains("only supported on unix-like platforms")
+        }));
+    }
+
+    #[test]
+    fn test_from_file_supports_yaml_yml_json_and_toml() {
+        let secret = "12345678901234567890123456789012";
+        let fixtures = [
+            (
+                "yaml",
+                format!("jwt:\n  secret: \"{secret}\"\nserver:\n  port: 50051\n"),
+            ),
+            (
+                "yml",
+                format!("jwt:\n  secret: \"{secret}\"\nserver:\n  port: 50052\n"),
+            ),
+            (
+                "json",
+                format!(r#"{{"jwt":{{"secret":"{secret}"}},"server":{{"port":50053}}}}"#),
+            ),
+            (
+                "toml",
+                format!("server.port = 50054\njwt.secret = \"{secret}\"\n"),
+            ),
+        ];
+
+        for (extension, contents) in fixtures {
+            let unique = format!(
+                "synctv-config-format-{}-{}-{}.{}",
+                extension,
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time before unix epoch")
+                    .as_nanos(),
+                extension
+            );
+            let path = std::env::temp_dir().join(unique);
+            std::fs::write(&path, contents).expect("write config fixture");
+
+            let config = Config::from_file(path.to_str().expect("utf-8 path"))
+                .expect("supported config format should load");
+            let _ = std::fs::remove_file(&path);
+
+            assert_eq!(config.jwt.secret, secret);
+            assert!(
+                (50051..=50054).contains(&config.server.port),
+                "unexpected port for extension {extension}: {}",
+                config.server.port
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_file_ignores_unknown_keys_for_json_and_toml() {
+        let secret = "12345678901234567890123456789012";
+        let fixtures = [
+            (
+                "json",
+                format!(
+                    r#"{{"jwt":{{"secret":"{secret}"}},"metrics":{{"enabled":true,"obsolete_token":"ignored"}}}}"#
+                ),
+                "metrics.obsolete_token",
+            ),
+            (
+                "toml",
+                format!(
+                    "jwt.secret = \"{secret}\"\n[metrics]\nenabled = true\nobsolete_token = \"ignored\"\n"
+                ),
+                "metrics.obsolete_token",
+            ),
+        ];
+
+        for (extension, contents, unknown_key) in fixtures {
+            let unique = format!(
+                "synctv-config-unknown-{}-{}-{}.{}",
+                extension,
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time before unix epoch")
+                    .as_nanos(),
+                extension
+            );
+            let path = std::env::temp_dir().join(unique);
+            std::fs::write(&path, contents).expect("write config fixture");
+
+            let unknown_keys =
+                Config::collect_unknown_config_file_keys(path.to_str().expect("utf-8 path"))
+                    .expect("unknown keys should be collected");
+            let config = Config::from_file(path.to_str().expect("utf-8 path"))
+                .expect("unknown config keys should warn and continue");
+            let _ = std::fs::remove_file(&path);
+
+            assert!(
+                unknown_keys.contains(&unknown_key.to_string()),
+                "missing unknown key {unknown_key} for {extension}: {unknown_keys:?}"
+            );
+            assert!(
+                config.metrics.enabled,
+                "known keys should still deserialize"
+            );
+            assert!(
+                config.metrics.auth.bearer_token.is_empty(),
+                "unknown key should not affect nested auth config for {extension}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_file_rejects_unsupported_extension() {
+        let unique = format!(
+            "synctv-config-unsupported-{}-{}.ini",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(
+            &path,
+            "[jwt]\nsecret = \"12345678901234567890123456789012\"\n",
+        )
+        .expect("write config");
+
+        let error = Config::from_file(path.to_str().expect("utf-8 path"))
+            .expect_err("unsupported extension must fail");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported config file extension"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -3497,8 +4569,9 @@ jwt:
     #[test]
     fn test_validate_metrics_endpoint_requires_bearer_token_when_enabled() {
         let mut config = valid_prod_config();
-        config.server.metrics_enabled = true;
-        config.server.metrics_bearer_token.clear();
+        config.metrics.enabled = true;
+        config.metrics.auth.mode = MetricsAuthMode::BearerToken;
+        config.metrics.auth.bearer_token.clear();
 
         let errors = config
             .validate()
@@ -3506,8 +4579,8 @@ jwt:
 
         assert!(
             errors.iter().any(|e| {
-                e.contains("server.metrics_bearer_token")
-                    && e.contains("metrics_enabled")
+                e.contains("metrics.auth.bearer_token")
+                    && e.contains("metrics.enabled")
                     && e.contains("must be set")
             }),
             "unexpected errors: {errors:?}"
@@ -3517,12 +4590,71 @@ jwt:
     #[test]
     fn test_validate_metrics_endpoint_accepts_bearer_token_when_enabled() {
         let mut config = valid_prod_config();
-        config.server.metrics_enabled = true;
-        config.server.metrics_bearer_token = "metrics-secret".to_string();
+        config.metrics.enabled = true;
+        config.metrics.auth.mode = MetricsAuthMode::BearerToken;
+        config.metrics.auth.bearer_token = "metrics-secret".to_string();
 
         assert!(
             config.validate().is_ok(),
             "authenticated metrics endpoint should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_validate_metrics_endpoint_accepts_basic_auth_when_enabled() {
+        let mut config = valid_prod_config();
+        config.metrics.enabled = true;
+        config.metrics.auth.mode = MetricsAuthMode::Basic;
+        config.metrics.auth.basic_username = "metrics".to_string();
+        config.metrics.auth.basic_password = "metrics-password".to_string();
+
+        assert!(
+            config.validate().is_ok(),
+            "basic-authenticated metrics endpoint should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_validate_metrics_endpoint_requires_basic_password_when_basic_auth_enabled() {
+        let mut config = valid_prod_config();
+        config.metrics.enabled = true;
+        config.metrics.auth.mode = MetricsAuthMode::Basic;
+        config.metrics.auth.basic_username = "metrics".to_string();
+        config.metrics.auth.basic_password.clear();
+
+        let errors = config
+            .validate()
+            .expect_err("metrics basic auth must reject missing password");
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("metrics.auth.basic_password")),
+            "unexpected errors: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_metrics_tls_requires_cert_and_key_paths() {
+        let mut config = valid_prod_config();
+        config.metrics.enabled = true;
+        config.metrics.auth.mode = MetricsAuthMode::BearerToken;
+        config.metrics.auth.bearer_token = "metrics-secret".to_string();
+        config.metrics.tls.enabled = true;
+        config.metrics.tls.cert_path.clear();
+        config.metrics.tls.key_path.clear();
+
+        let errors = config
+            .validate()
+            .expect_err("metrics TLS must require cert and key paths");
+
+        assert!(
+            errors.iter().any(|e| e.contains("metrics.tls.cert_path")),
+            "unexpected errors: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("metrics.tls.key_path")),
+            "unexpected errors: {errors:?}"
         );
     }
 

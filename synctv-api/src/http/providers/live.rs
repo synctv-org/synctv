@@ -31,6 +31,14 @@ pub struct RoomQuery {
     room_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct RoomStreamsQuery {
+    room_id: String,
+    page: Option<i32>,
+    page_size: Option<i32>,
+}
+
 pub fn rtmp_routes() -> Router<AppState> {
     create_live_provider_router()
 }
@@ -81,7 +89,8 @@ fn map_stream_error(context: &str, error: &StreamError) -> AppError {
         | StreamError::Internal(_)
         | StreamError::AlreadyPublishing(_)
         | StreamError::PublisherExists(_) => {
-            AppError::internal_server_error(format!("{context}: {error}"))
+            tracing::error!(context, error = %error, "Livestream internal error");
+            AppError::internal_server_error("Live streaming request failed")
         }
     }
 }
@@ -91,7 +100,8 @@ fn map_livestream_error(context: &str, error: &(dyn std::error::Error + 'static)
         return map_stream_error(context, stream_error);
     }
 
-    AppError::internal_server_error(format!("{context}: {error}"))
+    tracing::error!(context, error = %error, "Unexpected livestream error");
+    AppError::internal_server_error("Live streaming request failed")
 }
 
 #[cfg_attr(
@@ -136,7 +146,7 @@ pub(crate) async fn handle_stream_info(
         get,
         path = "/api/providers/rtmp/streams",
         tag = "Provider",
-        params(RoomQuery),
+        params(RoomStreamsQuery),
         responses(
             (status = 200, description = "Room live streams", body = crate::proto::client::ListRoomStreamsResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -149,12 +159,14 @@ pub(crate) async fn handle_stream_info(
 )]
 pub(crate) async fn handle_room_streams(
     auth: AuthUser,
-    Query(params): Query<RoomQuery>,
+    Query(params): Query<RoomStreamsQuery>,
     State(state): State<AppState>,
 ) -> AppResult<Json<crate::proto::client::ListRoomStreamsResponse>> {
+    let (page, page_size) =
+        crate::http::validation::validate_pagination(params.page, params.page_size);
     let resp = state
         .client_api
-        .list_room_streams(auth.user_id.as_str(), &params.room_id)
+        .list_room_streams(auth.user_id.as_str(), &params.room_id, page, page_size)
         .await
         .map_err(map_api_error)?;
 
@@ -206,9 +218,10 @@ pub(crate) async fn execute_live_proxy_action(
             segment_name,
             disguised_as_png,
         } => execute_hls_segment(state, &room_id, &media_id, &segment_name, disguised_as_png).await,
-        other => Err(AppError::internal(format!(
-            "execute_live_proxy_action received unsupported action: {other:?}"
-        ))),
+        other => {
+            tracing::error!(action = ?other, "execute_live_proxy_action received unsupported action");
+            Err(AppError::internal("Unsupported live proxy action"))
+        }
     }
 }
 
@@ -593,5 +606,16 @@ mod tests {
         let err = anyhow::anyhow!("plain anyhow without typed source");
         let mapped = map_livestream_error("Failed to create FLV session", err.as_ref());
         assert_eq!(mapped.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(mapped.message, "Live streaming request failed");
+    }
+
+    #[test]
+    fn livestream_internal_stream_error_is_sanitized() {
+        let err = map_stream_error(
+            "Failed to create FLV session",
+            &StreamError::Internal("redis://user:secret@localhost:6379".to_string()),
+        );
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message, "Live streaming request failed");
     }
 }

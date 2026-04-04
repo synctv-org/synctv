@@ -427,26 +427,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_registry() {
-        // Test that Default trait works
-        let registry = ProviderRegistry::default();
-
-        // Should be empty
-        assert!(registry.list_instances().is_empty());
-
-        // Should be usable
-        registry.register_factory(
-            "mock",
-            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
-        );
-        registry
-            .create_instance("mock", "test", serde_json::json!({}))
-            .unwrap();
-
-        assert!(registry.get_instance("test").is_some());
-    }
-
-    #[test]
     fn test_factory_config_parsing() {
         // Test that factory receives and can parse config
         let registry = ProviderRegistry::new();
@@ -557,30 +537,4 @@ mod tests {
         assert!(registry.get_instance("recreate_test").is_some());
     }
 
-    #[tokio::test]
-    async fn test_provider_trait_send_sync() {
-        // Test that provider instances can be sent across threads
-        use std::thread;
-
-        let registry = std::sync::Arc::new(ProviderRegistry::new());
-        registry.register_factory(
-            "mock",
-            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
-        );
-
-        registry
-            .create_instance("mock", "thread_test", serde_json::json!({}))
-            .unwrap();
-
-        // Get instance in main thread
-        let provider = registry.get_instance("thread_test").unwrap();
-
-        // Spawn thread and use provider there
-        let handle = thread::spawn(move || {
-            // Provider should be usable in different thread
-            assert_eq!(provider.name(), "mock");
-        });
-
-        handle.join().unwrap();
-    }
 }

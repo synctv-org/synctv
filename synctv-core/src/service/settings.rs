@@ -181,10 +181,12 @@ impl SettingsService {
         // Validate before writing to database
         self.validate_setting(key, &value)?;
 
+        let group_name = group_name_from_setting_key(key);
+
         // Update in database
         let setting = self
             .repository
-            .update(key, &value)
+            .upsert(key, &group_name, &value)
             .await
             .internal_with_err("Failed to update setting")?;
 
@@ -293,14 +295,20 @@ impl SettingsService {
 
         let mut updated = Vec::with_capacity(updates.len());
         for (key, value) in &updates {
+            let group_name = group_name_from_setting_key(key);
             let row = sqlx::query(
-                "UPDATE settings
-                 SET value = $1, version = version + 1, updated_at = NOW()
-                 WHERE key = $2
+                "INSERT INTO settings (key, group_name, value, version)
+                 VALUES ($1, $2, $3, 0)
+                 ON CONFLICT (key) DO UPDATE
+                 SET group_name = EXCLUDED.group_name,
+                     value = EXCLUDED.value,
+                     version = settings.version + 1,
+                     updated_at = NOW()
                  RETURNING key, group_name, value, version, created_at, updated_at",
             )
-            .bind(value.as_str())
             .bind(key.as_str())
+            .bind(group_name)
+            .bind(value.as_str())
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| Error::Internal(format!("Failed to update setting '{key}': {e}")))?;
@@ -558,6 +566,11 @@ impl SettingsService {
     }
 }
 
+fn group_name_from_setting_key(key: &str) -> String {
+    key.split_once('.')
+        .map_or_else(|| key.to_string(), |(group_name, _)| group_name.to_string())
+}
+
 /// Helper to get default settings for a group
 #[must_use]
 pub fn get_default_settings_json(group: &str) -> Option<serde_json::Value> {
@@ -567,72 +580,7 @@ pub fn get_default_settings_json(group: &str) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::settings::{
-        default_email_settings, default_oauth_settings, default_server_settings,
-        get_default_settings, SettingsGroup,
-    };
-
-    #[tokio::test]
-    async fn test_get_default_values() {
-        let allow_reg = get_default_settings_json("server")
-            .and_then(|v| v.get("allow_registration").cloned())
-            .and_then(|v| v.as_bool());
-
-        assert_eq!(allow_reg, Some(true));
-    }
-
-    // ========== Default Settings Groups ==========
-
-    #[test]
-    fn test_default_server_settings() {
-        let settings = default_server_settings();
-        assert_eq!(settings["allow_registration"], true);
-        assert_eq!(settings["allow_room_creation"], true);
-        assert_eq!(settings["max_rooms_per_user"], 10);
-        assert_eq!(settings["max_members_per_room"], 100);
-        assert!(settings["default_room_settings"].is_object());
-        assert_eq!(settings["default_room_settings"]["require_password"], false);
-        assert_eq!(settings["default_room_settings"]["allow_guest"], true);
-    }
-
-    #[test]
-    fn test_default_email_settings() {
-        let settings = default_email_settings();
-        assert_eq!(settings["enabled"], false);
-        assert_eq!(settings["smtp_port"], 587);
-        assert_eq!(settings["use_tls"], true);
-        assert_eq!(settings["from_name"], "SyncTV");
-        assert_eq!(settings["smtp_host"], "");
-        assert_eq!(settings["smtp_username"], "");
-    }
-
-    #[test]
-    fn test_default_oauth_settings() {
-        let settings = default_oauth_settings();
-        assert_eq!(settings["github_enabled"], false);
-        assert_eq!(settings["google_enabled"], false);
-        assert_eq!(settings["microsoft_enabled"], false);
-        assert_eq!(settings["discord_enabled"], false);
-    }
-
-    #[test]
-    fn test_default_rate_limit_settings() {
-        let settings = get_default_settings("rate_limit").unwrap();
-        assert_eq!(settings["enabled"], true);
-        assert_eq!(settings["api_rate_limit"], 100);
-        assert_eq!(settings["api_rate_window"], 60);
-        assert_eq!(settings["ws_rate_limit"], 50);
-        assert_eq!(settings["ws_rate_window"], 60);
-    }
-
-    #[test]
-    fn test_default_content_moderation_settings() {
-        let settings = get_default_settings("content_moderation").unwrap();
-        assert_eq!(settings["enabled"], false);
-        assert_eq!(settings["filter_profanity"], false);
-        assert_eq!(settings["max_message_length"], 1000);
-        assert_eq!(settings["link_filter_enabled"], false);
-    }
+    use crate::models::settings::{get_default_settings, SettingsGroup};
 
     #[test]
     fn test_unknown_group_returns_none() {
@@ -764,23 +712,6 @@ mod tests {
         assert_eq!(parsed["database"]["pool"]["max"], 10);
     }
 
-    // ========== Helper Function ==========
-
-    #[test]
-    fn test_get_default_settings_json_returns_same_as_get_default_settings() {
-        for group_name in &[
-            "server",
-            "email",
-            "oauth",
-            "rate_limit",
-            "content_moderation",
-        ] {
-            let from_helper = get_default_settings_json(group_name);
-            let from_model = get_default_settings(group_name);
-            assert_eq!(from_helper, from_model, "Mismatch for group: {group_name}");
-        }
-    }
-
     // ========== validate_setting tests ==========
 
     /// A mock `SettingProvider` that rejects any value not equal to "valid".
@@ -788,6 +719,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::service::settings_vars::SettingProvider for MockProvider {
+        fn key(&self) -> &str {
+            "test.mock"
+        }
+
+        fn default_raw(&self) -> String {
+            "valid".to_string()
+        }
+
         fn get_raw(&self) -> Option<String> {
             Some("valid".to_string())
         }

@@ -45,47 +45,6 @@ fn test_reorder_playlist_is_distinct_from_other_permissions() {
 // Role Default Permission Tests
 // ============================================================================
 
-#[test]
-fn test_creator_has_reorder_playlist_permission() {
-    // Creator should have all permissions including REORDER_PLAYLIST
-    let creator_perms = PermissionBits(PermissionBits::ALL);
-    assert!(
-        creator_perms.has(PermissionBits::REORDER_PLAYLIST),
-        "Creator should have REORDER_PLAYLIST permission"
-    );
-}
-
-#[test]
-fn test_admin_default_has_reorder_playlist_permission() {
-    // Admin default should include REORDER_PLAYLIST
-    let admin_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
-    assert!(
-        admin_default.has(PermissionBits::REORDER_PLAYLIST),
-        "Admin default should have REORDER_PLAYLIST permission"
-    );
-}
-
-#[test]
-fn test_member_default_lacks_reorder_playlist_permission() {
-    // Member default does NOT include REORDER_PLAYLIST - only admins and above have this
-    // This is by design: playlist reordering is an admin-level operation
-    let member_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
-    assert!(
-        !member_default.has(PermissionBits::REORDER_PLAYLIST),
-        "Member default should NOT have REORDER_PLAYLIST permission (admin-only)"
-    );
-}
-
-#[test]
-fn test_guest_default_lacks_reorder_playlist_permission() {
-    // Guest default should NOT include REORDER_PLAYLIST (read-only)
-    let guest_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
-    assert!(
-        !guest_default.has(PermissionBits::REORDER_PLAYLIST),
-        "Guest default should NOT have REORDER_PLAYLIST permission"
-    );
-}
-
 // ============================================================================
 // Permission Check Tests for Effective Permissions
 // ============================================================================

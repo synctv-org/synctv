@@ -15,6 +15,9 @@ pub mod resilience;
 pub mod secrets;
 pub mod service;
 pub mod spawn;
+pub mod time {
+    pub use synctv_common::time::*;
+}
 pub mod transaction;
 pub mod validation;
 

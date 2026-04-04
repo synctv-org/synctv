@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 use super::id::UserId;
+use super::query::SortDirection;
 
 /// Global user role (design document 06/07: role and status separation)
 ///
@@ -509,12 +510,72 @@ pub struct UpdateUserRequest {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UserListSortBy {
+    Username,
+    Email,
+    Status,
+    Role,
+    UpdatedAt,
+    #[default]
+    CreatedAt,
+}
+
+impl UserListSortBy {
+    #[must_use]
+    pub const fn as_sql(self) -> &'static str {
+        match self {
+            Self::Username => "username",
+            Self::Email => "email",
+            Self::Status => "status",
+            Self::Role => "role",
+            Self::UpdatedAt => "updated_at",
+            Self::CreatedAt => "created_at",
+        }
+    }
+}
+
+impl FromStr for UserListSortBy {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "username" => Ok(Self::Username),
+            "email" => Ok(Self::Email),
+            "status" => Ok(Self::Status),
+            "role" => Ok(Self::Role),
+            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
+            "created_at" | "createdat" => Ok(Self::CreatedAt),
+            other => Err(format!("Unknown user list sort field: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for UserListSortBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Username => "username",
+            Self::Email => "email",
+            Self::Status => "status",
+            Self::Role => "role",
+            Self::UpdatedAt => "updated_at",
+            Self::CreatedAt => "created_at",
+        };
+        f.write_str(value)
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserListQuery {
     pub pagination: super::pagination::PageParams,
     pub search: Option<String>,
     pub status: Option<UserStatus>,
     pub role: Option<UserRole>,
+    #[serde(default)]
+    pub sort_by: UserListSortBy,
+    #[serde(default)]
+    pub sort_direction: SortDirection,
 }
 
 #[cfg(test)]

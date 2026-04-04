@@ -52,7 +52,7 @@ fn make_cluster_config(
         redis_client,
         redis_conn,
         node_id,
-        format!("test_{}:", nanoid::nanoid!(8)),
+        format!("test_{}:", synctv_common::snanoid!(8)),
     )
 }
 
@@ -110,7 +110,7 @@ async fn test_cross_node_broadcast() {
 
     // Create two cluster managers (simulating two nodes) with separate Redis clients
     // but the same key prefix so they participate in the same logical cluster.
-    let shared_prefix = format!("test_{}:", nanoid::nanoid!(8));
+    let shared_prefix = format!("test_{}:", synctv_common::snanoid!(8));
     let config1 = make_cluster_config_with_prefix(
         redis_client1.clone(),
         _conn1.clone(),
@@ -143,7 +143,7 @@ async fn test_cross_node_broadcast() {
         &manager2,
         &mut rx,
         || ClusterEvent::ChatMessage {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room.clone(),
             user_id: uid("user2"),
             username: "sender".to_string(),
@@ -175,7 +175,7 @@ async fn test_message_deduplication() {
     let user = uid("user1");
 
     let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         user_id: user.clone(),
         username: "test".to_string(),
@@ -203,7 +203,7 @@ async fn test_message_deduplication() {
 
     // Different event should be processable
     let event2 = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16), // Different event_id
+        event_id: synctv_common::snanoid!(16), // Different event_id
         room_id: room,
         user_id: user,
         username: "test".to_string(),
@@ -224,7 +224,7 @@ async fn test_dedup_ttl_expiry() {
 
     let room = rid("room1");
     let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         user_id: uid("user1"),
         username: "test".to_string(),
@@ -258,7 +258,7 @@ async fn test_dedup_with_different_events() {
 
     let room = rid("room1");
     let user = uid("user1");
-    let event_id = nanoid::nanoid!(16);
+    let event_id = synctv_common::snanoid!(16);
 
     // Same event_id but different event types
     let event1 = ClusterEvent::UserJoined {
@@ -329,7 +329,7 @@ async fn test_single_node_mode_without_redis() {
 
     // Local broadcast should still work
     let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         user_id: user.clone(),
         username: "test".to_string(),
@@ -410,7 +410,7 @@ async fn test_multiple_subscriptions_same_room() {
 
     // Broadcast a message
     let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         user_id: uid("user1"),
         username: "sender".to_string(),
@@ -449,7 +449,7 @@ async fn test_critical_event_delivery() {
         .await
         .expect("Failed to create Redis ConnectionManager 2");
 
-    let shared_prefix = format!("test_{}:", nanoid::nanoid!(8));
+    let shared_prefix = format!("test_{}:", synctv_common::snanoid!(8));
     let config1 = make_cluster_config_with_prefix(
         redis_client1.clone(),
         conn1.clone(),
@@ -486,7 +486,7 @@ async fn test_critical_event_delivery() {
         &manager2,
         &mut room_rx,
         || ClusterEvent::KickUserFromRoom {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room.clone(),
             user_id: user.clone(),
             reason: "test_kick".to_string(),
@@ -502,7 +502,7 @@ async fn test_critical_event_delivery() {
         &manager2,
         &mut admin_rx,
         || ClusterEvent::KickUserFromRoom {
-            event_id: nanoid::nanoid!(16),
+            event_id: synctv_common::snanoid!(16),
             room_id: room.clone(),
             user_id: user.clone(),
             reason: "test_kick".to_string(),
@@ -527,7 +527,7 @@ async fn test_critical_event_delivery() {
 async fn test_event_type_routing() {
     // Room events should have room_id
     let room_event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("room1"),
         user_id: uid("user1"),
         username: "test".to_string(),
@@ -544,7 +544,7 @@ async fn test_event_type_routing() {
 
     // System events should not have room_id
     let system_event = ClusterEvent::SystemNotification {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         message: "maintenance".to_string(),
         level: NotificationLevel::Warning,
         timestamp: chrono::Utc::now(),
@@ -561,7 +561,7 @@ async fn test_event_type_routing() {
 
     // KickUser should have user_id but no room_id
     let kick_event = ClusterEvent::KickUser {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         user_id: uid("user1"),
         reason: "banned".to_string(),
         timestamp: chrono::Utc::now(),
@@ -582,7 +582,7 @@ async fn test_event_type_routing() {
 async fn test_critical_event_classification() {
     // Critical events
     assert!(ClusterEvent::KickPublisher {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("r1"),
         media_id: mid("m1"),
         reason: "test".to_string(),
@@ -591,7 +591,7 @@ async fn test_critical_event_classification() {
     .is_critical());
 
     assert!(ClusterEvent::KickUser {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         user_id: uid("u1"),
         reason: "test".to_string(),
         timestamp: chrono::Utc::now(),
@@ -599,7 +599,7 @@ async fn test_critical_event_classification() {
     .is_critical());
 
     assert!(ClusterEvent::KickUserFromRoom {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("r1"),
         user_id: uid("u1"),
         reason: "test".to_string(),
@@ -608,7 +608,7 @@ async fn test_critical_event_classification() {
     .is_critical());
 
     assert!(ClusterEvent::PermissionChanged {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("r1"),
         target_user_id: uid("u1"),
         target_username: "test".to_string(),
@@ -625,7 +625,7 @@ async fn test_critical_event_classification() {
     .is_critical());
 
     assert!(ClusterEvent::RoomDeleted {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("r1"),
         deleted_by: uid("u1"),
         timestamp: chrono::Utc::now(),
@@ -633,7 +633,7 @@ async fn test_critical_event_classification() {
     .is_critical());
 
     assert!(ClusterEvent::UserLeft {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("r1"),
         user_id: uid("u1"),
         username: "test".to_string(),
@@ -643,7 +643,7 @@ async fn test_critical_event_classification() {
 
     // Non-critical events
     assert!(!ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("r1"),
         user_id: uid("u1"),
         username: "test".to_string(),
@@ -655,7 +655,7 @@ async fn test_critical_event_classification() {
     .is_critical());
 
     assert!(!ClusterEvent::WebRTCJoin {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: rid("r1"),
         user_id: uid("u1"),
         conn_id: "c1".to_string(),
@@ -702,7 +702,7 @@ async fn test_broadcast_recipient_count() {
 
     // Broadcast a message
     let event = ClusterEvent::ChatMessage {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
         user_id: uid("user1"),
         username: "test".to_string(),
@@ -726,7 +726,7 @@ async fn test_broadcast_recipient_count() {
 #[tokio::test]
 async fn test_cache_invalidation_event() {
     let event = ClusterEvent::CacheInvalidate {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         targets: vec![
             CacheTarget::User {
                 user_id: "u1".to_string(),
@@ -766,7 +766,7 @@ async fn test_media_removed_batch_event() {
         .collect();
 
     let event = ClusterEvent::MediaRemovedBatch {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         room_id: room,
         user_id: user,
         username: "admin".to_string(),
@@ -799,7 +799,7 @@ async fn test_user_notification_event() {
     let user = uid("user1");
 
     let event = ClusterEvent::UserNotification {
-        event_id: nanoid::nanoid!(16),
+        event_id: synctv_common::snanoid!(16),
         user_id: user,
         notification_id: "notif-123".to_string(),
         title: "Room Invitation".to_string(),
@@ -827,7 +827,7 @@ async fn test_user_notification_event() {
 async fn test_dedup_key_from_event() {
     let room = rid("room1");
     let user = uid("user1");
-    let event_id = nanoid::nanoid!(16);
+    let event_id = synctv_common::snanoid!(16);
 
     let event = ClusterEvent::ChatMessage {
         event_id: event_id.clone(),

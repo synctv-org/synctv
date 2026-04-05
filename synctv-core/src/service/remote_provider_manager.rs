@@ -15,7 +15,7 @@
 // their local channel cache even across restarts and transient disconnects.
 
 use crate::cache::{CacheInvalidationService, InvalidationMessage};
-use crate::models::ProviderInstance;
+use crate::models::{ProviderInstance, ProviderInstanceListQuery};
 use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConnection};
 use crate::provider::ProviderError;
 use crate::repository::ProviderInstanceRepository;
@@ -80,16 +80,30 @@ impl std::fmt::Debug for RemoteProviderManager {
 }
 
 impl RemoteProviderManager {
+    fn provider_connection_setup_error(
+        message: &'static str,
+        error: impl std::fmt::Display,
+    ) -> crate::Error {
+        tracing::error!(error = %error, "{message}");
+        crate::Error::Internal(message.to_string())
+    }
+
     fn map_remote_resolution_error(err: crate::Error) -> ProviderError {
         match err {
             crate::Error::InvalidInput(msg) => ProviderError::InvalidConfig(msg),
             crate::Error::Timeout(msg) => ProviderError::NetworkError(msg),
             crate::Error::ServiceUnavailable(msg) => ProviderError::ApiError(msg),
-            crate::Error::Database(err) => {
-                ProviderError::ApiError(format!("Provider configuration store unavailable: {err}"))
+            crate::Error::Database(error) => {
+                tracing::warn!(error = %error, "Provider configuration store unavailable");
+                ProviderError::ApiError(
+                    "Provider configuration service is temporarily unavailable.".to_string(),
+                )
             }
-            crate::Error::Redis(err) => {
-                ProviderError::ApiError(format!("Provider configuration cache unavailable: {err}"))
+            crate::Error::Redis(error) => {
+                tracing::warn!(error = %error, "Provider configuration cache unavailable");
+                ProviderError::ApiError(
+                    "Provider configuration service is temporarily unavailable.".to_string(),
+                )
             }
             crate::Error::Serialization(err) => {
                 ProviderError::Internal(format!("Serialization error: {err}"))
@@ -716,7 +730,12 @@ impl RemoteProviderManager {
         // Create endpoint
         let transport_endpoint = Self::normalized_transport_endpoint(config)?;
         let mut endpoint = Endpoint::from_shared(transport_endpoint)
-            .map_err(|e| crate::Error::Internal(format!("Invalid endpoint: {e}")))?
+            .map_err(|error| {
+                Self::provider_connection_setup_error(
+                    "Remote provider endpoint configuration is invalid.",
+                    error,
+                )
+            })?
             .timeout(timeout)
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .http2_keep_alive_interval(Duration::from_secs(30))
@@ -735,8 +754,11 @@ impl RemoteProviderManager {
                 // tonic's ClientTlsConfig doesn't expose this, so we build a raw
                 // rustls ClientConfig with a no-op verifier and wrap it in a
                 // tower::Service<Uri> that tonic can use.
-                let channel = self.connect_insecure_tls(endpoint).await.map_err(|e| {
-                    crate::Error::Internal(format!("insecure TLS connect failed: {e}"))
+                let channel = self.connect_insecure_tls(endpoint).await.map_err(|error| {
+                    Self::provider_connection_setup_error(
+                        "Remote provider TLS connection setup failed.",
+                        error,
+                    )
                 })?;
 
                 tracing::info!(
@@ -759,9 +781,12 @@ impl RemoteProviderManager {
                 tls_config = tls_config.with_native_roots();
             }
 
-            endpoint = endpoint
-                .tls_config(tls_config)
-                .map_err(|e| crate::Error::Internal(format!("TLS config error: {e}")))?;
+            endpoint = endpoint.tls_config(tls_config).map_err(|error| {
+                Self::provider_connection_setup_error(
+                    "Remote provider TLS connection setup failed.",
+                    error,
+                )
+            })?;
         }
 
         let guard = synctv_common::ssrf::SsrfGuard::default_policy();
@@ -975,6 +1000,33 @@ impl RemoteProviderManager {
     pub async fn get_all_instances(&self) -> crate::Result<Vec<ProviderInstance>> {
         self.repository
             .get_all()
+            .await
+            .map_err(|e| crate::Error::Internal(format!("{e}")))
+    }
+
+    pub async fn get_instance(&self, name: &str) -> crate::Result<Option<ProviderInstance>> {
+        self.repository
+            .get_by_name(name)
+            .await
+            .map_err(|e| crate::Error::Internal(format!("{e}")))
+    }
+
+    pub async fn list_instances(
+        &self,
+        query: &ProviderInstanceListQuery,
+    ) -> crate::Result<Vec<ProviderInstance>> {
+        self.repository
+            .list(query)
+            .await
+            .map_err(|e| crate::Error::Internal(format!("{e}")))
+    }
+
+    pub async fn find_instances_by_provider(
+        &self,
+        provider: &str,
+    ) -> crate::Result<Vec<ProviderInstance>> {
+        self.repository
+            .find_by_provider(provider)
             .await
             .map_err(|e| crate::Error::Internal(format!("{e}")))
     }
@@ -1480,5 +1532,59 @@ mod tests {
             .expect("http:// endpoint should normalize to a tonic transport URL");
 
         assert_eq!(normalized, "http://provider.example.com:50051");
+    }
+
+    #[test]
+    fn map_remote_resolution_error_hides_database_details() {
+        let err = RemoteProviderManager::map_remote_resolution_error(crate::Error::Database(
+            sqlx::Error::PoolTimedOut,
+        ));
+
+        assert!(matches!(
+            err,
+            ProviderError::ApiError(ref message)
+                if message == "Provider configuration service is temporarily unavailable."
+        ));
+    }
+
+    #[test]
+    fn map_remote_resolution_error_hides_redis_details() {
+        let err = RemoteProviderManager::map_remote_resolution_error(crate::Error::Redis(
+            redis::RedisError::from((redis::ErrorKind::Io, "connection reset by peer")),
+        ));
+
+        assert!(matches!(
+            err,
+            ProviderError::ApiError(ref message)
+                if message == "Provider configuration service is temporarily unavailable."
+        ));
+    }
+
+    #[test]
+    fn provider_connection_setup_error_hides_invalid_endpoint_details() {
+        let err = RemoteProviderManager::provider_connection_setup_error(
+            "Remote provider endpoint configuration is invalid.",
+            "relative URL without a base",
+        );
+
+        assert!(matches!(
+            err,
+            crate::Error::Internal(ref message)
+                if message == "Remote provider endpoint configuration is invalid."
+        ));
+    }
+
+    #[test]
+    fn provider_connection_setup_error_hides_tls_connect_details() {
+        let err = RemoteProviderManager::provider_connection_setup_error(
+            "Remote provider TLS connection setup failed.",
+            "certificate verify failed",
+        );
+
+        assert!(matches!(
+            err,
+            crate::Error::Internal(ref message)
+                if message == "Remote provider TLS connection setup failed."
+        ));
     }
 }

@@ -15,6 +15,8 @@ use std::sync::Arc;
 use synctv_core::provider::ProviderError;
 use synctv_core::repository::UserProviderCredentialRepository;
 
+use crate::impls::ApiError;
+
 /// Provider bind information returned by `get_binds`.
 ///
 /// A generic representation of a saved provider credential, with two
@@ -32,6 +34,9 @@ pub struct ProviderBind {
     pub created_at_str: String,
 }
 
+const PROVIDER_BINDS_UNAVAILABLE_MESSAGE: &str =
+    "Provider bind information is temporarily unavailable";
+
 /// Shared implementation for querying saved provider credentials ("binds").
 ///
 /// Eliminates duplication across Alist, Emby, and Bilibili HTTP/gRPC handlers.
@@ -40,11 +45,16 @@ pub async fn get_provider_binds(
     user_id: &str,
     provider_name: &str,
     user_field_key: &str,
-) -> Result<Vec<ProviderBind>, String> {
-    let credentials = repo
-        .get_by_user(user_id)
-        .await
-        .map_err(|e| format!("Failed to query credentials: {e}"))?;
+) -> Result<Vec<ProviderBind>, ApiError> {
+    let credentials = repo.get_by_user(user_id).await.map_err(|error| {
+        tracing::error!(
+            user_id,
+            provider_name,
+            error = %error,
+            "Failed to query provider binds"
+        );
+        ApiError::ServiceUnavailable(PROVIDER_BINDS_UNAVAILABLE_MESSAGE.to_string())
+    })?;
 
     let binds = credentials
         .into_iter()
@@ -129,8 +139,34 @@ pub(crate) fn resolve_bound_instance_name(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_instance_name, resolve_bound_instance_name};
+    use super::{
+        extract_instance_name, get_provider_binds, resolve_bound_instance_name,
+        PROVIDER_BINDS_UNAVAILABLE_MESSAGE,
+    };
+    use crate::impls::ApiError;
+    use std::sync::Arc;
     use synctv_core::provider::ProviderError;
+    use synctv_core::repository::UserProviderCredentialRepository;
+
+    #[tokio::test]
+    async fn get_provider_binds_backend_outage_maps_to_service_unavailable() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgresql://localhost:1/synctv")
+            .expect("lazy pool");
+        let repo = Arc::new(UserProviderCredentialRepository::new(pool));
+
+        let err = get_provider_binds(&repo, "user-1", "alist", "username")
+            .await
+            .expect_err("bind query should fail");
+
+        match err {
+            ApiError::ServiceUnavailable(message) => {
+                assert_eq!(message, PROVIDER_BINDS_UNAVAILABLE_MESSAGE);
+            }
+            other => panic!("expected ServiceUnavailable, got {other:?}"),
+        }
+    }
 
     #[test]
     fn resolve_bound_instance_name_uses_credential_binding_when_request_omits_instance() {

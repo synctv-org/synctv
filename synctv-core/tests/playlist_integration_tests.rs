@@ -1,6 +1,6 @@
 //! Playlist tree operation integration tests
 //!
-//! Tests playlist CRUD, tree structure, position sorting, cycle prevention, and cascade delete.
+//! Tests playlist CRUD, tree structure, position sorting, cycle prevention, and subtree delete.
 //!
 //! Run with: cargo test --test `playlist_integration_tests`
 #![allow(clippy::unwrap_used)]
@@ -61,7 +61,7 @@ fn make_playlist(
         creator_id: None,
         name: name.to_string(),
         parent_id: parent_id.cloned(),
-        position,
+        position: f64::from(position),
         source_provider: None,
         source_config: None,
         provider_instance_name: None,
@@ -183,7 +183,7 @@ async fn test_position_sorting() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_position_uniqueness_constraint() {
+async fn test_duplicate_positions_are_allowed_in_same_parent() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -204,13 +204,13 @@ async fn test_position_uniqueness_constraint() {
         .await
         .unwrap();
 
-    // Try to create another child at the same position - should fail due to unique constraint
+    // Duplicate floating positions are allowed. Stable ordering falls back to
+    // secondary keys when necessary, and move operations rebalance only when needed.
     let duplicate = make_playlist(&room.id, "Duplicate", Some(&root.id), 0);
-    let result = playlist_repo.create(&duplicate).await;
-    assert!(
-        result.is_err(),
-        "Duplicate position in same parent should fail"
-    );
+    let result = playlist_repo.create(&duplicate).await.unwrap();
+    let children = playlist_repo.get_children(&root.id).await.unwrap();
+    assert_eq!(result.name, "Duplicate");
+    assert_eq!(children.len(), 2);
 }
 
 #[tokio::test]
@@ -285,7 +285,7 @@ async fn test_cascade_delete_parent_playlist() {
         .await
         .unwrap();
 
-    // Delete the child - grandchild should be cascade-deleted too
+    // Delete the child - the repository should remove the whole subtree too.
     let deleted = playlist_repo.delete(&child.id).await.unwrap();
     assert!(deleted);
 
@@ -297,7 +297,7 @@ async fn test_cascade_delete_parent_playlist() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_auto_position_computation() {
+async fn test_next_append_position_uses_sparse_floating_positions() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -314,25 +314,46 @@ async fn test_auto_position_computation() {
         .await
         .unwrap();
 
-    // Use negative position to trigger auto-position
-    let auto_1 = make_playlist(&room.id, "Auto1", Some(&root.id), -1);
-    let created_1 = playlist_repo.create(&auto_1).await.unwrap();
-    assert_eq!(
-        created_1.position, 0,
-        "First auto-positioned item should be at position 0"
-    );
+    let mut tx = pool.begin().await.unwrap();
+    let first_position = playlist_repo
+        .get_next_append_position_with_tx(&room.id, Some(&root.id), &mut tx)
+        .await
+        .unwrap();
+    assert_eq!(first_position, 1024.0);
 
-    let auto_2 = make_playlist(&room.id, "Auto2", Some(&root.id), -1);
-    let created_2 = playlist_repo.create(&auto_2).await.unwrap();
-    assert_eq!(
-        created_2.position, 1,
-        "Second auto-positioned item should be at position 1"
-    );
+    playlist_repo
+        .create_with_executor(
+            &Playlist {
+                id: PlaylistId::new(),
+                room_id: room.id.clone(),
+                creator_id: None,
+                name: "Auto1".to_string(),
+                parent_id: Some(root.id.clone()),
+                position: first_position,
+                source_provider: None,
+                source_config: None,
+                provider_instance_name: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                version: 0,
+            },
+            &mut *tx,
+        )
+        .await
+        .unwrap();
+
+    let second_position = playlist_repo
+        .get_next_append_position_with_tx(&room.id, Some(&root.id), &mut tx)
+        .await
+        .unwrap();
+    assert_eq!(second_position, 2048.0);
+    tx.commit().await.unwrap();
 }
 
 // ========== Task #9: Advisory Lock Key Consistency ==========
 //
-// VERIFIED: Both `create()` and `get_next_position_for_update()` methods now
+// VERIFIED: scope-level advisory locking is centralized in the repository and
+// append-position computation uses the same scope lock.
 // use the SAME hash strategy for computing advisory lock keys. This ensures
 // they acquire the SAME lock for the same (room_id, parent_id) pair.
 //
@@ -348,8 +369,8 @@ fn test_advisory_lock_key_consistency_between_methods() {
     use std::hash::{Hash, Hasher};
 
     // This is the unified hash strategy used in BOTH:
-    // - create() method (lines 175-204)
-    // - get_next_position_for_update() method (lines 361-396)
+    // - scope lock in create/move flows
+    // - append-position helper
     let compute_lock_key = |room_id: &str, parent_id: Option<&str>| -> i64 {
         let room_hash = {
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -556,7 +577,7 @@ async fn test_cross_room_parent_id_rejected() {
         creator_id: None,
         name: "Cross Room Child".to_string(),
         parent_id: Some(root_a.id.clone()), // But parent is in Room A - INVALID!
-        position: 0,
+        position: 0.0,
         source_provider: None,
         source_config: None,
         provider_instance_name: None,

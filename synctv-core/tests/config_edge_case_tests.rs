@@ -7,9 +7,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::net::IpAddr;
-use synctv_core::config::{
-    Config, DatabaseConfig, RedisConfig, RedisDeploymentMode, ServerConfig,
-};
+use synctv_core::config::{Config, DatabaseConfig, RedisConfig, RedisDeploymentMode, ServerConfig};
 
 // ============================================================================
 // Trusted proxy matching

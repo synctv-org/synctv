@@ -20,12 +20,11 @@ use crate::proto::client::{
     DeletePlaylistResponse, DeleteRoomResponse, EditMediaRequest, EditMediaResponse,
     GetChatHistoryResponse, GetHotRoomsResponse, GetPlaybackRequest, GetPlaybackResponse,
     GetRoomMembersResponse, GetRoomResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomResponse,
-    ListPlaylistsResponse, ListRoomsRequest, ListRoomsResponse, MediaReorderUpdate,
-    ReorderMediaBatchRequest, ReorderMediaBatchResponse, ResetRoomSettingsResponse,
+    ListPlaylistsResponse, ListRoomsRequest, ListRoomsResponse, MoveMediaRequest,
+    MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse, ResetRoomSettingsResponse,
     SetRoomPasswordRequest, SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse,
-    StopPlaybackRequest, StopPlaybackResponse, SwapMediaRequest, SwapMediaResponse,
-    UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
-    UpdateRoomSettingsResponse,
+    StopPlaybackRequest, StopPlaybackResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
+    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
 pub type JoinRoomBody = JoinRoomRequest;
@@ -41,13 +40,92 @@ fn parse_force_query(params: &std::collections::HashMap<String, String>) -> bool
     params.get("force").is_some_and(|value| value == "true")
 }
 
-pub type ListPlaylistItemsBody = crate::proto::client::ListPlaylistItemsRequest;
-pub type ReorderMediaBatchBody = ReorderMediaBatchRequest;
-pub type SwapMediaBody = SwapMediaRequest;
 pub type AddMediaBatchBody = AddMediaBatchRequest;
 pub type EditMediaBody = EditMediaRequest;
 pub type CreatePlaylistBody = CreatePlaylistRequest;
 pub type UpdatePlaylistBody = UpdatePlaylistRequest;
+pub type MovePlaylistBody = MovePlaylistRequest;
+
+fn default_resource_availability_filter() -> i32 {
+    crate::proto::client::ResourceAvailabilityFilter::All as i32
+}
+
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ListPlaylistItemsBody {
+    #[serde(default)]
+    pub playlist_id: String,
+
+    #[serde(default)]
+    pub target: Option<serde_json::Value>,
+
+    #[serde(default)]
+    pub page: i32,
+
+    #[serde(default)]
+    pub page_size: i32,
+
+    #[serde(default = "default_resource_availability_filter")]
+    pub availability: i32,
+}
+
+impl From<ListPlaylistItemsBody> for crate::proto::client::ListPlaylistItemsRequest {
+    fn from(value: ListPlaylistItemsBody) -> Self {
+        Self {
+            playlist_id: value.playlist_id,
+            target: value
+                .target
+                .and_then(|target| serde_json::to_vec(&target).ok())
+                .unwrap_or_default(),
+            page: value.page,
+            page_size: value.page_size,
+            search: String::new(),
+            source_provider: String::new(),
+            provider_instance_name: String::new(),
+            sort_by: crate::proto::client::MediaListSortBy::Position as i32,
+            sort_direction: crate::proto::client::SortDirection::Asc as i32,
+            availability: value.availability,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MoveMediaBody {
+    pub media_id: String,
+
+    #[serde(default)]
+    pub before_media_id: Option<String>,
+
+    #[serde(default)]
+    pub after_media_id: Option<String>,
+}
+
+impl TryFrom<MoveMediaBody> for MoveMediaRequest {
+    type Error = super::AppError;
+
+    fn try_from(value: MoveMediaBody) -> Result<Self, Self::Error> {
+        let anchor = match (value.before_media_id, value.after_media_id) {
+            (Some(id), None) => {
+                Some(crate::proto::client::move_media_request::Anchor::BeforeMediaId(id))
+            }
+            (None, Some(id)) => {
+                Some(crate::proto::client::move_media_request::Anchor::AfterMediaId(id))
+            }
+            _ => {
+                return Err(super::AppError::validation_failed(
+                    "anchor",
+                    "exactly one of before_media_id or after_media_id must be set",
+                ))
+            }
+        };
+
+        Ok(MoveMediaRequest {
+            media_id: value.media_id,
+            anchor,
+        })
+    }
+}
 
 fn map_validation_error(err: ValidationError) -> super::AppError {
     match err {
@@ -378,19 +456,19 @@ pub async fn delete_entries(
     Ok(Json(response))
 }
 
-/// Bulk reorder media items in playlist
+/// Move a media item relative to a sibling.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/media/reorder",
+        path = "/api/rooms/{room_id}/media/move",
         tag = "Room",
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = ReorderMediaBatchRequest,
+        request_body = MoveMediaBody,
         responses(
-            (status = 200, description = "Media reordered", body = ReorderMediaBatchResponse),
+            (status = 200, description = "Media moved", body = MoveMediaResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
         ),
@@ -399,19 +477,20 @@ pub async fn delete_entries(
         )
     )
 )]
-#[tracing::instrument(name = "http_reorder_media_batch", skip(state, req), fields(user_id = %auth.user_id, room_id = %room_id))]
-pub async fn reorder_media_batch(
+#[tracing::instrument(name = "http_move_media", skip(state, req), fields(user_id = %auth.user_id, room_id = %room_id))]
+pub async fn move_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<ReorderMediaBatchBody>,
-) -> AppResult<Json<ReorderMediaBatchResponse>> {
+    Json(req): Json<MoveMediaBody>,
+) -> AppResult<Json<MoveMediaResponse>> {
+    let req = MoveMediaRequest::try_from(req)?;
     let response = state
         .client_api
-        .reorder_media_batch(&auth.user_id.to_string(), &room_id, req)
+        .move_media(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(|e| {
-            tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to reorder media batch");
+            tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to move media");
             super::error::map_api_error(e)
         })?;
 
@@ -428,7 +507,7 @@ pub async fn reorder_media_batch(
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = crate::proto::client::ListPlaylistItemsRequest,
+        request_body = ListPlaylistItemsBody,
         responses(
             (status = 200, description = "Playlist items", body = crate::proto::client::ListPlaylistItemsResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -443,8 +522,9 @@ pub async fn list_playlist_items(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(mut req): Json<ListPlaylistItemsBody>,
+    Json(req): Json<ListPlaylistItemsBody>,
 ) -> AppResult<Json<crate::proto::client::ListPlaylistItemsResponse>> {
+    let mut req = crate::proto::client::ListPlaylistItemsRequest::from(req);
     req.page = super::validation::validate_page((req.page != 0).then_some(req.page));
     req.page_size =
         super::validation::validate_page_size((req.page_size != 0).then_some(req.page_size));
@@ -452,42 +532,6 @@ pub async fn list_playlist_items(
     let response = state
         .client_api
         .list_playlist_items(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
-
-    Ok(Json(response))
-}
-
-/// Swap media items
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/rooms/{room_id}/media/swap",
-        tag = "Room",
-        params(
-            ("room_id" = String, Path, description = "Room ID")
-        ),
-        request_body = SwapMediaRequest,
-        responses(
-            (status = 200, description = "Media swapped", body = SwapMediaResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
-        )
-    )
-)]
-pub async fn swap_media_items(
-    auth: AuthUser,
-    State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Json(req): Json<SwapMediaBody>,
-) -> AppResult<Json<SwapMediaResponse>> {
-    let response = state
-        .client_api
-        .swap_media(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -1346,17 +1390,12 @@ pub async fn update_playback(
     Ok(Json(pb))
 }
 
-/// HTTP-specific: Media batch update request for PATCH endpoint
-/// Dispatches to reorder or swap proto operations
+/// HTTP-specific: media move request for PATCH endpoint
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateMediaBatchRequest {
-    /// Reorder operations: list of {`media_id`, position}
     #[serde(default)]
-    pub reorder: Option<Vec<MediaReorderUpdate>>,
-    /// Swap operation: {`media_id1`, `media_id2`}
-    #[serde(default)]
-    pub swap: Option<SwapMediaBody>,
+    pub move_media: Option<MoveMediaBody>,
 }
 
 /// HTTP-specific: batch operation response
@@ -1366,9 +1405,9 @@ pub struct BatchOperationResponse {
     pub success: bool,
 }
 
-/// Unified handler for media batch operations via PATCH
+/// Unified handler for media move via PATCH
 /// PATCH /`api/rooms/:room_id/media`
-/// Supports: reorder, swap operations
+/// Supports: move operation
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -1395,42 +1434,18 @@ pub async fn update_media_batch(
     Path(room_id): Path<String>,
     Json(req): Json<UpdateMediaBatchRequest>,
 ) -> AppResult<Json<BatchOperationResponse>> {
-    let user_id = auth.user_id.to_string();
+    let Some(move_req) = req.move_media else {
+        return Err(super::AppError::bad_request("No media move operation provided"));
+    };
+    let move_req = MoveMediaRequest::try_from(move_req)?;
 
-    // Check for reorder operation
-    if let Some(updates) = req.reorder {
-        let proto_req = ReorderMediaBatchRequest { updates };
-        let response = state
-            .client_api
-            .reorder_media_batch(&user_id, &room_id, proto_req)
-            .await
-            .map_err(super::error::map_api_error)?;
+    state
+        .client_api
+        .move_media(&auth.user_id.to_string(), &room_id, move_req)
+        .await
+        .map_err(super::error::map_api_error)?;
 
-        return Ok(Json(BatchOperationResponse {
-            success: response.success,
-        }));
-    }
-
-    // Check for swap operation
-    if let Some(swap_req) = req.swap {
-        let proto_req = SwapMediaRequest {
-            media_id1: swap_req.media_id1,
-            media_id2: swap_req.media_id2,
-        };
-        let response = state
-            .client_api
-            .swap_media(&user_id, &room_id, proto_req)
-            .await
-            .map_err(super::error::map_api_error)?;
-
-        return Ok(Json(BatchOperationResponse {
-            success: response.success,
-        }));
-    }
-
-    Err(super::AppError::bad_request(
-        "No valid batch operation provided (reorder or swap)",
-    ))
+    Ok(Json(BatchOperationResponse { success: true }))
 }
 
 // ==================== Room Settings Reset ====================
@@ -1615,6 +1630,43 @@ pub async fn update_playlist(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/playlists/{playlist_id}/move",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("playlist_id" = String, Path, description = "Playlist ID")
+        ),
+        request_body = MovePlaylistRequest,
+        responses(
+            (status = 200, description = "Playlist moved", body = MovePlaylistResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn move_playlist(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((room_id, playlist_id)): Path<(String, String)>,
+    Json(mut req): Json<MovePlaylistBody>,
+) -> AppResult<Json<MovePlaylistResponse>> {
+    req.playlist_id = playlist_id;
+    let response = state
+        .client_api
+        .move_playlist(&auth.user_id.to_string(), &room_id, req)
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
 /// Delete a playlist
 /// DELETE /`api/rooms/:room_id/playlists/:playlist_id`
 #[cfg_attr(
@@ -1717,6 +1769,7 @@ pub async fn list_playlists(
             Some("desc") => crate::proto::client::SortDirection::Desc as i32,
             _ => crate::proto::client::SortDirection::Asc as i32,
         },
+        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
     };
     let response = state
         .client_api
@@ -1868,9 +1921,13 @@ mod tests {
         let json = r#"{}"#;
         let req: ListPlaylistItemsBody = serde_json::from_str(json).unwrap();
         assert!(req.playlist_id.is_empty());
-        assert!(req.target.is_empty());
+        assert!(req.target.is_none());
         assert_eq!(req.page, 0);
         assert_eq!(req.page_size, 0);
+        assert_eq!(
+            req.availability,
+            crate::proto::client::ResourceAvailabilityFilter::All as i32
+        );
     }
 
     #[test]
@@ -1879,10 +1936,13 @@ mod tests {
             r#"{"playlist_id":"pl1","target":{"cursor":"season-1"},"page":2,"page_size":25}"#;
         let req: ListPlaylistItemsBody = serde_json::from_str(json).unwrap();
         assert_eq!(req.playlist_id, "pl1");
-        let target: serde_json::Value = serde_json::from_slice(&req.target).unwrap();
-        assert_eq!(target, serde_json::json!({"cursor":"season-1"}));
+        assert_eq!(req.target, Some(serde_json::json!({"cursor":"season-1"})));
         assert_eq!(req.page, 2);
         assert_eq!(req.page_size, 25);
+        assert_eq!(
+            req.availability,
+            crate::proto::client::ResourceAvailabilityFilter::All as i32
+        );
     }
 
     #[test]
@@ -1911,17 +1971,18 @@ mod tests {
     }
 
     #[test]
-    fn test_update_media_batch_request_deserializes_swap_without_room_id() {
+    fn test_update_media_batch_request_deserializes_move_without_room_id() {
         let json = r#"{
-            "swap": {
-                "media_id1": "media-1",
-                "media_id2": "media-2"
+            "move_media": {
+                "media_id": "media-1",
+                "before_media_id": "media-2"
             }
         }"#;
         let req: UpdateMediaBatchRequest = serde_json::from_str(json).unwrap();
-        let swap = req.swap.expect("swap operation should deserialize");
-        assert_eq!(swap.media_id1, "media-1");
-        assert_eq!(swap.media_id2, "media-2");
+        let move_media = req.move_media.expect("move operation should deserialize");
+        assert_eq!(move_media.media_id, "media-1");
+        assert_eq!(move_media.before_media_id.as_deref(), Some("media-2"));
+        assert!(move_media.after_media_id.is_none());
     }
 
     #[test]

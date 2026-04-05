@@ -446,8 +446,27 @@ pub struct UpdatePlaylistRequest {
     pub playlist_id: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "3")]
     pub name: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(int32, optional, tag = "4")]
-    pub position: ::core::option::Option<i32>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MovePlaylistRequest {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub playlist_id: ::prost::alloc::string::String,
+    #[prost(oneof = "move_playlist_request::Anchor", tags = "3, 4")]
+    pub anchor: ::core::option::Option<move_playlist_request::Anchor>,
+}
+/// Nested message and enum types in `MovePlaylistRequest`.
+pub mod move_playlist_request {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Anchor {
+        #[prost(string, tag = "3")]
+        BeforePlaylistId(::prost::alloc::string::String),
+        #[prost(string, tag = "4")]
+        AfterPlaylistId(::prost::alloc::string::String),
+    }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -527,6 +546,27 @@ pub struct EditMediaRequest {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MoveMediaRequest {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub media_id: ::prost::alloc::string::String,
+    #[prost(oneof = "move_media_request::Anchor", tags = "3, 4")]
+    pub anchor: ::core::option::Option<move_media_request::Anchor>,
+}
+/// Nested message and enum types in `MoveMediaRequest`.
+pub mod move_media_request {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Anchor {
+        #[prost(string, tag = "3")]
+        BeforeMediaId(::prost::alloc::string::String),
+        #[prost(string, tag = "4")]
+        AfterMediaId(::prost::alloc::string::String),
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteMediaRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
@@ -534,22 +574,6 @@ pub struct DeleteMediaRequest {
     pub media_id: ::prost::alloc::string::String,
     #[prost(bool, tag = "3")]
     pub force: bool,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct MediaReorderUpdate {
-    #[prost(string, tag = "1")]
-    pub media_id: ::prost::alloc::string::String,
-    #[prost(int32, tag = "2")]
-    pub position: i32,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ReorderMediaBatchRequest {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag = "2")]
-    pub updates: ::prost::alloc::vec::Vec<MediaReorderUpdate>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2594,6 +2618,35 @@ pub mod management_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn move_playlist(
+            &mut self,
+            request: impl tonic::IntoRequest<super::MovePlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::MovePlaylistResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/MovePlaylist",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "MovePlaylist",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn delete_playlist(
             &mut self,
             request: impl tonic::IntoRequest<super::DeletePlaylistRequest>,
@@ -2730,6 +2783,32 @@ pub mod management_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn move_media(
+            &mut self,
+            request: impl tonic::IntoRequest<super::MoveMediaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::MoveMediaResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/MoveMedia",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "MoveMedia"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn delete_media(
             &mut self,
             request: impl tonic::IntoRequest<super::DeleteMediaRequest>,
@@ -2753,35 +2832,6 @@ pub mod management_service_client {
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new("synctv.management.ManagementService", "DeleteMedia"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn reorder_media_batch(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ReorderMediaBatchRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::ReorderMediaBatchResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.management.ManagementService/ReorderMediaBatch",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "synctv.management.ManagementService",
-                        "ReorderMediaBatch",
-                    ),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -3545,6 +3595,13 @@ pub mod management_service_server {
             tonic::Response<::synctv_proto::client::UpdatePlaylistResponse>,
             tonic::Status,
         >;
+        async fn move_playlist(
+            &self,
+            request: tonic::Request<super::MovePlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::MovePlaylistResponse>,
+            tonic::Status,
+        >;
         async fn delete_playlist(
             &self,
             request: tonic::Request<super::DeletePlaylistRequest>,
@@ -3580,18 +3637,18 @@ pub mod management_service_server {
             tonic::Response<::synctv_proto::client::EditMediaResponse>,
             tonic::Status,
         >;
+        async fn move_media(
+            &self,
+            request: tonic::Request<super::MoveMediaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::MoveMediaResponse>,
+            tonic::Status,
+        >;
         async fn delete_media(
             &self,
             request: tonic::Request<super::DeleteMediaRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::client::DeleteMediaResponse>,
-            tonic::Status,
-        >;
-        async fn reorder_media_batch(
-            &self,
-            request: tonic::Request<super::ReorderMediaBatchRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::ReorderMediaBatchResponse>,
             tonic::Status,
         >;
         async fn list_provider_instances(
@@ -5867,6 +5924,52 @@ pub mod management_service_server {
                     };
                     Box::pin(fut)
                 }
+                "/synctv.management.ManagementService/MovePlaylist" => {
+                    #[allow(non_camel_case_types)]
+                    struct MovePlaylistSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::MovePlaylistRequest>
+                    for MovePlaylistSvc<T> {
+                        type Response = ::synctv_proto::client::MovePlaylistResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::MovePlaylistRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::move_playlist(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = MovePlaylistSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/synctv.management.ManagementService/DeletePlaylist" => {
                     #[allow(non_camel_case_types)]
                     struct DeletePlaylistSvc<T: ManagementService>(pub Arc<T>);
@@ -6097,6 +6200,51 @@ pub mod management_service_server {
                     };
                     Box::pin(fut)
                 }
+                "/synctv.management.ManagementService/MoveMedia" => {
+                    #[allow(non_camel_case_types)]
+                    struct MoveMediaSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::MoveMediaRequest>
+                    for MoveMediaSvc<T> {
+                        type Response = ::synctv_proto::client::MoveMediaResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::MoveMediaRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::move_media(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = MoveMediaSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/synctv.management.ManagementService/DeleteMedia" => {
                     #[allow(non_camel_case_types)]
                     struct DeleteMediaSvc<T: ManagementService>(pub Arc<T>);
@@ -6128,55 +6276,6 @@ pub mod management_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = DeleteMediaSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.management.ManagementService/ReorderMediaBatch" => {
-                    #[allow(non_camel_case_types)]
-                    struct ReorderMediaBatchSvc<T: ManagementService>(pub Arc<T>);
-                    impl<
-                        T: ManagementService,
-                    > tonic::server::UnaryService<super::ReorderMediaBatchRequest>
-                    for ReorderMediaBatchSvc<T> {
-                        type Response = ::synctv_proto::client::ReorderMediaBatchResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ReorderMediaBatchRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ManagementService>::reorder_media_batch(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ReorderMediaBatchSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

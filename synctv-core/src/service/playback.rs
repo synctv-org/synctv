@@ -15,6 +15,7 @@ use crate::{
     repository::RoomPlaybackStateRepository,
     service::{
         media::MediaService, notification::NotificationService, permission::PermissionService,
+        UserService,
     },
     Error, Result,
 };
@@ -196,6 +197,7 @@ pub struct PlaybackService {
     playback_repo: RoomPlaybackStateRepository,
     permission_service: PermissionService,
     media_service: MediaService,
+    user_service: UserService,
     /// Optional notification service for broadcasting to local WebSocket clients
     notification_service: Option<NotificationService>,
     /// Optional cluster broadcaster for cross-replica sync (interior mutability
@@ -236,11 +238,13 @@ impl PlaybackService {
         playback_repo: RoomPlaybackStateRepository,
         permission_service: PermissionService,
         media_service: MediaService,
+        user_service: UserService,
     ) -> Self {
         Self {
             playback_repo,
             permission_service,
             media_service,
+            user_service,
             notification_service: None,
             cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
             playback_cache: Arc::new(
@@ -252,6 +256,24 @@ impl PlaybackService {
             invalidation_service: None,
             invalidation_runtime: Arc::new(PlaybackInvalidationRuntime::new()),
             single_flight: SingleFlight::new(),
+        }
+    }
+
+    async fn ensure_creator_is_active(
+        &self,
+        creator_id: Option<&UserId>,
+        resource_kind: &'static str,
+    ) -> Result<()> {
+        let Some(creator_id) = creator_id else {
+            return Ok(());
+        };
+
+        match self.user_service.get_user(creator_id).await {
+            Ok(user) if user.status.is_active() => Ok(()),
+            Ok(_) | Err(Error::NotFound(_)) => Err(Error::Authorization(format!(
+                "{resource_kind} is unavailable because its creator is not active"
+            ))),
+            Err(error) => Err(error),
         }
     }
 
@@ -923,6 +945,18 @@ impl PlaybackService {
                     .get_playlist(playlist_id)
                     .await?
                     .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+                match self
+                    .ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(Error::Authorization(_)) => {
+                        return self
+                            .stop_playback_for_unavailable_creator(room_id, "playlist")
+                            .await;
+                    }
+                    Err(error) => return Err(error),
+                }
                 self.media_service
                     .next_dynamic_playlist_item(room_id, playlist_id, &state.target, mode)
                     .await
@@ -942,6 +976,19 @@ impl PlaybackService {
                         .get_media(current_id)
                         .await?
                         .ok_or_else(|| Error::NotFound("Current media not found".to_string()))?;
+
+                    match self
+                        .ensure_creator_is_active(current_media.creator_id.as_ref(), "Media")
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(Error::Authorization(_)) => {
+                            return self
+                                .stop_playback_for_unavailable_creator(room_id, "media")
+                                .await;
+                        }
+                        Err(error) => return Err(error),
+                    }
 
                     if current_media.room_id != *room_id {
                         return Err(Error::Authorization(
@@ -1047,6 +1094,18 @@ impl PlaybackService {
             let mut updated_state = state;
             match &next_target {
                 NextTarget::Static(next) => {
+                    match self
+                        .ensure_creator_is_active(next.creator_id.as_ref(), "Media")
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(Error::Authorization(_)) => {
+                            return self
+                                .stop_playback_for_unavailable_creator(room_id, "media")
+                                .await;
+                        }
+                        Err(error) => return Err(error),
+                    }
                     updated_state.playing_media_id = Some(next.id.clone());
                     updated_state.playing_playlist_id = None;
                     updated_state.target = Vec::new();
@@ -1055,6 +1114,23 @@ impl PlaybackService {
                     playlist_id,
                     target,
                 } => {
+                    let playlist = self
+                        .media_service
+                        .get_playlist(playlist_id)
+                        .await?
+                        .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+                    match self
+                        .ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(Error::Authorization(_)) => {
+                            return self
+                                .stop_playback_for_unavailable_creator(room_id, "playlist")
+                                .await;
+                        }
+                        Err(error) => return Err(error),
+                    }
                     updated_state.playing_media_id = None;
                     updated_state.playing_playlist_id = Some(playlist_id.clone());
                     updated_state.target = target.clone();
@@ -1266,6 +1342,29 @@ impl PlaybackService {
         self.broadcast_state_change(&state).await
     }
 
+    pub async fn reset_playback_for_creator(
+        &self,
+        creator_id: &UserId,
+    ) -> Result<Vec<RoomPlaybackState>> {
+        let states = self
+            .playback_repo
+            .reset_playback_for_creator(creator_id)
+            .await?;
+
+        for state in &states {
+            self.invalidate_playback_cache(&state.room_id).await;
+            self.broadcast_invalidation_with_retry(
+                &state.room_id,
+                state,
+                "reset_playback_for_creator",
+            )
+            .await;
+            self.broadcast_state_change(state).await;
+        }
+
+        Ok(states)
+    }
+
     /// Check if playback is currently active
     pub async fn is_playing(&self, room_id: &RoomId) -> Result<bool> {
         let state = self.get_state(room_id).await?;
@@ -1334,6 +1433,9 @@ impl PlaybackService {
                     "Media does not belong to this room".to_string(),
                 ));
             }
+
+            self.ensure_creator_is_active(media.creator_id.as_ref(), "Media")
+                .await?;
         }
 
         if let Some(ref playlist_id) = target.playlist_id {
@@ -1354,6 +1456,9 @@ impl PlaybackService {
                     "playlist_id playback target must reference a dynamic playlist".to_string(),
                 ));
             }
+
+            self.ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
+                .await?;
 
             let resolved = self
                 .media_service
@@ -1415,6 +1520,33 @@ impl PlaybackService {
 
         self.broadcast_state_change(&state).await;
         Ok(state)
+    }
+
+    async fn stop_playback_for_unavailable_creator(
+        &self,
+        room_id: &RoomId,
+        resource_kind: &'static str,
+    ) -> Result<Option<RoomPlaybackState>> {
+        tracing::warn!(
+            room_id = %room_id.as_str(),
+            resource_kind,
+            "Stopping playback because the target creator is not active"
+        );
+
+        let state = self
+            .update_state(room_id.clone(), |state| {
+                state.playing_media_id = None;
+                state.playing_playlist_id = None;
+                state.target = Vec::new();
+                state.current_time = 0.0;
+                state.speed = 1.0;
+                state.is_playing = false;
+                state.updated_at = chrono::Utc::now();
+            })
+            .await?;
+
+        self.broadcast_state_change(&state).await;
+        Ok(Some(state))
     }
 
     /// Get current playback speed
@@ -1529,14 +1661,21 @@ impl PlaybackService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{CacheInvalidationService, CacheL2Backend};
+    use crate::cache::{
+        CacheInvalidationService, CacheL2Backend, KeyBuilder, NoopCacheL2, UsernameCache,
+    };
+    use crate::config::PasswordComplexityConfig;
     use crate::models::RoomId;
     use crate::repository::{
         MediaRepository, PlaylistRepository, ProviderInstanceRepository,
         RoomPlaybackStateRepository, RoomRepository,
     };
     use crate::service::permission::PermissionService;
-    use crate::service::{MediaService, ProvidersManager, RemoteProviderManager};
+    use crate::service::{
+        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        InMemoryTokenBlacklistStore, MediaService, ProvidersManager, RemoteProviderManager,
+        UserService,
+    };
     use async_trait::async_trait;
     use sqlx::PgPool;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -1599,6 +1738,28 @@ mod tests {
         }
     }
 
+    fn make_user_service(pool: PgPool) -> UserService {
+        let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
+        let l2 = Arc::new(NoopCacheL2);
+        let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+        let password_complexity = PasswordComplexityConfig::default();
+        let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+        let key_builder = KeyBuilder::new("test");
+        let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+        let mut user_service = UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            password_complexity,
+            token_blacklist,
+            key_builder,
+            brute_force,
+        );
+        user_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+        user_service
+    }
+
     fn make_playback_service_for_lifecycle_tests(
     ) -> (PlaybackService, Arc<CacheInvalidationService>) {
         let pool = PgPool::connect_lazy("postgres://localhost/test")
@@ -1618,10 +1779,12 @@ mod tests {
             permission_service.clone(),
             providers_manager,
         );
+        let user_service = make_user_service(pool.clone());
         let playback_service = PlaybackService::new(
             RoomPlaybackStateRepository::new(pool.clone()),
             permission_service,
             media_service,
+            user_service,
         );
         let invalidation_service = Arc::new(CacheInvalidationService::new(
             None,
@@ -1905,7 +2068,6 @@ mod tests {
                 PlaybackService::MAX_RETRIES
             );
         }
-
     }
 
     /// Tests for the CAS (compare-and-swap) version check in

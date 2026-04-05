@@ -142,7 +142,8 @@ impl CliConfigContext {
         };
 
         match cache.get_or_init(|| {
-            load_config_with_options(self.global.load_options(validate)).map_err(|error| error.to_string())
+            load_config_with_options(self.global.load_options(validate))
+                .map_err(|error| error.to_string())
         }) {
             Ok(config) => Ok(config.clone()),
             Err(error) => Err(anyhow!(error.clone())),
@@ -1544,8 +1545,10 @@ pub enum PlaylistSubcommand {
     Get(PlaylistGetArgs),
     /// Create a playlist as a specific real user
     Create(PlaylistCreateArgs),
-    /// Update playlist name or position
+    /// Update playlist name
     Update(PlaylistUpdateArgs),
+    /// Move a playlist before or after a sibling
+    Move(PlaylistMoveArgs),
     /// Delete a playlist
     Delete(PlaylistDeleteArgs),
 }
@@ -1625,9 +1628,21 @@ pub struct PlaylistUpdateArgs {
 
     #[arg(long)]
     pub name: Option<String>,
+}
 
-    #[arg(long)]
-    pub position: Option<i32>,
+#[derive(Debug, Args)]
+pub struct PlaylistMoveArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[arg(allow_hyphen_values = true)]
+    pub playlist_id: String,
+
+    #[arg(long, conflicts_with = "after_playlist_id")]
+    pub before_playlist_id: Option<String>,
+
+    #[arg(long, conflicts_with = "before_playlist_id")]
+    pub after_playlist_id: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1660,8 +1675,8 @@ pub enum MediaSubcommand {
     Update(MediaEditArgs),
     /// Delete a media item
     Delete(MediaDeleteArgs),
-    /// Reorder multiple media items in one request
-    Reorder(MediaReorderArgs),
+    /// Move a media item before or after a sibling
+    Move(MediaMoveArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1763,20 +1778,24 @@ pub struct MediaDeleteArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct MediaReorderArgs {
+#[command(group(
+    ArgGroup::new("media_move_anchor")
+        .args(["before_media_id", "after_media_id"])
+        .required(true)
+        .multiple(false)
+))]
+pub struct MediaMoveArgs {
     #[command(flatten)]
     pub room: RoomScopedRemoteArgs,
 
-    /// Reorder entry in media_id=position form. Repeat for multiple media items.
-    #[arg(
-        long = "update",
-        value_name = "MEDIA_ID=POSITION",
-        required = true,
-        num_args = 1,
-        action = ArgAction::Append,
-        allow_hyphen_values = true
-    )]
-    pub updates: Vec<String>,
+    #[arg(allow_hyphen_values = true)]
+    pub media_id: String,
+
+    #[arg(long, conflicts_with = "after_media_id")]
+    pub before_media_id: Option<String>,
+
+    #[arg(long, conflicts_with = "before_media_id")]
+    pub after_media_id: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -2140,6 +2159,7 @@ fn merge_playlist_command_globals(command: &mut PlaylistCommand, root: &GlobalCo
         PlaylistSubcommand::Get(args) => merge_room_scoped_remote_args(&mut args.room, root),
         PlaylistSubcommand::Create(args) => merge_room_scoped_remote_args(&mut args.room, root),
         PlaylistSubcommand::Update(args) => merge_room_scoped_remote_args(&mut args.room, root),
+        PlaylistSubcommand::Move(args) => merge_room_scoped_remote_args(&mut args.room, root),
         PlaylistSubcommand::Delete(args) => merge_room_scoped_remote_args(&mut args.room, root),
     }
 }
@@ -2151,7 +2171,7 @@ fn merge_media_command_globals(command: &mut MediaCommand, root: &GlobalConfigAr
         MediaSubcommand::AddUrl(args) => merge_room_scoped_remote_args(&mut args.room, root),
         MediaSubcommand::Update(args) => merge_room_scoped_remote_args(&mut args.room, root),
         MediaSubcommand::Delete(args) => merge_room_scoped_remote_args(&mut args.room, root),
-        MediaSubcommand::Reorder(args) => merge_room_scoped_remote_args(&mut args.room, root),
+        MediaSubcommand::Move(args) => merge_room_scoped_remote_args(&mut args.room, root),
     }
 }
 
@@ -3233,8 +3253,8 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
             args.room.remote.print_output(&response)
         }
         PlaylistSubcommand::Update(args) => {
-            if args.name.is_none() && args.position.is_none() {
-                bail!("playlist update requires at least one of --name or --position");
+            if args.name.is_none() {
+                bail!("playlist update requires --name");
             }
 
             let session = connect_remote_access(&args.room.remote).await?;
@@ -3246,7 +3266,29 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
                     room_id: args.room.room_id,
                     playlist_id: args.playlist_id,
                     name: args.name,
-                    position: args.position,
+                }
+            )?;
+            args.room.remote.print_output(&response)
+        }
+        PlaylistSubcommand::Move(args) => {
+            let session = connect_remote_access(&args.room.remote).await?;
+            let anchor = match (args.before_playlist_id, args.after_playlist_id) {
+                (Some(id), None) => Some(
+                    management_proto::move_playlist_request::Anchor::BeforePlaylistId(id),
+                ),
+                (None, Some(id)) => Some(
+                    management_proto::move_playlist_request::Anchor::AfterPlaylistId(id),
+                ),
+                _ => bail!("playlist move requires exactly one of --before-playlist-id or --after-playlist-id"),
+            };
+            let response = management_unary_call!(
+                session,
+                "move playlist",
+                move_playlist,
+                management_proto::MovePlaylistRequest {
+                    room_id: args.room.room_id,
+                    playlist_id: args.playlist_id,
+                    anchor,
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -3364,15 +3406,25 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
             )?;
             args.room.remote.print_output(&response)
         }
-        MediaSubcommand::Reorder(args) => {
+        MediaSubcommand::Move(args) => {
             let session = connect_remote_access(&args.room.remote).await?;
+            let anchor = match (args.before_media_id, args.after_media_id) {
+                (Some(id), None) => {
+                    Some(management_proto::move_media_request::Anchor::BeforeMediaId(id))
+                }
+                (None, Some(id)) => {
+                    Some(management_proto::move_media_request::Anchor::AfterMediaId(id))
+                }
+                _ => bail!("media move requires exactly one of --before-media-id or --after-media-id"),
+            };
             let response = management_unary_call!(
                 session,
-                "reorder media",
-                reorder_media_batch,
-                management_proto::ReorderMediaBatchRequest {
+                "move media",
+                move_media,
+                management_proto::MoveMediaRequest {
                     room_id: args.room.room_id,
-                    updates: parse_media_reorder_updates(&args.updates)?,
+                    media_id: args.media_id,
+                    anchor,
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -3653,7 +3705,10 @@ async fn management_stream_item<T>(
         .map_err(|status| format_management_status_error(operation, &status))
 }
 
-fn format_management_status_error(operation: &'static str, status: &tonic::Status) -> anyhow::Error {
+fn format_management_status_error(
+    operation: &'static str,
+    status: &tonic::Status,
+) -> anyhow::Error {
     let message = status.message().trim();
     let detail = if message.is_empty() {
         operation.to_string()
@@ -3662,7 +3717,9 @@ fn format_management_status_error(operation: &'static str, status: &tonic::Statu
     };
 
     let rendered = match status.code() {
-        tonic::Code::InvalidArgument => format!("management {operation} failed: invalid request: {detail}"),
+        tonic::Code::InvalidArgument => {
+            format!("management {operation} failed: invalid request: {detail}")
+        }
         tonic::Code::NotFound => format!("management {operation} failed: {detail}"),
         tonic::Code::AlreadyExists => format!("management {operation} failed: {detail}"),
         tonic::Code::PermissionDenied => {
@@ -3677,16 +3734,15 @@ fn format_management_status_error(operation: &'static str, status: &tonic::Statu
         tonic::Code::DeadlineExceeded => {
             format!("management {operation} failed: deadline exceeded: {detail}")
         }
-        tonic::Code::Aborted => format!("management {operation} failed: operation aborted: {detail}"),
+        tonic::Code::Aborted => {
+            format!("management {operation} failed: operation aborted: {detail}")
+        }
         tonic::Code::ResourceExhausted => {
             format!("management {operation} failed: resource exhausted: {detail}")
         }
         tonic::Code::Internal => format!("management {operation} failed: internal error"),
         tonic::Code::Unknown => format!("management {operation} failed: {detail}"),
-        _ => format!(
-            "management {operation} failed: {}: {detail}",
-            status.code()
-        ),
+        _ => format!("management {operation} failed: {}: {detail}", status.code()),
     };
 
     anyhow!(rendered)
@@ -3808,29 +3864,6 @@ fn parse_setting_entries(entries: &[String]) -> Result<std::collections::HashMap
         }
     }
     Ok(settings)
-}
-
-fn parse_media_reorder_updates(
-    entries: &[String],
-) -> Result<Vec<management_proto::MediaReorderUpdate>> {
-    let mut updates = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let Some((media_id, position)) = entry.split_once('=') else {
-            bail!("invalid --update entry '{entry}': expected media_id=position");
-        };
-        let media_id = media_id.trim();
-        if media_id.is_empty() {
-            bail!("invalid --update entry '{entry}': media_id must not be empty");
-        }
-        let position = position.trim().parse::<i32>().with_context(|| {
-            format!("invalid --update entry '{entry}': position must be an integer")
-        })?;
-        updates.push(management_proto::MediaReorderUpdate {
-            media_id: media_id.to_string(),
-            position,
-        });
-    }
-    Ok(updates)
 }
 
 fn validate_generic_media_add(args: &MediaAddArgs) -> Result<()> {
@@ -4214,7 +4247,7 @@ struct HumanPlaylist {
     room_id: String,
     name: String,
     parent_id: String,
-    position: i32,
+    position: f64,
     is_dynamic: bool,
     item_count: i32,
     created_at: String,
@@ -4228,7 +4261,7 @@ struct HumanMedia {
     provider: String,
     title: String,
     metadata: Value,
-    position: i32,
+    position: f64,
     added_at: String,
     added_by: String,
     provider_instance_name: String,
@@ -4984,6 +5017,16 @@ impl ToHuman for synctv_proto::client::UpdatePlaylistResponse {
     }
 }
 
+impl ToHuman for synctv_proto::client::MovePlaylistResponse {
+    type Human = HumanPlaylistResponse<HumanPlaylist>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanPlaylistResponse {
+            playlist: self.playlist.to_human(),
+        }
+    }
+}
+
 impl ToHuman for synctv_proto::client::GetPlaylistResponse {
     type Human = HumanGetPlaylistResponse<HumanPlaylist>;
 
@@ -5018,6 +5061,16 @@ impl ToHuman for synctv_proto::client::AddMediaResponse {
 }
 
 impl ToHuman for synctv_proto::client::EditMediaResponse {
+    type Human = HumanMediaResponse<HumanMedia>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanMediaResponse {
+            media: self.media.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::MoveMediaResponse {
     type Human = HumanMediaResponse<HumanMedia>;
 
     fn to_human(&self) -> Self::Human {
@@ -5120,9 +5173,7 @@ impl_identity_to_human!(
     synctv_proto::client::StopPlaybackResponse,
     synctv_proto::client::DeleteMediaResponse,
     synctv_proto::client::DeleteEntriesResponse,
-    synctv_proto::client::SwapMediaResponse,
-    synctv_proto::client::ClearPlaylistResponse,
-    synctv_proto::client::ReorderMediaBatchResponse
+    synctv_proto::client::ClearPlaylistResponse
 );
 
 #[cfg(test)]
@@ -6612,25 +6663,26 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_media_reorder_for_room_scope() {
+    fn cli_parses_media_move_for_room_scope() {
         let cli = Cli::parse_from([
             "synctv",
             "media",
-            "reorder",
+            "move",
             "--room-id",
             "room-123",
-            "--update",
-            "media-1=2",
-            "--update",
-            "media-2=1",
+            "--before-media-id",
+            "media-2",
+            "media-1",
         ]);
         match cli.command {
             Commands::Media(MediaCommand {
-                command: MediaSubcommand::Reorder(args),
+                command: MediaSubcommand::Move(args),
                 ..
             }) => {
                 assert_eq!(args.room.room_id, "room-123");
-                assert_eq!(args.updates, vec!["media-1=2", "media-2=1"]);
+                assert_eq!(args.media_id, "media-1");
+                assert_eq!(args.before_media_id.as_deref(), Some("media-2"));
+                assert!(args.after_media_id.is_none());
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -6676,78 +6728,75 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_media_reorder_updates() {
+    fn cli_parses_media_move_after_anchor() {
         let cli = Cli::parse_from([
             "synctv",
             "media",
-            "reorder",
+            "move",
             "--room-id",
             "room-123",
-            "--update",
-            "media-a=2",
-            "--update",
-            "media-b=1",
+            "--after-media-id",
+            "media-b",
+            "media-a",
         ]);
         match cli.command {
             Commands::Media(MediaCommand {
-                command: MediaSubcommand::Reorder(args),
+                command: MediaSubcommand::Move(args),
                 ..
             }) => {
                 assert_eq!(args.room.room_id, "room-123");
-                assert_eq!(args.updates, vec!["media-a=2", "media-b=1"]);
+                assert_eq!(args.media_id, "media-a");
+                assert_eq!(args.after_media_id.as_deref(), Some("media-b"));
+                assert!(args.before_media_id.is_none());
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
     }
 
     #[test]
-    fn cli_parses_media_reorder_updates_with_hyphen_prefixed_media_id() {
+    fn cli_parses_media_move_with_hyphen_prefixed_media_id() {
         let cli = Cli::try_parse_from([
             "synctv",
             "media",
-            "reorder",
+            "move",
             "--room-id",
             "room-123",
-            "--update",
-            "-99tNxdXRosK=0",
+            "--before-media-id",
+            "media-1",
+            "-99tNxdXRosK",
         ])
-        .expect("hyphen-prefixed media ids should be accepted as --update values");
+        .expect("hyphen-prefixed media ids should be accepted as positional media ids");
         match cli.command {
             Commands::Media(MediaCommand {
-                command: MediaSubcommand::Reorder(args),
+                command: MediaSubcommand::Move(args),
                 ..
             }) => {
                 assert_eq!(args.room.room_id, "room-123");
-                assert_eq!(args.updates, vec!["-99tNxdXRosK=0"]);
+                assert_eq!(args.media_id, "-99tNxdXRosK");
+                assert_eq!(args.before_media_id.as_deref(), Some("media-1"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
     }
 
     #[test]
-    fn cli_parses_repeated_media_reorder_updates_with_hyphen_prefixed_media_id() {
-        let cli = Cli::try_parse_from([
+    fn cli_rejects_media_move_without_anchor() {
+        let error = Cli::try_parse_from([
             "synctv",
             "media",
-            "reorder",
+            "move",
             "--room-id",
             "room-123",
-            "--update",
-            "-99tNxdXRosK=0",
-            "--update",
-            "media-1=1",
+            "media-1",
         ])
-        .expect("repeated --update entries should keep parsing after a hyphen-prefixed media id");
-        match cli.command {
-            Commands::Media(MediaCommand {
-                command: MediaSubcommand::Reorder(args),
-                ..
-            }) => {
-                assert_eq!(args.room.room_id, "room-123");
-                assert_eq!(args.updates, vec!["-99tNxdXRosK=0", "media-1=1"]);
-            }
-            other => panic!("unexpected command parsed: {other:?}"),
-        }
+        .expect_err("move should require one anchor flag");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("--before-media-id")
+                || rendered.contains("--after-media-id")
+                || rendered.contains("required"),
+            "unexpected error: {rendered}"
+        );
     }
 
     #[test]
@@ -6778,16 +6827,6 @@ mod tests {
             error
                 .to_string()
                 .contains("--provider-instance-name is required"),
-            "unexpected error: {error:#}"
-        );
-    }
-
-    #[test]
-    fn parse_media_reorder_updates_rejects_invalid_positions() {
-        let error = parse_media_reorder_updates(&["media-a=not-an-int".to_string()])
-            .expect_err("invalid reorder position should fail");
-        assert!(
-            error.to_string().contains("position must be an integer"),
             "unexpected error: {error:#}"
         );
     }

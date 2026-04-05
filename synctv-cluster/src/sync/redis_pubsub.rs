@@ -1814,6 +1814,7 @@ impl RedisPubSub {
                 ClusterEvent::KickPublisher { .. }
                     | ClusterEvent::KickUserFromRoom { .. }
                     | ClusterEvent::RoomBanned { .. }
+                    | ClusterEvent::RoomOwnerInactive { .. }
                     | ClusterEvent::UserLeft { .. }
             ) {
                 let _ = self.admin_event_tx.send(event.clone());
@@ -1840,7 +1841,8 @@ impl RedisPubSub {
                     }
                     ClusterEvent::RoomSettingsChanged { .. }
                     | ClusterEvent::RoomDeleted { .. }
-                    | ClusterEvent::RoomBanned { .. } => {
+                    | ClusterEvent::RoomBanned { .. }
+                    | ClusterEvent::RoomOwnerInactive { .. } => {
                         perm_svc.invalidate_room_cache(&room_id).await;
                         debug!(
                             room_id = %room_id.as_str(),
@@ -1862,7 +1864,9 @@ impl RedisPubSub {
                             room_id: room_id.as_str().to_string(),
                         }]);
                     }
-                    ClusterEvent::RoomDeleted { .. } | ClusterEvent::RoomBanned { .. } => {
+                    ClusterEvent::RoomDeleted { .. }
+                    | ClusterEvent::RoomBanned { .. }
+                    | ClusterEvent::RoomOwnerInactive { .. } => {
                         // Invalidate both room cache and playback state cache
                         self.invalidate_cache_targets(&[CacheTarget::Room {
                             room_id: room_id.as_str().to_string(),
@@ -1894,7 +1898,9 @@ impl RedisPubSub {
             // even though the room cleanup proceeds.
             if matches!(
                 &event,
-                ClusterEvent::RoomDeleted { .. } | ClusterEvent::RoomBanned { .. }
+                ClusterEvent::RoomDeleted { .. }
+                    | ClusterEvent::RoomBanned { .. }
+                    | ClusterEvent::RoomOwnerInactive { .. }
             ) {
                 let sent_count = self.message_hub.broadcast_reliably(&room_id, event).await;
                 // Remove all local subscriptions for the deleted room

@@ -319,19 +319,36 @@ impl CleanupService {
     /// Permanently delete rooms that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_rooms(&self) -> Result<u64> {
         let days = self.config.room_soft_delete_retention_days as i32;
-        let result = sqlx::query(
+        let room_ids: Vec<crate::models::RoomId> = sqlx::query_scalar(
             r"
-            DELETE FROM rooms
+            SELECT id
+            FROM rooms
             WHERE deleted_at IS NOT NULL
               AND deleted_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
+            ORDER BY deleted_at ASC, id ASC
             ",
         )
         .bind(days)
-        .execute(&self.pool)
+        .fetch_all(&self.pool)
         .await
-        .internal_with_err("Failed to purge soft-deleted rooms")?;
+        .internal_with_err("Failed to list soft-deleted rooms for purge")?;
 
-        Ok(result.rows_affected())
+        let mut purged = 0u64;
+        for room_id in room_ids {
+            let mut tx = self.pool.begin().await?;
+            let deleted =
+                crate::service::room::hard_delete_room_and_cleanup_in_tx(&mut tx, &room_id)
+                    .await
+                    .internal_with_err("Failed to clean up room dependencies during purge")?;
+            tx.commit()
+                .await
+                .internal_with_err("Failed to commit room purge transaction")?;
+            if deleted {
+                purged += 1;
+            }
+        }
+
+        Ok(purged)
     }
 
     /// Delete email tokens that expired beyond the retention period

@@ -47,7 +47,13 @@ pub struct AddMediaRequest {
 pub struct EditMediaRequest {
     pub media_id: MediaId,
     pub name: Option<String>,
-    pub position: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MoveMediaRequest {
+    pub media_id: MediaId,
+    pub before_media_id: Option<MediaId>,
+    pub after_media_id: Option<MediaId>,
 }
 
 /// Media management service
@@ -249,7 +255,7 @@ impl MediaService {
         // Get next position in playlist (locked with FOR UPDATE)
         let position = self
             .media_repo
-            .get_next_position_with_tx(&room_id, request.playlist_id.as_ref(), &mut tx)
+            .get_next_append_position_with_tx(&room_id, request.playlist_id.as_ref(), &mut tx)
             .await?;
 
         // Create media with provider info (no enum conversion needed)
@@ -369,7 +375,7 @@ impl MediaService {
         let mut tx = self.media_repo.pool().begin().await?;
         let position = self
             .media_repo
-            .get_next_position_with_tx(&room_id, request.playlist_id.as_ref(), &mut tx)
+            .get_next_append_position_with_tx(&room_id, request.playlist_id.as_ref(), &mut tx)
             .await?;
 
         let media = Media::from_provider(
@@ -516,7 +522,7 @@ impl MediaService {
         // Get starting position (locked with FOR UPDATE)
         let start_position = self
             .media_repo
-            .get_next_position_with_tx(&room_id, playlist_id.as_ref(), &mut tx)
+            .get_next_append_position_with_tx(&room_id, playlist_id.as_ref(), &mut tx)
             .await?;
 
         // Create media items with provider info
@@ -532,7 +538,7 @@ impl MediaService {
                 prepared_source_config,
                 provider.name(),             // Provider type name
                 item.provider_instance_name, // Instance name
-                start_position + i32::try_from(index).unwrap_or(i32::MAX),
+                start_position + 1024.0 * (index as f64),
             );
             media_items.push(media);
         }
@@ -626,10 +632,6 @@ impl MediaService {
             if let Some(ref name) = request.name {
                 media.name = name.clone();
             }
-            if let Some(position) = request.position {
-                media.position = position;
-            }
-
             // Conditional update: only succeed if no other edit changed the row
             match self
                 .media_repo
@@ -718,10 +720,6 @@ impl MediaService {
             if let Some(ref name) = request.name {
                 media.name = name.clone();
             }
-            if let Some(position) = request.position {
-                media.position = position;
-            }
-
             match self
                 .media_repo
                 .update_with_version(&media, expected_version)
@@ -928,62 +926,6 @@ impl MediaService {
             .await
     }
 
-    /// Swap positions of two media items
-    pub async fn swap_media_positions(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        media_id1: MediaId,
-        media_id2: MediaId,
-    ) -> Result<()> {
-        // Check permission (use no_cache to ensure fresh permissions)
-        self.permission_service
-            .check_permission_no_cache(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
-            .await?;
-
-        // Use a single transaction for both verification and swap to prevent
-        // TOCTOU races where a media item could move between rooms between
-        // the ownership check and the position swap.
-        let mut tx = self.media_repo.pool().begin().await?;
-
-        // Verify both media exist and belong to the room (inside transaction)
-        let media_ids = vec![media_id1.clone(), media_id2.clone()];
-        let media_items = self
-            .media_repo
-            .get_by_ids_with_executor(&media_ids, &mut *tx)
-            .await?;
-
-        if media_items.len() != 2 {
-            return Err(Error::NotFound(
-                "One or more media items not found".to_string(),
-            ));
-        }
-
-        for media in &media_items {
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
-        }
-
-        // Swap positions within the same transaction
-        self.media_repo
-            .swap_positions_with_tx(&media_id1, &media_id2, &mut tx)
-            .await?;
-
-        tx.commit().await?;
-
-        tracing::info!(
-            room_id = %room_id.as_str(),
-            media_id1 = %media_id1.as_str(),
-            media_id2 = %media_id2.as_str(),
-            "Media positions swapped"
-        );
-
-        Ok(())
-    }
-
     /// Bulk remove media from playlist
     ///
     /// Removes multiple media items in a single transaction.
@@ -1103,152 +1045,86 @@ impl MediaService {
         Ok(deleted_count)
     }
 
-    /// Bulk reorder media items
-    ///
-    /// Reorders multiple media items to new positions in a single transaction.
-    /// Uses a single batch query to verify room ownership instead of N individual queries.
-    /// Both verification and reorder happen inside a single transaction to prevent
-    /// TOCTOU races where a media item could move between rooms.
-    ///
-    /// # Position Validation
-    ///
-    /// Positions must be non-negative (>= 0). Negative positions are rejected
-    /// with `Error::InvalidInput` before any database operations.
-    pub async fn reorder_media_batch(
+    pub async fn move_media(
         &self,
         room_id: RoomId,
         user_id: UserId,
-        updates: Vec<(MediaId, i32)>,
-    ) -> Result<()> {
-        // Check permission
-        self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
-            .await?;
-
-        if updates.is_empty() {
-            return Ok(());
-        }
-
-        if updates.len() > MAX_BATCH_SIZE {
-            return Err(Error::InvalidInput(format!(
-                "Batch size exceeds maximum of {MAX_BATCH_SIZE}"
-            )));
-        }
-
-        // Validate all positions are non-negative
-        for (media_id, position) in &updates {
-            if *position < 0 {
-                return Err(Error::InvalidInput(format!(
-                    "Invalid position {} for media {}: position must be non-negative",
-                    position,
-                    media_id.as_str()
-                )));
-            }
-        }
-
-        // Use a single transaction for both verification and reorder to prevent
-        // TOCTOU races where a media item could move between rooms.
-        let mut tx = self.media_repo.pool().begin().await?;
-
-        // Batch-load all media in a single query to verify room ownership (inside transaction)
-        let media_ids: Vec<MediaId> = updates.iter().map(|(id, _)| id.clone()).collect();
-        let media_items = self
-            .media_repo
-            .get_by_ids_with_executor(&media_ids, &mut *tx)
-            .await?;
-
-        if media_items.len() != updates.len() {
-            return Err(Error::NotFound(
-                "One or more media items not found".to_string(),
-            ));
-        }
-
-        for media in &media_items {
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
-        }
-
-        // Bulk reorder within the same transaction
-        self.media_repo
-            .reorder_batch_with_tx(&updates, &mut tx)
-            .await?;
-
-        tx.commit().await?;
-
-        tracing::info!(
-            room_id = %room_id.as_str(),
-            count = updates.len(),
-            "Bulk reordered media in playlist"
-        );
-
-        Ok(())
+        request: MoveMediaRequest,
+    ) -> Result<Media> {
+        self.move_media_internal(room_id, user_id, request, false).await
     }
 
-    /// Bulk reorder media items as a global admin.
-    pub async fn admin_reorder_media_batch(
+    pub async fn admin_move_media(
         &self,
         room_id: RoomId,
         admin_user_id: UserId,
-        updates: Vec<(MediaId, i32)>,
-    ) -> Result<()> {
-        if updates.is_empty() {
-            return Ok(());
+        request: MoveMediaRequest,
+    ) -> Result<Media> {
+        self.move_media_internal(room_id, admin_user_id, request, true)
+            .await
+    }
+
+    async fn move_media_internal(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: MoveMediaRequest,
+        bypass_room_permissions: bool,
+    ) -> Result<Media> {
+        if !bypass_room_permissions {
+            self.permission_service
+                .check_permission_no_cache(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
+                .await?;
         }
 
-        if updates.len() > MAX_BATCH_SIZE {
-            return Err(Error::InvalidInput(format!(
-                "Batch size exceeds maximum of {MAX_BATCH_SIZE}"
-            )));
-        }
-
-        for (media_id, position) in &updates {
-            if *position < 0 {
-                return Err(Error::InvalidInput(format!(
-                    "Invalid position {} for media {}: position must be non-negative",
-                    position,
-                    media_id.as_str()
-                )));
-            }
-        }
-
-        let mut tx = self.media_repo.pool().begin().await?;
-        let media_ids: Vec<MediaId> = updates.iter().map(|(id, _)| id.clone()).collect();
-        let media_items = self
-            .media_repo
-            .get_by_ids_with_executor(&media_ids, &mut *tx)
-            .await?;
-
-        if media_items.len() != updates.len() {
-            return Err(Error::NotFound(
-                "One or more media items not found".to_string(),
+        let has_before = request.before_media_id.is_some();
+        let has_after = request.after_media_id.is_some();
+        if has_before == has_after {
+            return Err(Error::InvalidInput(
+                "Exactly one of before_media_id or after_media_id must be set".to_string(),
             ));
         }
 
-        for media in &media_items {
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
-        }
-
-        self.media_repo
-            .reorder_batch_with_tx(&updates, &mut tx)
+        let mut tx = self.media_repo.pool().begin().await?;
+        let moved = self
+            .media_repo
+            .move_with_tx(
+                &request.media_id,
+                request.before_media_id.as_ref(),
+                request.after_media_id.as_ref(),
+                &mut tx,
+            )
             .await?;
+
+        if moved.room_id != room_id {
+            return Err(Error::Authorization(
+                "Media does not belong to this room".to_string(),
+            ));
+        }
 
         tx.commit().await?;
 
         tracing::info!(
             room_id = %room_id.as_str(),
-            admin_user_id = %admin_user_id.as_str(),
-            count = updates.len(),
-            "Bulk reordered media in playlist by admin"
+            media_id = %moved.id.as_str(),
+            position = moved.position,
+            "Media moved"
         );
 
-        Ok(())
+        if let Some(ref ns) = self.notification_service {
+            if let Err(e) = ns
+                .notify_media_updated(&room_id, moved.id.as_str(), &moved.name, moved.position)
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    "Failed to broadcast media moved event"
+                );
+            }
+        }
+
+        Ok(moved)
     }
 
     /// List dynamic playlist items as a global admin.
@@ -1360,6 +1236,10 @@ impl MediaService {
         self.media_repo.count_by_playlist(playlist_id).await
     }
 
+    pub async fn count_playlist_media_accessible(&self, playlist_id: &PlaylistId) -> Result<i64> {
+        self.media_repo.count_by_playlist_accessible(playlist_id).await
+    }
+
     pub async fn count_room_root_media(&self, room_id: &RoomId) -> Result<i64> {
         self.media_repo.count_room_root(room_id).await
     }
@@ -1370,6 +1250,15 @@ impl MediaService {
         playlist_ids: &[&str],
     ) -> Result<std::collections::HashMap<String, i64>> {
         self.media_repo.count_by_playlists_batch(playlist_ids).await
+    }
+
+    pub async fn count_playlist_media_batch_accessible(
+        &self,
+        playlist_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, i64>> {
+        self.media_repo
+            .count_by_playlists_batch_accessible(playlist_ids)
+            .await
     }
 
     /// List dynamic playlist items
@@ -1603,7 +1492,7 @@ impl MediaService {
             room_id: room_id.clone(),
             creator_id: None,
             name: format!("dynamic:{playlist_id}"),
-            position: 0,
+            position: 0.0,
             source_provider: provider_name.clone(),
             source_config: serde_json::Value::Null,
             provider_instance_name,
@@ -1676,35 +1565,33 @@ mod tests {
         let request = EditMediaRequest {
             media_id: MediaId::new(),
             name: Some("New Name".to_string()),
-            position: None,
         };
 
         assert_eq!(request.name, Some("New Name".to_string()));
-        assert!(request.position.is_none());
     }
 
     #[test]
-    fn test_edit_media_request_position_only() {
-        let request = EditMediaRequest {
+    fn test_move_media_request_before_anchor() {
+        let request = MoveMediaRequest {
             media_id: MediaId::new(),
-            name: None,
-            position: Some(5),
+            before_media_id: Some(MediaId::new()),
+            after_media_id: None,
         };
 
-        assert!(request.name.is_none());
-        assert_eq!(request.position, Some(5));
+        assert!(request.before_media_id.is_some());
+        assert!(request.after_media_id.is_none());
     }
 
     #[test]
-    fn test_edit_media_request_both_fields() {
-        let request = EditMediaRequest {
+    fn test_move_media_request_after_anchor() {
+        let request = MoveMediaRequest {
             media_id: MediaId::new(),
-            name: Some("Updated".to_string()),
-            position: Some(10),
+            before_media_id: None,
+            after_media_id: Some(MediaId::new()),
         };
 
-        assert_eq!(request.name, Some("Updated".to_string()));
-        assert_eq!(request.position, Some(10));
+        assert!(request.before_media_id.is_none());
+        assert!(request.after_media_id.is_some());
     }
 
     // ========== Batch Size Validation ==========

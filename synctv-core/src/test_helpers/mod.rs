@@ -280,7 +280,7 @@ pub struct PlaylistFixture {
     creator_id: Option<UserId>,
     name: String,
     parent_id: Option<PlaylistId>,
-    position: i32,
+    position: f64,
 }
 
 impl PlaylistFixture {
@@ -293,7 +293,7 @@ impl PlaylistFixture {
             creator_id: None,
             name: String::new(),
             parent_id: None,
-            position: -1, // Use auto-position (negative triggers MAX+1 logic in create)
+            position: 0.0,
         }
     }
 
@@ -305,7 +305,7 @@ impl PlaylistFixture {
             creator_id: None,
             name: format!("playlist_{}", synctv_common::snanoid!(8)),
             parent_id: Some(parent_id),
-            position: -1, // Use auto-position (negative triggers MAX+1 logic in create)
+            position: 0.0,
         }
     }
 
@@ -341,8 +341,8 @@ impl PlaylistFixture {
     }
 
     #[must_use]
-    pub fn with_position(mut self, position: i32) -> Self {
-        self.position = position;
+    pub fn with_position(mut self, position: impl Into<f64>) -> Self {
+        self.position = position.into();
         self
     }
 

@@ -8,16 +8,19 @@ CREATE TABLE IF NOT EXISTS media (
     playlist_id CHAR(12),
 
     -- ========== Basic information ==========
-    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-    creator_id CHAR(12) REFERENCES users(id) ON DELETE SET NULL,
+    -- Room deletion is application-orchestrated: media must be explicitly
+    -- deleted before a room row can be hard-deleted.
+    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
+    -- User deletion is application-orchestrated: media must be explicitly
+    -- deleted or reassigned before a user row can be hard-deleted.
+    creator_id CHAR(12) REFERENCES users(id) ON DELETE RESTRICT,
 
     -- Media display name
     name VARCHAR(255) NOT NULL,
 
     -- Sort position (within playlist).
-    -- No DEFAULT: callers must always compute the next position via MAX+1
-    -- to avoid UNIQUE constraint violations on concurrent inserts.
-    position INTEGER NOT NULL,
+    -- Floating-point gaps allow single-row reordering between siblings.
+    position DOUBLE PRECISION NOT NULL,
 
     -- ========== Video source type (string for flexibility) ==========
     source_provider VARCHAR(64) NOT NULL DEFAULT 'direct_url',
@@ -40,20 +43,12 @@ CREATE TABLE IF NOT EXISTS media (
     CONSTRAINT media_playlist_same_room_fk
         FOREIGN KEY (playlist_id, room_id)
         REFERENCES playlists(id, room_id)
-        ON DELETE CASCADE
+        ON DELETE RESTRICT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_media_id_room_unique ON media(id, room_id);
 
 -- Unique index: prevent duplicate positions within the same playlist
-CREATE UNIQUE INDEX IF NOT EXISTS unique_media_position ON media (playlist_id, position);
-
--- Root-level media also need unique positions within a room because NULL values
--- are not covered by the composite unique index above.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_media_unique_root_position
-    ON media(room_id, position)
-    WHERE playlist_id IS NULL;
-
 -- Create indexes
 CREATE INDEX idx_media_room ON media(room_id);
 CREATE INDEX idx_media_creator ON media(creator_id);
@@ -62,15 +57,17 @@ CREATE INDEX idx_media_source_provider ON media(source_provider);
 CREATE INDEX idx_media_provider_name ON media(provider_instance_name);
 CREATE INDEX idx_media_source_config ON media USING gin(source_config);
 
--- Performance optimization: covering index for playlist queries
-CREATE INDEX idx_media_playlist_covering ON media(playlist_id, position, source_provider, name);
+-- Performance optimization: ordered covering indexes for playlist queries
+CREATE INDEX idx_media_playlist_covering ON media(playlist_id, position, id, source_provider, name);
+CREATE INDEX idx_media_room_root_covering ON media(room_id, position, id, source_provider, name)
+    WHERE playlist_id IS NULL;
 
 -- Comments
 COMMENT ON TABLE media IS 'Media items (videos/audio) in playlists';
 COMMENT ON COLUMN media.id IS '12-character base62 ID';
 COMMENT ON COLUMN media.playlist_id IS 'Associated playlist (directory). NULL means the media is directly under the room root.';
 COMMENT ON COLUMN media.name IS 'Media display name. It is not a routing key or unique path segment.';
-COMMENT ON COLUMN media.position IS 'Position in playlist (0-indexed)';
+COMMENT ON COLUMN media.position IS 'Floating-point order position within the playlist scope';
 COMMENT ON COLUMN media.source_provider IS 'Media provider type name (e.g., "bilibili", "alist", "emby", "direct_url")';
 COMMENT ON COLUMN media.source_config IS 'Media provider-specific configuration (persistent)';
 COMMENT ON COLUMN media.provider_instance_name IS 'Media provider instance name for registry lookup (e.g., "bilibili_main"). Always required.';

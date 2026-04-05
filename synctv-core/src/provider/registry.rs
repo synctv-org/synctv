@@ -536,5 +536,4 @@ mod tests {
             .unwrap();
         assert!(registry.get_instance("recreate_test").is_some());
     }
-
 }

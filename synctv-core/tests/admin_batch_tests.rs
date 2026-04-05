@@ -1,6 +1,6 @@
 //! Admin batch operations tests
 //!
-//! Tests batch ban/delete operations for users and rooms.
+//! Tests batch delete operations for users.
 //!
 //! Run with: cargo test --package synctv-core `admin_batch`
 #![allow(clippy::unwrap_used)]
@@ -11,12 +11,11 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{UserId, UserStatus},
+    models::UserId,
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         InMemoryTokenBlacklistStore, UserService,
     },
-    Error,
 };
 use synctv_core_testing::create_test_pool;
 const BATCH_SIZE_LIMIT: usize = 100;
@@ -69,148 +68,6 @@ async fn create_test_users(service: &UserService, count: usize, prefix: &str) ->
         user_ids.push(user.id);
     }
     user_ids
-}
-
-// ============================================================================
-// Batch Ban Users Tests
-// ============================================================================
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn batch_ban_users_succeeds() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
-
-    // Create 5 test users
-    let user_ids = create_test_users(&service, 5, "batch_ban").await;
-    let user_id_strs: Vec<String> = user_ids
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect();
-
-    // Ban all 5 users
-    let result = service.batch_ban_users(&user_id_strs).await;
-    assert!(result.is_ok(), "Batch ban should succeed: {result:?}");
-
-    // Verify all users are banned
-    for user_id in &user_ids {
-        let user = service.get_user(user_id).await.expect("User should exist");
-        assert_eq!(
-            user.status,
-            UserStatus::Banned,
-            "User {user_id} should be banned"
-        );
-    }
-}
-
-#[tokio::test]
-async fn batch_ban_users_exceeds_limit_fails() {
-    let service = create_user_service(create_lazy_pool());
-
-    // The size limit check happens before any DB operations, so we don't need
-    // to create real users -- fake IDs are enough to trigger the validation.
-    let user_id_strs: Vec<String> = (0..=BATCH_SIZE_LIMIT)
-        .map(|i| format!("fake_user_{i}"))
-        .collect();
-
-    // Attempt to ban more than limit
-    let result = service.batch_ban_users(&user_id_strs).await;
-    assert!(
-        result.is_err(),
-        "Batch ban should fail when exceeding limit"
-    );
-
-    match result {
-        Err(Error::InvalidInput(msg)) => {
-            assert!(
-                msg.contains("exceeds limit"),
-                "Error message should mention limit"
-            );
-        }
-        _ => panic!("Expected InvalidInput error"),
-    }
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn batch_ban_users_already_banned_skipped() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
-
-    // Create 3 test users
-    let user_ids = create_test_users(&service, 3, "batch_ban_skip").await;
-
-    // Ban the first user beforehand
-    let mut user = service
-        .get_user(&user_ids[0])
-        .await
-        .expect("User should exist");
-    user.status = UserStatus::Banned;
-    let old_version = user.version;
-    service
-        .update_user(&user, old_version)
-        .await
-        .expect("Update should succeed");
-
-    // Ban all users (first is already banned)
-    let user_id_strs: Vec<String> = user_ids
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect();
-    let result = service.batch_ban_users(&user_id_strs).await;
-    assert!(result.is_ok(), "Batch ban should succeed: {result:?}");
-
-    // Verify all users are banned
-    for user_id in &user_ids {
-        let user = service.get_user(user_id).await.expect("User should exist");
-        assert_eq!(
-            user.status,
-            UserStatus::Banned,
-            "User {user_id} should be banned"
-        );
-    }
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn batch_ban_users_nonexistent_user_fails() {
-    let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
-
-    // Create 2 test users
-    let user_ids = create_test_users(&service, 2, "batch_ban_nonexist").await;
-    let mut user_id_strs: Vec<String> = user_ids
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect();
-
-    // Add a non-existent user ID
-    user_id_strs.push("nonexistent_user_id".to_string());
-
-    // Attempt batch ban – the overall call succeeds but individual results
-    // report per-user success/failure.
-    let results = service
-        .batch_ban_users(&user_id_strs)
-        .await
-        .expect("batch_ban_users returns Ok with per-user results");
-
-    // The two real users should succeed
-    let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
-    let err_count = results.iter().filter(|(_, r)| r.is_err()).count();
-    assert_eq!(ok_count, 2, "Two real users should be banned successfully");
-    assert_eq!(err_count, 1, "Non-existent user should fail");
-
-    // Verify the failing entry is the non-existent user
-    let failed: Vec<_> = results.iter().filter(|(_, r)| r.is_err()).collect();
-    assert_eq!(failed[0].0, "nonexistent_user_id");
-}
-
-#[tokio::test]
-async fn batch_ban_users_empty_list_fails() {
-    let service = create_user_service(create_lazy_pool());
-
-    let result = service.batch_ban_users(&[]).await;
-    assert!(result.is_err(), "Batch ban should fail with empty list");
 }
 
 // ============================================================================

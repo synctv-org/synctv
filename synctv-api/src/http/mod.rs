@@ -442,12 +442,8 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
             post(room::push_media_batch),
         )
         .route(
-            "/api/rooms/{room_id}/media/reorder",
-            post(room::reorder_media_batch),
-        )
-        .route(
-            "/api/rooms/{room_id}/media/swap",
-            post(room::swap_media_items),
+            "/api/rooms/{room_id}/media/move",
+            post(room::move_media),
         )
         .route(
             "/api/rooms/{room_id}/media/{media_id}",
@@ -529,6 +525,10 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route(
             "/api/rooms/{room_id}/playlists/{playlist_id}",
             axum::routing::patch(room::update_playlist),
+        )
+        .route(
+            "/api/rooms/{room_id}/playlists/{playlist_id}/move",
+            post(room::move_playlist),
         )
         .route(
             "/api/rooms/{room_id}/playlists/{playlist_id}",
@@ -2301,7 +2301,7 @@ mod tests {
             .await
             .expect("response");
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -2321,7 +2321,7 @@ mod tests {
             .await
             .expect("response");
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]

@@ -2,7 +2,10 @@
 //
 // Database access layer for provider instance configuration management.
 
-use crate::models::{ProviderInstance, UserProviderCredential};
+use crate::models::{
+    ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy,
+    UserProviderCredential,
+};
 use crate::service::CredentialEncryption;
 use crate::Result;
 use sqlx::PgPool;
@@ -26,6 +29,63 @@ impl std::fmt::Debug for ProviderInstanceRepository {
 }
 
 impl ProviderInstanceRepository {
+    fn build_order_by(query: &ProviderInstanceListQuery) -> String {
+        let direction = query.sort_direction.as_sql();
+        match query.sort_by {
+            ProviderInstanceListSortBy::Name => format!("name {direction}, created_at {direction}"),
+            ProviderInstanceListSortBy::Endpoint => {
+                format!("endpoint {direction}, created_at {direction}")
+            }
+            ProviderInstanceListSortBy::UpdatedAt => {
+                format!("updated_at {direction}, name {direction}")
+            }
+            ProviderInstanceListSortBy::CreatedAt => {
+                format!("created_at {direction}, name {direction}")
+            }
+        }
+    }
+
+    fn push_list_filters(
+        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        query: &ProviderInstanceListQuery,
+    ) {
+        builder.push(" WHERE TRUE");
+
+        if let Some(provider_type) = &query.provider_type {
+            builder.push(" AND ");
+            builder.push_bind(provider_type.clone());
+            builder.push(" = ANY(providers)");
+        }
+        if let Some(enabled) = query.enabled {
+            builder.push(" AND enabled = ");
+            builder.push_bind(enabled);
+        }
+        if let Some(tls) = query.tls {
+            builder.push(" AND tls = ");
+            builder.push_bind(tls);
+        }
+        if let Some(search) = &query.search {
+            let pattern = format!("%{}%", super::query_builder::escape_ilike(search));
+            builder.push(
+                " AND (name ILIKE ",
+            );
+            builder.push_bind(pattern.clone());
+            builder.push(
+                " ESCAPE '\\' OR endpoint ILIKE ",
+            );
+            builder.push_bind(pattern.clone());
+            builder.push(
+                " ESCAPE '\\' OR COALESCE(comment, '') ILIKE ",
+            );
+            builder.push_bind(pattern.clone());
+            builder.push(
+                " ESCAPE '\\' OR array_to_string(providers, ' ') ILIKE ",
+            );
+            builder.push_bind(pattern);
+            builder.push(" ESCAPE '\\')");
+        }
+    }
+
     fn sensitive_fields_present(instance: &ProviderInstance) -> bool {
         instance
             .jwt_secret
@@ -143,6 +203,26 @@ impl ProviderInstanceRepository {
             Some(i) => Ok(Some(self.decrypt_instance(i)?)),
             None => Ok(None),
         }
+    }
+
+    pub async fn list(&self, query: &ProviderInstanceListQuery) -> Result<Vec<ProviderInstance>> {
+        let limit = query.pagination.limit() as i64;
+        let offset = query.pagination.offset() as i64;
+
+        let mut builder =
+            sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT * FROM media_provider_instances");
+        Self::push_list_filters(&mut builder, query);
+        let order_by = Self::build_order_by(query);
+        builder.push(format!(" ORDER BY {order_by} LIMIT "));
+        builder.push_bind(limit);
+        builder.push(" OFFSET ");
+        builder.push_bind(offset);
+
+        let instances = builder
+            .build_query_as::<ProviderInstance>()
+            .fetch_all(&self.pool)
+            .await?;
+        self.decrypt_instances(instances)
     }
 
     /// Get instances that support a specific provider type (sensitive fields decrypted)

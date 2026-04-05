@@ -64,6 +64,7 @@ pub struct PlaylistListQuery {
     pub source_provider: Option<String>,
     pub provider_instance_name: Option<String>,
     pub dynamic_only: Option<bool>,
+    pub availability: Option<bool>,
     #[serde(default)]
     pub sort_by: PlaylistListSortBy,
     #[serde(default)]
@@ -78,6 +79,7 @@ impl Default for PlaylistListQuery {
             source_provider: None,
             provider_instance_name: None,
             dynamic_only: None,
+            availability: None,
             sort_by: PlaylistListSortBy::Position,
             sort_direction: SortDirection::Asc,
         }
@@ -92,7 +94,7 @@ pub struct Playlist {
     pub creator_id: Option<UserId>,
     pub name: String,
     pub parent_id: Option<PlaylistId>,
-    pub position: i32,
+    pub position: f64,
 
     // Dynamic folder fields
     /// Provider type name for dynamic folders (e.g., "alist", "emby")
@@ -134,7 +136,6 @@ pub struct CreatePlaylistRequest {
     pub room_id: RoomId,
     pub name: String,
     pub parent_id: Option<PlaylistId>,
-    pub position: Option<i32>,
 
     // Dynamic folder fields
     pub source_provider: Option<String>,
@@ -146,7 +147,6 @@ pub struct CreatePlaylistRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdatePlaylistRequest {
     pub name: Option<String>,
-    pub position: Option<i32>,
 }
 
 /// Playlist with media count (for efficient queries)
@@ -174,7 +174,7 @@ mod tests {
             creator_id: Some(UserId("user_001".to_string())),
             name: name.to_string(),
             parent_id,
-            position: 0,
+            position: 0.0,
             source_provider,
             source_config: None,
             provider_instance_name: None,
@@ -230,7 +230,6 @@ mod tests {
             "room_id": "room_123",
             "name": "My Playlist",
             "parent_id": "pl_parent",
-            "position": 5,
             "source_provider": "alist",
             "source_config": {"path": "/videos"},
             "provider_instance_name": "my_alist"
@@ -239,7 +238,6 @@ mod tests {
         assert_eq!(req.room_id.as_str(), "room_123");
         assert_eq!(req.name, "My Playlist");
         assert_eq!(req.parent_id.as_ref().unwrap().as_str(), "pl_parent");
-        assert_eq!(req.position, Some(5));
         assert_eq!(req.source_provider.as_deref(), Some("alist"));
     }
 
@@ -251,7 +249,6 @@ mod tests {
         });
         let req: CreatePlaylistRequest = serde_json::from_value(json).unwrap();
         assert!(req.parent_id.is_none());
-        assert!(req.position.is_none());
         assert!(req.source_provider.is_none());
         assert!(req.source_config.is_none());
     }
@@ -263,7 +260,6 @@ mod tests {
         });
         let req: UpdatePlaylistRequest = serde_json::from_value(json).unwrap();
         assert_eq!(req.name.as_deref(), Some("Renamed"));
-        assert!(req.position.is_none());
     }
 
     #[test]

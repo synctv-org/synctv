@@ -161,7 +161,11 @@ fn map_jwt_error(e: jsonwebtoken::errors::Error, context: &str) -> Error {
         jsonwebtoken::errors::ErrorKind::InvalidSignature => {
             Error::Authentication(format!("Invalid {} signature", context.to_lowercase()))
         }
-        _ => Error::Authentication(format!("{context} verification failed: {e}")),
+        _ => {
+            tracing::warn!(context, error = %e, "JWT verification failed");
+            let context = context.to_lowercase();
+            Error::Authentication(format!("Invalid or expired {context}"))
+        }
     }
 }
 
@@ -1065,6 +1069,32 @@ mod tests {
 
         let result = jwt.verify_token(&token);
         assert!(result.is_err(), "Expired token should be rejected");
+    }
+
+    #[test]
+    fn test_map_jwt_error_hides_unexpected_verification_details_for_tokens() {
+        let error = map_jwt_error(
+            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidIssuer),
+            "Token",
+        );
+
+        assert!(matches!(
+            error,
+            Error::Authentication(ref message) if message == "Invalid or expired token"
+        ));
+    }
+
+    #[test]
+    fn test_map_jwt_error_hides_unexpected_verification_details_for_guest_tokens() {
+        let error = map_jwt_error(
+            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidAudience),
+            "Guest token",
+        );
+
+        assert!(matches!(
+            error,
+            Error::Authentication(ref message) if message == "Invalid or expired guest token"
+        ));
     }
 
     #[test]

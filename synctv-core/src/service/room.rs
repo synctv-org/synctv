@@ -66,19 +66,20 @@
 
 use chrono::{DateTime, Duration, Utc};
 use rand::RngExt;
-use sqlx::PgPool;
-use std::collections::HashSet;
+use sqlx::{PgPool, Row};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 
 use crate::{
     cache::CacheInvalidationService,
     models::{
-        ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits, PlaylistId, Room,
-        RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole, RoomSettings, RoomStatus,
-        RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
+        ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits, Playlist,
+        PlaylistId, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole,
+        RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
     },
     repository::{
-        ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository,
+        playlist::PlaylistListItem, media::MediaListItem, ChatRepository, MediaRepository,
+        PlaylistRepository, RoomMemberRepository,
         RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
     },
     service::{
@@ -168,6 +169,36 @@ pub struct ClearPlaylistResult {
     pub playback_state: Option<RoomPlaybackState>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EntryDeletionImpact {
+    pub deleted_playlist_ids: Vec<PlaylistId>,
+    pub deleted_media_ids: Vec<MediaId>,
+    pub playback_reset: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RoomCleanupImpact {
+    pub deleted_playlist_ids: Vec<PlaylistId>,
+    pub deleted_media_ids: Vec<MediaId>,
+    pub members_deleted: u64,
+    pub settings_deleted: u64,
+    pub playback_rows_deleted: u64,
+    pub chat_deleted: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientResourceAvailability {
+    Available,
+    CreatorInactive,
+}
+
+impl ClientResourceAvailability {
+    #[must_use]
+    pub const fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
 impl std::fmt::Debug for RoomService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RoomService").finish()
@@ -175,6 +206,93 @@ impl std::fmt::Debug for RoomService {
 }
 
 impl RoomService {
+    fn playlist_client_availability(
+        playlist: &Playlist,
+        active_creators: &HashSet<UserId>,
+    ) -> ClientResourceAvailability {
+        match playlist.creator_id.as_ref() {
+            Some(creator_id) if !active_creators.contains(creator_id) => {
+                ClientResourceAvailability::CreatorInactive
+            }
+            _ => ClientResourceAvailability::Available,
+        }
+    }
+
+    fn media_client_availability(
+        media: &Media,
+        active_creators: &HashSet<UserId>,
+    ) -> ClientResourceAvailability {
+        match media.creator_id.as_ref() {
+            Some(creator_id) if !active_creators.contains(creator_id) => {
+                ClientResourceAvailability::CreatorInactive
+            }
+            _ => ClientResourceAvailability::Available,
+        }
+    }
+
+    async fn load_active_creators<'a, I>(&self, creator_ids: I) -> Result<HashSet<UserId>>
+    where
+        I: IntoIterator<Item = &'a UserId>,
+    {
+        let unique_ids: Vec<UserId> = creator_ids
+            .into_iter()
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if unique_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        Ok(self
+            .user_service
+            .get_users_by_ids(&unique_ids)
+            .await?
+            .into_iter()
+            .filter(|user| user.status.is_active())
+            .map(|user| user.id)
+            .collect())
+    }
+
+    async fn ensure_resource_creator_is_active_for_client_access(
+        &self,
+        creator_id: Option<&UserId>,
+        resource_kind: &'static str,
+    ) -> Result<()> {
+        let Some(creator_id) = creator_id else {
+            return Ok(());
+        };
+
+        match self.user_service.get_user(creator_id).await {
+            Ok(user) if user.status.is_active() => Ok(()),
+            Ok(_) | Err(Error::NotFound(_)) => Err(Error::Authorization(format!(
+                "{resource_kind} is unavailable because its creator is not active"
+            ))),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn ensure_room_creator_is_active_for_access(
+        &self,
+        room: &Room,
+        actor_user_id: &UserId,
+    ) -> Result<()> {
+        let actor = self.user_service.get_user(actor_user_id).await?;
+        if actor.role.is_admin_or_above() {
+            return Ok(());
+        }
+
+        let creator = self.user_service.get_user(&room.created_by).await;
+        match creator {
+            Ok(user) if user.status.is_active() => Ok(()),
+            Ok(_) | Err(Error::NotFound(_)) => Err(Error::Authorization(
+                "Room is unavailable because its creator is not active".to_string(),
+            )),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Maximum retry attempts for optimistic lock conflicts on settings updates
     const MAX_RETRIES: u32 = 3;
     /// Base backoff in milliseconds (exponential: 5ms, 10ms, 20ms)
@@ -193,6 +311,125 @@ impl RoomService {
     #[must_use]
     pub const fn playlist_service(&self) -> &PlaylistService {
         &self.playlist_service
+    }
+
+    pub async fn ensure_client_usable_playlist(&self, playlist: &Playlist) -> Result<()> {
+        if !playlist.is_dynamic() {
+            return Ok(());
+        }
+
+        self.ensure_resource_creator_is_active_for_client_access(
+            playlist.creator_id.as_ref(),
+            "Dynamic playlist",
+        )
+        .await
+    }
+
+    pub async fn playlist_availability(
+        &self,
+        playlist: &Playlist,
+    ) -> Result<ClientResourceAvailability> {
+        let active_creators = self
+            .load_active_creators(playlist.creator_id.iter())
+            .await?;
+        Ok(Self::playlist_client_availability(playlist, &active_creators))
+    }
+
+    pub async fn playlist_availability_map(
+        &self,
+        playlists: &[Playlist],
+    ) -> Result<HashMap<PlaylistId, ClientResourceAvailability>> {
+        let active_creators = self
+            .load_active_creators(
+                playlists
+                    .iter()
+                    .filter_map(|playlist| playlist.creator_id.as_ref()),
+            )
+            .await?;
+
+        Ok(playlists
+            .into_iter()
+            .map(|playlist| {
+                (
+                    playlist.id.clone(),
+                    Self::playlist_client_availability(playlist, &active_creators),
+                )
+            })
+            .collect())
+    }
+
+    pub async fn count_client_playlists(
+        &self,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+        query: &crate::models::PlaylistListQuery,
+    ) -> Result<i64> {
+        self.playlist_repo
+            .count_filtered_by_parent(room_id, parent_id, query)
+            .await
+    }
+
+    pub async fn list_client_playlists(
+        &self,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+        query: &crate::models::PlaylistListQuery,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<PlaylistListItem>> {
+        self.playlist_repo
+            .list_filtered_by_parent(room_id, parent_id, query, limit, offset)
+            .await
+    }
+
+    pub async fn media_availability(&self, media: &Media) -> Result<ClientResourceAvailability> {
+        let active_creators = self
+            .load_active_creators(media.creator_id.iter())
+            .await?;
+        Ok(Self::media_client_availability(media, &active_creators))
+    }
+
+    pub async fn media_availability_map(
+        &self,
+        media: &[Media],
+    ) -> Result<HashMap<MediaId, ClientResourceAvailability>> {
+        let active_creators = self
+            .load_active_creators(media.iter().filter_map(|item| item.creator_id.as_ref()))
+            .await?;
+
+        Ok(media
+            .into_iter()
+            .map(|item| {
+                (
+                    item.id.clone(),
+                    Self::media_client_availability(item, &active_creators),
+                )
+            })
+            .collect())
+    }
+
+    pub async fn count_client_media(
+        &self,
+        room_id: &RoomId,
+        playlist_id: Option<&PlaylistId>,
+        query: &crate::models::MediaListQuery,
+    ) -> Result<i64> {
+        self.media_repo
+            .count_filtered_by_scope(room_id, playlist_id, query)
+            .await
+    }
+
+    pub async fn list_client_media(
+        &self,
+        room_id: &RoomId,
+        playlist_id: Option<&PlaylistId>,
+        query: &crate::models::MediaListQuery,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<MediaListItem>> {
+        self.media_repo
+            .list_filtered_by_scope(room_id, playlist_id, query, limit, offset)
+            .await
     }
 
     /// Get the permission service
@@ -331,6 +568,7 @@ impl RoomService {
             playback_repo.clone(),
             permission_service.clone(),
             media_service.clone(),
+            user_service.clone(),
         );
         playback_service.set_notification_service(notification_service.clone());
 
@@ -484,10 +722,12 @@ impl RoomService {
     ///
     /// All database operations run inside a single transaction so the room is
     /// either fully created or not visible at all — no partially-created rooms.
+    /// Duplicate room names for the same creator are rejected atomically by
+    /// the database UNIQUE constraint on `(rooms.created_by, rooms.name)`.
     ///
     /// When a distributed lock is configured (multi-replica mode), a per-user
-    /// lock prevents duplicate rooms from concurrent requests (network retries,
-    /// double-clicks).
+    /// lock still coalesces repeated requests from the same user (network
+    /// retries, double-clicks) before they reach the database.
     pub async fn create_room(
         &self,
         name: String,
@@ -796,6 +1036,9 @@ impl RoomService {
                 Error::NotFound("Room not found".to_string())
             })?;
 
+        self.ensure_room_creator_is_active_for_access(&ctx.room, &user_id)
+            .await?;
+
         // Check if room is active
         if ctx.room.status != RoomStatus::Active {
             tracing::warn!(room_id = %room_id, user_id = %user_id, status = ?ctx.room.status, "Attempted to join inactive room");
@@ -855,6 +1098,9 @@ impl RoomService {
                         .get_join_context(&room_id, &user_id)
                         .await?
                         .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+                    self.ensure_room_creator_is_active_for_access(&fresh_ctx.room, &user_id)
+                        .await?;
 
                     if fresh_ctx.room.status != RoomStatus::Active {
                         return Err(Error::InvalidInput("Room is closed".to_string()));
@@ -1088,13 +1334,13 @@ impl RoomService {
     /// data (members, playlists, media, chat messages, settings, playback state)
     /// remain in the database until the periodic `CleanupService` permanently
     /// purges rows whose `deleted_at` exceeds the configured retention period
-    /// (default: 90 days). The actual SQL `DELETE` at purge time triggers
-    /// `ON DELETE CASCADE` on all related tables.
+    /// (default: 90 days). Permanent purge uses the same explicit cleanup path
+    /// as normal room deletion before removing the room row itself.
     ///
     /// **Soft-delete lifecycle (optimized):**
     /// 1. This method sets `rooms.deleted_at = NOW()` (room becomes invisible to queries)
     /// 2. IMMEDIATELY deletes non-critical related data to free storage:
-    ///    - playlists (cascades to media via FK)
+    ///    - playlists and nested media via explicit subtree cleanup
     ///    - `room_members`
     ///    - `room_settings`
     ///    - `room_playback_state`
@@ -1125,68 +1371,7 @@ impl RoomService {
             .await?;
 
         let mut tx = self.pool.begin().await?;
-
-        // Soft-delete: set deleted_at timestamp.
-        let deleted = sqlx::query(
-            "UPDATE rooms
-             SET deleted_at = $2, updated_at = $2, version = version + 1
-             WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(room_id.as_str())
-        .bind(chrono::Utc::now())
-        .execute(&mut *tx)
-        .await?;
-
-        if deleted.rows_affected() == 0 {
-            // Transaction will be automatically rolled back on drop
-            return Err(Error::NotFound(
-                "Room not found or already deleted".to_string(),
-            ));
-        }
-
-        // IMMEDIATE CLEANUP: Delete non-critical related data to free storage.
-        // This optimization prevents resource bloat during the 90-day retention period.
-        //
-        // The ON DELETE CASCADE constraints will handle these automatically when the room
-        // row is purged, but we explicitly delete them now to reclaim storage immediately.
-        //
-        // Order matters due to FK dependencies:
-        // 1. media (depends on playlists) - deleted via CASCADE when playlists are deleted
-        // 2. playlists (depends on room) - CASCADE to media
-        // 3. room_members (depends on room and users)
-        // 4. room_settings (depends on room)
-        // 5. room_playback_state (depends on room)
-        // 6. chat_messages (depends on room)
-
-        // Delete playlists (cascades to media via FK)
-        let playlists_deleted = sqlx::query("DELETE FROM playlists WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        // Delete room members
-        let members_deleted = sqlx::query("DELETE FROM room_members WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        // Delete room settings
-        let settings_deleted = sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        // Delete room playback state
-        let _playback_deleted = sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        // Delete chat messages
-        let chat_deleted = sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
+        let impact = soft_delete_room_and_cleanup_in_tx(&mut tx, &room_id).await?;
 
         // Commit transaction - all or nothing
         tx.commit().await?;
@@ -1202,10 +1387,11 @@ impl RoomService {
         tracing::info!(
             room_id = %room_id,
             user_id = %user_id,
-            playlists_deleted = playlists_deleted.rows_affected(),
-            members_deleted = members_deleted.rows_affected(),
-            settings_deleted = settings_deleted.rows_affected(),
-            chat_deleted = chat_deleted.rows_affected(),
+            playlists_deleted = impact.deleted_playlist_ids.len(),
+            media_deleted = impact.deleted_media_ids.len(),
+            members_deleted = impact.members_deleted,
+            settings_deleted = impact.settings_deleted,
+            chat_deleted = impact.chat_deleted,
             "Room soft-deleted with immediate cleanup of related data (room row preserved for audit, will be purged by CleanupService after retention period)"
         );
 
@@ -1221,10 +1407,11 @@ impl RoomService {
             Some(room_id.as_str().to_string()),
             serde_json::json!({
                 "reason": "Room deleted by user",
-                "playlists_deleted": playlists_deleted.rows_affected(),
-                "members_deleted": members_deleted.rows_affected(),
-                "settings_deleted": settings_deleted.rows_affected(),
-                "chat_deleted": chat_deleted.rows_affected(),
+                "playlists_deleted": impact.deleted_playlist_ids.len(),
+                "media_deleted": impact.deleted_media_ids.len(),
+                "members_deleted": impact.members_deleted,
+                "settings_deleted": impact.settings_deleted,
+                "chat_deleted": impact.chat_deleted,
             }),
         )
         .await;
@@ -1994,6 +2181,11 @@ impl RoomService {
         self.room_repo.list(query).await
     }
 
+    pub async fn list_accessible_rooms(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
+        query.pagination.validate()?;
+        self.room_repo.list_accessible(query).await
+    }
+
     /// List rooms related to a user either by ownership or active membership.
     pub async fn list_related_rooms_for_user(
         &self,
@@ -2068,6 +2260,17 @@ impl RoomService {
         query.pagination.validate()?;
         self.member_service
             .list_user_rooms_with_details_query(user_id, query)
+            .await
+    }
+
+    pub async fn list_accessible_joined_rooms_with_query(
+        &self,
+        user_id: &UserId,
+        query: &crate::models::RelatedRoomListQuery,
+    ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
+        query.pagination.validate()?;
+        self.member_repo
+            .list_accessible_by_user_with_query(user_id, query)
             .await
     }
 
@@ -2193,7 +2396,15 @@ impl RoomService {
 
     /// Check if user is a member of the room
     pub async fn check_membership(&self, room_id: &RoomId, user_id: &UserId) -> Result<()> {
-        if self.member_service.is_member(room_id, user_id).await? {
+        let room = self.get_room(room_id).await?;
+        self.check_membership_with_room(&room, user_id).await
+    }
+
+    pub async fn check_membership_with_room(&self, room: &Room, user_id: &UserId) -> Result<()> {
+        self.ensure_room_creator_is_active_for_access(&room, user_id)
+            .await?;
+
+        if self.member_service.is_member(&room.id, user_id).await? {
             Ok(())
         } else {
             Err(Error::Authorization(
@@ -2346,111 +2557,21 @@ impl RoomService {
             return Err(Error::Authorization("Permission denied".to_string()));
         }
 
-        let deleted_media_ids =
-            collect_deleted_media_ids_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids).await?;
-
-        let playback_row = sqlx::query(
-            "SELECT playing_media_id, playing_playlist_id
-             FROM room_playback_state
-             WHERE room_id = $1
-             FOR UPDATE",
-        )
-        .bind(room_id.as_str())
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        if let Some(row) = playback_row {
-            use sqlx::Row;
-
-            let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
-            let playing_playlist_id: Option<String> = row.try_get("playing_playlist_id")?;
-
-            let deletes_playing_media = playing_media_id.as_ref().is_some_and(|current_id| {
-                deleted_media_ids
-                    .iter()
-                    .any(|id| id.as_str() == current_id.as_str())
-            });
-
-            let deletes_playing_playlist =
-                if let Some(ref playing_playlist_id) = playing_playlist_id {
-                    let targeted_playlist_ids: Vec<&str> =
-                        playlist_ids.iter().map(PlaylistId::as_str).collect();
-                    if targeted_playlist_ids.is_empty() {
-                        false
-                    } else {
-                        sqlx::query_scalar(
-                            "WITH RECURSIVE target_playlists AS (
-                            SELECT id
-                            FROM playlists
-                            WHERE id = ANY($1)
-                            UNION ALL
-                            SELECT p.id
-                            FROM playlists p
-                            JOIN target_playlists tp ON p.parent_id = tp.id
-                        )
-                        SELECT EXISTS(
-                            SELECT 1
-                            FROM target_playlists
-                            WHERE id = $2
-                        )",
-                        )
-                        .bind(&targeted_playlist_ids)
-                        .bind(playing_playlist_id.as_str())
-                        .fetch_one(&mut *tx)
-                        .await?
-                    }
-                } else {
-                    false
-                };
-
-            if deletes_playing_media || deletes_playing_playlist {
-                if !force {
-                    return Err(Error::InvalidInput(
-                        "Cannot delete entries that include the currently playing media"
-                            .to_string(),
-                    ));
-                }
-
-                sqlx::query(
-                    "UPDATE room_playback_state
-                     SET playing_media_id = NULL,
-                         playing_playlist_id = NULL,
-                         target = ''::bytea,
-                         \"current_time\" = 0,
-                         speed = 1.0,
-                         is_playing = false,
-                         version = version + 1,
-                         updated_at = NOW()
-                     WHERE room_id = $1",
-                )
-                .bind(room_id.as_str())
-                .execute(&mut *tx)
+        let impact =
+            delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
                 .await?;
-            }
-        }
-
-        if !media_ids.is_empty() {
-            self.media_repo
-                .delete_batch_with_executor(&media_ids, &mut *tx)
-                .await?;
-        }
-        if !playlist_ids.is_empty() {
-            self.playlist_repo
-                .delete_batch_with_executor(&playlist_ids, &mut *tx)
-                .await?;
-        }
 
         tx.commit().await?;
 
-        if force {
+        if impact.playback_reset {
             let state = self.playback_service.get_state(&room_id).await?;
             self.playback_service
                 .broadcast_playback_reset_after_force_delete(state)
                 .await;
         }
 
-        if !deleted_media_ids.is_empty() {
-            for media_id in &deleted_media_ids {
+        if !impact.deleted_media_ids.is_empty() {
+            for media_id in &impact.deleted_media_ids {
                 if let Err(error) = self
                     .notification_service
                     .notify_media_removed(&room_id, media_id.as_str())
@@ -2469,15 +2590,15 @@ impl RoomService {
         tracing::info!(
             room_id = %room_id.as_str(),
             user_id = %user_id.as_str(),
-            deleted_playlists = playlist_ids.len(),
-            deleted_media = deleted_media_ids.len(),
+            deleted_playlists = impact.deleted_playlist_ids.len(),
+            deleted_media = impact.deleted_media_ids.len(),
             "Entries deleted"
         );
 
         Ok(DeleteEntriesResult {
-            deleted_playlists: playlist_ids.len(),
-            deleted_media: deleted_media_ids.len(),
-            deleted_media_ids,
+            deleted_playlists: impact.deleted_playlist_ids.len(),
+            deleted_media: impact.deleted_media_ids.len(),
+            deleted_media_ids: impact.deleted_media_ids,
         })
     }
 
@@ -2550,111 +2671,21 @@ impl RoomService {
             }
         }
 
-        let deleted_media_ids =
-            collect_deleted_media_ids_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids).await?;
-
-        let playback_row = sqlx::query(
-            "SELECT playing_media_id, playing_playlist_id
-             FROM room_playback_state
-             WHERE room_id = $1
-             FOR UPDATE",
-        )
-        .bind(room_id.as_str())
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        if let Some(row) = playback_row {
-            use sqlx::Row;
-
-            let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
-            let playing_playlist_id: Option<String> = row.try_get("playing_playlist_id")?;
-
-            let deletes_playing_media = playing_media_id.as_ref().is_some_and(|current_id| {
-                deleted_media_ids
-                    .iter()
-                    .any(|id| id.as_str() == current_id.as_str())
-            });
-
-            let deletes_playing_playlist =
-                if let Some(ref playing_playlist_id) = playing_playlist_id {
-                    let targeted_playlist_ids: Vec<&str> =
-                        playlist_ids.iter().map(PlaylistId::as_str).collect();
-                    if targeted_playlist_ids.is_empty() {
-                        false
-                    } else {
-                        sqlx::query_scalar(
-                            "WITH RECURSIVE target_playlists AS (
-                            SELECT id
-                            FROM playlists
-                            WHERE id = ANY($1)
-                            UNION ALL
-                            SELECT p.id
-                            FROM playlists p
-                            JOIN target_playlists tp ON p.parent_id = tp.id
-                        )
-                        SELECT EXISTS(
-                            SELECT 1
-                            FROM target_playlists
-                            WHERE id = $2
-                        )",
-                        )
-                        .bind(&targeted_playlist_ids)
-                        .bind(playing_playlist_id.as_str())
-                        .fetch_one(&mut *tx)
-                        .await?
-                    }
-                } else {
-                    false
-                };
-
-            if deletes_playing_media || deletes_playing_playlist {
-                if !force {
-                    return Err(Error::InvalidInput(
-                        "Cannot delete entries that include the currently playing media"
-                            .to_string(),
-                    ));
-                }
-
-                sqlx::query(
-                    "UPDATE room_playback_state
-                     SET playing_media_id = NULL,
-                         playing_playlist_id = NULL,
-                         target = ''::bytea,
-                         \"current_time\" = 0,
-                         speed = 1.0,
-                         is_playing = false,
-                         version = version + 1,
-                         updated_at = NOW()
-                     WHERE room_id = $1",
-                )
-                .bind(room_id.as_str())
-                .execute(&mut *tx)
+        let impact =
+            delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
                 .await?;
-            }
-        }
-
-        if !media_ids.is_empty() {
-            self.media_repo
-                .delete_batch_with_executor(&media_ids, &mut *tx)
-                .await?;
-        }
-        if !playlist_ids.is_empty() {
-            self.playlist_repo
-                .delete_batch_with_executor(&playlist_ids, &mut *tx)
-                .await?;
-        }
 
         tx.commit().await?;
 
-        if force {
+        if impact.playback_reset {
             let state = self.playback_service.get_state(&room_id).await?;
             self.playback_service
                 .broadcast_playback_reset_after_force_delete(state)
                 .await;
         }
 
-        if !deleted_media_ids.is_empty() {
-            for media_id in &deleted_media_ids {
+        if !impact.deleted_media_ids.is_empty() {
+            for media_id in &impact.deleted_media_ids {
                 if let Err(error) = self
                     .notification_service
                     .notify_media_removed(&room_id, media_id.as_str())
@@ -2673,15 +2704,15 @@ impl RoomService {
         tracing::info!(
             room_id = %room_id.as_str(),
             admin_user_id = %admin_user_id.as_str(),
-            deleted_playlists = playlist_ids.len(),
-            deleted_media = deleted_media_ids.len(),
+            deleted_playlists = impact.deleted_playlist_ids.len(),
+            deleted_media = impact.deleted_media_ids.len(),
             "Entries deleted by admin"
         );
 
         Ok(DeleteEntriesResult {
-            deleted_playlists: playlist_ids.len(),
-            deleted_media: deleted_media_ids.len(),
-            deleted_media_ids,
+            deleted_playlists: impact.deleted_playlist_ids.len(),
+            deleted_media: impact.deleted_media_ids.len(),
+            deleted_media_ids: impact.deleted_media_ids,
         })
     }
 
@@ -2723,7 +2754,6 @@ impl RoomService {
         let request = EditMediaRequest {
             media_id,
             name,
-            position: None,
         };
         self.media_service
             .edit_media(room_id, user_id, request)
@@ -2897,16 +2927,15 @@ impl RoomService {
             .await
     }
 
-    /// Swap positions of two media items in playlist
-    pub async fn swap_media(
+    /// Move a media item relative to a sibling in the same scope.
+    pub async fn move_media(
         &self,
         room_id: RoomId,
         user_id: UserId,
-        media_id1: MediaId,
-        media_id2: MediaId,
-    ) -> Result<()> {
+        request: crate::service::media::MoveMediaRequest,
+    ) -> Result<crate::models::Media> {
         self.media_service
-            .swap_media_positions(room_id, user_id, media_id1, media_id2)
+            .move_media(room_id, user_id, request)
             .await
     }
 
@@ -2988,6 +3017,10 @@ impl RoomService {
         user_id: &UserId,
         permission: u64,
     ) -> Result<()> {
+        let room = self.get_room(room_id).await?;
+        self.ensure_room_creator_is_active_for_access(&room, user_id)
+            .await?;
+
         self.permission_service
             .check_permission(room_id, user_id, permission)
             .await
@@ -3068,51 +3101,8 @@ impl RoomService {
             ));
         }
 
-        // Wrap deletion in a transaction for atomicity
         let mut tx = self.pool.begin().await?;
-
-        let deleted = sqlx::query(
-            "UPDATE rooms
-             SET deleted_at = $2, updated_at = $2, version = version + 1
-             WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(room_id.as_str())
-        .bind(chrono::Utc::now())
-        .execute(&mut *tx)
-        .await?;
-
-        if deleted.rows_affected() == 0 {
-            // Transaction will be automatically rolled back on drop
-            return Err(Error::NotFound(
-                "Room not found or already deleted".to_string(),
-            ));
-        }
-
-        // IMMEDIATE CLEANUP: Delete non-critical related data (same as delete_room)
-        let playlists_deleted = sqlx::query("DELETE FROM playlists WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        let members_deleted = sqlx::query("DELETE FROM room_members WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        let settings_deleted = sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        let _playback_deleted = sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        let chat_deleted = sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
+        let impact = soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await?;
 
         tx.commit().await?;
 
@@ -3134,10 +3124,11 @@ impl RoomService {
                     Some(room_id.as_str().to_string()),
                     serde_json::json!({
                         "reason": "Room deleted by admin",
-                        "playlists_deleted": playlists_deleted.rows_affected(),
-                        "members_deleted": members_deleted.rows_affected(),
-                        "settings_deleted": settings_deleted.rows_affected(),
-                        "chat_deleted": chat_deleted.rows_affected(),
+                        "playlists_deleted": impact.deleted_playlist_ids.len(),
+                        "media_deleted": impact.deleted_media_ids.len(),
+                        "members_deleted": impact.members_deleted,
+                        "settings_deleted": impact.settings_deleted,
+                        "chat_deleted": impact.chat_deleted,
                     }),
                     None,
                     None,
@@ -3225,50 +3216,8 @@ impl RoomService {
             "Confirmed room is orphaned, proceeding with admin deletion"
         );
 
-        // Now delete the room using the same logic as admin_delete_room
         let mut tx = self.pool.begin().await?;
-
-        let deleted = sqlx::query(
-            "UPDATE rooms
-             SET deleted_at = $2, updated_at = $2, version = version + 1
-             WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(room_id.as_str())
-        .bind(chrono::Utc::now())
-        .execute(&mut *tx)
-        .await?;
-
-        if deleted.rows_affected() == 0 {
-            return Err(Error::NotFound(
-                "Room not found or already deleted".to_string(),
-            ));
-        }
-
-        // IMMEDIATE CLEANUP: Delete non-critical related data
-        let playlists_deleted = sqlx::query("DELETE FROM playlists WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        let members_deleted = sqlx::query("DELETE FROM room_members WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        let settings_deleted = sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        let _playback_deleted = sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
-
-        let chat_deleted = sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
-            .bind(room_id.as_str())
-            .execute(&mut *tx)
-            .await?;
+        let impact = soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await?;
 
         tx.commit().await?;
 
@@ -3291,10 +3240,11 @@ impl RoomService {
                     serde_json::json!({
                         "reason": "Orphaned room deleted by admin (creator deleted/banned)",
                         "creator_id": room.created_by.as_str(),
-                        "playlists_deleted": playlists_deleted.rows_affected(),
-                        "members_deleted": members_deleted.rows_affected(),
-                        "settings_deleted": settings_deleted.rows_affected(),
-                        "chat_deleted": chat_deleted.rows_affected(),
+                        "playlists_deleted": impact.deleted_playlist_ids.len(),
+                        "media_deleted": impact.deleted_media_ids.len(),
+                        "members_deleted": impact.members_deleted,
+                        "settings_deleted": impact.settings_deleted,
+                        "chat_deleted": impact.chat_deleted,
                     }),
                     None,
                     None,
@@ -3648,6 +3598,62 @@ impl RoomService {
             .await;
     }
 
+    /// Run best-effort post-commit side effects after a room has already been
+    /// deleted transactionally elsewhere.
+    pub async fn finalize_deleted_room_after_commit(&self, room_id: &RoomId) {
+        self.invalidate_room_caches(room_id).await;
+        let _ = self.notification_service.notify_room_deleted(room_id).await;
+    }
+
+    /// Run best-effort post-commit side effects after a room became unusable
+    /// because its creator account is no longer active.
+    pub async fn finalize_room_owner_inactive_after_commit(&self, room_id: &RoomId) {
+        self.invalidate_room_caches(room_id).await;
+    }
+
+    /// Run best-effort post-commit side effects after entry deletions have
+    /// already committed.
+    pub async fn finalize_entry_deletions_after_commit(
+        &self,
+        room_id: &RoomId,
+        deleted_media_ids: &[MediaId],
+        playback_reset: bool,
+    ) {
+        self.invalidate_room_caches(room_id).await;
+
+        if playback_reset {
+            match self.playback_service.get_state(room_id).await {
+                Ok(state) => {
+                    self.playback_service
+                        .broadcast_playback_reset_after_force_delete(state)
+                        .await;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id.as_str(),
+                        "Failed to reload playback state after user cleanup reset"
+                    );
+                }
+            }
+        }
+
+        for media_id in deleted_media_ids {
+            if let Err(error) = self
+                .notification_service
+                .notify_media_removed(room_id, media_id.as_str())
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id.as_str(),
+                    media_id = %media_id.as_str(),
+                    "Failed to broadcast media removed event after user cleanup"
+                );
+            }
+        }
+    }
+
     // ========================
     // Batch Operations
     // ========================
@@ -3792,6 +3798,100 @@ async fn has_room_permission_in_tx(
     Ok(has_permission.unwrap_or(false))
 }
 
+async fn collect_target_playlist_nodes_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    root_playlist_ids: &[PlaylistId],
+) -> Result<Vec<(PlaylistId, i32)>> {
+    if root_playlist_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let playlist_id_strs: Vec<&str> = root_playlist_ids.iter().map(PlaylistId::as_str).collect();
+
+    let rows = sqlx::query(
+        "WITH RECURSIVE target_playlists AS (
+            SELECT id, 0 AS depth
+            FROM playlists
+            WHERE room_id = $1
+              AND id = ANY($2)
+            UNION ALL
+            SELECT p.id, tp.depth + 1
+            FROM playlists p
+            JOIN target_playlists tp ON p.parent_id = tp.id
+            WHERE p.room_id = $1
+        )
+        SELECT id, MAX(depth) AS depth
+        FROM target_playlists
+        GROUP BY id
+        ORDER BY MAX(depth) DESC, id",
+    )
+    .bind(room_id.as_str())
+    .bind(&playlist_id_strs)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let playlist_id = row.try_get::<String, _>("id")?;
+            let depth = row.try_get::<i32, _>("depth")?;
+            Ok((PlaylistId::from_string(playlist_id), depth))
+        })
+        .collect()
+}
+
+async fn collect_all_room_playlist_nodes_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+) -> Result<Vec<(PlaylistId, i32)>> {
+    let rows = sqlx::query(
+        "WITH RECURSIVE playlist_tree AS (
+            SELECT id, 0 AS depth
+            FROM playlists
+            WHERE room_id = $1
+              AND parent_id IS NULL
+            UNION ALL
+            SELECT p.id, pt.depth + 1
+            FROM playlists p
+            JOIN playlist_tree pt ON p.parent_id = pt.id
+            WHERE p.room_id = $1
+        )
+        SELECT id, MAX(depth) AS depth
+        FROM playlist_tree
+        GROUP BY id
+        ORDER BY MAX(depth) DESC, id",
+    )
+    .bind(room_id.as_str())
+    .fetch_all(&mut **tx)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let playlist_id = row.try_get::<String, _>("id")?;
+            let depth = row.try_get::<i32, _>("depth")?;
+            Ok((PlaylistId::from_string(playlist_id), depth))
+        })
+        .collect()
+}
+
+async fn collect_room_root_media_ids_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+) -> Result<Vec<MediaId>> {
+    let media_ids: Vec<MediaId> = sqlx::query_scalar(
+        "SELECT id
+         FROM media
+         WHERE room_id = $1
+           AND playlist_id IS NULL
+         ORDER BY id",
+    )
+    .bind(room_id.as_str())
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(media_ids)
+}
+
 async fn collect_deleted_media_ids_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
@@ -3838,6 +3938,271 @@ async fn collect_deleted_media_ids_in_tx(
             Ok(MediaId::from_string(media_id))
         })
         .collect()
+}
+
+async fn reset_playback_for_deleted_entries_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    deleted_playlist_ids: &[PlaylistId],
+    deleted_media_ids: &[MediaId],
+    force: bool,
+) -> Result<bool> {
+    let playback_row = sqlx::query(
+        "SELECT playing_media_id, playing_playlist_id
+         FROM room_playback_state
+         WHERE room_id = $1
+         FOR UPDATE",
+    )
+    .bind(room_id.as_str())
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let Some(row) = playback_row else {
+        return Ok(false);
+    };
+
+    let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
+    let playing_playlist_id: Option<String> = row.try_get("playing_playlist_id")?;
+
+    let deletes_playing_media = playing_media_id.as_ref().is_some_and(|current_id| {
+        deleted_media_ids
+            .iter()
+            .any(|media_id| media_id.as_str() == current_id.as_str())
+    });
+
+    let deletes_playing_playlist = playing_playlist_id.as_ref().is_some_and(|current_id| {
+        deleted_playlist_ids
+            .iter()
+            .any(|playlist_id| playlist_id.as_str() == current_id.as_str())
+    });
+
+    if !(deletes_playing_media || deletes_playing_playlist) {
+        return Ok(false);
+    }
+
+    if !force {
+        return Err(Error::InvalidInput(
+            "Cannot delete entries that include the currently playing media".to_string(),
+        ));
+    }
+
+    sqlx::query(
+        "UPDATE room_playback_state
+         SET playing_media_id = NULL,
+             playing_playlist_id = NULL,
+             target = ''::bytea,
+             \"current_time\" = 0,
+             speed = 1.0,
+             is_playing = false,
+             version = version + 1,
+             updated_at = NOW()
+         WHERE room_id = $1",
+    )
+    .bind(room_id.as_str())
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(true)
+}
+
+async fn delete_playlist_ids_in_depth_order_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    playlist_nodes: &[(PlaylistId, i32)],
+) -> Result<()> {
+    if playlist_nodes.is_empty() {
+        return Ok(());
+    }
+
+    let mut ids_by_depth = BTreeMap::<i32, Vec<&str>>::new();
+    for (playlist_id, depth) in playlist_nodes {
+        ids_by_depth
+            .entry(*depth)
+            .or_default()
+            .push(playlist_id.as_str());
+    }
+
+    for (_depth, ids) in ids_by_depth.into_iter().rev() {
+        sqlx::query("DELETE FROM playlists WHERE id = ANY($1)")
+            .bind(&ids)
+            .execute(&mut **tx)
+            .await?;
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn delete_entries_in_room_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    root_playlist_ids: &[PlaylistId],
+    explicit_media_ids: &[MediaId],
+    force: bool,
+) -> Result<EntryDeletionImpact> {
+    let playlist_nodes =
+        collect_target_playlist_nodes_in_tx(tx, room_id, root_playlist_ids).await?;
+    let deleted_playlist_ids: Vec<PlaylistId> = playlist_nodes
+        .iter()
+        .map(|(playlist_id, _)| playlist_id.clone())
+        .collect();
+    let deleted_media_ids =
+        collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, explicit_media_ids)
+            .await?;
+    let playback_reset = reset_playback_for_deleted_entries_in_tx(
+        tx,
+        room_id,
+        &deleted_playlist_ids,
+        &deleted_media_ids,
+        force,
+    )
+    .await?;
+
+    if !deleted_media_ids.is_empty() {
+        let media_id_strs: Vec<&str> = deleted_media_ids.iter().map(MediaId::as_str).collect();
+        sqlx::query("DELETE FROM media WHERE id = ANY($1)")
+            .bind(&media_id_strs)
+            .execute(&mut **tx)
+            .await?;
+    }
+
+    delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
+
+    Ok(EntryDeletionImpact {
+        deleted_playlist_ids,
+        deleted_media_ids,
+        playback_reset,
+    })
+}
+
+pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+) -> Result<RoomCleanupImpact> {
+    let deleted = sqlx::query(
+        "UPDATE rooms
+         SET deleted_at = $2, updated_at = $2, version = version + 1
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(room_id.as_str())
+    .bind(chrono::Utc::now())
+    .execute(&mut **tx)
+    .await?;
+
+    if deleted.rows_affected() == 0 {
+        return Err(Error::NotFound(
+            "Room not found or already deleted".to_string(),
+        ));
+    }
+
+    let playlist_nodes = collect_all_room_playlist_nodes_in_tx(tx, room_id).await?;
+    let deleted_playlist_ids: Vec<PlaylistId> = playlist_nodes
+        .iter()
+        .map(|(playlist_id, _)| playlist_id.clone())
+        .collect();
+    let root_media_ids = collect_room_root_media_ids_in_tx(tx, room_id).await?;
+    let deleted_media_ids =
+        collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, &root_media_ids)
+            .await?;
+
+    let playback_rows_deleted = sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
+        .bind(room_id.as_str())
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+
+    if !deleted_media_ids.is_empty() {
+        let media_id_strs: Vec<&str> = deleted_media_ids.iter().map(MediaId::as_str).collect();
+        sqlx::query("DELETE FROM media WHERE id = ANY($1)")
+            .bind(&media_id_strs)
+            .execute(&mut **tx)
+            .await?;
+    }
+
+    delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
+
+    let members_deleted = sqlx::query("DELETE FROM room_members WHERE room_id = $1")
+        .bind(room_id.as_str())
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+
+    let settings_deleted = sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
+        .bind(room_id.as_str())
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+
+    let chat_deleted = sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
+        .bind(room_id.as_str())
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+
+    Ok(RoomCleanupImpact {
+        deleted_playlist_ids,
+        deleted_media_ids,
+        members_deleted,
+        settings_deleted,
+        playback_rows_deleted,
+        chat_deleted,
+    })
+}
+
+pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+) -> Result<bool> {
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)")
+        .bind(room_id.as_str())
+        .fetch_one(&mut **tx)
+        .await?;
+    if !exists {
+        return Ok(false);
+    }
+
+    let playlist_nodes = collect_all_room_playlist_nodes_in_tx(tx, room_id).await?;
+    let deleted_playlist_ids: Vec<PlaylistId> = playlist_nodes
+        .iter()
+        .map(|(playlist_id, _)| playlist_id.clone())
+        .collect();
+    let root_media_ids = collect_room_root_media_ids_in_tx(tx, room_id).await?;
+    let deleted_media_ids =
+        collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, &root_media_ids)
+            .await?;
+
+    sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
+        .bind(room_id.as_str())
+        .execute(&mut **tx)
+        .await?;
+
+    if !deleted_media_ids.is_empty() {
+        let media_id_strs: Vec<&str> = deleted_media_ids.iter().map(MediaId::as_str).collect();
+        sqlx::query("DELETE FROM media WHERE id = ANY($1)")
+            .bind(&media_id_strs)
+            .execute(&mut **tx)
+            .await?;
+    }
+
+    delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
+
+    sqlx::query("DELETE FROM room_members WHERE room_id = $1")
+        .bind(room_id.as_str())
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
+        .bind(room_id.as_str())
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
+        .bind(room_id.as_str())
+        .execute(&mut **tx)
+        .await?;
+
+    let deleted = sqlx::query("DELETE FROM rooms WHERE id = $1")
+        .bind(room_id.as_str())
+        .execute(&mut **tx)
+        .await?;
+
+    Ok(deleted.rows_affected() > 0)
 }
 
 #[cfg(test)]

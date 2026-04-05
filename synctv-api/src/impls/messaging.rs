@@ -696,7 +696,7 @@ impl StreamMessageHandler {
 
     async fn final_realtime_admission_denial_reason(
         &self,
-    ) -> Result<Option<&'static str>, RealtimeJoinError> {
+    ) -> Result<Option<String>, RealtimeJoinError> {
         let user = self
             .room_service
             .user_service()
@@ -712,13 +712,15 @@ impl StreamMessageHandler {
                 RealtimeJoinError::ServiceUnavailable(
                     "User re-validation temporarily unavailable".to_string(),
                 )
-            })?;
+        })?;
 
         if user.status == UserStatus::Banned || user.status == UserStatus::Pending {
-            return Ok(Some("User is no longer allowed to use real-time messaging"));
+            return Ok(Some(
+                "User is no longer allowed to use real-time messaging".to_string(),
+            ));
         }
         if user.deleted_at.is_some() {
-            return Ok(Some("User account is no longer available"));
+            return Ok(Some("User account is no longer available".to_string()));
         }
 
         let room = self.room_service.get_room(&self.room_id).await.map_err(|error| {
@@ -734,19 +736,17 @@ impl StreamMessageHandler {
         })?;
 
         if room.is_banned {
-            return Ok(Some("This room has been banned"));
+            return Ok(Some("This room has been banned".to_string()));
         }
         if room.status == RoomStatus::Closed {
             return Ok(Some(
-                "This room is closed and not accepting new connections",
+                "This room is closed and not accepting new connections".to_string(),
             ));
         }
 
-        let membership_lookup = self
-            .room_service
-            .member_service()
-            .get_member(&self.room_id, &self.user_id)
-            .await;
+        let membership_lookup =
+            probe_realtime_membership_access_with_room(&self.room_service, &room, &self.user_id)
+                .await;
         if let Some(reason) = initial_realtime_join_denial_reason(&membership_lookup) {
             return Ok(Some(reason));
         }
@@ -928,11 +928,9 @@ impl StreamMessageHandler {
             .map(|svc| svc.subscribe_events());
 
         // E6 fix: Fetch member data ONCE and pass to both methods
-        let member_lookup = self
-            .room_service
-            .member_service()
-            .get_member(&self.room_id, &self.user_id)
-            .await;
+        let member_lookup =
+            probe_realtime_membership_access(&self.room_service, &self.room_id, &self.user_id)
+                .await;
         if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
             tracing::info!(
                 room_id = %self.room_id.as_str(),
@@ -946,7 +944,8 @@ impl StreamMessageHandler {
             return Ok(());
         }
         let member_data = match member_lookup {
-            Ok(member) => member,
+            Ok(RealtimeMembershipAccess::Allowed(member)) => Some(member),
+            Ok(RealtimeMembershipAccess::Denied(_)) => None,
             Err(error) => {
                 tracing::warn!(
                     error = %error,
@@ -1159,29 +1158,25 @@ impl StreamMessageHandler {
                             disconnect_rx = self.connection_manager.subscribe_disconnect();
 
                             // Fallback: check database to see if we were kicked/banned while lagged
-                            match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
-                                Ok(Some(member)) => {
-                                    if member.status == synctv_core::models::MemberStatus::Banned {
-                                        tracing::info!(
-                                            user_id = %self.user_id.as_str(),
-                                            room_id = %self.room_id.as_str(),
-                                            "User is banned (detected after disconnect signal lag), disconnecting"
-                                        );
-                                        self.skip_cleanup_user_left
-                                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                                        break;
-                                    }
-                                }
-                                Ok(None) => {
+                            match probe_realtime_membership_access(
+                                &self.room_service,
+                                &self.room_id,
+                                &self.user_id,
+                            )
+                            .await
+                            {
+                                Ok(RealtimeMembershipAccess::Denied(reason)) => {
                                     tracing::info!(
                                         user_id = %self.user_id.as_str(),
                                         room_id = %self.room_id.as_str(),
-                                        "User is no longer a member (detected after disconnect signal lag), disconnecting"
+                                        reason,
+                                        "Real-time access is no longer valid (detected after disconnect signal lag), disconnecting"
                                     );
                                     self.skip_cleanup_user_left
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                     break;
                                 }
+                                Ok(RealtimeMembershipAccess::Allowed(_)) => {}
                                 Err(e) => {
                                     tracing::warn!(
                                         error = %e,
@@ -1298,29 +1293,25 @@ impl StreamMessageHandler {
 
                             // Fallback: query database to confirm member status since we may
                             // have missed a KickUser or KickUserFromRoom event during the lag.
-                            match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
-                                Ok(Some(member)) => {
-                                    if member.status == synctv_core::models::MemberStatus::Banned {
-                                        tracing::info!(
-                                            user_id = %self.user_id.as_str(),
-                                            room_id = %self.room_id.as_str(),
-                                            "User is banned (detected after admin event lag), disconnecting"
-                                        );
-                                        self.skip_cleanup_user_left
-                                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                                        break;
-                                    }
-                                }
-                                Ok(None) => {
+                            match probe_realtime_membership_access(
+                                &self.room_service,
+                                &self.room_id,
+                                &self.user_id,
+                            )
+                            .await
+                            {
+                                Ok(RealtimeMembershipAccess::Denied(reason)) => {
                                     tracing::info!(
                                         user_id = %self.user_id.as_str(),
                                         room_id = %self.room_id.as_str(),
-                                        "User is no longer a member (detected after admin event lag), disconnecting"
+                                        reason,
+                                        "Real-time access is no longer valid (detected after admin event lag), disconnecting"
                                     );
                                     self.skip_cleanup_user_left
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                     break;
                                 }
+                                Ok(RealtimeMembershipAccess::Allowed(_)) => {}
                                 Err(e) => {
                                     tracing::warn!(
                                         error = %e,
@@ -1441,28 +1432,25 @@ impl StreamMessageHandler {
                     }
 
                     // Cache miss: query database and populate cache.
-                    match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
-                        Ok(Some(member)) => {
+                    match probe_realtime_membership_access(
+                        &self.room_service,
+                        &self.room_id,
+                        &self.user_id,
+                    )
+                    .await
+                    {
+                        Ok(RealtimeMembershipAccess::Allowed(member)) => {
                             let cached = CachedMembership::from_member(Some(&member));
                             self.membership_cache.insert(cache_key, cached);
-                            if member.status == synctv_core::models::MemberStatus::Banned {
-                                tracing::info!(
-                                    user_id = %self.user_id.as_str(),
-                                    room_id = %self.room_id.as_str(),
-                                    "Periodic check: user is banned, disconnecting"
-                                );
-                                self.skip_cleanup_user_left
-                                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                                break;
-                            }
                         }
-                        Ok(None) => {
+                        Ok(RealtimeMembershipAccess::Denied(reason)) => {
                             let cached = CachedMembership::from_member(None);
                             self.membership_cache.insert(cache_key, cached);
                             tracing::info!(
                                 user_id = %self.user_id.as_str(),
                                 room_id = %self.room_id.as_str(),
-                                "Periodic check: user is no longer a member, disconnecting"
+                                reason,
+                                "Periodic check: real-time access is no longer valid, disconnecting"
                             );
                             self.skip_cleanup_user_left
                                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1921,17 +1909,17 @@ impl StreamMessageHandler {
             .register(self.connection_id.clone(), self.user_id.clone())
             .await?;
 
-        self.pre_join_after_registration().await.map_err(String::from)?;
+        self.pre_join_after_registration()
+            .await
+            .map_err(String::from)?;
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let room_id_str = self.room_id.as_str().to_string();
 
         // E6 fix: Fetch member data ONCE and pass to both methods
-        let member_lookup = self
-            .room_service
-            .member_service()
-            .get_member(&self.room_id, &self.user_id)
-            .await;
+        let member_lookup =
+            probe_realtime_membership_access(&self.room_service, &self.room_id, &self.user_id)
+                .await;
         if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
             self.skip_cleanup_user_left
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1939,7 +1927,8 @@ impl StreamMessageHandler {
             return Err(reason.to_string());
         }
         let member_data = match member_lookup {
-            Ok(member) => member,
+            Ok(RealtimeMembershipAccess::Allowed(member)) => Some(member),
+            Ok(RealtimeMembershipAccess::Denied(_)) => None,
             Err(error) => {
                 tracing::warn!(
                     error = %error,
@@ -2005,8 +1994,12 @@ impl StreamMessageHandler {
                                     }
                                 }
 
-                                let is_room_shutdown =
-                                    matches!(event, ClusterEvent::RoomDeleted { .. } | ClusterEvent::RoomBanned { .. });
+                                let is_room_shutdown = matches!(
+                                    event,
+                                    ClusterEvent::RoomDeleted { .. }
+                                        | ClusterEvent::RoomBanned { .. }
+                                        | ClusterEvent::RoomOwnerInactive { .. }
+                                );
 
                                 for msg in cluster_event_to_server_messages(&event, &room_id_str) {
                                     if let Err(e) = sender.send(msg) {
@@ -2134,10 +2127,16 @@ impl StreamMessageHandler {
                                 );
                                 disconnect_rx = connection_manager.subscribe_disconnect();
                                 // Verify membership after lag
-                                let is_removed = match room_service.member_service().get_member(&room_id, &user_id).await {
-                                    Ok(Some(member)) => membership_invalidation_requires_skip_cleanup(Some(&member)),
-                                    Ok(None) => membership_invalidation_requires_skip_cleanup(None),
-                                    _ => false,
+                                let is_removed = match probe_realtime_membership_access(
+                                    &room_service,
+                                    &room_id,
+                                    &user_id,
+                                )
+                                .await
+                                {
+                                    Ok(RealtimeMembershipAccess::Denied(_)) => true,
+                                    Ok(RealtimeMembershipAccess::Allowed(_)) => false,
+                                    Err(_) => false,
                                 };
                                 if is_removed {
                                     skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2214,10 +2213,16 @@ impl StreamMessageHandler {
                                 );
                                 admin_rx = cluster_manager.subscribe_admin_events();
                                 // Verify membership after lag
-                                let is_removed = match room_service.member_service().get_member(&room_id, &user_id).await {
-                                    Ok(Some(member)) => membership_invalidation_requires_skip_cleanup(Some(&member)),
-                                    Ok(None) => membership_invalidation_requires_skip_cleanup(None),
-                                    _ => false,
+                                let is_removed = match probe_realtime_membership_access(
+                                    &room_service,
+                                    &room_id,
+                                    &user_id,
+                                )
+                                .await
+                                {
+                                    Ok(RealtimeMembershipAccess::Denied(_)) => true,
+                                    Ok(RealtimeMembershipAccess::Allowed(_)) => false,
+                                    Err(_) => false,
                                 };
                                 if is_removed {
                                     skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2278,29 +2283,26 @@ impl StreamMessageHandler {
                                 break;
                             }
 
-                            match heartbeat_room_service.member_service().get_member(&heartbeat_room_id, &heartbeat_user_id).await {
-                                Ok(Some(member)) => {
-                                    if member.status == synctv_core::models::MemberStatus::Banned {
-                                        tracing::info!(
-                                            user_id = %heartbeat_user_id.as_str(),
-                                            room_id = %heartbeat_room_id.as_str(),
-                                            "start() periodic check: user is banned, disconnecting"
-                                        );
-                                        skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
-                                        heartbeat_token.cancel();
-                                        break;
-                                    }
-                                }
-                                Ok(None) => {
+                            match probe_realtime_membership_access(
+                                &heartbeat_room_service,
+                                &heartbeat_room_id,
+                                &heartbeat_user_id,
+                            )
+                            .await
+                            {
+                                Ok(RealtimeMembershipAccess::Denied(reason)) => {
                                     tracing::info!(
                                         user_id = %heartbeat_user_id.as_str(),
                                         room_id = %heartbeat_room_id.as_str(),
-                                        "start() periodic check: user is no longer a member, disconnecting"
+                                        reason,
+                                        "start() periodic check: real-time access is no longer valid, disconnecting"
                                     );
-                                    skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    skip_cleanup_user_left
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
                                     heartbeat_token.cancel();
                                     break;
                                 }
+                                Ok(RealtimeMembershipAccess::Allowed(_)) => {}
                                 Err(e) => {
                                     tracing::warn!(
                                         error = %e,
@@ -3401,6 +3403,15 @@ fn cluster_event_to_server_messages(
                 })),
             }]
         }
+        ClusterEvent::RoomOwnerInactive { .. } => {
+            vec![ServerMessage {
+                message: Some(Message::Error(ErrorMessage {
+                    message: "Room is unavailable because its creator is not active".to_string(),
+                    code: crate::impls::error_codes::FORBIDDEN,
+                    detail: String::new(),
+                })),
+            }]
+        }
         ClusterEvent::KickPublisher { .. }
         | ClusterEvent::KickUser { .. }
         | ClusterEvent::KickUserFromRoom { .. }
@@ -3456,29 +3467,65 @@ const fn should_transition_webrtc_membership(
     }
 }
 
-#[inline]
-fn membership_invalidation_requires_skip_cleanup(
-    member: Option<&synctv_core::models::RoomMember>,
-) -> bool {
-    match member {
-        Some(member) => member.status == synctv_core::models::MemberStatus::Banned,
-        None => true,
+#[derive(Debug)]
+enum RealtimeMembershipAccess {
+    Allowed(synctv_core::models::RoomMember),
+    Denied(String),
+}
+
+async fn probe_realtime_membership_access_with_room(
+    room_service: &RoomService,
+    room: &synctv_core::models::Room,
+    user_id: &UserId,
+) -> synctv_core::Result<RealtimeMembershipAccess> {
+    match room_service.check_membership_with_room(room, user_id).await {
+        Ok(()) => match room_service
+            .member_service()
+            .get_member(&room.id, user_id)
+            .await?
+        {
+            Some(member) => Ok(RealtimeMembershipAccess::Allowed(member)),
+            None => Ok(RealtimeMembershipAccess::Denied(
+                "Not a member of this room".to_string(),
+            )),
+        },
+        Err(synctv_core::Error::Authorization(message))
+            if message == "Not a member of this room" =>
+        {
+            match room_service
+                .member_service()
+                .get_member(&room.id, user_id)
+                .await?
+            {
+                Some(member) if member.status == synctv_core::models::MemberStatus::Banned => Ok(
+                    RealtimeMembershipAccess::Denied("User is banned from this room".to_string()),
+                ),
+                Some(_) | None => Ok(RealtimeMembershipAccess::Denied(message)),
+            }
+        }
+        Err(synctv_core::Error::Authorization(message)) => {
+            Ok(RealtimeMembershipAccess::Denied(message))
+        }
+        Err(error) => Err(error),
     }
+}
+
+async fn probe_realtime_membership_access(
+    room_service: &RoomService,
+    room_id: &RoomId,
+    user_id: &UserId,
+) -> synctv_core::Result<RealtimeMembershipAccess> {
+    let room = room_service.get_room(room_id).await?;
+    probe_realtime_membership_access_with_room(room_service, &room, user_id).await
 }
 
 #[inline]
 fn initial_realtime_join_denial_reason(
-    member_lookup: &std::result::Result<
-        Option<synctv_core::models::RoomMember>,
-        synctv_core::Error,
-    >,
-) -> Option<&'static str> {
+    member_lookup: &std::result::Result<RealtimeMembershipAccess, synctv_core::Error>,
+) -> Option<String> {
     match member_lookup {
-        Ok(Some(member)) if member.status == synctv_core::models::MemberStatus::Banned => {
-            Some("User is banned from this room")
-        }
-        Ok(Some(_)) => None,
-        Ok(None) => Some("Not a member of this room"),
+        Ok(RealtimeMembershipAccess::Allowed(_)) => None,
+        Ok(RealtimeMembershipAccess::Denied(reason)) => Some(reason.clone()),
         Err(_) => None,
     }
 }
@@ -3513,7 +3560,8 @@ fn admin_event_requires_skip_cleanup(
         // A global KickUser must still allow connection cleanup to publish a
         // room-scoped UserLeft on the affected room.
         ClusterEvent::KickUser { user_id: _uid, .. } => false,
-        ClusterEvent::RoomBanned { room_id: rid, .. } => rid == room_id,
+        ClusterEvent::RoomBanned { room_id: rid, .. }
+        | ClusterEvent::RoomOwnerInactive { room_id: rid, .. } => rid == room_id,
         ClusterEvent::KickUserFromRoom {
             user_id: uid,
             room_id: rid,
@@ -4942,6 +4990,27 @@ mod tests {
     }
 
     #[test]
+    fn test_room_owner_inactive_event_conversion() {
+        let event = ClusterEvent::RoomOwnerInactive {
+            event_id: "evt11c".to_string(),
+            room_id: room_id(),
+            owner_id: user_id(),
+            triggered_by: user_id(),
+            timestamp: now(),
+        };
+
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
+            Some(Message::Error(e)) => {
+                assert!(e.message.contains("creator"));
+                assert_eq!(e.code, crate::impls::error_codes::FORBIDDEN);
+            }
+            other => panic!("Expected Error message for RoomOwnerInactive, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_system_notification_event_conversion() {
         let event = ClusterEvent::SystemNotification {
             event_id: "evt12".to_string(),
@@ -5725,63 +5794,38 @@ mod tests {
     }
 
     #[test]
-    fn test_membership_invalidation_requires_skip_cleanup_for_banned_member() {
-        let mut member = synctv_core::models::RoomMember::new(
-            room_id(),
-            user_id(),
-            synctv_core::models::RoomRole::Member,
-        );
-        member.status = synctv_core::models::MemberStatus::Banned;
-
-        assert!(super::membership_invalidation_requires_skip_cleanup(Some(
-            &member
-        )));
-    }
-
-    #[test]
-    fn test_membership_invalidation_requires_skip_cleanup_for_missing_member() {
-        assert!(super::membership_invalidation_requires_skip_cleanup(None));
-    }
-
-    #[test]
-    fn test_membership_invalidation_keeps_cleanup_for_active_member() {
-        let member = synctv_core::models::RoomMember::new(
-            room_id(),
-            user_id(),
-            synctv_core::models::RoomRole::Member,
-        );
-
-        assert!(!super::membership_invalidation_requires_skip_cleanup(Some(
-            &member
-        )));
-    }
-
-    #[test]
     fn test_initial_realtime_join_denial_reason_rejects_missing_member() {
-        let lookup: std::result::Result<
-            Option<synctv_core::models::RoomMember>,
-            synctv_core::Error,
-        > = Ok(None);
+        let lookup = Ok(super::RealtimeMembershipAccess::Denied(
+            "Not a member of this room".to_string(),
+        ));
 
         assert_eq!(
-            super::initial_realtime_join_denial_reason(&lookup),
+            super::initial_realtime_join_denial_reason(&lookup).as_deref(),
             Some("Not a member of this room")
         );
     }
 
     #[test]
     fn test_initial_realtime_join_denial_reason_rejects_banned_member() {
-        let mut member = synctv_core::models::RoomMember::new(
-            room_id(),
-            user_id(),
-            synctv_core::models::RoomRole::Member,
-        );
-        member.status = synctv_core::models::MemberStatus::Banned;
-        let lookup = Ok(Some(member));
+        let lookup = Ok(super::RealtimeMembershipAccess::Denied(
+            "User is banned from this room".to_string(),
+        ));
 
         assert_eq!(
-            super::initial_realtime_join_denial_reason(&lookup),
+            super::initial_realtime_join_denial_reason(&lookup).as_deref(),
             Some("User is banned from this room")
+        );
+    }
+
+    #[test]
+    fn test_initial_realtime_join_denial_reason_rejects_room_with_inactive_creator() {
+        let lookup = Ok(super::RealtimeMembershipAccess::Denied(
+            "Room is unavailable because its creator is not active".to_string(),
+        ));
+
+        assert_eq!(
+            super::initial_realtime_join_denial_reason(&lookup).as_deref(),
+            Some("Room is unavailable because its creator is not active")
         );
     }
 
@@ -5934,6 +5978,98 @@ mod tests {
         assert!(
             error.to_string().contains("closed"),
             "expected closed-room error, got: {error}"
+        );
+        assert_eq!(connection_manager.connection_count(), 0);
+        assert_eq!(connection_manager.room_connection_count(&room.id), 0);
+        assert_eq!(connection_manager.user_connection_count(&member.id), 0);
+
+        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_pre_join_after_registration_rejects_room_with_inactive_creator() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let cluster_manager =
+            test_cluster_manager("test_pre_join_room_creator_inactive_final_revalidation").await;
+        let connection_manager = test_connection_manager();
+        let room_service = test_room_service(pool.clone());
+        let user_service = room_service.user_service().clone();
+        let owner = user_service
+            .register(
+                "room-owner-inactive".to_string(),
+                Some("owner-inactive@test.invalid".to_string()),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("owner should register")
+            .0;
+        let member = user_service
+            .register(
+                "room-member-inactive-owner".to_string(),
+                Some("member-inactive-owner@test.invalid".to_string()),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("member should register")
+            .0;
+        let (room, _) = room_service
+            .create_room(
+                "Realtime Room Inactive Owner".to_string(),
+                "test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+        room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("member should join room");
+
+        let handler = super::StreamMessageHandler::new(
+            room.id.clone(),
+            member.id.clone(),
+            member.username.clone(),
+            Arc::clone(&room_service),
+            test_chat_service(pool.clone()),
+            Arc::clone(&cluster_manager),
+            connection_manager.clone(),
+            Arc::new(RateLimiter::in_memory_only(
+                "test:pre-join-room-owner-inactive:".to_string(),
+            )),
+            Arc::new(RateLimitConfig::default()),
+            Arc::new(ContentFilter::new()),
+            FailingMessageSender::fail_after(usize::MAX),
+        );
+
+        connection_manager
+            .register(handler.connection_id.clone(), handler.user_id.clone())
+            .await
+            .expect("register should succeed before final admission");
+
+        let mut updated_owner = user_service
+            .get_user(&owner.id)
+            .await
+            .expect("owner should still exist");
+        let old_version = updated_owner.version;
+        updated_owner.status = UserStatus::Banned;
+        user_service
+            .update_user(&updated_owner, old_version)
+            .await
+            .expect("banning room owner should succeed");
+
+        let error = handler
+            .pre_join_after_registration()
+            .await
+            .expect_err("room with inactive creator must fail final realtime admission");
+
+        assert!(
+            error.to_string().contains("creator is not active"),
+            "expected room-owner-inactive error, got: {error}"
         );
         assert_eq!(connection_manager.connection_count(), 0);
         assert_eq!(connection_manager.room_connection_count(&room.id), 0);

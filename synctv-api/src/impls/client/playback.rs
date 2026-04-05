@@ -12,6 +12,10 @@ use super::convert::{
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 
+fn providers_manager_unavailable_error() -> ApiError {
+    ApiError::ServiceUnavailable("Playback providers are not available on this server.".to_string())
+}
+
 fn static_media_provider_instance_name(
     media: &synctv_core::models::Media,
 ) -> Result<&str, ApiError> {
@@ -55,7 +59,7 @@ impl ClientApiImpl {
         let providers_manager = self
             .providers_manager
             .as_ref()
-            .ok_or_else(|| ApiError::Internal("Providers manager not configured".to_string()))?;
+            .ok_or_else(providers_manager_unavailable_error)?;
 
         let instance_name = static_media_provider_instance_name(&media)?;
 
@@ -101,6 +105,18 @@ impl ClientApiImpl {
         playlist_id: &PlaylistId,
         target: &[u8],
     ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
+        let playlist = self
+            .room_service
+            .playlist_service()
+            .get_playlist(playlist_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
+        self.room_service
+            .ensure_client_usable_playlist(&playlist)
+            .await
+            .map_err(ApiError::from)?;
+
         let item = self
             .room_service
             .media_service()
@@ -114,14 +130,6 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Dynamic playlist item not found".to_string()))?;
 
-        let playlist = self
-            .room_service
-            .playlist_service()
-            .get_playlist(playlist_id)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
-
         let provider_name = playlist
             .source_provider
             .as_deref()
@@ -129,7 +137,7 @@ impl ClientApiImpl {
         let providers_manager = self
             .providers_manager
             .as_ref()
-            .ok_or_else(|| ApiError::Internal("Providers manager not configured".to_string()))?;
+            .ok_or_else(providers_manager_unavailable_error)?;
         let bound_instance = playlist.provider_instance_name.as_deref().and_then(|name| {
             let trimmed = name.trim();
             if trimmed.is_empty() {
@@ -161,7 +169,7 @@ impl ClientApiImpl {
             Some(playlist_id.clone()),
             room_id_model.clone(),
             item.name.clone(),
-            0,
+            0.0,
         )
         .default_mode(provider_result.default_mode.clone());
 
@@ -295,7 +303,7 @@ impl ClientApiImpl {
                 playlist_id: String::new(),
                 room_id: rid.as_str().to_string(),
                 name: String::new(),
-                position: 0,
+                position: 0.0,
                 playback_infos: std::collections::HashMap::new(),
                 default_mode: String::new(),
                 metadata: std::collections::HashMap::new(),
@@ -401,7 +409,8 @@ impl ClientApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::static_media_provider_instance_name;
+    use super::{providers_manager_unavailable_error, static_media_provider_instance_name};
+    use crate::impls::ErrorKind;
     use chrono::Utc;
     use synctv_core::models::{Media, MediaId, RoomId};
 
@@ -412,7 +421,7 @@ mod tests {
             room_id: RoomId::from_string("room_static".to_string()),
             creator_id: None,
             name: "Static Media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
             provider_instance_name: provider_instance_name.to_string(),
@@ -434,5 +443,15 @@ mod tests {
         let media = make_media("");
         let err = static_media_provider_instance_name(&media).unwrap_err();
         assert!(err.to_string().contains("provider_instance_name"));
+    }
+
+    #[test]
+    fn test_providers_manager_missing_is_service_unavailable() {
+        let err = providers_manager_unavailable_error();
+        assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(
+            err.message(),
+            "Playback providers are not available on this server."
+        );
     }
 }

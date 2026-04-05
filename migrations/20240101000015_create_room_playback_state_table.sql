@@ -1,6 +1,6 @@
 -- Create room_playback_state table
 CREATE TABLE IF NOT EXISTS room_playback_state (
-    room_id CHAR(12) PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+    room_id CHAR(12) PRIMARY KEY REFERENCES rooms(id) ON DELETE RESTRICT,
     playing_media_id CHAR(12) NULL,
     playing_playlist_id CHAR(12) NULL,
     target BYTEA NOT NULL DEFAULT ''::bytea,

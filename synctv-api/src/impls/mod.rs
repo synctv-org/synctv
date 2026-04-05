@@ -5,6 +5,7 @@
 //!
 //! All methods use grpc-generated types for parameters and return values.
 use std::time::Duration;
+use synctv_livestream::error::StreamError;
 
 pub mod admin;
 pub mod client;
@@ -82,6 +83,17 @@ pub fn cluster_fanout_required(cluster_mode: bool, redis_publish_tx_configured: 
 pub fn cluster_fanout_failure(message: impl Into<String>) -> ApiError {
     ApiError::ServiceUnavailable(message.into())
 }
+
+const LIVESTREAM_NOT_AVAILABLE_MESSAGE: &str = "Live stream is not currently available";
+const LIVESTREAM_PERMISSION_DENIED_MESSAGE: &str =
+    "You do not have permission to access this live stream";
+const LIVESTREAM_RATE_LIMITED_MESSAGE: &str =
+    "Live streaming capacity limit reached. Please try again later.";
+const LIVESTREAM_UNAVAILABLE_MESSAGE: &str =
+    "Live streaming service is temporarily unavailable. Please try again later.";
+const LIVESTREAM_REQUEST_FAILED_MESSAGE: &str = "Live streaming request failed";
+const UPSTREAM_PROVIDER_UNAVAILABLE_MESSAGE: &str =
+    "Upstream provider service is temporarily unavailable.";
 
 #[derive(Debug)]
 pub struct ClusterEventPublishReservation {
@@ -198,6 +210,162 @@ pub async fn kick_stream_cluster(
             );
         }
     }
+}
+
+pub async fn active_room_stream_media_ids(
+    live_streaming_infrastructure: Option<
+        &std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+    >,
+    room_id: &str,
+) -> Vec<String> {
+    let mut media_ids = std::collections::BTreeSet::new();
+
+    if let Some(infra) = live_streaming_infrastructure {
+        media_ids.extend(infra.user_stream_tracker.get_room_streams(room_id));
+
+        match infra.registry.list_streams_for_room(room_id).await {
+            Ok(remote_media_ids) => media_ids.extend(remote_media_ids),
+            Err(error) => {
+                tracing::warn!(
+                    room_id,
+                    error = %error,
+                    "Failed to list room streams from registry; falling back to local tracker view"
+                );
+            }
+        }
+    }
+
+    media_ids.into_iter().collect()
+}
+
+pub async fn disconnect_deleted_user(
+    connection_manager: &synctv_cluster::sync::ConnectionManager,
+    live_streaming_infrastructure: Option<
+        &std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+    >,
+    redis_publish_tx: Option<&tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
+    user_id: &synctv_core::models::UserId,
+    reason: &str,
+) {
+    use synctv_cluster::sync::{ClusterEvent, PublishRequest};
+
+    connection_manager.disconnect_user(user_id);
+
+    if let Some(infra) = live_streaming_infrastructure {
+        let streams = infra.user_stream_tracker.get_user_streams(user_id.as_str());
+
+        for (room_id, media_id) in &streams {
+            kick_stream_cluster(Some(infra), redis_publish_tx, room_id, media_id, reason).await;
+        }
+
+        infra.kick_user_publishers(user_id.as_str()).await;
+    }
+
+    if let Some(tx) = redis_publish_tx {
+        let _ = try_publish_cluster_event(
+            tx,
+            PublishRequest {
+                event: ClusterEvent::KickUser {
+                    event_id: synctv_common::snanoid!(16),
+                    user_id: user_id.clone(),
+                    reason: reason.to_string(),
+                    timestamp: chrono::Utc::now(),
+                },
+            },
+        )
+        .await;
+    }
+}
+
+pub async fn finalize_user_deletion(
+    room_service: &synctv_core::service::RoomService,
+    connection_manager: &synctv_cluster::sync::ConnectionManager,
+    live_streaming_infrastructure: Option<
+        &std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+    >,
+    redis_publish_tx: Option<&tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
+    summary: &synctv_core::service::user::UserDeletionSummary,
+    deleted_by: &synctv_core::models::UserId,
+    disconnect_reason: &str,
+) {
+    use synctv_cluster::sync::{ClusterEvent, PublishRequest};
+
+    for room_id in &summary.membership_room_ids {
+        room_service
+            .permission_service()
+            .invalidate_cache(room_id, &summary.user_id)
+            .await;
+    }
+
+    for impact in &summary.modified_rooms {
+        room_service
+            .finalize_entry_deletions_after_commit(
+                &impact.room_id,
+                &impact.deleted_media_ids,
+                impact.playback_reset,
+            )
+            .await;
+
+        for media_id in &impact.deleted_media_ids {
+            kick_stream_cluster(
+                live_streaming_infrastructure,
+                redis_publish_tx,
+                impact.room_id.as_str(),
+                media_id.as_str(),
+                "user_resource_deleted",
+            )
+            .await;
+        }
+    }
+
+    for room_id in &summary.deleted_room_ids {
+        room_service
+            .finalize_deleted_room_after_commit(room_id)
+            .await;
+
+        if let Some(tx) = redis_publish_tx {
+            let _ = try_publish_cluster_event(
+                tx,
+                PublishRequest {
+                    event: ClusterEvent::RoomDeleted {
+                        event_id: synctv_common::snanoid!(16),
+                        room_id: room_id.clone(),
+                        deleted_by: deleted_by.clone(),
+                        timestamp: chrono::Utc::now(),
+                    },
+                },
+            )
+            .await;
+        }
+
+        connection_manager.disconnect_room(room_id);
+
+        let media_ids =
+            active_room_stream_media_ids(live_streaming_infrastructure, room_id.as_str()).await;
+        for media_id in &media_ids {
+            kick_stream_cluster(
+                live_streaming_infrastructure,
+                redis_publish_tx,
+                room_id.as_str(),
+                media_id,
+                "room_deleted",
+            )
+            .await;
+        }
+
+        if let Some(infra) = live_streaming_infrastructure {
+            infra.kick_room_publishers(room_id.as_str()).await;
+        }
+    }
+
+    disconnect_deleted_user(
+        connection_manager,
+        live_streaming_infrastructure,
+        redis_publish_tx,
+        &summary.user_id,
+        disconnect_reason,
+    )
+    .await;
 }
 
 /// Application-level error codes for client-side programmatic handling.
@@ -334,11 +502,19 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             ProviderError::NetworkError(msg) | ProviderError::ApiError(msg) => {
                 Self::ServiceUnavailable(msg)
             }
-            ProviderError::UpstreamHttp { status, url } => {
-                if status >= 500 {
-                    Self::ServiceUnavailable(format!("Upstream HTTP {status} error for {url}"))
+            ProviderError::UpstreamHttp { status, .. } => {
+                if status == 401 || status == 403 {
+                    tracing::warn!(status, "Upstream provider authentication failure");
+                    Self::Authentication("Provider authentication failed".to_string())
+                } else if status == 404 {
+                    tracing::info!(status, "Upstream provider resource not found");
+                    Self::NotFound("Provider resource not found".to_string())
+                } else if status == 408 || status == 429 || status >= 500 {
+                    tracing::warn!(status, "Upstream provider unavailable");
+                    Self::ServiceUnavailable(UPSTREAM_PROVIDER_UNAVAILABLE_MESSAGE.to_string())
                 } else {
-                    Self::Internal(format!("Upstream HTTP {status} error for {url}"))
+                    tracing::warn!(status, "Upstream provider rejected request");
+                    Self::InvalidInput("Upstream provider rejected the request.".to_string())
                 }
             }
             ProviderError::ParseError(msg)
@@ -412,20 +588,68 @@ impl ApiError {
     }
 }
 
+pub(crate) fn find_livestream_stream_error<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a StreamError> {
+    let mut current = Some(error);
+    while let Some(err) = current {
+        if let Some(stream_error) = err.downcast_ref::<StreamError>() {
+            return Some(stream_error);
+        }
+        current = err.source();
+    }
+
+    None
+}
+
+#[must_use]
+pub(crate) fn map_livestream_stream_error(stream_error: &StreamError) -> ApiError {
+    match stream_error {
+        StreamError::NoPublisher(_)
+        | StreamError::StreamNotFound(_)
+        | StreamError::InvalidStreamKey(_) => {
+            ApiError::NotFound(LIVESTREAM_NOT_AVAILABLE_MESSAGE.to_string())
+        }
+        StreamError::PermissionDenied(_) | StreamError::AuthenticationFailed(_) => {
+            ApiError::Authorization(LIVESTREAM_PERMISSION_DENIED_MESSAGE.to_string())
+        }
+        StreamError::ResourceExhausted(_) => {
+            ApiError::RateLimited(LIVESTREAM_RATE_LIMITED_MESSAGE.to_string())
+        }
+        StreamError::InvalidAddress(_)
+        | StreamError::ProtocolError(_)
+        | StreamError::HandshakeFailed(_)
+        | StreamError::InvalidState(_)
+        | StreamError::RedisError(_)
+        | StreamError::RegistryError(_)
+        | StreamError::GrpcError(_)
+        | StreamError::ConnectionFailed(_)
+        | StreamError::StaleEpoch(_)
+        | StreamError::StreamHubError(_) => {
+            ApiError::ServiceUnavailable(LIVESTREAM_UNAVAILABLE_MESSAGE.to_string())
+        }
+        StreamError::IoError(_)
+        | StreamError::Internal(_)
+        | StreamError::AlreadyPublishing(_)
+        | StreamError::PublisherExists(_) => {
+            ApiError::Internal(LIVESTREAM_REQUEST_FAILED_MESSAGE.to_string())
+        }
+    }
+}
+
+#[must_use]
+pub(crate) fn map_livestream_backend_error(error: &(dyn std::error::Error + 'static)) -> ApiError {
+    if let Some(stream_error) = find_livestream_stream_error(error) {
+        return map_livestream_stream_error(stream_error);
+    }
+
+    tracing::error!(error = %error, "Unexpected livestream backend error");
+    ApiError::Internal(LIVESTREAM_REQUEST_FAILED_MESSAGE.to_string())
+}
+
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Use the same prefixes that classify_by_prefix recognizes, so that
-        // if an ApiError is converted to String it still classifies correctly.
-        match self {
-            Self::NotFound(msg) => write!(f, "Not found: {msg}"),
-            Self::Authentication(msg) => write!(f, "Authentication error: {msg}"),
-            Self::Authorization(msg) => write!(f, "Authorization error: {msg}"),
-            Self::AlreadyExists(msg) => write!(f, "Already exists: {msg}"),
-            Self::InvalidInput(msg) => write!(f, "Invalid input: {msg}"),
-            Self::RateLimited(msg) => write!(f, "Rate limited: {msg}"),
-            Self::ServiceUnavailable(msg) => write!(f, "Service unavailable: {msg}"),
-            Self::Internal(msg) => write!(f, "Internal error: {msg}"),
-        }
+        f.write_str(self.message())
     }
 }
 
@@ -903,47 +1127,36 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_api_error_display_roundtrips_through_classify() {
-        // ApiError::Display produces prefixed strings that classify_by_prefix recognizes
-        let cases: Vec<(ApiError, fn(&ErrorKind) -> bool)> = vec![
-            (ApiError::NotFound("room".into()), |k| {
-                matches!(k, ErrorKind::NotFound)
-            }),
-            (ApiError::Authentication("bad".into()), |k| {
-                matches!(k, ErrorKind::Unauthenticated)
-            }),
-            (ApiError::Authorization("denied".into()), |k| {
-                matches!(k, ErrorKind::PermissionDenied)
-            }),
-            (ApiError::AlreadyExists("dup".into()), |k| {
-                matches!(k, ErrorKind::AlreadyExists)
-            }),
-            (ApiError::InvalidInput("bad".into()), |k| {
-                matches!(k, ErrorKind::InvalidArgument)
-            }),
-            (ApiError::RateLimited("too fast".into()), |k| {
-                matches!(k, ErrorKind::RateLimited)
-            }),
-            (ApiError::ServiceUnavailable("down".into()), |k| {
-                matches!(k, ErrorKind::ServiceUnavailable)
-            }),
-            (ApiError::Internal("boom".into()), |k| {
-                matches!(k, ErrorKind::Internal)
-            }),
+    fn test_api_error_display_uses_user_message() {
+        let cases = [
+            ApiError::NotFound("room not found".into()),
+            ApiError::Authentication("invalid token".into()),
+            ApiError::Authorization("not a member of this room".into()),
+            ApiError::AlreadyExists("user already exists".into()),
+            ApiError::InvalidInput("username is required".into()),
+            ApiError::RateLimited("room at capacity".into()),
+            ApiError::ServiceUnavailable("backend unavailable".into()),
+            ApiError::Internal("internal details".into()),
         ];
-        for (api_err, check) in cases {
-            let as_string = api_err.to_string();
-            let classified = classify_error(&as_string);
-            assert!(
-                check(&classified),
-                "ApiError '{as_string}' misclassified after Display roundtrip"
-            );
+
+        for api_err in cases {
+            assert_eq!(api_err.to_string(), api_err.message());
         }
     }
 
     #[test]
-    fn test_parse_api_error_string_strips_structured_prefixes() {
+    fn test_parse_api_error_string_keeps_plain_message() {
+        let (kind, message) = parse_api_error_string("realtime room capacity exceeded");
+        assert!(matches!(kind, ErrorKind::RateLimited));
+        assert_eq!(message, "realtime room capacity exceeded");
+
+        let (kind, message) = parse_api_error_string("distributed room capacity check unavailable");
+        assert!(matches!(kind, ErrorKind::ServiceUnavailable));
+        assert_eq!(message, "distributed room capacity check unavailable");
+    }
+
+    #[test]
+    fn test_parse_api_error_string_still_accepts_legacy_prefixed_messages() {
         let (kind, message) =
             parse_api_error_string("Rate limited: realtime room capacity exceeded");
         assert!(matches!(kind, ErrorKind::RateLimited));
@@ -1115,7 +1328,7 @@ mod tests {
     fn test_api_error_from_string_conversion() {
         let err = ApiError::NotFound("item".to_string());
         let s: String = err.into();
-        assert!(s.starts_with("Not found: "));
+        assert_eq!(s, "item");
     }
 
     #[test]
@@ -1212,10 +1425,72 @@ mod tests {
         assert!(matches!(
             api_err,
             ApiError::ServiceUnavailable(ref msg)
-                if msg == "Upstream HTTP 503 error for https://provider.example/api"
+                if msg == "Upstream provider service is temporarily unavailable."
         ));
         assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
         assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_api_error_from_provider_upstream_408_maps_to_service_unavailable() {
+        let provider_err = synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 408,
+            url: "https://provider.example/api?token=secret".to_string(),
+        };
+        let api_err = ApiError::from(provider_err);
+        assert!(matches!(
+            api_err,
+            ApiError::ServiceUnavailable(ref msg)
+                if msg == "Upstream provider service is temporarily unavailable."
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_api_error_from_provider_upstream_429_maps_to_service_unavailable() {
+        let provider_err = synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 429,
+            url: "https://provider.example/api?token=secret".to_string(),
+        };
+        let api_err = ApiError::from(provider_err);
+        assert!(matches!(
+            api_err,
+            ApiError::ServiceUnavailable(ref msg)
+                if msg == "Upstream provider service is temporarily unavailable."
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_api_error_from_provider_upstream_404_maps_to_not_found() {
+        let provider_err = synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 404,
+            url: "https://provider.example/api".to_string(),
+        };
+        let api_err = ApiError::from(provider_err);
+        assert!(matches!(
+            api_err,
+            ApiError::NotFound(ref msg) if msg == "Provider resource not found"
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::NotFound));
+        assert_eq!(api_err.code(), error_codes::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_api_error_from_provider_upstream_400_maps_to_invalid_input() {
+        let provider_err = synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 400,
+            url: "https://provider.example/api".to_string(),
+        };
+        let api_err = ApiError::from(provider_err);
+        assert!(matches!(
+            api_err,
+            ApiError::InvalidInput(ref msg) if msg == "Upstream provider rejected the request."
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::InvalidArgument));
+        assert_eq!(api_err.code(), error_codes::INVALID_ARGUMENT);
     }
 
     #[test]
@@ -1230,13 +1505,13 @@ mod tests {
     fn test_api_error_rate_limited_display() {
         let err = ApiError::RateLimited("exceeded quota".to_string());
         let display = err.to_string();
-        assert_eq!(display, "Rate limited: exceeded quota");
+        assert_eq!(display, "exceeded quota");
     }
 
     #[test]
     fn test_api_error_service_unavailable_display() {
         let err = ApiError::ServiceUnavailable("redis unavailable".to_string());
         let display = err.to_string();
-        assert_eq!(display, "Service unavailable: redis unavailable");
+        assert_eq!(display, "redis unavailable");
     }
 }

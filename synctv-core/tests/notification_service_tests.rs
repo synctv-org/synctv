@@ -172,7 +172,7 @@ fn test_event_type_names_all_variants() {
                 media_id: "m1".to_string(),
                 title: "Test".to_string(),
                 url: "http://example.com".to_string(),
-                position: 0,
+                position: 0.0,
             },
             "media_added",
         ),

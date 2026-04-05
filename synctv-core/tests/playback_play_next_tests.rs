@@ -126,7 +126,7 @@ async fn create_top_level_playlist(pool: &PgPool, room_id: &RoomId) -> Playlist 
         creator_id: None,
         name: "Top Level".to_string(),
         parent_id: None,
-        position: 0,
+        position: 0.0,
         source_provider: None,
         source_config: None,
         provider_instance_name: None,
@@ -154,7 +154,7 @@ async fn insert_media(
         room_id: room_id.clone(),
         creator_id: None,
         name: name.to_string(),
-        position,
+        position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", name)}),
         provider_instance_name: "direct_url".to_string(),
@@ -176,7 +176,7 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
         room_id: room_id.clone(),
         creator_id: None,
         name: name.to_string(),
-        position,
+        position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", name)}),
         provider_instance_name: "direct_url".to_string(),
@@ -390,7 +390,7 @@ async fn create_dynamic_playlist(
         creator_id: Some(owner_id.clone()),
         name: "Dynamic Playlist".to_string(),
         parent_id: None,
-        position: 0,
+        position: 0.0,
         source_provider: Some("fake_dynamic".to_string()),
         source_config: Some(serde_json::json!({})),
         provider_instance_name: Some(provider_instance_name.to_string()),
@@ -868,7 +868,7 @@ async fn test_no_current_media_plays_first() {
             room_id: room.id.clone(),
             creator_id: None,
             name: "first_vid".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": "https://example.com/first_vid.mp4"}),
             provider_instance_name: "direct_url".to_string(),
@@ -885,7 +885,7 @@ async fn test_no_current_media_plays_first() {
             room_id: room.id.clone(),
             creator_id: None,
             name: "second_vid".to_string(),
-            position: 1,
+            position: 1.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": "https://example.com/second_vid.mp4"}),
             provider_instance_name: "direct_url".to_string(),
@@ -965,6 +965,97 @@ async fn test_no_current_media_ignores_other_rooms_root_media() {
     assert_eq!(state.playing_playlist_id, None);
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let room_owner = user_repo
+        .create(&make_user("play_next_owner"))
+        .await
+        .unwrap();
+    let next_creator = user_repo
+        .create(&make_user("play_next_inactive_creator"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Play Next Inactive Media".to_string(),
+            String::new(),
+            room_owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media_repo = MediaRepository::new(pool.clone());
+    let media1 = Media {
+        id: MediaId::new(),
+        playlist_id: Some(playlist.id.clone()),
+        room_id: room.id.clone(),
+        creator_id: Some(room_owner.id.clone()),
+        name: "episode-1".to_string(),
+        position: 0.0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/episode-1.mp4"}),
+        provider_instance_name: "direct_url".to_string(),
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    let media2 = Media {
+        id: MediaId::new(),
+        playlist_id: Some(playlist.id.clone()),
+        room_id: room.id.clone(),
+        creator_id: Some(next_creator.id.clone()),
+        name: "episode-2".to_string(),
+        position: 1.0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/episode-2.mp4"}),
+        provider_instance_name: "direct_url".to_string(),
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    media_repo.create(&media1).await.unwrap();
+    media_repo.create(&media2).await.unwrap();
+
+    room_service
+        .playback_service()
+        .switch(
+            room.id.clone(),
+            room_owner.id.clone(),
+            Some(media1.id.clone()),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
+        .bind(next_creator.id.as_str())
+        .bind(UserStatus::Banned)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let settings = make_settings_with_mode(PlayMode::Sequential);
+    let state = room_service
+        .playback_service()
+        .play_next(&room.id, &settings)
+        .await
+        .unwrap()
+        .expect("play_next should stop playback when next media creator is inactive");
+
+    assert!(state.playing_media_id.is_none());
+    assert!(state.playing_playlist_id.is_none());
+    assert!(!state.is_playing);
+}
+
 // ========== Dynamic Playlist Tests ==========
 
 #[tokio::test]
@@ -1029,6 +1120,161 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
     );
     assert!((state.current_time - 0.0).abs() < f64::EPSILON);
     assert!(state.is_playing);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+        synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+    )));
+    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    providers_manager.register_factory(
+        "fake_dynamic",
+        Box::new(|instance_id, _config, _instance_manager| {
+            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
+        }),
+    );
+    let providers_manager = Arc::new(providers_manager);
+    let room_service = make_room_service_with_providers(pool.clone(), providers_manager);
+
+    let room_owner = user_repo
+        .create(&make_user("dynamic_inactive_owner"))
+        .await
+        .unwrap();
+    let playlist_creator = user_repo
+        .create(&make_user("dynamic_inactive_creator"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Dynamic Inactive Creator".to_string(),
+            String::new(),
+            room_owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    register_fake_dynamic_provider(&room_service).await;
+    let playlist = create_dynamic_playlist(
+        &pool,
+        &room.id,
+        &playlist_creator.id,
+        "fake_dynamic_default",
+    )
+    .await;
+
+    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
+        .bind(playlist_creator.id.as_str())
+        .bind(UserStatus::Banned)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let result = room_service
+        .playback_service()
+        .switch(
+            room.id.clone(),
+            room_owner.id.clone(),
+            None,
+            Some(playlist.id.clone()),
+            dynamic_target("/episode-1.mp4"),
+        )
+        .await;
+
+    match result.expect_err("dynamic playlist created by banned user must not be playable") {
+        synctv_core::Error::Authorization(message) => {
+            assert!(
+                message.contains("creator") && message.contains("active"),
+                "error should explain creator status: {message}"
+            );
+        }
+        other => panic!("expected authorization error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+        synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+    )));
+    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    providers_manager.register_factory(
+        "fake_dynamic",
+        Box::new(|instance_id, _config, _instance_manager| {
+            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
+        }),
+    );
+    let providers_manager = Arc::new(providers_manager);
+    let room_service = make_room_service_with_providers(pool.clone(), providers_manager);
+
+    let room_owner = user_repo
+        .create(&make_user("dynamic_play_next_owner"))
+        .await
+        .unwrap();
+    let playlist_creator = user_repo
+        .create(&make_user("dynamic_play_next_inactive_creator"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Dynamic Play Next Inactive Creator".to_string(),
+            String::new(),
+            room_owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    register_fake_dynamic_provider(&room_service).await;
+    let playlist = create_dynamic_playlist(
+        &pool,
+        &room.id,
+        &playlist_creator.id,
+        "fake_dynamic_default",
+    )
+    .await;
+
+    room_service
+        .playback_service()
+        .switch(
+            room.id.clone(),
+            room_owner.id.clone(),
+            None,
+            Some(playlist.id.clone()),
+            dynamic_target("/episode-1.mp4"),
+        )
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
+        .bind(playlist_creator.id.as_str())
+        .bind(UserStatus::Banned)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let settings = make_settings_with_mode(PlayMode::Sequential);
+    let state = room_service
+        .playback_service()
+        .play_next(&room.id, &settings)
+        .await
+        .unwrap()
+        .expect("play_next should stop playback when dynamic playlist creator is inactive");
+
+    assert!(state.playing_media_id.is_none());
+    assert!(state.playing_playlist_id.is_none());
+    assert!(!state.is_playing);
 }
 
 #[tokio::test]

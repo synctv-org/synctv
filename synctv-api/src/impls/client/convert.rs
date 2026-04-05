@@ -18,6 +18,14 @@ pub(super) const fn user_status_to_proto(status: synctv_core::models::UserStatus
     }
 }
 
+pub(crate) const fn resource_availability_to_proto(is_available: bool) -> i32 {
+    if is_available {
+        crate::proto::client::ResourceAvailability::Available as i32
+    } else {
+        crate::proto::client::ResourceAvailability::CreatorInactive as i32
+    }
+}
+
 pub fn proto_role_to_room_role(
     role_i32: i32,
 ) -> Result<synctv_core::models::RoomRole, crate::impls::ApiError> {
@@ -111,6 +119,13 @@ pub(super) fn hot_room_to_proto(
 
 #[must_use]
 pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::client::Media {
+    media_to_proto_with_availability(media, true)
+}
+
+pub fn media_to_proto_with_availability(
+    media: &synctv_core::models::Media,
+    is_available: bool,
+) -> crate::proto::client::Media {
     // Extract metadata from source_config if present (any provider may store it)
     let metadata_bytes = media
         .source_config
@@ -136,12 +151,21 @@ pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::clien
             .map_or(String::new(), |id| id.as_str().to_string()),
         provider_instance_name: media.provider_instance_name.clone(),
         source_config: serde_json::to_vec(&sanitized_config).unwrap_or_default(),
+        availability: resource_availability_to_proto(is_available),
     }
 }
 
 pub(crate) fn playlist_to_proto(
     playlist: &synctv_core::models::Playlist,
     item_count: i32,
+) -> crate::proto::client::Playlist {
+    playlist_to_proto_with_availability(playlist, item_count, true)
+}
+
+pub(crate) fn playlist_to_proto_with_availability(
+    playlist: &synctv_core::models::Playlist,
+    item_count: i32,
+    is_available: bool,
 ) -> crate::proto::client::Playlist {
     crate::proto::client::Playlist {
         id: playlist.id.as_str().to_string(),
@@ -157,6 +181,7 @@ pub(crate) fn playlist_to_proto(
         item_count,
         created_at: playlist.created_at.timestamp(),
         updated_at: playlist.updated_at.timestamp(),
+        availability: resource_availability_to_proto(is_available),
     }
 }
 

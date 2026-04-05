@@ -99,7 +99,6 @@ pub struct CreatePlaylistRequest {
     pub room_id: RoomId,
     pub name: String,
     pub parent_id: Option<PlaylistId>,
-    pub position: Option<i32>,
 
     // Dynamic folder fields
     pub source_provider: Option<String>,
@@ -112,7 +111,13 @@ pub struct CreatePlaylistRequest {
 pub struct SetPlaylistRequest {
     pub playlist_id: PlaylistId,
     pub name: Option<String>,
-    pub position: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MovePlaylistRequest {
+    pub playlist_id: PlaylistId,
+    pub before_playlist_id: Option<PlaylistId>,
+    pub after_playlist_id: Option<PlaylistId>,
 }
 
 /// Playlist management service
@@ -216,16 +221,18 @@ impl PlaylistService {
             }
         }
 
-        // Use explicit position if provided, otherwise use -1 sentinel
-        // to let the repository compute it atomically in the INSERT query
-        let position = request.position.unwrap_or(-1);
-
         let (source_provider, source_config, provider_instance_name) =
             normalize_dynamic_playlist_fields(
                 request.source_provider,
                 request.source_config,
                 request.provider_instance_name,
             )?;
+
+        let mut tx = self.playlist_repo.pool().begin().await?;
+        let position = self
+            .playlist_repo
+            .get_next_append_position_with_tx(&room_id, request.parent_id.as_ref(), &mut tx)
+            .await?;
 
         // Create playlist
         let playlist = Playlist {
@@ -243,7 +250,11 @@ impl PlaylistService {
             version: 0,
         };
 
-        let created_playlist = self.playlist_repo.create(&playlist).await?;
+        let created_playlist = self
+            .playlist_repo
+            .create_with_executor(&playlist, &mut *tx)
+            .await?;
+        tx.commit().await?;
 
         tracing::info!(
             room_id = %room_id.as_str(),
@@ -405,10 +416,6 @@ impl PlaylistService {
                 }
                 playlist.name = name.clone();
             }
-            if let Some(position) = request.position {
-                playlist.position = position;
-            }
-
             // Save with optimistic locking
             match self
                 .playlist_repo
@@ -450,6 +457,67 @@ impl PlaylistService {
         Err(Error::Internal(
             "Playlist update failed after maximum retry attempts".to_string(),
         ))
+    }
+
+    pub async fn move_playlist(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: MovePlaylistRequest,
+    ) -> Result<Playlist> {
+        self.move_playlist_internal(room_id, user_id, request, false).await
+    }
+
+    pub async fn admin_move_playlist(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        request: MovePlaylistRequest,
+    ) -> Result<Playlist> {
+        self.move_playlist_internal(room_id, actor_user_id, request, true)
+            .await
+    }
+
+    async fn move_playlist_internal(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: MovePlaylistRequest,
+        bypass_room_permissions: bool,
+    ) -> Result<Playlist> {
+        if !bypass_room_permissions {
+            self.permission_service
+                .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
+                .await?;
+        }
+
+        let has_before = request.before_playlist_id.is_some();
+        let has_after = request.after_playlist_id.is_some();
+        if has_before == has_after {
+            return Err(Error::InvalidInput(
+                "Exactly one of before_playlist_id or after_playlist_id must be set".to_string(),
+            ));
+        }
+
+        let mut tx = self.playlist_repo.pool().begin().await?;
+        let moved = self
+            .playlist_repo
+            .move_with_tx(
+                &request.playlist_id,
+                request.before_playlist_id.as_ref(),
+                request.after_playlist_id.as_ref(),
+                &mut tx,
+            )
+            .await?;
+
+        if moved.room_id != room_id {
+            return Err(Error::Authorization(
+                "Playlist does not belong to this room".to_string(),
+            ));
+        }
+
+        tx.commit().await?;
+        Ok(moved)
     }
 
     /// Delete playlist
@@ -546,7 +614,6 @@ mod tests {
             room_id: room_id.clone(),
             name: "My Playlist".to_string(),
             parent_id: None,
-            position: None,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -564,7 +631,6 @@ mod tests {
             room_id: RoomId::new(),
             name: "Alist Movies".to_string(),
             parent_id: None,
-            position: Some(0),
             source_provider: Some("alist".to_string()),
             source_config: Some(serde_json::json!({"path": "/movies"})),
             provider_instance_name: Some("alist_home".to_string()),
@@ -582,14 +648,12 @@ mod tests {
             room_id: RoomId::new(),
             name: "Subfolder".to_string(),
             parent_id: Some(parent_id.clone()),
-            position: Some(1),
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
         };
 
         assert_eq!(request.parent_id, Some(parent_id));
-        assert_eq!(request.position, Some(1));
     }
 
     // ========== SetPlaylistRequest Validation ==========
@@ -599,23 +663,21 @@ mod tests {
         let request = SetPlaylistRequest {
             playlist_id: PlaylistId::new(),
             name: Some("New Name".to_string()),
-            position: None,
         };
 
         assert_eq!(request.name, Some("New Name".to_string()));
-        assert!(request.position.is_none());
     }
 
     #[test]
-    fn test_set_playlist_request_position_only() {
-        let request = SetPlaylistRequest {
+    fn test_move_playlist_request_before_anchor() {
+        let request = MovePlaylistRequest {
             playlist_id: PlaylistId::new(),
-            name: None,
-            position: Some(5),
+            before_playlist_id: Some(PlaylistId::new()),
+            after_playlist_id: None,
         };
 
-        assert!(request.name.is_none());
-        assert_eq!(request.position, Some(5));
+        assert!(request.before_playlist_id.is_some());
+        assert!(request.after_playlist_id.is_none());
     }
 
     // ========== Playlist Name Validation Logic ==========
@@ -668,7 +730,7 @@ mod tests {
             creator_id: Some(UserId::new()),
             name: String::new(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -690,7 +752,7 @@ mod tests {
             creator_id: Some(UserId::new()),
             name: "Not Root".to_string(),
             parent_id: Some(PlaylistId::new()),
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -710,7 +772,7 @@ mod tests {
             creator_id: Some(UserId::new()),
             name: String::new(),
             parent_id: Some(PlaylistId::new()),
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -730,7 +792,7 @@ mod tests {
             creator_id: Some(UserId::new()),
             name: "Alist Folder".to_string(),
             parent_id: Some(PlaylistId::new()),
-            position: 0,
+            position: 0.0,
             source_provider: Some("alist".to_string()),
             source_config: Some(serde_json::json!({"path": "/movies"})),
             provider_instance_name: Some("alist_home".to_string()),
@@ -752,7 +814,7 @@ mod tests {
             creator_id: Some(UserId::new()),
             name: "Static Folder".to_string(),
             parent_id: Some(PlaylistId::new()),
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -773,7 +835,6 @@ mod tests {
             room_id: RoomId::new(),
             name: "Bad Dynamic".to_string(),
             parent_id: None,
-            position: None,
             source_provider: Some("alist".to_string()),
             source_config: None,
             provider_instance_name: None,
@@ -835,7 +896,6 @@ mod tests {
             room_id: RoomId::new(),
             name: "Valid Dynamic".to_string(),
             parent_id: None,
-            position: None,
             source_provider: Some("emby".to_string()),
             source_config: Some(serde_json::json!({"library_id": "abc123"})),
             provider_instance_name: Some("emby_main".to_string()),

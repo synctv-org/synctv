@@ -2,12 +2,19 @@
 //!
 //! Design reference: /Volumes/workspace/rust/design/04-数据库设计.md §2.4.2
 
-use sqlx::{FromRow, PgPool};
+use super::query_builder::escape_ilike;
+use sqlx::{FromRow, PgPool, Row};
 
 use crate::{
-    models::{Media, MediaId, PageParams, PlaylistId, RoomId},
+    models::{Media, MediaId, MediaListQuery, PageParams, PlaylistId, RoomId, UserStatus},
     Result,
 };
+
+#[derive(Debug, Clone)]
+pub struct MediaListItem {
+    pub media: Media,
+    pub is_available: bool,
+}
 
 /// Media repository for database operations
 #[derive(Clone)]
@@ -16,6 +23,9 @@ pub struct MediaRepository {
 }
 
 impl MediaRepository {
+    const ORDER_STEP: f64 = 1024.0;
+    const MIN_ORDER_GAP: f64 = 1e-9;
+
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -25,6 +35,151 @@ impl MediaRepository {
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    fn scope_lock_key(room_id: &RoomId, playlist_id: Option<&PlaylistId>) -> i64 {
+        use std::hash::{Hash, Hasher};
+
+        let room_hash = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            room_id.as_str().hash(&mut h);
+            h.finish()
+        };
+        let playlist_hash = playlist_id.map_or(0, |playlist_id| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            playlist_id.as_str().hash(&mut h);
+            h.finish()
+        });
+        let room_bits = (room_hash & 0x7FFFFFFF) as i64;
+        let playlist_bits = (playlist_hash & 0x7FFFFFFF) as i64;
+        (room_bits << 31) | playlist_bits
+    }
+
+    fn build_media_list_order_by(query: &MediaListQuery) -> String {
+        let direction = query.sort_direction.as_sql();
+        match query.sort_by {
+            crate::models::MediaListSortBy::Name => {
+                format!("m.name {direction}, m.position {direction}, m.id {direction}")
+            }
+            crate::models::MediaListSortBy::AddedAt => {
+                format!("m.added_at {direction}, m.position {direction}, m.id {direction}")
+            }
+            crate::models::MediaListSortBy::UpdatedAt => {
+                format!("m.updated_at {direction}, m.position {direction}, m.id {direction}")
+            }
+            crate::models::MediaListSortBy::SourceProvider => format!(
+                "m.source_provider {direction}, m.name {direction}, m.id {direction}"
+            ),
+            crate::models::MediaListSortBy::ProviderInstanceName => format!(
+                "m.provider_instance_name {direction}, m.name {direction}, m.id {direction}"
+            ),
+            crate::models::MediaListSortBy::Position => {
+                format!("m.position {direction}, m.name {direction}, m.id {direction}")
+            }
+        }
+    }
+
+    fn push_media_scope_filters(
+        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        room_id: &RoomId,
+        playlist_id: Option<&PlaylistId>,
+        query: &MediaListQuery,
+    ) {
+        const ACTIVE_STATUS_SQL: i16 = UserStatus::Active as i16;
+
+        builder.push(" FROM media m LEFT JOIN users u ON m.creator_id = u.id AND u.deleted_at IS NULL WHERE m.room_id = ");
+        builder.push_bind(room_id.as_str().to_owned());
+        match playlist_id {
+            Some(playlist_id) => {
+                builder.push(" AND m.playlist_id = ");
+                builder.push_bind(playlist_id.as_str().to_owned());
+            }
+            None => {
+                builder.push(" AND m.playlist_id IS NULL");
+            }
+        }
+
+        if let Some(search) = &query.search {
+            let pattern = escape_ilike(search);
+            builder.push(" AND m.name ILIKE ");
+            builder.push_bind(pattern);
+            builder.push(" ESCAPE '\\'");
+        }
+        if let Some(source_provider) = &query.source_provider {
+            builder.push(" AND m.source_provider = ");
+            builder.push_bind(source_provider.clone());
+        }
+        if let Some(provider_instance_name) = &query.provider_instance_name {
+            builder.push(" AND m.provider_instance_name = ");
+            builder.push_bind(provider_instance_name.clone());
+        }
+        match query.availability {
+            Some(true) => {
+                builder.push(" AND (m.creator_id IS NULL OR (u.id IS NOT NULL AND u.status = ");
+                builder.push_bind(ACTIVE_STATUS_SQL);
+                builder.push("))");
+            }
+            Some(false) => {
+                builder.push(" AND m.creator_id IS NOT NULL AND (u.id IS NULL OR u.status <> ");
+                builder.push_bind(ACTIVE_STATUS_SQL);
+                builder.push(")");
+            }
+            None => {}
+        }
+    }
+
+    pub async fn count_filtered_by_scope(
+        &self,
+        room_id: &RoomId,
+        playlist_id: Option<&PlaylistId>,
+        query: &MediaListQuery,
+    ) -> Result<i64> {
+        let mut builder =
+            sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*)");
+        Self::push_media_scope_filters(&mut builder, room_id, playlist_id, query);
+        builder.build_query_scalar().fetch_one(&self.pool).await.map_err(Into::into)
+    }
+
+    pub async fn list_filtered_by_scope(
+        &self,
+        room_id: &RoomId,
+        playlist_id: Option<&PlaylistId>,
+        query: &MediaListQuery,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<MediaListItem>> {
+        const ACTIVE_STATUS_SQL: i16 = UserStatus::Active as i16;
+
+        let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT m.id, m.playlist_id, m.room_id, m.creator_id, m.name, m.position,
+                    m.source_provider, m.source_config, m.provider_instance_name,
+                    m.added_at, m.updated_at, m.version,
+                    CASE
+                      WHEN m.creator_id IS NULL THEN TRUE
+                      WHEN u.id IS NOT NULL AND u.status = ",
+        );
+        builder.push_bind(ACTIVE_STATUS_SQL);
+        builder.push(
+            " THEN TRUE
+                      ELSE FALSE
+                    END AS is_available",
+        );
+        Self::push_media_scope_filters(&mut builder, room_id, playlist_id, query);
+        let order_by = Self::build_media_list_order_by(query);
+        builder.push(format!(" ORDER BY {order_by} LIMIT "));
+        builder.push_bind(limit);
+        builder.push(" OFFSET ");
+        builder.push_bind(offset);
+
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(MediaListItem {
+                    media: Media::from_row(&row)?,
+                    is_available: row.try_get("is_available")?,
+                })
+            })
+            .collect()
     }
 
     /// Add media to playlist
@@ -612,191 +767,144 @@ impl MediaRepository {
         Ok(result.rows_affected() as usize)
     }
 
-    /// Swap positions of two media
-    pub async fn swap_positions(&self, media_id1: &MediaId, media_id2: &MediaId) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        self.swap_positions_with_tx(media_id1, media_id2, &mut tx)
-            .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    /// Swap positions of two media using a provided transaction.
-    ///
-    /// Uses a two-phase sentinel approach to avoid violating the
-    /// `UNIQUE(playlist_id`, position) constraint. `PostgreSQL` evaluates UNIQUE
-    /// constraints per-row during multi-row UPDATEs, so a single-statement
-    /// CTE swap can trigger a violation. Instead:
-    ///   1. Lock both rows with FOR UPDATE (ordered by id to prevent deadlocks).
-    ///   2. Move both to negative sentinel positions (clearing the constraint space).
-    ///   3. Set them to their swapped final positions.
-    pub async fn swap_positions_with_tx(
-        &self,
-        media_id1: &MediaId,
-        media_id2: &MediaId,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    ) -> Result<()> {
-        // Lock both rows in id order to prevent deadlocks
-        let rows = sqlx::query(
-            r"
-            SELECT id, position
-            FROM media
-            WHERE id IN ($1, $2)
-            ORDER BY id
-            FOR UPDATE
-            ",
-        )
-        .bind(media_id1.as_str())
-        .bind(media_id2.as_str())
-        .fetch_all(&mut **tx)
-        .await?;
-
-        if rows.len() != 2 {
-            return Err(crate::Error::NotFound(
-                "One or both media items not found for swap".to_string(),
-            ));
-        }
-
-        use sqlx::Row;
-        let id1_str: String = rows[0].try_get("id")?;
-        let pos1: i32 = rows[0].try_get("position")?;
-        let id2_str: String = rows[1].try_get("id")?;
-        let pos2: i32 = rows[1].try_get("position")?;
-
-        // Phase 1: Move both to negative sentinel positions.
-        // M-6: Use i32::MIN + offset to avoid collisions with normal
-        // positions (which could be negative near -1000).
-        sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
-            .bind(&id1_str)
-            .bind(i32::MIN.wrapping_add(1))
-            .execute(&mut **tx)
-            .await?;
-        sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
-            .bind(&id2_str)
-            .bind(i32::MIN.wrapping_add(2))
-            .execute(&mut **tx)
-            .await?;
-
-        // Phase 2: Set swapped final positions
-        sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
-            .bind(&id1_str)
-            .bind(pos2)
-            .execute(&mut **tx)
-            .await?;
-        sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
-            .bind(&id2_str)
-            .bind(pos1)
-            .execute(&mut **tx)
-            .await?;
-
-        Ok(())
-    }
-
-    /// Bulk reorder media items with new positions
-    /// Takes a list of (`media_id`, `new_position`) tuples and updates them in a transaction.
-    /// Uses FOR UPDATE locks to prevent concurrent reordering race conditions.
-    pub async fn reorder_batch(&self, updates: &[(MediaId, i32)]) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        self.reorder_batch_with_tx(updates, &mut tx).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    /// Bulk reorder media items using a provided transaction
-    ///
-    /// Sorts updates by `media_id` before acquiring FOR UPDATE locks to prevent
-    /// deadlocks when concurrent transactions lock the same rows in different order.
-    /// Uses a two-phase approach (sentinel then final values) to avoid violating
-    /// the `UNIQUE(playlist_id`, position) constraint during intermediate states.
-    pub async fn reorder_batch_with_tx(
-        &self,
-        updates: &[(MediaId, i32)],
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    ) -> Result<()> {
-        if updates.is_empty() {
-            return Ok(());
-        }
-
-        // Sort by media_id to ensure consistent lock ordering across concurrent transactions.
-        // Without this, two transactions locking [A, B] and [B, A] can deadlock.
-        let mut sorted_updates: Vec<_> = updates.to_vec();
-        sorted_updates.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
-
-        // Lock all affected rows first to prevent concurrent modification
-        for (media_id, _) in &sorted_updates {
-            sqlx::query("SELECT id FROM media WHERE id = $1 FOR UPDATE")
-                .bind(media_id.as_str())
-                .fetch_optional(&mut **tx)
-                .await?;
-        }
-
-        // Phase 1: Move all affected rows to negative sentinel positions to
-        // clear the UNIQUE constraint space for the final positions.
-        for (i, (media_id, _)) in sorted_updates.iter().enumerate() {
-            let sentinel = -(i as i32) - 1; // -1, -2, -3, ...
-            sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
-                .bind(media_id.as_str())
-                .bind(sentinel)
-                .execute(&mut **tx)
-                .await?;
-        }
-
-        // Phase 2: Set the final positions (now safe since no collisions)
-        for (media_id, new_position) in &sorted_updates {
-            sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
-                .bind(media_id.as_str())
-                .bind(new_position)
-                .execute(&mut **tx)
-                .await?;
-        }
-
-        Ok(())
-    }
-
-    /// Get the next available position in a playlist within a transaction.
-    ///
-    /// Uses `pg_advisory_xact_lock` to serialize position computation, which
-    /// correctly handles both empty and non-empty playlists. The `FOR UPDATE`
-    /// approach alone cannot protect empty playlists because there are no rows
-    /// to lock, leading to duplicate positions (Task #25).
-    ///
-    /// The advisory lock is transaction-scoped and automatically released when
-    /// the transaction commits or rolls back.
-    ///
-    /// # Lock Key Strategy
-    ///
-    /// The lock key is computed from `playlist_id` using a hash function, ensuring
-    /// different playlists get different locks. This is simpler than the
-    /// playlist position lock (which needs `room_id` + `parent_id`) because media
-    /// positions only need to be unique within a single playlist.
-    pub async fn get_next_position_with_tx(
+    async fn lock_scope_with_tx(
         &self,
         room_id: &RoomId,
         playlist_id: Option<&PlaylistId>,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    ) -> Result<i32> {
-        // Compute advisory lock key from (room_id, playlist_id) so root-level
-        // media (playlist_id = NULL) is serialized independently per room.
-        let lock_key: i64 = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            room_id.as_str().hash(&mut h);
-            playlist_id.map(PlaylistId::as_str).hash(&mut h);
-            // Use lower 63 bits to stay within positive i64 range
-            (h.finish() & 0x7FFFFFFFFFFFFFFF) as i64
-        };
-
-        // Acquire transaction-scoped advisory lock
-        // This serializes position computation even for empty playlists
+    ) -> Result<()> {
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(lock_key)
+            .bind(Self::scope_lock_key(room_id, playlist_id))
             .execute(&mut **tx)
             .await?;
+        Ok(())
+    }
 
-        // Now safe to compute MAX(position) + 1
-        let next_pos: i32 = sqlx::query_scalar(
+    async fn get_scope_previous_position_with_tx(
+        &self,
+        room_id: &RoomId,
+        playlist_id: Option<&PlaylistId>,
+        exclude_media_id: &MediaId,
+        anchor_position: f64,
+        anchor_media_id: &MediaId,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Option<f64>> {
+        sqlx::query_scalar(
             r"
-            SELECT COALESCE(MAX(position), -1) + 1
+            SELECT position
+            FROM media
+            WHERE room_id = $1
+              AND playlist_id IS NOT DISTINCT FROM $2
+              AND id <> $3
+              AND (
+                    position < $4
+                 OR (position = $4 AND id < $5)
+              )
+            ORDER BY position DESC, id DESC
+            LIMIT 1
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(playlist_id.map(PlaylistId::as_str))
+        .bind(exclude_media_id.as_str())
+        .bind(anchor_position)
+        .bind(anchor_media_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn get_scope_next_position_with_tx(
+        &self,
+        room_id: &RoomId,
+        playlist_id: Option<&PlaylistId>,
+        exclude_media_id: &MediaId,
+        anchor_position: f64,
+        anchor_media_id: &MediaId,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Option<f64>> {
+        sqlx::query_scalar(
+            r"
+            SELECT position
+            FROM media
+            WHERE room_id = $1
+              AND playlist_id IS NOT DISTINCT FROM $2
+              AND id <> $3
+              AND (
+                    position > $4
+                 OR (position = $4 AND id > $5)
+              )
+            ORDER BY position ASC, id ASC
+            LIMIT 1
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(playlist_id.map(PlaylistId::as_str))
+        .bind(exclude_media_id.as_str())
+        .bind(anchor_position)
+        .bind(anchor_media_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn rebalance_scope_with_tx(
+        &self,
+        room_id: &RoomId,
+        playlist_id: Option<&PlaylistId>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<()> {
+        let rows = sqlx::query(
+            r"
+            SELECT id
+            FROM media
+            WHERE room_id = $1
+              AND playlist_id IS NOT DISTINCT FROM $2
+            ORDER BY position ASC, id ASC
+            FOR UPDATE
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(playlist_id.map(PlaylistId::as_str))
+        .fetch_all(&mut **tx)
+        .await?;
+
+        for (index, row) in rows.into_iter().enumerate() {
+            let media_id: String = row.try_get("id")?;
+            let position = Self::ORDER_STEP * ((index + 1) as f64);
+            sqlx::query("UPDATE media SET position = $2, version = version + 1 WHERE id = $1")
+                .bind(media_id)
+                .bind(position)
+                .execute(&mut **tx)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    fn midpoint(previous: f64, next: f64) -> Option<f64> {
+        let gap = next - previous;
+        if !gap.is_finite() || gap <= Self::MIN_ORDER_GAP {
+            return None;
+        }
+        let midpoint = previous + gap / 2.0;
+        if !midpoint.is_finite() || midpoint <= previous || midpoint >= next {
+            return None;
+        }
+        Some(midpoint)
+    }
+
+    pub async fn get_next_append_position_with_tx(
+        &self,
+        room_id: &RoomId,
+        playlist_id: Option<&PlaylistId>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<f64> {
+        self.lock_scope_with_tx(room_id, playlist_id, tx).await?;
+
+        let max_pos: Option<f64> = sqlx::query_scalar(
+            r"
+            SELECT MAX(position)
             FROM media
             WHERE room_id = $1
               AND playlist_id IS NOT DISTINCT FROM $2
@@ -807,7 +915,143 @@ impl MediaRepository {
         .fetch_one(&mut **tx)
         .await?;
 
-        Ok(next_pos)
+        match max_pos {
+            Some(position) if position.is_finite() => Ok(position + Self::ORDER_STEP),
+            _ => Ok(Self::ORDER_STEP),
+        }
+    }
+
+    pub async fn move_with_tx(
+        &self,
+        media_id: &MediaId,
+        before_media_id: Option<&MediaId>,
+        after_media_id: Option<&MediaId>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Media> {
+        let anchor_id = match (before_media_id, after_media_id) {
+            (Some(anchor_id), None) | (None, Some(anchor_id)) => anchor_id,
+            _ => {
+                return Err(crate::Error::InvalidInput(
+                    "Exactly one of before_media_id or after_media_id must be set".to_string(),
+                ))
+            }
+        };
+
+        if media_id == anchor_id {
+            return Err(crate::Error::InvalidInput(
+                "Cannot move media relative to itself".to_string(),
+            ));
+        }
+
+        let moved = sqlx::query(
+            r"
+            SELECT id, playlist_id, room_id, creator_id, name, position,
+                   source_provider, source_config, provider_instance_name,
+                   added_at, updated_at, version
+            FROM media
+            WHERE id = $1
+            FOR UPDATE
+            ",
+        )
+        .bind(media_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|row| Media::from_row(&row))
+        .transpose()?
+        .ok_or_else(|| crate::Error::NotFound("Media not found".to_string()))?;
+
+        let anchor = sqlx::query(
+            r"
+            SELECT id, playlist_id, room_id, creator_id, name, position,
+                   source_provider, source_config, provider_instance_name,
+                   added_at, updated_at, version
+            FROM media
+            WHERE id = $1
+            FOR UPDATE
+            ",
+        )
+        .bind(anchor_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|row| Media::from_row(&row))
+        .transpose()?
+        .ok_or_else(|| crate::Error::NotFound("Anchor media not found".to_string()))?;
+
+        if moved.room_id != anchor.room_id || moved.playlist_id != anchor.playlist_id {
+            return Err(crate::Error::InvalidInput(
+                "Media can only be moved relative to a sibling in the same playlist scope"
+                    .to_string(),
+            ));
+        }
+
+        self.lock_scope_with_tx(&moved.room_id, moved.playlist_id.as_ref(), tx)
+            .await?;
+
+        for _ in 0..2 {
+            let anchor_position: f64 =
+                sqlx::query_scalar("SELECT position FROM media WHERE id = $1 FOR UPDATE")
+                    .bind(anchor.id.as_str())
+                    .fetch_one(&mut **tx)
+                    .await?;
+
+            let new_position = if before_media_id.is_some() {
+                match self
+                    .get_scope_previous_position_with_tx(
+                        &moved.room_id,
+                        moved.playlist_id.as_ref(),
+                        &moved.id,
+                        anchor_position,
+                        &anchor.id,
+                        tx,
+                    )
+                    .await?
+                {
+                    Some(previous) => Self::midpoint(previous, anchor_position),
+                    None => Some(anchor_position - Self::ORDER_STEP),
+                }
+            } else {
+                match self
+                    .get_scope_next_position_with_tx(
+                        &moved.room_id,
+                        moved.playlist_id.as_ref(),
+                        &moved.id,
+                        anchor_position,
+                        &anchor.id,
+                        tx,
+                    )
+                    .await?
+                {
+                    Some(next) => Self::midpoint(anchor_position, next),
+                    None => Some(anchor_position + Self::ORDER_STEP),
+                }
+            };
+
+            if let Some(position) = new_position.filter(|position| position.is_finite()) {
+                let row = sqlx::query(
+                    r"
+                    UPDATE media
+                    SET position = $2, version = version + 1
+                    WHERE id = $1
+                    RETURNING id, playlist_id, room_id, creator_id, name, position,
+                              source_provider, source_config, provider_instance_name,
+                              added_at, updated_at, version
+                    ",
+                )
+                .bind(moved.id.as_str())
+                .bind(position)
+                .fetch_one(&mut **tx)
+                .await?;
+
+                return Ok(Media::from_row(&row)?);
+            }
+
+            self.rebalance_scope_with_tx(&moved.room_id, moved.playlist_id.as_ref(), tx)
+                .await?;
+        }
+
+        Err(crate::Error::Internal(
+            "Failed to compute a stable media order position".to_string(),
+        ))
     }
 
     /// Count media items in a playlist.
@@ -817,6 +1061,27 @@ impl MediaRepository {
             SELECT COUNT(*) FROM media WHERE playlist_id = $1            ",
         )
         .bind(playlist_id.as_str())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count)
+    }
+
+    /// Count only media whose creator is still active (or media without a creator).
+    pub async fn count_by_playlist_accessible(&self, playlist_id: &PlaylistId) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            r"
+            SELECT COUNT(*)
+            FROM media m
+            LEFT JOIN users u
+              ON m.creator_id = u.id
+             AND u.deleted_at IS NULL
+            WHERE m.playlist_id = $1
+              AND (m.creator_id IS NULL OR u.status = $2)
+            ",
+        )
+        .bind(playlist_id.as_str())
+        .bind(UserStatus::Active)
         .fetch_one(&self.pool)
         .await?;
 
@@ -865,6 +1130,43 @@ impl MediaRepository {
         }
         Ok(result)
     }
+
+    /// Batch count only media whose creator is still active (or media without a creator).
+    pub async fn count_by_playlists_batch_accessible(
+        &self,
+        playlist_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, i64>> {
+        use sqlx::Row;
+
+        if playlist_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let rows = sqlx::query(
+            r"
+            SELECT m.playlist_id, COUNT(*) as cnt
+            FROM media m
+            LEFT JOIN users u
+              ON m.creator_id = u.id
+             AND u.deleted_at IS NULL
+            WHERE m.playlist_id = ANY($1)
+              AND (m.creator_id IS NULL OR u.status = $2)
+            GROUP BY m.playlist_id
+            ",
+        )
+        .bind(playlist_ids)
+        .bind(UserStatus::Active)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut result = std::collections::HashMap::new();
+        for row in rows {
+            let pid: String = row.try_get("playlist_id")?;
+            let cnt: i64 = row.try_get("cnt")?;
+            result.insert(pid, cnt);
+        }
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -888,11 +1190,11 @@ mod tests {
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
             "default".to_string(),
-            0,
+            0.0,
         );
 
         assert_eq!(media.name, "Test Video");
-        assert_eq!(media.position, 0);
+        assert_eq!(media.position, 0.0);
         assert_eq!(media.source_provider, "direct_url");
     }
 
@@ -915,11 +1217,11 @@ mod tests {
             "Single Mode Video".to_string(),
             "direct",
             playback_info,
-            5,
+            5.0,
         );
 
         assert_eq!(media.name, "Single Mode Video");
-        assert_eq!(media.position, 5);
+        assert_eq!(media.position, 5.0);
         assert_eq!(media.provider_instance_name, "direct_url");
         assert!(media.source_config.get("playback_infos").is_some());
     }
@@ -957,11 +1259,11 @@ mod tests {
             playback_infos,
             "direct".to_string(),
             metadata,
-            10,
+            10.0,
         );
 
         assert_eq!(media.name, "Multimode Video");
-        assert_eq!(media.position, 10);
+        assert_eq!(media.position, 10.0);
         assert_eq!(media.provider_instance_name, "direct_url");
         assert!(media.source_config.get("playback_infos").is_some());
         assert!(media.source_config.get("metadata").is_some());
@@ -1018,12 +1320,12 @@ mod tests {
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
             "default".to_string(),
-            0,
+            0.0,
         );
 
         let created = media_repo.create(&media).await.unwrap();
         assert_eq!(created.name, "Test Video");
-        assert_eq!(created.position, 0);
+        assert_eq!(created.position, 0.0);
 
         // Get by ID
         let fetched = media_repo.get_by_id(&created.id).await.unwrap();
@@ -1075,18 +1377,18 @@ mod tests {
             serde_json::json!({}),
             "direct_url",
             "default".to_string(),
-            0,
+            0.0,
         );
         let created = media_repo.create(&media).await.unwrap();
 
         // Update
         let mut updated = created.clone();
         updated.name = "Updated Name".to_string();
-        updated.position = 5;
+        updated.position = 5.0;
 
         let result = media_repo.update(&updated).await.unwrap();
         assert_eq!(result.name, "Updated Name");
-        assert_eq!(result.position, 5);
+        assert_eq!(result.position, 5.0);
     }
 
     /// Integration test: Delete media
@@ -1132,7 +1434,7 @@ mod tests {
             serde_json::json!({}),
             "direct_url",
             "default".to_string(),
-            0,
+            0.0,
         );
         let created = media_repo.create(&media).await.unwrap();
 
@@ -1193,7 +1495,7 @@ mod tests {
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
                     "default".to_string(),
-                    i,
+                    i as f64,
                 )
             })
             .collect();
@@ -1224,7 +1526,7 @@ mod tests {
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
                     "default".to_string(),
-                    i,
+                    i as f64,
                 )
             })
             .collect();
@@ -1248,10 +1550,10 @@ mod tests {
         }
     }
 
-    /// Integration test: Swap positions
+    /// Integration test: Move media within a scope using anchor-based ordering.
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_swap_positions() {
+    async fn test_move_with_tx_reorders_scope() {
         use crate::repository::playlist::PlaylistRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::user::UserRepository;
@@ -1290,7 +1592,7 @@ mod tests {
             serde_json::json!({}),
             "direct_url",
             "default".to_string(),
-            0,
+            1024.0,
         );
         let media2 = Media::from_provider(
             Some(playlist.id.clone()),
@@ -1300,27 +1602,27 @@ mod tests {
             serde_json::json!({}),
             "direct_url",
             "default".to_string(),
-            1,
+            2048.0,
         );
 
         let created1 = media_repo.create(&media1).await.unwrap();
         let created2 = media_repo.create(&media2).await.unwrap();
 
-        assert_eq!(created1.position, 0);
-        assert_eq!(created2.position, 1);
+        assert_eq!(created1.position, 1024.0);
+        assert_eq!(created2.position, 2048.0);
 
-        // Swap positions
+        let mut tx = pool.begin().await.unwrap();
         media_repo
-            .swap_positions(&created1.id, &created2.id)
+            .move_with_tx(&created2.id, Some(&created1.id), None, &mut tx)
             .await
             .unwrap();
+        tx.commit().await.unwrap();
 
-        // Verify swap
+        // Verify ordering changed and only the moved item crossed the anchor.
         let fetched1 = media_repo.get_by_id(&created1.id).await.unwrap().unwrap();
         let fetched2 = media_repo.get_by_id(&created2.id).await.unwrap().unwrap();
 
-        assert_eq!(fetched1.position, 1);
-        assert_eq!(fetched2.position, 0);
+        assert!(fetched2.position < fetched1.position);
     }
 
     /// Integration test: Count by playlist
@@ -1370,7 +1672,7 @@ mod tests {
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
-                i,
+                i as f64,
             );
             media_repo.create(&media).await.unwrap();
         }
@@ -1422,7 +1724,7 @@ mod tests {
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
-                i,
+                i as f64,
             );
             media_repo.create(&media).await.unwrap();
         }
@@ -1492,7 +1794,7 @@ mod tests {
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
-                i,
+                i as f64,
             );
             let created = media_repo.create(&media).await.unwrap();
             ids.push(created.id);
@@ -1551,7 +1853,7 @@ mod tests {
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
-                i,
+                i as f64,
             );
             let created = media_repo.create(&media).await.unwrap();
             ids.push(created.id);

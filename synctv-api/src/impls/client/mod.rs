@@ -173,44 +173,7 @@ impl ClientApiImpl {
     pub(super) fn map_livestream_backend_error(
         error: &(dyn std::error::Error + 'static),
     ) -> ApiError {
-        if let Some(stream_error) = error.downcast_ref::<synctv_livestream::error::StreamError>() {
-            return match stream_error {
-                synctv_livestream::error::StreamError::NoPublisher(_)
-                | synctv_livestream::error::StreamError::StreamNotFound(_)
-                | synctv_livestream::error::StreamError::InvalidStreamKey(_) => {
-                    ApiError::NotFound(stream_error.to_string())
-                }
-                synctv_livestream::error::StreamError::PermissionDenied(_)
-                | synctv_livestream::error::StreamError::AuthenticationFailed(_) => {
-                    ApiError::Authorization(stream_error.to_string())
-                }
-                synctv_livestream::error::StreamError::ResourceExhausted(_) => {
-                    ApiError::RateLimited(stream_error.to_string())
-                }
-                synctv_livestream::error::StreamError::InvalidAddress(_)
-                | synctv_livestream::error::StreamError::ProtocolError(_)
-                | synctv_livestream::error::StreamError::HandshakeFailed(_)
-                | synctv_livestream::error::StreamError::InvalidState(_) => {
-                    ApiError::InvalidInput(stream_error.to_string())
-                }
-                synctv_livestream::error::StreamError::RedisError(_)
-                | synctv_livestream::error::StreamError::RegistryError(_)
-                | synctv_livestream::error::StreamError::GrpcError(_)
-                | synctv_livestream::error::StreamError::ConnectionFailed(_)
-                | synctv_livestream::error::StreamError::StaleEpoch(_)
-                | synctv_livestream::error::StreamError::StreamHubError(_) => {
-                    ApiError::ServiceUnavailable(stream_error.to_string())
-                }
-                synctv_livestream::error::StreamError::IoError(_)
-                | synctv_livestream::error::StreamError::Internal(_)
-                | synctv_livestream::error::StreamError::AlreadyPublishing(_)
-                | synctv_livestream::error::StreamError::PublisherExists(_) => {
-                    ApiError::Internal(stream_error.to_string())
-                }
-            };
-        }
-
-        ApiError::Internal(error.to_string())
+        crate::impls::map_livestream_backend_error(error)
     }
 
     /// Create a new `ClientApiImpl` from individual parameters.

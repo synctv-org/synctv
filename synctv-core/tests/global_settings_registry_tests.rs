@@ -833,7 +833,6 @@ fn test_setting_value_roundtrip() {
     assert_eq!(cors_origins, cors_parsed);
 }
 
-
 // ============================================================================
 // SettingsService.update() validation tests (Issue #1)
 // ============================================================================

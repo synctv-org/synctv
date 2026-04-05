@@ -131,7 +131,7 @@ where
         // Parse Bearer token and validate using unified validator.
         let auth_str = auth_header
             .to_str()
-            .map_err(|_| AppError::invalid_authorization_header())?;
+            .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
 
         // Step 1: JWT verification
         let claims = validator
@@ -145,7 +145,9 @@ where
             .await
             .map_err(|e| match SecurityPipeline::classify_auth_error(&e) {
                 AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
-                AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
+                AuthErrorCategory::Authorization => {
+                    crate::http::error::map_auth_authorization_error(&e)
+                }
                 AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
             })?;
 
@@ -215,7 +217,7 @@ where
 
         let auth_str = auth_header
             .to_str()
-            .map_err(|_| AppError::invalid_authorization_header())?;
+            .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
 
         let token = JwtValidator::extract_bearer_token(auth_str)
             .map_err(|_| AppError::invalid_or_expired_token())?;
@@ -223,7 +225,9 @@ where
         let map_guest_auth_error =
             |e: synctv_core::Error| match SecurityPipeline::classify_auth_error(&e) {
                 AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
-                AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
+                AuthErrorCategory::Authorization => {
+                    crate::http::error::map_auth_authorization_error(&e)
+                }
                 AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
             };
 

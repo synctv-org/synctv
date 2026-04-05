@@ -33,18 +33,32 @@ use crate::proto::client::{
 const EMAIL_ADDR_MAX_REQUESTS: u32 = 3;
 const EMAIL_ADDR_WINDOW_SECONDS: u64 = 3600;
 
+fn email_service_unavailable_error() -> AppError {
+    AppError::new(
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "Email service is not available on this server.",
+    )
+}
+
+fn email_token_service_unavailable_error() -> AppError {
+    AppError::new(
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "Email verification service is not available on this server.",
+    )
+}
+
 /// Build an `EmailApiImpl` from `AppState`, or return an error if email is not configured.
 fn require_email_api(state: &AppState) -> Result<EmailApiImpl, AppError> {
     let email_service = state
         .email_service
         .as_ref()
-        .ok_or_else(|| AppError::bad_request("Email service not configured"))?;
+        .ok_or_else(email_service_unavailable_error)?;
 
     // Use the shared EmailTokenService from AppState (created once at startup)
     let email_token_service = state
         .email_token_service
         .as_ref()
-        .ok_or_else(|| AppError::bad_request("Email token service not configured"))?;
+        .ok_or_else(email_token_service_unavailable_error)?;
 
     Ok(EmailApiImpl::new(
         state.user_service.clone(),
@@ -230,4 +244,30 @@ pub async fn confirm_password_reset(
         message: result.message,
         user_id: result.user_id,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn test_email_service_missing_is_service_unavailable() {
+        let err = email_service_unavailable_error();
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            err.message,
+            "Email service is not available on this server."
+        );
+    }
+
+    #[test]
+    fn test_email_token_service_missing_is_service_unavailable() {
+        let err = email_token_service_unavailable_error();
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            err.message,
+            "Email verification service is not available on this server."
+        );
+    }
 }

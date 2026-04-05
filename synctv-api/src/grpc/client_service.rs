@@ -37,16 +37,16 @@ use crate::proto::client::{
     ListParticipatedRoomsResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
     ListPlaylistsRequest, ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse,
     ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest,
-    LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
-    ReorderMediaBatchRequest, ReorderMediaBatchResponse, RequestPasswordResetRequest,
-    RequestPasswordResetResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
-    SendVerificationEmailRequest, SendVerificationEmailResponse, ServerMessage, SetPasswordRequest,
-    SetPasswordResponse, SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest,
-    SetUsernameResponse, StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest,
-    StopPlaybackResponse, SwapMediaRequest, SwapMediaResponse, UnbanMemberRequest,
-    UnbanMemberResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
-    UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
-    UpdateRoomSettingsResponse,
+    LogoutResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
+    MovePlaylistResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
+    RegisterResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
+    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendVerificationEmailRequest,
+    SendVerificationEmailResponse, ServerMessage, SetPasswordRequest, SetPasswordResponse,
+    SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse,
+    StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
+    UnbanMemberRequest, UnbanMemberResponse, UpdateMemberPermissionsRequest,
+    UpdateMemberPermissionsResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
+    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -194,6 +194,18 @@ pub struct ClientServiceImpl {
 }
 
 impl ClientServiceImpl {
+    fn email_service_unavailable_error() -> crate::impls::ApiError {
+        crate::impls::ApiError::ServiceUnavailable(
+            "Email service is not available on this server.".to_string(),
+        )
+    }
+
+    fn email_token_service_unavailable_error() -> crate::impls::ApiError {
+        crate::impls::ApiError::ServiceUnavailable(
+            "Email verification service is not available on this server.".to_string(),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -253,17 +265,14 @@ impl ClientServiceImpl {
 
     /// Build an `EmailApiImpl` from the configured services, or return an error
     fn email_api(&self) -> Result<crate::impls::EmailApiImpl, crate::impls::ApiError> {
-        let email_service = self.email_service.as_ref().ok_or_else(|| {
-            crate::impls::ApiError::Internal(
-                "Email service is not configured on this server. Please contact the administrator."
-                    .to_string(),
-            )
-        })?;
-        let email_token_service = self.email_token_service.as_ref().ok_or_else(|| {
-            crate::impls::ApiError::Internal(
-                "Email verification service is not configured on this server.".to_string(),
-            )
-        })?;
+        let email_service = self
+            .email_service
+            .as_ref()
+            .ok_or_else(Self::email_service_unavailable_error)?;
+        let email_token_service = self
+            .email_token_service
+            .as_ref()
+            .ok_or_else(Self::email_token_service_unavailable_error)?;
 
         Ok(crate::impls::EmailApiImpl::new(
             self.user_service.clone(),
@@ -927,16 +936,16 @@ impl RoomService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn swap_media(
+    async fn move_media(
         &self,
-        request: Request<SwapMediaRequest>,
-    ) -> Result<Response<SwapMediaResponse>, Status> {
+        request: Request<MoveMediaRequest>,
+    ) -> Result<Response<MoveMediaResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
-            .swap_media(user_id.as_str(), room_id.as_str(), req)
+            .move_media(user_id.as_str(), room_id.as_str(), req)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
@@ -966,21 +975,6 @@ impl RoomService for ClientServiceImpl {
         let response = self
             .client_api
             .add_media_batch(user_id.as_str(), room_id.as_str(), req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn reorder_media_batch(
-        &self,
-        request: Request<ReorderMediaBatchRequest>,
-    ) -> Result<Response<ReorderMediaBatchResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let req = request.into_inner();
-        let response = self
-            .client_api
-            .reorder_media_batch(user_id.as_str(), room_id.as_str(), req)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
@@ -1117,6 +1111,21 @@ impl RoomService for ClientServiceImpl {
         let response = self
             .client_api
             .update_playlist(user_id.as_str(), room_id.as_str(), req)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn move_playlist(
+        &self,
+        request: Request<MovePlaylistRequest>,
+    ) -> Result<Response<MovePlaylistResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let room_id = self.get_room_id(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .move_playlist(user_id.as_str(), room_id.as_str(), req)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
@@ -1464,6 +1473,32 @@ mod tests {
     }
 
     #[test]
+    fn test_email_service_missing_maps_to_service_unavailable() {
+        let err = ClientServiceImpl::email_service_unavailable_error();
+        assert!(matches!(
+            err.classify(),
+            crate::impls::ErrorKind::ServiceUnavailable
+        ));
+        assert_eq!(
+            err.message(),
+            "Email service is not available on this server."
+        );
+    }
+
+    #[test]
+    fn test_email_token_service_missing_maps_to_service_unavailable() {
+        let err = ClientServiceImpl::email_token_service_unavailable_error();
+        assert!(matches!(
+            err.classify(),
+            crate::impls::ErrorKind::ServiceUnavailable
+        ));
+        assert_eq!(
+            err.message(),
+            "Email verification service is not available on this server."
+        );
+    }
+
+    #[test]
     fn test_message_stream_user_lookup_backend_outage_stays_unavailable() {
         let status = map_message_stream_user_lookup_error(synctv_core::Error::ServiceUnavailable(
             "user backend unavailable".to_string(),
@@ -1701,19 +1736,18 @@ mod tests {
 
     #[test]
     fn test_map_message_stream_join_error_maps_capacity_to_resource_exhausted() {
-        let status = map_message_stream_join_error(
-            RealtimeJoinError::RateLimited("realtime room capacity exceeded".to_string()),
-        );
+        let status = map_message_stream_join_error(RealtimeJoinError::RateLimited(
+            "realtime room capacity exceeded".to_string(),
+        ));
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert_eq!(status.message(), "realtime room capacity exceeded");
     }
 
     #[test]
     fn test_map_message_stream_join_error_maps_raw_capacity_error() {
-        let status =
-            map_message_stream_join_error(RealtimeJoinError::RateLimited(
-                "Room at capacity (42 connections, max: 40)".to_string(),
-            ));
+        let status = map_message_stream_join_error(RealtimeJoinError::RateLimited(
+            "Room at capacity (42 connections, max: 40)".to_string(),
+        ));
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert_eq!(
             status.message(),
@@ -1723,11 +1757,9 @@ mod tests {
 
     #[test]
     fn test_map_message_stream_join_error_maps_raw_user_capacity_error() {
-        let status = map_message_stream_join_error(
-            RealtimeJoinError::RateLimited(
-                "Too many connections for this user across all replicas (max 3)".to_string(),
-            ),
-        );
+        let status = map_message_stream_join_error(RealtimeJoinError::RateLimited(
+            "Too many connections for this user across all replicas (max 3)".to_string(),
+        ));
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert_eq!(
             status.message(),
@@ -1737,11 +1769,9 @@ mod tests {
 
     #[test]
     fn test_map_message_stream_join_error_maps_raw_total_capacity_error() {
-        let status = map_message_stream_join_error(
-            RealtimeJoinError::RateLimited(
-                "Server at capacity across all replicas (42 connections)".to_string(),
-            ),
-        );
+        let status = map_message_stream_join_error(RealtimeJoinError::RateLimited(
+            "Server at capacity across all replicas (42 connections)".to_string(),
+        ));
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert_eq!(
             status.message(),
@@ -1797,11 +1827,9 @@ mod tests {
 
     #[test]
     fn test_map_message_stream_join_error_maps_distributed_degradation_to_unavailable() {
-        let status = map_message_stream_join_error(
-            RealtimeJoinError::ServiceUnavailable(
-                "distributed room capacity check unavailable".to_string(),
-            ),
-        );
+        let status = map_message_stream_join_error(RealtimeJoinError::ServiceUnavailable(
+            "distributed room capacity check unavailable".to_string(),
+        ));
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(
             status.message(),
@@ -1856,11 +1884,9 @@ mod tests {
 
     #[test]
     fn test_map_message_stream_join_error_maps_business_denial_to_permission_denied() {
-        let status = map_message_stream_join_error(
-            RealtimeJoinError::PermissionDenied(
-                "User is no longer allowed to use real-time messaging".to_string(),
-            ),
-        );
+        let status = map_message_stream_join_error(RealtimeJoinError::PermissionDenied(
+            "User is no longer allowed to use real-time messaging".to_string(),
+        ));
 
         assert_eq!(status.code(), tonic::Code::PermissionDenied);
         assert_eq!(
@@ -1871,10 +1897,9 @@ mod tests {
 
     #[test]
     fn test_map_message_stream_join_error_hides_unexpected_internal_details() {
-        let status =
-            map_message_stream_join_error(RealtimeJoinError::Internal(
-                "Connection 'conn123' is already registered".to_string(),
-            ));
+        let status = map_message_stream_join_error(RealtimeJoinError::Internal(
+            "Connection 'conn123' is already registered".to_string(),
+        ));
         assert_eq!(status.code(), tonic::Code::Internal);
         assert_eq!(status.message(), "Failed to establish message stream");
     }

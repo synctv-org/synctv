@@ -1054,18 +1054,17 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         server,
         &[
             "media",
-            "reorder",
+            "move",
             "--room-id",
             &room_id,
-            "--update",
-            &format!("{media_two_id}=0"),
-            "--update",
-            &format!("{media_one_id}=1"),
+            "--before-media-id",
+            &media_one_id,
+            &media_two_id,
         ],
     );
     assert!(
         media_reorder.status.success(),
-        "media reorder via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
+        "media move via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&media_reorder.stdout),
         String::from_utf8_lossy(&media_reorder.stderr),
     );
@@ -1084,6 +1083,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         dynamic_only: None,
         sort_by: synctv_proto::client::PlaylistListSortBy::Position as i32,
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
     });
     list_playlists
         .metadata_mut()
@@ -1111,6 +1111,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         provider_instance_name: String::new(),
         sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
     });
     list_items
         .metadata_mut()

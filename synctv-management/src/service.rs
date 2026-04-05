@@ -18,14 +18,14 @@ use crate::proto::{
     GetSystemStatsRequest, GetUserByUsernameRequest, GetUserRequest, GetUserRoomsRequest,
     KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
     ListMediaRequest, ListPlaylistsRequest, ListProviderInstancesRequest, ListRoomStreamsRequest,
-    ListRoomsRequest, ListUsersRequest, ReconnectProviderInstanceRequest, RemoveAdminRequest,
-    ReorderMediaBatchRequest, ResetRoomSettingsRequest, RoomStatus, SendTestEmailRequest,
-    ShutdownMode as ProtoShutdownMode, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
-    StopServerRequest, UnbanMemberRequest, UnbanRoomRequest, UnbanUserRequest,
-    UpdateMemberPermissionsRequest, UpdatePlaylistRequest, UpdateProviderInstanceRequest,
-    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
-    UpdateUserPasswordRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRole,
-    UserStatus,
+    ListRoomsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
+    ReconnectProviderInstanceRequest, RemoveAdminRequest, ResetRoomSettingsRequest, RoomStatus,
+    SendTestEmailRequest, ShutdownMode as ProtoShutdownMode, StartPlaybackRequest,
+    StopPlaybackRequest, StopServerEvent, StopServerRequest, UnbanMemberRequest,
+    UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest,
+    UpdatePlaylistRequest, UpdateProviderInstanceRequest, UpdateRoomPasswordRequest,
+    UpdateRoomSettingsRequest, UpdateSettingsRequest, UpdateUserPasswordRequest,
+    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRole, UserStatus,
 };
 use synctv_api::impls::admin::{
     RequestContext, RoomStreamListQuery, LOCAL_MANAGEMENT_ACTOR_USER_ID,
@@ -1094,6 +1094,7 @@ impl ManagementService for ManagementServiceImpl {
                     dynamic_only: req.dynamic_only,
                     sort_by: req.sort_by,
                     sort_direction: req.sort_direction,
+                    availability: client_proto::ResourceAvailabilityFilter::All as i32,
                 },
                 &validated.user_id,
             )
@@ -1156,7 +1157,34 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::UpdatePlaylistRequest {
                     playlist_id: req.playlist_id,
                     name: req.name.unwrap_or_default(),
-                    position: req.position.unwrap_or(-1),
+                },
+                &validated.user_id,
+            )
+            .await
+            .map_err(map_api_error)?;
+        Self::proto_response(response)
+    }
+
+    async fn move_playlist(
+        &self,
+        request: Request<MovePlaylistRequest>,
+    ) -> Result<Response<client_proto::MovePlaylistResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request).await?;
+        let req = request.into_inner();
+        let response = self
+            .admin_api
+            .move_playlist(
+                &req.room_id,
+                client_proto::MovePlaylistRequest {
+                    playlist_id: req.playlist_id,
+                    anchor: req.anchor.map(|anchor| match anchor {
+                        crate::proto::move_playlist_request::Anchor::BeforePlaylistId(id) => {
+                            client_proto::move_playlist_request::Anchor::BeforePlaylistId(id)
+                        }
+                        crate::proto::move_playlist_request::Anchor::AfterPlaylistId(id) => {
+                            client_proto::move_playlist_request::Anchor::AfterPlaylistId(id)
+                        }
+                    }),
                 },
                 &validated.user_id,
             )
@@ -1206,6 +1234,7 @@ impl ManagementService for ManagementServiceImpl {
                     provider_instance_name: req.provider_instance_name,
                     sort_by: req.sort_by,
                     sort_direction: req.sort_direction,
+                    availability: client_proto::ResourceAvailabilityFilter::All as i32,
                 },
                 &validated.user_id,
             )
@@ -1314,25 +1343,26 @@ impl ManagementService for ManagementServiceImpl {
         Self::proto_response(response)
     }
 
-    async fn reorder_media_batch(
+    async fn move_media(
         &self,
-        request: Request<ReorderMediaBatchRequest>,
-    ) -> Result<Response<client_proto::ReorderMediaBatchResponse>, Status> {
+        request: Request<MoveMediaRequest>,
+    ) -> Result<Response<client_proto::MoveMediaResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
         let req = request.into_inner();
         let response = self
             .admin_api
-            .reorder_media_batch(
+            .move_media(
                 &req.room_id,
-                client_proto::ReorderMediaBatchRequest {
-                    updates: req
-                        .updates
-                        .into_iter()
-                        .map(|update| client_proto::MediaReorderUpdate {
-                            media_id: update.media_id,
-                            position: update.position,
-                        })
-                        .collect(),
+                client_proto::MoveMediaRequest {
+                    media_id: req.media_id,
+                    anchor: req.anchor.map(|anchor| match anchor {
+                        crate::proto::move_media_request::Anchor::BeforeMediaId(id) => {
+                            client_proto::move_media_request::Anchor::BeforeMediaId(id)
+                        }
+                        crate::proto::move_media_request::Anchor::AfterMediaId(id) => {
+                            client_proto::move_media_request::Anchor::AfterMediaId(id)
+                        }
+                    }),
                 },
                 &validated.user_id,
             )
@@ -1814,8 +1844,7 @@ mod tests {
     #[test]
     fn validate_client_actor_user_rejects_banned_user_with_explicit_message() {
         let user = make_actor_user("root", UserStatus::Banned);
-        let error =
-            validate_client_actor_user(&user).expect_err("banned actor should be rejected");
+        let error = validate_client_actor_user(&user).expect_err("banned actor should be rejected");
 
         assert_eq!(error.code(), tonic::Code::PermissionDenied);
         assert_eq!(error.message(), "actor user 'root' is banned");

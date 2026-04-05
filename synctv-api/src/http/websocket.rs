@@ -166,7 +166,7 @@ async fn extract_user_id(
     if let Some(token) = extract_authorization_bearer_token(headers)? {
         let claims = validator
             .validate_token(&token)
-            .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
+            .map_err(|_| AppError::invalid_or_expired_token())?;
 
         // Run SecurityPipeline checks (password version, banned/deleted status)
         let authenticated = state
@@ -209,7 +209,9 @@ async fn extract_user_id(
 fn map_security_pipeline_error(error: synctv_core::Error) -> AppError {
     match SecurityPipeline::classify_auth_error(&error) {
         AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
-        AuthErrorCategory::Authorization => AppError::forbidden(format!("{error}")),
+        AuthErrorCategory::Authorization => {
+            crate::http::error::map_auth_authorization_error(&error)
+        }
         AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(error),
     }
 }
@@ -223,13 +225,26 @@ fn map_websocket_ticket_validation_error(error: synctv_core::Error) -> AppError 
 
     match synctv_core::service::auth::SecurityPipeline::classify_auth_error(&error) {
         AuthErrorCategory::Authentication => AppError::invalid_or_expired_ticket(),
-        AuthErrorCategory::Authorization => AppError::forbidden(format!("{error}")),
+        AuthErrorCategory::Authorization => {
+            crate::http::error::map_auth_authorization_error(&error)
+        }
         AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(error),
     }
 }
 
 fn map_websocket_membership_probe_error(error: synctv_core::Error) -> AppError {
     AppError::from(error)
+}
+
+async fn validate_websocket_room_membership(
+    room_service: &synctv_core::service::RoomService,
+    room: &synctv_core::models::Room,
+    user_id: &UserId,
+) -> Result<(), AppError> {
+    room_service
+        .check_membership_with_room(room, user_id)
+        .await
+        .map_err(map_websocket_membership_probe_error)
 }
 
 fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<String>, AppError> {
@@ -239,7 +254,7 @@ fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<Stri
 
     let auth_str = auth_header
         .to_str()
-        .map_err(|_| AppError::invalid_authorization_header())?;
+        .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
 
     let token = JwtValidator::extract_bearer_token(auth_str)
         .map_err(|_| AppError::invalid_authorization_header())?;
@@ -977,17 +992,6 @@ async fn prepare_websocket_upgrade(
     let auth = extract_user_id(state, headers, query, &rid).await?;
     let user_id = auth.user_id.clone();
 
-    let is_member = state
-        .room_service
-        .member_service()
-        .is_member(&rid, &user_id)
-        .await
-        .map_err(map_websocket_membership_probe_error)?;
-
-    if !is_member {
-        return Err(AppError::forbidden("Not a member of this room"));
-    }
-
     let room = state
         .room_service
         .get_room(&rid)
@@ -1003,6 +1007,8 @@ async fn prepare_websocket_upgrade(
             "This room is closed and not accepting new connections",
         ));
     }
+
+    validate_websocket_room_membership(&state.room_service, &room, &user_id).await?;
 
     validate_websocket_runtime_dependencies(state)?;
     let username = load_websocket_username(state, &user_id).await?;
@@ -1198,8 +1204,16 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
-    use synctv_core::models::{RoomId, UserId};
-    use synctv_core::service::{UserValidationResult, UserValidator};
+    use synctv_core::{
+        cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+        config::PasswordComplexityConfig,
+        models::{RoomId, UserId, UserStatus},
+        service::{
+            auth::{BruteForceProtection, JwtService},
+            InMemoryTokenBlacklistStore, RoomService, UserService, UserValidationResult,
+            UserValidator,
+        },
+    };
 
     struct AllowAllTicketValidator;
 
@@ -1213,6 +1227,28 @@ mod tests {
                 password_version: 0,
             })
         }
+    }
+
+    fn test_user_service(pool: sqlx::PgPool) -> UserService {
+        let jwt_service =
+            JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").expect("jwt service");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 100, 60);
+        let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+
+        UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            PasswordComplexityConfig::default(),
+            token_blacklist,
+            KeyBuilder::new("test"),
+            BruteForceProtection::in_memory("test".to_string()),
+        )
+    }
+
+    fn test_room_service(pool: sqlx::PgPool) -> RoomService {
+        RoomService::new(pool.clone(), test_user_service(pool))
     }
 
     // ========== WsQuery Tests ==========
@@ -1671,11 +1707,80 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_validate_websocket_room_membership_rejects_room_with_inactive_creator() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let room_service = test_room_service(pool.clone());
+        let user_service = room_service.user_service().clone();
+
+        let owner = user_service
+            .register(
+                "ws-owner-inactive".to_string(),
+                Some("ws-owner-inactive@test.invalid".to_string()),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("owner should register")
+            .0;
+        let member = user_service
+            .register(
+                "ws-member-inactive-owner".to_string(),
+                Some("ws-member-inactive-owner@test.invalid".to_string()),
+                "Password123!".to_string(),
+                None,
+            )
+            .await
+            .expect("member should register")
+            .0;
+
+        let room = room_service
+            .create_room(
+                "ws-room-inactive-owner".to_string(),
+                String::new(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+        room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("member should join room");
+
+        let mut updated_owner = user_service
+            .get_user(&owner.id)
+            .await
+            .expect("owner should exist");
+        let old_version = updated_owner.version;
+        updated_owner.status = UserStatus::Banned;
+        user_service
+            .update_user(&updated_owner, old_version)
+            .await
+            .expect("banning owner should succeed");
+
+        let err = validate_websocket_room_membership(&room_service, &room, &member.id)
+            .await
+            .expect_err("room with inactive creator must be rejected during websocket prepare");
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert!(
+            err.message.contains("creator is not active"),
+            "expected creator-inactive error, got: {}",
+            err.message
+        );
+
+        pool.close().await;
+    }
+
     #[test]
     fn test_map_websocket_pre_join_error_maps_typed_rate_limit_prefix() {
-        let err = map_websocket_pre_join_error(
-            RealtimeJoinError::RateLimited("realtime room capacity exceeded".to_string()),
-        );
+        let err = map_websocket_pre_join_error(RealtimeJoinError::RateLimited(
+            "realtime room capacity exceeded".to_string(),
+        ));
 
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(err.message, "realtime room capacity exceeded");
@@ -1683,10 +1788,9 @@ mod tests {
 
     #[test]
     fn test_map_websocket_pre_join_error_maps_raw_capacity_error() {
-        let err =
-            map_websocket_pre_join_error(RealtimeJoinError::RateLimited(
-                "Room at capacity (42 connections, max: 40)".to_string(),
-            ));
+        let err = map_websocket_pre_join_error(RealtimeJoinError::RateLimited(
+            "Room at capacity (42 connections, max: 40)".to_string(),
+        ));
 
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(err.message, "Room at capacity (42 connections, max: 40)");
@@ -1694,11 +1798,9 @@ mod tests {
 
     #[test]
     fn test_map_websocket_pre_join_error_maps_raw_user_capacity_error() {
-        let err = map_websocket_pre_join_error(
-            RealtimeJoinError::RateLimited(
-                "Too many connections for this user across all replicas (max 3)".to_string(),
-            ),
-        );
+        let err = map_websocket_pre_join_error(RealtimeJoinError::RateLimited(
+            "Too many connections for this user across all replicas (max 3)".to_string(),
+        ));
 
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(
@@ -1709,11 +1811,9 @@ mod tests {
 
     #[test]
     fn test_map_websocket_pre_join_error_maps_raw_total_capacity_error() {
-        let err = map_websocket_pre_join_error(
-            RealtimeJoinError::RateLimited(
-                "Server at capacity across all replicas (42 connections)".to_string(),
-            ),
-        );
+        let err = map_websocket_pre_join_error(RealtimeJoinError::RateLimited(
+            "Server at capacity across all replicas (42 connections)".to_string(),
+        ));
 
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(
@@ -1724,11 +1824,9 @@ mod tests {
 
     #[test]
     fn test_map_websocket_pre_join_error_maps_typed_service_unavailable_prefix() {
-        let err = map_websocket_pre_join_error(
-            RealtimeJoinError::ServiceUnavailable(
-                "distributed room capacity check unavailable".to_string(),
-            ),
-        );
+        let err = map_websocket_pre_join_error(RealtimeJoinError::ServiceUnavailable(
+            "distributed room capacity check unavailable".to_string(),
+        ));
 
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(
@@ -1787,14 +1885,15 @@ mod tests {
 
     #[test]
     fn test_map_websocket_pre_join_error_maps_business_denial_to_forbidden() {
-        let err = map_websocket_pre_join_error(
-            RealtimeJoinError::PermissionDenied(
-                "User is no longer allowed to use real-time messaging".to_string(),
-            ),
-        );
+        let err = map_websocket_pre_join_error(RealtimeJoinError::PermissionDenied(
+            "User is no longer allowed to use real-time messaging".to_string(),
+        ));
 
         assert_eq!(err.status, StatusCode::FORBIDDEN);
-        assert_eq!(err.message, "User is no longer allowed to use real-time messaging");
+        assert_eq!(
+            err.message,
+            "User is no longer allowed to use real-time messaging"
+        );
     }
 
     #[test]

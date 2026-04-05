@@ -14,12 +14,8 @@ use crate::proto::providers::alist::{
     ListResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
 };
 
+use crate::grpc::map_api_error;
 use crate::grpc::map_provider_error as api_err;
-
-#[allow(clippy::result_large_err)]
-fn map_provider_binds_error(error: String) -> Status {
-    Status::unavailable(error)
-}
 
 /// Alist Provider gRPC Service
 ///
@@ -145,7 +141,7 @@ impl AlistProviderService for AlistProviderGrpcService {
             "username",
         )
         .await
-        .map_err(map_provider_binds_error)?;
+        .map_err(map_api_error)?;
 
         let binds = provider_binds
             .into_iter()
@@ -163,15 +159,18 @@ impl AlistProviderService for AlistProviderGrpcService {
 
 #[cfg(test)]
 mod tests {
-    use super::map_provider_binds_error;
+    use crate::grpc::map_api_error;
+    use crate::impls::ApiError;
 
     #[test]
     fn test_provider_binds_backend_outage_maps_to_unavailable() {
-        let status = map_provider_binds_error("Failed to query credentials: pool timed out".into());
+        let status = map_api_error(ApiError::ServiceUnavailable(
+            "Provider bind information is temporarily unavailable".into(),
+        ));
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(
             status.message(),
-            "Failed to query credentials: pool timed out"
+            "Provider bind information is temporarily unavailable"
         );
     }
 }

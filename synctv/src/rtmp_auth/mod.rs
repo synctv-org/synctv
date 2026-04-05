@@ -1901,5 +1901,4 @@ mod tests {
             other => unreachable!("Expected Stopped variant, got: {other:?}"),
         }
     }
-
 }

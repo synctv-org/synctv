@@ -913,7 +913,6 @@ mod hsts_headers {
         // Zero max-age is valid -- used to clear HSTS
         assert_eq!(hsts_header(0, false, false), "max-age=0");
     }
-
 }
 
 // ============================================================================
@@ -1292,36 +1291,44 @@ mod api_error_classification {
     }
 
     #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_api_error_display_roundtrips() {
-        // Ensure Display output classifies correctly when parsed back
-        let cases: &[(ApiError, fn(&ErrorKind) -> bool)] = &[
-            (ApiError::NotFound("x".into()), |k| {
-                matches!(k, ErrorKind::NotFound)
-            }),
-            (ApiError::Authentication("x".into()), |k| {
-                matches!(k, ErrorKind::Unauthenticated)
-            }),
-            (ApiError::Authorization("x".into()), |k| {
-                matches!(k, ErrorKind::PermissionDenied)
-            }),
-            (ApiError::AlreadyExists("x".into()), |k| {
-                matches!(k, ErrorKind::AlreadyExists)
-            }),
-            (ApiError::InvalidInput("x".into()), |k| {
-                matches!(k, ErrorKind::InvalidArgument)
-            }),
-            (ApiError::ServiceUnavailable("x".into()), |k| {
-                matches!(k, ErrorKind::ServiceUnavailable)
-            }),
-            (ApiError::Internal("x".into()), |k| {
-                matches!(k, ErrorKind::Internal)
-            }),
+    fn test_api_error_display_uses_plain_message() {
+        let cases = [
+            (
+                ApiError::NotFound("room not found".into()),
+                ErrorKind::NotFound,
+            ),
+            (
+                ApiError::Authentication("invalid token".into()),
+                ErrorKind::Unauthenticated,
+            ),
+            (
+                ApiError::Authorization("forbidden".into()),
+                ErrorKind::PermissionDenied,
+            ),
+            (
+                ApiError::AlreadyExists("user already exists".into()),
+                ErrorKind::AlreadyExists,
+            ),
+            (
+                ApiError::InvalidInput("invalid username".into()),
+                ErrorKind::InvalidArgument,
+            ),
+            (
+                ApiError::ServiceUnavailable("distributed room capacity check unavailable".into()),
+                ErrorKind::ServiceUnavailable,
+            ),
+            (
+                ApiError::Internal("opaque internal failure".into()),
+                ErrorKind::Internal,
+            ),
         ];
-        for (err, check) in cases {
-            let s = err.to_string();
-            let kind = classify_error(&s);
-            assert!(check(&kind), "ApiError '{s}' misclassified after roundtrip");
+
+        for (err, expected_kind) in cases {
+            assert_eq!(err.to_string(), err.message());
+            assert!(
+                std::mem::discriminant(&classify_error(err.message()))
+                    == std::mem::discriminant(&expected_kind)
+            );
         }
     }
 
@@ -1329,7 +1336,7 @@ mod api_error_classification {
     fn test_api_error_into_string() {
         let err = ApiError::NotFound("item".to_string());
         let s: String = err.into();
-        assert!(s.starts_with("Not found: "));
+        assert_eq!(s, "item");
     }
 }
 

@@ -81,7 +81,7 @@ async fn test_position_reset_on_media_switch() {
         room_id: room.id.clone(),
         creator_id: Some(owner.id.clone()),
         name: "Test Video".to_string(),
-        position: 0,
+        position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
         provider_instance_name: "direct_url".to_string(),

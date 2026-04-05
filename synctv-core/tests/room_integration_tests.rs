@@ -277,7 +277,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
         creator_id: Some(owner.id.clone()),
         name: String::new(),
         parent_id: None,
-        position: 0,
+        position: 0.0,
         source_provider: None,
         source_config: None,
         provider_instance_name: None,
@@ -287,7 +287,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
     };
     playlist_repo.create(&root_playlist).await.unwrap();
 
-    // Hard delete the room (CASCADE should remove members and playlists)
+    // Hard delete the room through the explicit cleanup path.
     let deleted = room_repo.hard_delete(&room.id).await.unwrap();
     assert!(deleted);
 
@@ -298,7 +298,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(member_count, 0, "Room members should be cascade-deleted");
+    assert_eq!(member_count, 0, "Room members should be explicitly deleted");
 
     // Check playlists are gone
     let playlist_count: i64 =
@@ -307,7 +307,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(playlist_count, 0, "Playlists should be cascade-deleted");
+    assert_eq!(playlist_count, 0, "Playlists should be explicitly deleted");
 }
 
 #[tokio::test]

@@ -2,7 +2,7 @@
 CREATE TABLE IF NOT EXISTS email_tokens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     token VARCHAR(255) UNIQUE NOT NULL,
-    user_id CHAR(12) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id CHAR(12) NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     token_type VARCHAR(20) NOT NULL, -- 'email_verification' or 'password_reset'
     expires_at TIMESTAMPTZ NOT NULL,
     used_at TIMESTAMPTZ NULL,

@@ -651,5 +651,4 @@ mod tests {
         assert!(delete_result.is_ok());
         assert!(delete_result.unwrap().is_ok());
     }
-
 }

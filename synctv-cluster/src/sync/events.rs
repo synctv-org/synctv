@@ -276,6 +276,18 @@ pub enum ClusterEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// A room became unavailable because its creator account is no longer active.
+    ///
+    /// Broadcast cluster-wide so replicas disconnect active members, invalidate
+    /// room-related caches, and stop allowing normal room participation.
+    RoomOwnerInactive {
+        event_id: String,
+        room_id: RoomId,
+        owner_id: UserId,
+        triggered_by: UserId,
+        timestamp: DateTime<Utc>,
+    },
+
     /// A persistent user notification was created.
     ///
     /// Broadcast cluster-wide so that the node hosting the user's active WebSocket
@@ -345,6 +357,7 @@ impl ClusterEvent {
             | Self::RoomCreated { event_id, .. }
             | Self::RoomDeleted { event_id, .. }
             | Self::RoomBanned { event_id, .. }
+            | Self::RoomOwnerInactive { event_id, .. }
             | Self::UserNotification { event_id, .. }
             | Self::CacheInvalidate { event_id, .. } => event_id,
         }
@@ -372,7 +385,8 @@ impl ClusterEvent {
             | Self::KickUserFromRoom { room_id, .. }
             | Self::RoomCreated { room_id, .. }
             | Self::RoomDeleted { room_id, .. }
-            | Self::RoomBanned { room_id, .. } => Some(room_id),
+            | Self::RoomBanned { room_id, .. }
+            | Self::RoomOwnerInactive { room_id, .. } => Some(room_id),
             Self::SystemNotification { .. }
             | Self::KickUser { .. }
             | Self::UserNotification { .. }
@@ -402,6 +416,7 @@ impl ClusterEvent {
             Self::RoomCreated { creator_id, .. } => Some(creator_id),
             Self::RoomDeleted { deleted_by, .. } => Some(deleted_by),
             Self::RoomBanned { banned_by, .. } => Some(banned_by),
+            Self::RoomOwnerInactive { triggered_by, .. } => Some(triggered_by),
             Self::PermissionChanged { changed_by, .. } => Some(changed_by),
             Self::WebRTCSignaling { .. }
             | Self::SystemNotification { .. }
@@ -435,6 +450,7 @@ impl ClusterEvent {
             | Self::RoomCreated { timestamp, .. }
             | Self::RoomDeleted { timestamp, .. }
             | Self::RoomBanned { timestamp, .. }
+            | Self::RoomOwnerInactive { timestamp, .. }
             | Self::UserNotification { timestamp, .. }
             | Self::CacheInvalidate { timestamp, .. } => timestamp,
         }
@@ -452,6 +468,7 @@ impl ClusterEvent {
                 | Self::UserLeft { .. }
                 | Self::PermissionChanged { .. }
                 | Self::RoomBanned { .. }
+                | Self::RoomOwnerInactive { .. }
                 | Self::RoomDeleted { .. }
         )
     }
@@ -477,6 +494,9 @@ impl ClusterEvent {
                 )
             }
             Self::RoomBanned { room_id, .. } => format!("room_banned:{}", room_id.as_str()),
+            Self::RoomOwnerInactive { room_id, .. } => {
+                format!("room_owner_inactive:{}", room_id.as_str())
+            }
             Self::UserNotification {
                 user_id,
                 notification_id,
@@ -512,6 +532,7 @@ impl ClusterEvent {
             Self::KickUserFromRoom { .. } => "kick_user_from_room",
             Self::RoomCreated { .. } => "room_created",
             Self::RoomBanned { .. } => "room_banned",
+            Self::RoomOwnerInactive { .. } => "room_owner_inactive",
             Self::RoomDeleted { .. } => "room_deleted",
             Self::UserNotification { .. } => "user_notification",
             Self::CacheInvalidate { .. } => "cache_invalidate",

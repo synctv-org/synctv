@@ -1286,7 +1286,10 @@ impl Config {
                 self.redis.username, self.redis.password, self.redis.host, self.redis.port
             )
         } else if !self.redis.password.is_empty() {
-            format!(":{}@{}:{}", self.redis.password, self.redis.host, self.redis.port)
+            format!(
+                ":{}@{}:{}",
+                self.redis.password, self.redis.host, self.redis.port
+            )
         } else {
             format!("{}:{}", self.redis.host, self.redis.port)
         };
@@ -2090,14 +2093,12 @@ impl Config {
         }
         if self.database.username.trim().is_empty() {
             errors.push(
-                "database.username must be set when using split database configuration"
-                    .to_string(),
+                "database.username must be set when using split database configuration".to_string(),
             );
         }
         if self.database.password.trim().is_empty() {
             errors.push(
-                "database.password must be set when using split database configuration"
-                    .to_string(),
+                "database.password must be set when using split database configuration".to_string(),
             );
         }
         if self.database.name.trim().is_empty() {
@@ -2117,8 +2118,7 @@ impl Config {
 
     fn validate_redis_split_config(&self, errors: &mut Vec<String>) {
         if self.redis.host.trim().is_empty() {
-            errors
-                .push("redis.host must be set when using split redis configuration".to_string());
+            errors.push("redis.host must be set when using split redis configuration".to_string());
         }
         if self.redis.port == 0 {
             errors.push(
@@ -4119,7 +4119,9 @@ jwt:
         config.database.url = "postgresql://user:pass@db.example.com:5432/synctv".to_string();
         config.database.host = "db.example.com".to_string();
 
-        let errors = config.validate().expect_err("database URL and split fields must be exclusive");
+        let errors = config
+            .validate()
+            .expect_err("database URL and split fields must be exclusive");
         assert!(errors
             .iter()
             .any(|e| e.contains("database.url is mutually exclusive")));
@@ -4131,7 +4133,9 @@ jwt:
         config.redis.url = "redis://:secret@redis.example.com:6379/0".to_string();
         config.redis.host = "redis.example.com".to_string();
 
-        let errors = config.validate().expect_err("redis URL and split fields must be exclusive");
+        let errors = config
+            .validate()
+            .expect_err("redis URL and split fields must be exclusive");
         assert!(errors
             .iter()
             .any(|e| e.contains("redis.url is mutually exclusive")));
@@ -4150,8 +4154,12 @@ jwt:
         let errors = config
             .validate()
             .expect_err("incomplete split database config must fail");
-        assert!(errors.iter().any(|e| e.contains("database.password must be set")));
-        assert!(errors.iter().any(|e| e.contains("database.name must be set")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("database.password must be set")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("database.name must be set")));
     }
 
     #[test]
@@ -4164,7 +4172,9 @@ jwt:
         let errors = config
             .validate()
             .expect_err("incomplete split redis config must fail");
-        assert!(errors.iter().any(|e| e.contains("redis.port must be greater than 0")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("redis.port must be greater than 0")));
     }
 
     #[test]

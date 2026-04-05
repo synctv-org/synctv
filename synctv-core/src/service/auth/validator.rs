@@ -181,13 +181,17 @@ impl JwtValidator {
         &self,
         metadata: &MetadataMap,
     ) -> std::result::Result<Claims, Status> {
-        let token = self
-            .extract_grpc_token(metadata)
-            .map_err(|e| Status::unauthenticated(format!("Token extraction failed: {e}")))?;
+        let token = self.extract_grpc_token(metadata).map_err(|error| {
+            tracing::warn!(error = %error, "gRPC token extraction failed");
+            Status::unauthenticated("Invalid authorization header")
+        })?;
 
         self.jwt_service
             .verify_access_token(&token)
-            .map_err(|e| Status::unauthenticated(format!("Token verification failed: {e}")))
+            .map_err(|error| {
+                tracing::warn!(error = %error, "gRPC token verification failed");
+                Status::unauthenticated("Invalid or expired token")
+            })
     }
 }
 
@@ -325,5 +329,36 @@ mod tests {
         let result = validator.validate_grpc_as_status(&metadata);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn test_validate_grpc_as_status_hides_verification_details() {
+        let jwt_service = create_test_jwt_service();
+        let validator = JwtValidator::new(jwt_service);
+
+        let mut metadata = MetadataMap::new();
+        metadata.insert("authorization", "Bearer invalid".parse().unwrap());
+
+        let status = validator
+            .validate_grpc_as_status(&metadata)
+            .expect_err("invalid token should be rejected");
+
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        assert_eq!(status.message(), "Invalid or expired token");
+    }
+
+    #[test]
+    fn test_validate_grpc_as_status_hides_extraction_details() {
+        let jwt_service = create_test_jwt_service();
+        let validator = JwtValidator::new(jwt_service);
+
+        let metadata = MetadataMap::new();
+
+        let status = validator
+            .validate_grpc_as_status(&metadata)
+            .expect_err("missing authorization header should be rejected");
+
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        assert_eq!(status.message(), "Invalid authorization header");
     }
 }

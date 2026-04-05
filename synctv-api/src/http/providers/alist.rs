@@ -210,7 +210,7 @@ pub(crate) struct AlistBindsResponseDoc {
         responses(
             (status = 200, description = "Saved Alist credentials", body = AlistBindsResponseDoc),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 500, description = "Credential query failed", body = crate::openapi::ErrorResponseDoc)
+            (status = 503, description = "Provider bind information unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
             ("bearer_auth" = [])
@@ -230,10 +230,7 @@ pub(crate) async fn binds(
         "username",
     )
     .await
-    .map_err(|e| {
-        tracing::error!("Failed to query credentials: {}", e);
-        AppError::internal_server_error("Failed to query credentials")
-    })?;
+    .map_err(AppError::from)?;
 
     let alist_binds: Vec<_> = provider_binds
         .into_iter()

@@ -45,7 +45,7 @@ async fn validate_auth_user(
 
     let auth_str = auth_header
         .to_str()
-        .map_err(|_| AppError::invalid_authorization_header())?;
+        .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
 
     let claims = validator
         .validate_http(auth_str)
@@ -60,7 +60,9 @@ async fn validate_auth_user(
         .await
         .map_err(|e| match SecurityPipeline::classify_auth_error(&e) {
             AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
-            AuthErrorCategory::Authorization => AppError::forbidden(format!("{e}")),
+            AuthErrorCategory::Authorization => {
+                crate::http::error::map_auth_authorization_error(&e)
+            }
             AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
         })?;
 
@@ -171,10 +173,12 @@ where
 // ------------------------------------------------------------------
 
 fn require_admin_api(state: &AppState) -> Result<&Arc<crate::impls::AdminApiImpl>, AppError> {
-    state
-        .admin_api
-        .as_ref()
-        .ok_or_else(|| AppError::internal("Admin service not configured"))
+    state.admin_api.as_ref().ok_or_else(|| {
+        AppError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "Admin service is not available on this server.",
+        )
+    })
 }
 
 /// Map a typed `ApiError` to an HTTP `AppError` with guaranteed-correct
@@ -2045,12 +2049,20 @@ mod tests {
 
     // ========== Error Mapping Tests ==========
 
-    #[test]
-    fn test_require_admin_api_error() {
-        // When admin_api is None, should produce an internal error
-        let err = AppError::internal("Admin service not configured");
-        assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(err.message, "Admin service not configured");
+    #[tokio::test]
+    async fn test_require_admin_api_error() {
+        let mut state = crate::http::tests::test_app_state();
+        state.admin_api = None;
+
+        let err = match require_admin_api(&state) {
+            Ok(_) => panic!("missing admin api should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            err.message,
+            "Admin service is not available on this server."
+        );
     }
 
     #[test]

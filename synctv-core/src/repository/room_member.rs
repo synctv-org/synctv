@@ -18,6 +18,9 @@ pub struct RoomMemberRepository {
     pool: PgPool,
 }
 
+const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
+    "EXISTS (SELECT 1 FROM users u WHERE u.id = r.created_by AND u.deleted_at IS NULL AND u.status = 1)";
+
 impl RoomMemberRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -1376,6 +1379,82 @@ impl RoomMemberRepository {
             JOIN rooms r ON rm.room_id = r.id
             LEFT JOIN room_members rm2 ON r.id = rm2.room_id AND rm2.left_at IS NULL
             WHERE rm.user_id = $1 AND {where_sql}
+            GROUP BY r.id, r.name, r.description, r.created_by, r.status,
+                     r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
+                     rm.role, rm.status, rm.joined_at
+            ORDER BY {order_by}
+            LIMIT $2 OFFSET $3
+            "
+        );
+
+        let rows = Self::bind_related_room_filters(
+            sqlx::query(&sql)
+                .bind(user_id.as_str())
+                .bind(limit)
+                .bind(offset),
+            &search_pattern,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let total_count = rows
+            .first()
+            .map_or(0, |row| row.get::<i64, _>("total_count"));
+
+        let results: Result<Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>> = rows
+            .into_iter()
+            .map(|row| {
+                let room = crate::models::Room {
+                    id: RoomId::from_string(row.try_get("id")?),
+                    name: row.try_get("name")?,
+                    description: row.try_get("description")?,
+                    created_by: UserId::from_string(row.try_get("created_by")?),
+                    status: row.try_get("status")?,
+                    is_banned: row.try_get("is_banned")?,
+                    created_at: row.try_get("created_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                    last_activity_at: row.try_get("last_activity_at")?,
+                    deleted_at: row.try_get("deleted_at")?,
+                    version: row.try_get("version")?,
+                };
+
+                Ok((
+                    room,
+                    row.try_get("user_role")?,
+                    row.try_get("user_status")?,
+                    row.try_get("member_count")?,
+                ))
+            })
+            .collect();
+
+        Ok((results?, total_count))
+    }
+
+    /// List only rooms whose creator is still active.
+    pub async fn list_accessible_by_user_with_query(
+        &self,
+        user_id: &UserId,
+        query: &RelatedRoomListQuery,
+    ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
+        let limit = query.pagination.limit() as i64;
+        let offset = query.pagination.offset() as i64;
+        let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
+        let wb = Self::build_related_room_list_conditions(query);
+        let (where_sql, _) = wb.build(4);
+        let order_by = Self::build_related_room_order_by(query);
+        let sql = format!(
+            r"
+            SELECT
+                r.id, r.name, r.description, r.created_by, r.status,
+                r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
+                rm.role as user_role,
+                rm.status as user_status,
+                COUNT(rm2.user_id)::int as member_count,
+                COUNT(*) OVER() as total_count
+            FROM room_members rm
+            JOIN rooms r ON rm.room_id = r.id
+            LEFT JOIN room_members rm2 ON r.id = rm2.room_id AND rm2.left_at IS NULL
+            WHERE rm.user_id = $1 AND {where_sql} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}
             GROUP BY r.id, r.name, r.description, r.created_by, r.status,
                      r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                      rm.role, rm.status, rm.joined_at

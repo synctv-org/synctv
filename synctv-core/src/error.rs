@@ -128,15 +128,21 @@ impl From<crate::provider::ProviderError> for Error {
             // Invalid URL
             ProviderError::InvalidUrl(msg) => Self::InvalidInput(format!("Invalid URL: {msg}")),
             // Upstream HTTP errors
-            ProviderError::UpstreamHttp { status, url } => {
+            ProviderError::UpstreamHttp { status, .. } => {
                 if status == 401 || status == 403 {
-                    Self::Authentication(format!("Provider authentication failed for {url}"))
+                    tracing::warn!(status, "Provider upstream authentication failure");
+                    Self::Authentication("Provider authentication failed".to_string())
                 } else if status == 404 {
-                    Self::NotFound(format!("Provider resource not found: {url}"))
-                } else if status >= 500 {
-                    Self::Timeout(format!("Provider server error ({status}) for {url}"))
+                    tracing::info!(status, "Provider upstream resource not found");
+                    Self::NotFound("Provider resource not found".to_string())
+                } else if status == 408 || status == 429 || status >= 500 {
+                    tracing::warn!(status, "Provider upstream unavailable");
+                    Self::Timeout(
+                        "Upstream provider service is temporarily unavailable.".to_string(),
+                    )
                 } else {
-                    Self::Internal(format!("Provider HTTP error {status} for {url}"))
+                    tracing::warn!(status, "Provider upstream rejected request");
+                    Self::InvalidInput("Upstream provider rejected the request.".to_string())
                 }
             }
             // Encryption required
@@ -552,7 +558,9 @@ mod tests {
             url: "https://api.example.com/video".to_string(),
         };
         let core_err: Error = provider_err.into();
-        assert!(matches!(core_err, Error::Authentication(_)));
+        assert!(
+            matches!(core_err, Error::Authentication(ref msg) if msg == "Provider authentication failed")
+        );
     }
 
     #[test]
@@ -562,7 +570,9 @@ mod tests {
             url: "https://api.example.com/video".to_string(),
         };
         let core_err: Error = provider_err.into();
-        assert!(matches!(core_err, Error::Authentication(_)));
+        assert!(
+            matches!(core_err, Error::Authentication(ref msg) if msg == "Provider authentication failed")
+        );
     }
 
     #[test]
@@ -572,7 +582,9 @@ mod tests {
             url: "https://api.example.com/video".to_string(),
         };
         let core_err: Error = provider_err.into();
-        assert!(matches!(core_err, Error::NotFound(_)));
+        assert!(
+            matches!(core_err, Error::NotFound(ref msg) if msg == "Provider resource not found")
+        );
     }
 
     #[test]
@@ -583,18 +595,45 @@ mod tests {
         };
         let core_err: Error = provider_err.into();
         // 5xx errors are treated as transient/timeout
-        assert!(matches!(core_err, Error::Timeout(_)));
+        assert!(
+            matches!(core_err, Error::Timeout(ref msg) if msg == "Upstream provider service is temporarily unavailable.")
+        );
     }
 
     #[test]
-    fn test_provider_error_upstream_http_400_converts_to_internal() {
+    fn test_provider_error_upstream_http_408_converts_to_timeout() {
+        let provider_err = crate::provider::ProviderError::UpstreamHttp {
+            status: 408,
+            url: "https://api.example.com/video?token=secret".to_string(),
+        };
+        let core_err: Error = provider_err.into();
+        assert!(
+            matches!(core_err, Error::Timeout(ref msg) if msg == "Upstream provider service is temporarily unavailable.")
+        );
+    }
+
+    #[test]
+    fn test_provider_error_upstream_http_429_converts_to_timeout() {
+        let provider_err = crate::provider::ProviderError::UpstreamHttp {
+            status: 429,
+            url: "https://api.example.com/video?token=secret".to_string(),
+        };
+        let core_err: Error = provider_err.into();
+        assert!(
+            matches!(core_err, Error::Timeout(ref msg) if msg == "Upstream provider service is temporarily unavailable.")
+        );
+    }
+
+    #[test]
+    fn test_provider_error_upstream_http_400_converts_to_invalid_input() {
         let provider_err = crate::provider::ProviderError::UpstreamHttp {
             status: 400,
             url: "https://api.example.com/video".to_string(),
         };
         let core_err: Error = provider_err.into();
-        // 4xx (except 401/403/404) are internal errors
-        assert!(matches!(core_err, Error::Internal(_)));
+        assert!(
+            matches!(core_err, Error::InvalidInput(ref msg) if msg == "Upstream provider rejected the request.")
+        );
     }
 
     #[test]

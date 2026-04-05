@@ -308,7 +308,7 @@ async fn create_dynamic_playlist(
         creator_id: Some(owner_id.clone()),
         name: "Dynamic Playlist".to_string(),
         parent_id: None,
-        position: 0,
+        position: 0.0,
         source_provider: Some("fake_dynamic".to_string()),
         source_config: Some(serde_json::json!({})),
         provider_instance_name: Some(provider_instance_name.to_string()),
@@ -517,6 +517,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
                 provider_instance_name: String::new(),
                 sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
+                availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
             },
         )
         .await
@@ -724,6 +725,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
                 provider_instance_name: String::new(),
                 sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
+                availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
             },
         )
         .await
@@ -788,7 +790,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
             danmakus: Vec::new(),
             format: "mp4".to_string(),
         },
-        0,
+        0.0,
     );
     synctv_core::repository::MediaRepository::new(pool.clone())
         .create(&root_media)
@@ -821,6 +823,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
                 provider_instance_name: String::new(),
                 sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
+                availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
             },
         )
         .await

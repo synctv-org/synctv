@@ -150,7 +150,7 @@ pub async fn logout(
         .get(axum::http::header::AUTHORIZATION)
         .ok_or_else(AppError::missing_authorization_header)?
         .to_str()
-        .map_err(|_| AppError::invalid_authorization_header())?;
+        .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
 
     let token = synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_value)
         .map_err(|_| AppError::invalid_or_expired_token())?;

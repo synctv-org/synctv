@@ -96,7 +96,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.DeleteEntriesRequest.playlist_ids",
         ".synctv.client.DeleteEntriesRequest.media_ids",
         ".synctv.client.DeleteEntriesRequest.force",
-        ".synctv.client.ReorderMediaBatchRequest.updates",
         ".synctv.client.UpdatePlaylistRequest.playlist_id",
         ".synctv.client.UpdatePlaylistRequest.name",
         ".synctv.client.UpdateMemberPermissionsRequest.user_id",
@@ -158,10 +157,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         prost_config.field_attribute(field, "#[serde(default)]");
     }
-    prost_config.field_attribute(
-        ".synctv.client.UpdatePlaylistRequest.position",
-        "#[serde(default = \"crate::serde_defaults::update_playlist_position\")]",
-    );
     prost_config.field_attribute(".synctv.admin.BanUserRequest.reason", "#[serde(default)]");
     prost_config.field_attribute(".synctv.admin.BanRoomRequest.reason", "#[serde(default)]");
     prost_config.field_attribute(

@@ -83,7 +83,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
             creator_id: Some(owner.id.clone()),
             name: "Top Level".to_string(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -110,7 +110,7 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
         room_id: room_id.clone(),
         creator_id: None,
         name: name.to_string(),
-        position,
+        position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: json!({"url": "https://example.com/video.mp4"}),
         provider_instance_name: "direct_url".to_string(),
@@ -127,7 +127,7 @@ fn make_room_root_media(room_id: &RoomId, name: &str, position: i32) -> Media {
         room_id: room_id.clone(),
         creator_id: None,
         name: name.to_string(),
-        position,
+        position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: json!({"url": "https://example.com/video.mp4"}),
         provider_instance_name: "direct_url".to_string(),
@@ -147,7 +147,7 @@ async fn test_create_media_basic() {
     let created = media_repo.create(&media).await.unwrap();
 
     assert_eq!(created.name, "test_video.mp4");
-    assert_eq!(created.position, 0);
+    assert_eq!(created.position, 0.0);
     assert_eq!(created.source_provider, "direct_url");
     assert_eq!(created.playlist_id, Some(ctx.root_playlist.id));
     assert_eq!(created.room_id, ctx.room.id);
@@ -228,7 +228,7 @@ async fn test_duplicate_media_names_are_allowed_in_same_playlist() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_unique_media_position_constraint() {
+async fn test_duplicate_media_positions_are_allowed() {
     let ctx = setup_test_context("6").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
@@ -242,13 +242,16 @@ async fn test_unique_media_position_constraint() {
         .await
         .unwrap();
 
-    // Try to create another media at the same position in the same playlist
+    // Duplicate floating positions are allowed; ordering falls back to the
+    // secondary sort key and move operations rebalance only when needed.
     let duplicate = make_media(&ctx.root_playlist.id, &ctx.room.id, "second.mp4", 0);
-    let result = media_repo.create(&duplicate).await;
-    assert!(
-        result.is_err(),
-        "Duplicate position in same playlist should fail"
-    );
+    let result = media_repo.create(&duplicate).await.unwrap();
+    let items = media_repo
+        .get_by_playlist(&ctx.root_playlist.id)
+        .await
+        .unwrap();
+    assert_eq!(result.name, "second.mp4");
+    assert_eq!(items.len(), 2);
 }
 
 #[tokio::test]
@@ -324,7 +327,7 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
     .bind(room.id.as_str())
     .bind(owner.id.as_str())
     .bind("root-media.mp4")
-    .bind(0)
+    .bind(0.0)
     .bind("direct_url")
     .bind(json!({"url": "https://example.com/root.mp4"}))
     .bind("direct_url")
@@ -355,7 +358,7 @@ async fn test_media_cascade_delete_with_playlist() {
             creator_id: None,
             name: "Child PL".to_string(),
             parent_id: Some(ctx.root_playlist.id.clone()),
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -377,19 +380,19 @@ async fn test_media_cascade_delete_with_playlist() {
         .await
         .unwrap();
 
-    // Delete the child playlist - media should be cascade-deleted
+    // Delete the child playlist - nested media should be explicitly deleted too.
     playlist_repo.delete(&child_playlist.id).await.unwrap();
 
     let fetched = media_repo.get_by_id(&media.id).await.unwrap();
     assert!(
         fetched.is_none(),
-        "Media should be cascade-deleted when playlist is deleted"
+        "Media should be deleted when its playlist subtree is deleted"
     );
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_media_swap_positions() {
+async fn test_media_move_with_tx_reorders_scope() {
     let ctx = setup_test_context("9").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
@@ -398,7 +401,7 @@ async fn test_media_swap_positions() {
             &ctx.root_playlist.id,
             &ctx.room.id,
             "first.mp4",
-            0,
+            1024,
         ))
         .await
         .unwrap();
@@ -407,18 +410,22 @@ async fn test_media_swap_positions() {
             &ctx.root_playlist.id,
             &ctx.room.id,
             "second.mp4",
-            1,
+            2048,
         ))
         .await
         .unwrap();
 
-    media_repo.swap_positions(&m1.id, &m2.id).await.unwrap();
+    let mut tx = ctx.pool.begin().await.unwrap();
+    media_repo
+        .move_with_tx(&m2.id, Some(&m1.id), None, &mut tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
 
     let updated_m1 = media_repo.get_by_id(&m1.id).await.unwrap().unwrap();
     let updated_m2 = media_repo.get_by_id(&m2.id).await.unwrap().unwrap();
 
-    assert_eq!(updated_m1.position, 1, "first should now be at position 1");
-    assert_eq!(updated_m2.position, 0, "second should now be at position 0");
+    assert!(updated_m2.position < updated_m1.position);
 }
 
 #[tokio::test]
@@ -486,31 +493,28 @@ async fn test_media_batch_delete() {
 }
 
 // ============================================================================
-// Bug B1: get_next_position_with_tx tests
+// Append-position helper tests
 // ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_next_position_with_tx_empty_playlist_returns_zero() {
+async fn test_get_next_append_position_with_tx_empty_playlist_returns_order_step() {
     let ctx = setup_test_context("next_pos_empty").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let mut tx = ctx.pool.begin().await.unwrap();
     let next_pos = media_repo
-        .get_next_position_with_tx(&ctx.room.id, Some(&ctx.root_playlist.id), &mut tx)
+        .get_next_append_position_with_tx(&ctx.room.id, Some(&ctx.root_playlist.id), &mut tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
-    assert_eq!(
-        next_pos, 0,
-        "Next position for an empty playlist should be 0"
-    );
+    assert_eq!(next_pos, 1024.0);
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_next_position_with_tx_existing_items() {
+async fn test_get_next_append_position_with_tx_existing_items() {
     let ctx = setup_test_context("next_pos_existing").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
@@ -519,103 +523,22 @@ async fn test_get_next_position_with_tx_existing_items() {
         .await
         .unwrap();
     media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1))
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 2048))
         .await
         .unwrap();
     media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "c.mp4", 5))
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "c.mp4", 4096))
         .await
         .unwrap();
 
     let mut tx = ctx.pool.begin().await.unwrap();
     let next_pos = media_repo
-        .get_next_position_with_tx(&ctx.room.id, Some(&ctx.root_playlist.id), &mut tx)
+        .get_next_append_position_with_tx(&ctx.room.id, Some(&ctx.root_playlist.id), &mut tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
-    assert_eq!(next_pos, 6, "Next position should be max(position)+1 = 6");
-}
-
-// ============================================================================
-// Bug B2: swap_positions_no_constraint_violation test
-// ============================================================================
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_swap_positions_no_constraint_violation() {
-    let ctx = setup_test_context("swap_fix").await;
-    let media_repo = MediaRepository::new(ctx.pool.clone());
-
-    let m1 = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "swap_a.mp4",
-            0,
-        ))
-        .await
-        .unwrap();
-    let m2 = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "swap_b.mp4",
-            1,
-        ))
-        .await
-        .unwrap();
-
-    // This should NOT trigger a unique constraint violation
-    media_repo.swap_positions(&m1.id, &m2.id).await.unwrap();
-
-    let updated_m1 = media_repo.get_by_id(&m1.id).await.unwrap().unwrap();
-    let updated_m2 = media_repo.get_by_id(&m2.id).await.unwrap().unwrap();
-
-    assert_eq!(updated_m1.position, 1, "m1 should now be at position 1");
-    assert_eq!(updated_m2.position, 0, "m2 should now be at position 0");
-}
-
-// ============================================================================
-// reorder_batch tests
-// ============================================================================
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_reorder_batch_with_tx_swaps_positions() {
-    let ctx = setup_test_context("reorder_swap").await;
-    let media_repo = MediaRepository::new(ctx.pool.clone());
-
-    let m1 = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "reorder_a.mp4",
-            0,
-        ))
-        .await
-        .unwrap();
-    let m2 = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "reorder_b.mp4",
-            1,
-        ))
-        .await
-        .unwrap();
-
-    // Swap positions [0,1] -> [1,0]
-    media_repo
-        .reorder_batch(&[(m1.id.clone(), 1), (m2.id.clone(), 0)])
-        .await
-        .unwrap();
-
-    let updated_m1 = media_repo.get_by_id(&m1.id).await.unwrap().unwrap();
-    let updated_m2 = media_repo.get_by_id(&m2.id).await.unwrap().unwrap();
-
-    assert_eq!(updated_m1.position, 1);
-    assert_eq!(updated_m2.position, 0);
+    assert_eq!(next_pos, 5120.0);
 }
 
 // ============================================================================
@@ -648,7 +571,7 @@ async fn test_create_batch_chunked_inserts_all() {
         .unwrap();
     assert_eq!(playlist_items.len(), 5);
     for (i, item) in playlist_items.iter().enumerate() {
-        assert_eq!(item.position, i as i32);
+        assert_eq!(item.position, i as f64);
     }
 }
 
@@ -671,7 +594,7 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
             creator_id: None,
             name: "Second PL".to_string(),
             parent_id: Some(ctx.root_playlist.id.clone()),
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -906,24 +829,9 @@ async fn test_delete_room_root_only_removes_target_room_media() {
 }
 
 // ============================================================================
-// Task #25: Concurrent position assignment tests
+// Concurrent append-position assignment tests
 // ============================================================================
-//
-// BUG: get_next_position_with_tx uses FOR UPDATE on a subquery, but this
-// provides NO protection when the playlist is empty - the subquery returns
-// no rows to lock. Two concurrent inserts on an empty playlist will both
-// compute position=0 and violate the UNIQUE constraint.
-//
-// FIX: Use pg_advisory_xact_lock on playlist_id to serialize position
-// computation, similar to Task #9's fix for playlist position.
 
-/// Test that concurrent media additions to an EMPTY playlist produce unique positions.
-///
-/// This is the critical edge case where the current implementation fails:
-/// - Empty playlist = no rows for FOR UPDATE to lock
-/// - Both transactions see MAX(position) = NULL
-/// - Both compute position = 0
-/// - UNIQUE constraint violation!
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_add_to_empty_playlist_unique_positions() {
@@ -941,11 +849,10 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
         let media_repo = media_repo.clone();
 
         let handle = tokio::spawn(async move {
-            // Each task starts its own transaction and calls get_next_position_with_tx
             let mut tx = pool.begin().await.expect("Failed to begin transaction");
 
             let position = media_repo
-                .get_next_position_with_tx(&room_id, Some(&playlist_id), &mut tx)
+                .get_next_append_position_with_tx(&room_id, Some(&playlist_id), &mut tx)
                 .await
                 .expect("Failed to get next position");
 
@@ -987,7 +894,7 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
         .collect();
 
     // All tasks should succeed (no UNIQUE constraint violations)
-    let successful_positions: Vec<i32> = results
+    let successful_positions: Vec<f64> = results
         .into_iter()
         .filter_map(std::result::Result::ok)
         .collect();
@@ -1002,7 +909,7 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
 
     // All positions should be unique
     let mut sorted_positions = successful_positions.clone();
-    sorted_positions.sort_unstable();
+    sorted_positions.sort_by(f64::total_cmp);
     sorted_positions.dedup();
     assert_eq!(
         sorted_positions.len(),
@@ -1010,18 +917,13 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
         "All positions should be unique, got duplicates: {successful_positions:?}"
     );
 
-    // Positions should be 0..9
     assert_eq!(
         sorted_positions,
-        (0..num_concurrent as i32).collect::<Vec<_>>(),
-        "Positions should be 0 through 9"
+        (1..=num_concurrent).map(|n| (n as f64) * 1024.0).collect::<Vec<_>>(),
+        "Positions should follow sparse append ordering"
     );
 }
 
-/// Test that concurrent media additions to a NON-EMPTY playlist also work correctly.
-///
-/// This should already work with the current implementation (FOR UPDATE on
-/// existing rows), but we verify it for completeness.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
@@ -1055,7 +957,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
             let mut tx = pool.begin().await.expect("Failed to begin transaction");
 
             let position = media_repo
-                .get_next_position_with_tx(&room_id, Some(&playlist_id), &mut tx)
+                .get_next_append_position_with_tx(&room_id, Some(&playlist_id), &mut tx)
                 .await
                 .expect("Failed to get next position");
 
@@ -1089,7 +991,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
         .map(|r| r.expect("Task panicked"))
         .collect();
 
-    let successful_positions: Vec<i32> = results
+    let successful_positions: Vec<f64> = results
         .into_iter()
         .filter_map(std::result::Result::ok)
         .collect();
@@ -1100,19 +1002,16 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
         "All {num_concurrent} concurrent adds should succeed"
     );
 
-    // All new positions should be unique and >= 5
+    // All new positions should be unique and greater than the existing max.
     let mut sorted_positions = successful_positions;
-    sorted_positions.sort_unstable();
+    sorted_positions.sort_by(f64::total_cmp);
     sorted_positions.dedup();
     assert_eq!(sorted_positions.len(), num_concurrent);
 
-    // All should be in range [5, 10)
-    for &pos in &sorted_positions {
-        assert!(
-            (5..10).contains(&pos),
-            "New position {pos} should be >= 5 and < 10"
-        );
-    }
+    assert!(
+        sorted_positions.iter().all(|&pos| pos > 4.0),
+        "All new positions should append after the existing max position"
+    );
 }
 
 #[tokio::test]
@@ -1175,7 +1074,7 @@ async fn test_media_rejects_cross_room_playlist_reference() {
             creator_id: Some(owner.id.clone()),
             name: "Room B Playlist".to_string(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -1193,7 +1092,7 @@ async fn test_media_rejects_cross_room_playlist_reference() {
             room_id: room_a.id.clone(),
             creator_id: None,
             name: "cross-room.mp4".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: json!({"url": "https://example.com/cross-room.mp4"}),
             provider_instance_name: "direct_url".to_string(),

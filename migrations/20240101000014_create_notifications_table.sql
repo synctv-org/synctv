@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS notifications (
     id UUID NOT NULL DEFAULT gen_random_uuid(),
-    user_id CHAR(12) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id CHAR(12) NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     type VARCHAR(50) NOT NULL, -- room_invitation, system_announcement, room_event, etc.
     title VARCHAR(255) NOT NULL,
     content TEXT NOT NULL,

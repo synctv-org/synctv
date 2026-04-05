@@ -116,7 +116,7 @@ fn security_pipeline_error_status(err: &CoreError) -> tonic::Status {
         AuthErrorCategory::Authentication => {
             tonic::Status::unauthenticated("Authentication failed")
         }
-        AuthErrorCategory::Authorization => tonic::Status::permission_denied("Permission denied"),
+        AuthErrorCategory::Authorization => super::map_auth_authorization_error(err),
         AuthErrorCategory::Unavailable => {
             tonic::Status::unavailable("Authentication service unavailable")
         }
@@ -365,6 +365,27 @@ mod tests {
         assert!(
             extensions.get::<SecurityCheckPassed>().is_some(),
             "Extensions should contain SecurityCheckPassed"
+        );
+    }
+
+    #[test]
+    fn test_security_pipeline_error_status_preserves_authorization_message() {
+        let status = security_pipeline_error_status(&CoreError::Authorization(
+            "Not a member of this room".to_string(),
+        ));
+
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(status.message(), "Not a member of this room");
+    }
+
+    #[test]
+    fn test_security_pipeline_error_status_maps_email_not_verified() {
+        let status = security_pipeline_error_status(&CoreError::EmailNotVerified);
+
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(
+            status.message(),
+            "Email not verified. Please verify your email to continue."
         );
     }
 }

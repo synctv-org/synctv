@@ -26,6 +26,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use std::sync::Arc;
 use tracing::{debug, error, info};
 
 use synctv_proto::client::{
@@ -34,7 +35,23 @@ use synctv_proto::client::{
     ListAvailableProvidersResponse, UnlinkProviderResponse,
 };
 
-use super::{error::map_api_error, middleware::AuthUser, validation, AppResult, AppState};
+use super::{
+    error::map_api_error, middleware::AuthUser, validation, AppError, AppResult, AppState,
+};
+
+fn oauth2_unavailable_error() -> AppError {
+    AppError::new(
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "OAuth2 is not available on this server.",
+    )
+}
+
+fn require_oauth2_api(state: &AppState) -> Result<Arc<crate::impls::OAuth2ApiImpl>, AppError> {
+    state
+        .oauth2_api
+        .clone()
+        .ok_or_else(oauth2_unavailable_error)
+}
 
 /// Query params for get authorization URL (converted to proto request)
 #[derive(Debug, Deserialize)]
@@ -74,10 +91,7 @@ pub async fn get_authorize_url(
     Path(provider): Path<String>,
     Query(params): Query<GetAuthUrlQuery>,
 ) -> AppResult<Json<GetAuthorizationUrlResponse>> {
-    let oauth2_api = state
-        .oauth2_api
-        .as_ref()
-        .ok_or_else(|| super::AppError::bad_request("OAuth2 is not configured on this server"))?;
+    let oauth2_api = require_oauth2_api(&state)?;
 
     // Validate redirect_url length and format
     let redirect_url = validation::validate_oauth2_redirect_url(params.redirect_url.as_deref())
@@ -135,10 +149,7 @@ pub async fn exchange_authorization_code(
     Path(provider): Path<String>,
     Json(req): Json<ExchangeAuthorizationCodeRequest>,
 ) -> AppResult<Json<ExchangeAuthorizationCodeResponse>> {
-    let oauth2_api = state
-        .oauth2_api
-        .as_ref()
-        .ok_or_else(|| super::AppError::bad_request("OAuth2 is not configured on this server"))?;
+    let oauth2_api = require_oauth2_api(&state)?;
 
     // Validate state parameter format (CSRF protection)
     // State must be exactly 32 characters from the shared base62 alphabet
@@ -219,10 +230,7 @@ pub async fn get_bind_authorize_url(
     Path(provider): Path<String>,
     Query(params): Query<GetAuthUrlQuery>,
 ) -> AppResult<Json<GetAuthorizationUrlForBindResponse>> {
-    let oauth2_api = state
-        .oauth2_api
-        .as_ref()
-        .ok_or_else(|| super::AppError::bad_request("OAuth2 is not configured on this server"))?;
+    let oauth2_api = require_oauth2_api(&state)?;
 
     // Validate redirect_url length and format
     let redirect_url = validation::validate_oauth2_redirect_url(params.redirect_url.as_deref())
@@ -277,10 +285,7 @@ pub async fn unlink_provider(
     Path(provider): Path<String>,
     Query(params): Query<UnlinkProviderQuery>,
 ) -> AppResult<Json<UnlinkProviderResponse>> {
-    let oauth2_api = state
-        .oauth2_api
-        .as_ref()
-        .ok_or_else(|| super::AppError::bad_request("OAuth2 is not configured on this server"))?;
+    let oauth2_api = require_oauth2_api(&state)?;
 
     // Validate provider_user_id length
     let provider_user_id =
@@ -328,10 +333,7 @@ pub async fn unlink_provider(
 pub async fn list_available_providers(
     State(state): State<AppState>,
 ) -> AppResult<Json<ListAvailableProvidersResponse>> {
-    let oauth2_api = state
-        .oauth2_api
-        .as_ref()
-        .ok_or_else(|| super::AppError::bad_request("OAuth2 is not configured on this server"))?;
+    let oauth2_api = require_oauth2_api(&state)?;
 
     let providers = oauth2_api.list_available_providers().await.map_err(|e| {
         error!("Failed to list available providers: {}", e);
@@ -372,10 +374,7 @@ pub async fn get_linked_providers(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> AppResult<Json<GetLinkedProvidersResponse>> {
-    let oauth2_api = state
-        .oauth2_api
-        .as_ref()
-        .ok_or_else(|| super::AppError::bad_request("OAuth2 is not configured on this server"))?;
+    let oauth2_api = require_oauth2_api(&state)?;
 
     let providers = oauth2_api
         .get_linked_providers(&auth.user_id)
@@ -542,5 +541,12 @@ mod tests {
 
         assert_eq!(err.status, StatusCode::NOT_FOUND);
         assert_eq!(err.message, "No binding found for this provider");
+    }
+
+    #[test]
+    fn test_oauth2_missing_is_service_unavailable() {
+        let err = oauth2_unavailable_error();
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.message, "OAuth2 is not available on this server.");
     }
 }

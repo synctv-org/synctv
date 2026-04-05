@@ -6,6 +6,10 @@ use synctv_core::models::UserId;
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 
+const LIVESTREAM_UNAVAILABLE_MESSAGE: &str = "Live streaming is not available on this server.";
+const PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE: &str =
+    "Publish key service is not available on this server.";
+
 fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String {
     let rtmp_host = config.public_rtmp_host();
     let rtmp_port = config.livestream.rtmp_port;
@@ -38,6 +42,14 @@ fn paginate_room_stream_ids(
         .collect();
 
     crate::proto::client::ListRoomStreamsResponse { streams, total }
+}
+
+fn live_streaming_unavailable_error() -> ApiError {
+    ApiError::ServiceUnavailable(LIVESTREAM_UNAVAILABLE_MESSAGE.to_string())
+}
+
+fn publish_key_service_unavailable_error() -> ApiError {
+    ApiError::ServiceUnavailable(PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE.to_string())
 }
 
 impl ClientApiImpl {
@@ -87,7 +99,7 @@ impl ClientApiImpl {
         let publish_key_service = self
             .publish_key_service
             .as_ref()
-            .ok_or_else(|| ApiError::Internal("Publish key service not configured".to_string()))?;
+            .ok_or_else(publish_key_service_unavailable_error)?;
 
         // Generate publish key
         let publish_key = publish_key_service
@@ -127,7 +139,7 @@ impl ClientApiImpl {
         let user_id = self
             .jwt_validator
             .validate_http_extract_user_id(&bearer_token)
-            .map_err(|e| ApiError::Authentication(format!("Invalid token: {e}")))?;
+            .map_err(|_| ApiError::Authentication("Invalid or expired token".to_string()))?;
 
         // Verify room membership
         let rid = self.parse_room_id(room_id)?;
@@ -166,7 +178,7 @@ impl ClientApiImpl {
         let infrastructure = self
             .live_streaming_infrastructure
             .as_ref()
-            .ok_or_else(|| ApiError::Internal("Live streaming not configured".to_string()))?;
+            .ok_or_else(live_streaming_unavailable_error)?;
 
         match infrastructure
             .registry
@@ -208,7 +220,7 @@ impl ClientApiImpl {
         let infrastructure = self
             .live_streaming_infrastructure
             .as_ref()
-            .ok_or_else(|| ApiError::Internal("Live streaming not configured".to_string()))?;
+            .ok_or_else(live_streaming_unavailable_error)?;
 
         let media_ids = infrastructure
             .registry
@@ -261,7 +273,11 @@ impl ClientApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::paginate_room_stream_ids;
+    use super::{
+        live_streaming_unavailable_error, paginate_room_stream_ids,
+        publish_key_service_unavailable_error,
+    };
+    use crate::impls::ErrorKind;
 
     #[test]
     fn paginate_room_stream_ids_sorts_and_applies_defaults() {
@@ -300,6 +316,26 @@ mod tests {
         assert_eq!(response.streams.len(), 1);
         assert_eq!(response.streams[0].media_id, "media-b");
         assert!(response.streams[0].active);
+    }
+
+    #[test]
+    fn live_streaming_unavailable_error_is_service_unavailable() {
+        let err = live_streaming_unavailable_error();
+        assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(
+            err.message(),
+            "Live streaming is not available on this server."
+        );
+    }
+
+    #[test]
+    fn publish_key_service_unavailable_error_is_service_unavailable() {
+        let err = publish_key_service_unavailable_error();
+        assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(
+            err.message(),
+            "Publish key service is not available on this server."
+        );
     }
 }
 

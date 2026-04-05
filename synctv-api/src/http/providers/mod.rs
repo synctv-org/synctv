@@ -173,7 +173,10 @@ pub(crate) async fn unified_proxy_handler(
     let claims = state
         .proxy_signing_key
         .parse_and_verify_query(query_str, &provider_name, version)
-        .map_err(|e| AppError::unauthorized(format!("Invalid proxy signature: {e}")))?;
+        .map_err(|error| {
+            tracing::warn!(error = %error, "Invalid proxy signature");
+            AppError::unauthorized("Invalid proxy signature")
+        })?;
 
     // 3. Fresh access verification
     let uid = UserId::from_string(claims.user_id.clone());
@@ -380,6 +383,14 @@ mod tests {
             "Not a member of this room".to_string(),
         ));
         assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn proxy_signature_errors_hide_verification_details() {
+        let err = AppError::unauthorized("Invalid proxy signature");
+
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message, "Invalid proxy signature");
     }
 
     #[tokio::test]

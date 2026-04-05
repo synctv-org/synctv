@@ -20,7 +20,10 @@ use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
 use synctv_core::{
-    cache::{CacheInvalidationService, InvalidationMessage},
+    cache::{
+        CacheInvalidationService, InvalidationMessage, KeyBuilder, NoopCacheL2, UsernameCache,
+    },
+    config::PasswordComplexityConfig,
     models::{
         room_settings::MaxMembers, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
         User, UserId, UserRole, UserStatus,
@@ -29,7 +32,12 @@ use synctv_core::{
         RoomMemberRepository, RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
         UserRepository,
     },
-    service::{permission::PermissionService, playback::PlaybackService},
+    service::{
+        auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        permission::PermissionService,
+        playback::PlaybackService,
+        InMemoryTokenBlacklistStore, UserService,
+    },
 };
 use synctv_core_testing::{
     create_test_pool_with_options_and_label, start_redis_url_with_label, RedisContainer,
@@ -117,6 +125,28 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         version: 0,
         last_activity_at: now,
     }
+}
+
+fn make_user_service(pool: PgPool) -> UserService {
+    let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
+    let l2 = Arc::new(NoopCacheL2);
+    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let password_complexity = PasswordComplexityConfig::default();
+    let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+    let mut user_service = UserService::new(
+        pool,
+        jwt_service,
+        username_cache,
+        password_complexity,
+        token_blacklist,
+        key_builder,
+        brute_force,
+    );
+    user_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    user_service
 }
 
 /// Setup test room with owner
@@ -384,6 +414,7 @@ async fn test_playback_state_cross_replica_sync() {
 
     let permission_service =
         PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
+    let user_service = make_user_service(pool.clone());
 
     let mut playback_service_a = PlaybackService::new(
         playback_repo.clone(),
@@ -398,6 +429,7 @@ async fn test_playback_state_cross_replica_sync() {
                 )),
             ))),
         ),
+        user_service.clone(),
     );
     playback_service_a.set_invalidation_service(cache_invalidation_1.clone());
     playback_service_a
@@ -418,6 +450,7 @@ async fn test_playback_state_cross_replica_sync() {
                 )),
             ))),
         ),
+        user_service,
     );
     playback_service_b.set_invalidation_service(cache_invalidation_2.clone());
     playback_service_b

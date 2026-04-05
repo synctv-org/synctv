@@ -339,5 +339,4 @@ mod tests {
         assert_eq!(success_count, 5);
         assert_eq!(fail_count, 5);
     }
-
 }

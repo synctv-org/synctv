@@ -83,7 +83,7 @@ async fn create_top_level_playlist(
         creator_id: None,
         name: "Top Level".to_string(),
         parent_id: None,
-        position: 0,
+        position: 0.0,
         source_provider: None,
         source_config: None,
         provider_instance_name: None,
@@ -486,7 +486,6 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     let edit_req = EditMediaRequest {
         media_id: media.id.clone(),
         name: Some("Updated Name".to_string()),
-        position: None,
     };
 
     let result = media_service
@@ -517,31 +516,23 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     }
 }
 
-// ========== Position Validation Tests ==========
-//
-// These tests verify that media position values are validated before being
-// passed to the database. Positions should be non-negative and within i32 bounds.
+// ========== Move Validation Tests ==========
 
-/// Test that `reorder_media_batch` rejects negative positions.
-///
-/// This verifies input validation: negative positions are invalid and
-/// should be rejected with `InvalidInput` error before hitting the database.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_reorder_media_rejects_negative_position() {
+async fn test_move_media_requires_exactly_one_anchor() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
     let owner = user_repo
-        .create(&make_user("reorder_neg_owner"))
+        .create(&make_user("move_media_owner"))
         .await
         .unwrap();
 
-    // Create room
     let (room, _) = room_service
         .create_room(
-            "Reorder Test Room".to_string(),
+            "Move Media Validation".to_string(),
             String::new(),
             owner.id.clone(),
             None,
@@ -552,14 +543,13 @@ async fn test_reorder_media_rejects_negative_position() {
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
 
-    // Add a media item
     let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
     let media = synctv_core::models::Media {
         id: synctv_core::models::MediaId::new(),
         playlist_id: Some(playlist.id.clone()),
         room_id: room.id.clone(),
-        name: "Test Media".to_string(),
-        position: 0,
+        name: "Media".to_string(),
+        position: 1024.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({}),
         provider_instance_name: "direct_url".to_string(),
@@ -568,50 +558,54 @@ async fn test_reorder_media_rejects_negative_position() {
         updated_at: chrono::Utc::now(),
         version: 0,
     };
-    media_repo.create(&media).await.unwrap();
+    let media = media_repo.create(&media).await.unwrap();
 
-    // Try to reorder with a negative position - should fail validation
-    let result = room_service
+    let missing_anchor = room_service
         .media_service()
-        .reorder_media_batch(
+        .move_media(
             room.id.clone(),
             owner.id.clone(),
-            vec![(media.id.clone(), -1)], // Negative position
+            synctv_core::service::media::MoveMediaRequest {
+                media_id: media.id.clone(),
+                before_media_id: None,
+                after_media_id: None,
+            },
         )
-        .await;
+        .await
+        .unwrap_err();
+    assert!(matches!(missing_anchor, Error::InvalidInput(_)));
 
-    assert!(result.is_err(), "Negative position should be rejected");
-    match result.unwrap_err() {
-        Error::InvalidInput(msg) => {
-            assert!(
-                msg.to_lowercase().contains("position"),
-                "Error should mention position: {msg}"
-            );
-        }
-        other => panic!("Expected InvalidInput error, got: {other:?}"),
-    }
+    let conflicting_anchor = room_service
+        .media_service()
+        .move_media(
+            room.id.clone(),
+            owner.id.clone(),
+            synctv_core::service::media::MoveMediaRequest {
+                media_id: media.id.clone(),
+                before_media_id: Some(media.id.clone()),
+                after_media_id: Some(media.id.clone()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(conflicting_anchor, Error::InvalidInput(_)));
 }
 
-/// Test that `reorder_media_batch` rejects extremely large positions (overflow).
-///
-/// This verifies input validation: positions larger than `i32::MAX` are invalid
-/// and should be rejected with `InvalidInput` error.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_reorder_media_rejects_overflow_position() {
+async fn test_move_media_reorders_using_anchor_positions() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
     let owner = user_repo
-        .create(&make_user("reorder_overflow_owner"))
+        .create(&make_user("move_media_order_owner"))
         .await
         .unwrap();
 
-    // Create room
     let (room, _) = room_service
         .create_room(
-            "Reorder Overflow Test".to_string(),
+            "Move Media Order".to_string(),
             String::new(),
             owner.id.clone(),
             None,
@@ -621,129 +615,59 @@ async fn test_reorder_media_rejects_overflow_position() {
         .unwrap();
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
-
-    // Add a media item
     let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
-    let media = synctv_core::models::Media {
-        id: synctv_core::models::MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
-        name: "Test Media".to_string(),
-        position: 0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({}),
-        provider_instance_name: "direct_url".to_string(),
-        creator_id: Some(owner.id.clone()),
-        added_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        version: 0,
-    };
-    media_repo.create(&media).await.unwrap();
 
-    // Try to reorder with an overflow position - should fail validation
-    // i32::MAX = 2147483647, so use something larger
-    let result = room_service
-        .media_service()
-        .reorder_media_batch(
-            room.id.clone(),
-            owner.id.clone(),
-            vec![(media.id.clone(), i32::MAX)], // At the boundary - technically valid
-        )
-        .await;
-
-    // i32::MAX should actually succeed (it's valid)
-    assert!(result.is_ok(), "i32::MAX position should be valid");
-
-    // Now try with something that would overflow - but since we use i32,
-    // we can't actually pass a value > i32::MAX through the function signature.
-    // The validation is to ensure we don't have negative values.
-    // This test documents the expected behavior at the boundary.
-}
-
-/// Test that `reorder_media_batch` accepts valid positions (0 and positive).
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_reorder_media_accepts_valid_positions() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("reorder_valid_owner"))
+    let media1 = media_repo
+        .create(&synctv_core::models::Media {
+            id: synctv_core::models::MediaId::new(),
+            playlist_id: Some(playlist.id.clone()),
+            room_id: room.id.clone(),
+            name: "Media 1".to_string(),
+            position: 1024.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: "direct_url".to_string(),
+            creator_id: Some(owner.id.clone()),
+            added_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+    let media2 = media_repo
+        .create(&synctv_core::models::Media {
+            id: synctv_core::models::MediaId::new(),
+            playlist_id: Some(playlist.id.clone()),
+            room_id: room.id.clone(),
+            name: "Media 2".to_string(),
+            position: 2048.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: "direct_url".to_string(),
+            creator_id: Some(owner.id.clone()),
+            added_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 0,
+        })
         .await
         .unwrap();
 
-    // Create room
-    let (room, _) = room_service
-        .create_room(
-            "Reorder Valid Test".to_string(),
-            String::new(),
+    let moved = room_service
+        .media_service()
+        .move_media(
+            room.id.clone(),
             owner.id.clone(),
-            None,
-            None,
+            synctv_core::service::media::MoveMediaRequest {
+                media_id: media2.id.clone(),
+                before_media_id: Some(media1.id.clone()),
+                after_media_id: None,
+            },
         )
         .await
         .unwrap();
 
-    let playlist = create_top_level_playlist(&pool, &room.id).await;
-
-    // Add two media items
-    let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
-    let media1 = synctv_core::models::Media {
-        id: synctv_core::models::MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
-        name: "Media 1".to_string(),
-        position: 0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({}),
-        provider_instance_name: "direct_url".to_string(),
-        creator_id: Some(owner.id.clone()),
-        added_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        version: 0,
-    };
-    media_repo.create(&media1).await.unwrap();
-
-    let media2 = synctv_core::models::Media {
-        id: synctv_core::models::MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
-        name: "Media 2".to_string(),
-        position: 1,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({}),
-        provider_instance_name: "direct_url".to_string(),
-        creator_id: Some(owner.id.clone()),
-        added_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        version: 0,
-    };
-    media_repo.create(&media2).await.unwrap();
-
-    // Valid reorder: swap positions
-    let result = room_service
-        .media_service()
-        .reorder_media_batch(
-            room.id.clone(),
-            owner.id.clone(),
-            vec![
-                (media1.id.clone(), 1), // Move media1 to position 1
-                (media2.id.clone(), 0), // Move media2 to position 0
-            ],
-        )
-        .await;
-
-    assert!(
-        result.is_ok(),
-        "Valid positions should be accepted: {:?}",
-        result.err()
-    );
-
-    // Verify the new positions
     let updated1 = media_repo.get_by_id(&media1.id).await.unwrap().unwrap();
     let updated2 = media_repo.get_by_id(&media2.id).await.unwrap().unwrap();
-
-    assert_eq!(updated1.position, 1, "Media1 should be at position 1");
-    assert_eq!(updated2.position, 0, "Media2 should be at position 0");
+    assert_eq!(moved.id, media2.id);
+    assert!(updated2.position < updated1.position);
 }

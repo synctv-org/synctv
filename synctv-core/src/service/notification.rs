@@ -75,7 +75,7 @@ pub enum RoomEvent {
         media_id: String,
         title: String,
         url: String,
-        position: i32,
+        position: f64,
     },
     /// Media removed from playlist
     MediaRemoved { media_id: String },
@@ -83,7 +83,7 @@ pub enum RoomEvent {
     MediaUpdated {
         media_id: String,
         title: String,
-        position: i32,
+        position: f64,
     },
     /// Playlist reordered
     PlaylistReordered { media_ids: Vec<String> },
@@ -461,7 +461,7 @@ impl NotificationService {
         media_id: &str,
         title: &str,
         url: &str,
-        position: i32,
+        position: f64,
     ) -> Result<()> {
         let event = RoomEvent::MediaAdded {
             media_id: media_id.to_string(),
@@ -486,7 +486,7 @@ impl NotificationService {
         room_id: &RoomId,
         media_id: &str,
         title: &str,
-        position: i32,
+        position: f64,
     ) -> Result<()> {
         let event = RoomEvent::MediaUpdated {
             media_id: media_id.to_string(),
@@ -794,7 +794,7 @@ mod tests {
                 media_id: "media123".to_string(),
                 title: "Test Video".to_string(),
                 url: "http://example.com/video.mp4".to_string(),
-                position: 1,
+                position: 1.0,
             },
             RoomEvent::MediaRemoved {
                 media_id: "media123".to_string(),
@@ -802,7 +802,7 @@ mod tests {
             RoomEvent::MediaUpdated {
                 media_id: "media123".to_string(),
                 title: "Updated Video".to_string(),
-                position: 2,
+                position: 2.0,
             },
             RoomEvent::PlaylistReordered {
                 media_ids: vec!["media1".to_string(), "media2".to_string()],

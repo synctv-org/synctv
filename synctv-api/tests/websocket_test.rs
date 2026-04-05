@@ -94,7 +94,6 @@ mod auth_method {
     fn test_methods_are_distinct() {
         assert_ne!(AuthMethod::Header, AuthMethod::Ticket);
     }
-
 }
 
 // ============================================================================
@@ -552,8 +551,9 @@ mod ws_auth_scenarios {
 
     #[test]
     fn test_invalid_token_error() {
-        let err = AppError::unauthorized("Invalid token: invalid signature");
+        let err = AppError::unauthorized("Invalid or expired token");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message, "Invalid or expired token");
     }
 
     #[test]
@@ -570,8 +570,9 @@ mod ws_auth_scenarios {
 
     #[test]
     fn test_expired_ticket_error() {
-        let err = AppError::unauthorized("Invalid or expired ticket: ticket not found");
+        let err = AppError::unauthorized("Invalid or expired ticket");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message, "Invalid or expired ticket");
     }
 }
 

@@ -121,6 +121,11 @@ impl AppError {
     }
 
     #[must_use]
+    pub fn invalid_authorization_header_non_utf8() -> Self {
+        Self::unauthorized("Invalid Authorization header: non-UTF-8 value")
+    }
+
+    #[must_use]
     pub fn invalid_or_expired_token() -> Self {
         Self::unauthorized("Invalid or expired token")
     }
@@ -128,6 +133,20 @@ impl AppError {
     #[must_use]
     pub fn invalid_or_expired_ticket() -> Self {
         Self::unauthorized("Invalid or expired ticket")
+    }
+}
+
+#[must_use]
+pub fn map_auth_authorization_error(err: &synctv_core::Error) -> AppError {
+    match err {
+        synctv_core::Error::Authorization(message) => AppError::forbidden(message.clone()),
+        synctv_core::Error::EmailNotVerified => {
+            AppError::forbidden("Email not verified. Please verify your email to continue.")
+        }
+        other => {
+            tracing::error!(error = %other, "Unexpected authorization-classified auth error");
+            AppError::forbidden("You do not have permission to perform this action")
+        }
     }
 }
 
@@ -205,15 +224,20 @@ impl From<synctv_core::provider::ProviderError> for AppError {
         match err {
             ProviderError::NetworkError(msg) => Self::new(StatusCode::BAD_GATEWAY, msg),
             ProviderError::ApiError(msg) => Self::new(StatusCode::BAD_GATEWAY, msg),
-            ProviderError::UpstreamHttp { status, url } => {
-                tracing::error!(upstream_url = %url, status = status, "Upstream HTTP error");
-                let http_status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-                let mapped = if http_status.is_client_error() {
-                    http_status
+            ProviderError::UpstreamHttp { status, .. } => {
+                tracing::warn!(status = status, "Upstream HTTP error");
+                if status == 401 || status == 403 {
+                    Self::unauthorized("Provider authentication failed")
+                } else if status == 404 {
+                    Self::not_found("Provider resource not found")
+                } else if status == 408 || status == 429 || status >= 500 {
+                    Self::new(
+                        StatusCode::BAD_GATEWAY,
+                        "Upstream provider service is temporarily unavailable.",
+                    )
                 } else {
-                    StatusCode::BAD_GATEWAY
-                };
-                Self::new(mapped, format!("Upstream HTTP {status} error"))
+                    Self::bad_request("Upstream provider rejected the request.")
+                }
             }
             ProviderError::ParseError(msg) => Self::bad_request(msg),
             ProviderError::InvalidConfig(msg) => Self::bad_request(msg),
@@ -555,6 +579,13 @@ mod tests {
     }
 
     #[test]
+    fn test_invalid_authorization_header_non_utf8_helper() {
+        let err = AppError::invalid_authorization_header_non_utf8();
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message, "Invalid Authorization header: non-UTF-8 value");
+    }
+
+    #[test]
     fn test_invalid_or_expired_token_helper() {
         let err = AppError::invalid_or_expired_token();
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
@@ -566,6 +597,27 @@ mod tests {
         let err = AppError::invalid_or_expired_ticket();
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.message, "Invalid or expired ticket");
+    }
+
+    #[test]
+    fn test_map_auth_authorization_error_preserves_business_message() {
+        let err = map_auth_authorization_error(&synctv_core::Error::Authorization(
+            "Not a member of this room".to_string(),
+        ));
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.message, "Not a member of this room");
+    }
+
+    #[test]
+    fn test_map_auth_authorization_error_maps_email_not_verified() {
+        let err = map_auth_authorization_error(&synctv_core::Error::EmailNotVerified);
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            err.message,
+            "Email not verified. Please verify your email to continue."
+        );
     }
 
     // ========== Common user-facing errors ==========
@@ -865,6 +917,65 @@ mod tests {
             app_err.status,
             StatusCode::TOO_MANY_REQUESTS,
             "synctv_core::Error::RateLimited should map to HTTP 429 via ApiError"
+        );
+    }
+
+    #[test]
+    fn test_from_provider_upstream_http_400_maps_to_bad_request() {
+        let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 400,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+        assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(app_err.message, "Upstream provider rejected the request.");
+    }
+
+    #[test]
+    fn test_from_provider_upstream_http_404_maps_to_not_found() {
+        let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 404,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+        assert_eq!(app_err.status, StatusCode::NOT_FOUND);
+        assert_eq!(app_err.message, "Provider resource not found");
+    }
+
+    #[test]
+    fn test_from_provider_upstream_http_503_is_sanitized() {
+        let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 503,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+        assert_eq!(app_err.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            app_err.message,
+            "Upstream provider service is temporarily unavailable."
+        );
+    }
+
+    #[test]
+    fn test_from_provider_upstream_http_408_maps_to_bad_gateway() {
+        let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 408,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+        assert_eq!(app_err.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            app_err.message,
+            "Upstream provider service is temporarily unavailable."
+        );
+    }
+
+    #[test]
+    fn test_from_provider_upstream_http_429_maps_to_bad_gateway() {
+        let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 429,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+        assert_eq!(app_err.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            app_err.message,
+            "Upstream provider service is temporarily unavailable."
         );
     }
 }

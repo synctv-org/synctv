@@ -8,11 +8,18 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    repository::UserRepository,
+    models::{
+        Media, MediaId, MemberStatus, Playlist, PlaylistId, Room, RoomId, RoomMember, RoomStatus,
+        SignupMethod, User, UserId, UserRole, UserStatus,
+    },
+    repository::{
+        MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
+    },
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         InMemoryTokenBlacklistStore, UserService,
@@ -47,6 +54,85 @@ fn create_user_service(pool: PgPool) -> UserService {
     );
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc
+}
+
+fn make_user(username: &str) -> User {
+    let now = Utc::now();
+    User {
+        id: UserId::new(),
+        username: username.to_string(),
+        email: Some(format!("{username}@example.com")),
+        password_hash: "hash".to_string(),
+        role: UserRole::User,
+        status: UserStatus::Active,
+        signup_method: SignupMethod::Email,
+        email_verified: true,
+        created_at: now,
+        updated_at: now,
+        password_changed_at: now,
+        password_version: 0,
+        version: 0,
+        deleted_at: None,
+    }
+}
+
+fn make_room(name: &str, owner_id: &UserId) -> Room {
+    let now = Utc::now();
+    Room {
+        id: RoomId::new(),
+        name: name.to_string(),
+        description: String::new(),
+        created_by: owner_id.clone(),
+        status: RoomStatus::Active,
+        is_banned: false,
+        created_at: now,
+        updated_at: now,
+        deleted_at: None,
+        version: 0,
+        last_activity_at: now,
+    }
+}
+
+fn make_playlist(room_id: &RoomId, creator_id: &UserId, name: &str, position: i32) -> Playlist {
+    let now = Utc::now();
+    Playlist {
+        id: PlaylistId::new(),
+        room_id: room_id.clone(),
+        creator_id: Some(creator_id.clone()),
+        name: name.to_string(),
+        parent_id: None,
+        position: f64::from(position),
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: now,
+        updated_at: now,
+        version: 0,
+    }
+}
+
+fn make_media(
+    room_id: &RoomId,
+    playlist_id: Option<&PlaylistId>,
+    creator_id: &UserId,
+    name: &str,
+    position: i32,
+) -> Media {
+    let now = Utc::now();
+    Media {
+        id: MediaId::new(),
+        playlist_id: playlist_id.cloned(),
+        room_id: room_id.clone(),
+        creator_id: Some(creator_id.clone()),
+        name: name.to_string(),
+        position: f64::from(position),
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        provider_instance_name: "direct_url".to_string(),
+        added_at: now,
+        updated_at: now,
+        version: 0,
+    }
 }
 
 // ============================================================================
@@ -250,6 +336,310 @@ async fn assert_delete_user_concurrent_deletion_atomicity(pool: PgPool) {
     );
 }
 
+async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_playback(pool: PgPool) {
+    let service = create_user_service(pool.clone());
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let room_member_repo = RoomMemberRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+
+    let doomed_user = user_repo
+        .create(&make_user("delete_owner"))
+        .await
+        .expect("create doomed user");
+    let foreign_owner = user_repo
+        .create(&make_user("foreign_owner"))
+        .await
+        .expect("create foreign owner");
+    let other_creator = user_repo
+        .create(&make_user("other_creator"))
+        .await
+        .expect("create other creator");
+
+    let owned_room = room_repo
+        .create(&make_room("owned room", &doomed_user.id))
+        .await
+        .expect("create owned room");
+    let foreign_room = room_repo
+        .create(&make_room("foreign room", &foreign_owner.id))
+        .await
+        .expect("create foreign room");
+
+    room_member_repo
+        .add(&RoomMember {
+            room_id: foreign_room.id.clone(),
+            user_id: doomed_user.id.clone(),
+            role: synctv_core::models::RoomRole::Member,
+            status: MemberStatus::Active,
+            added_permissions: 0,
+            removed_permissions: 0,
+            admin_added_permissions: 0,
+            admin_removed_permissions: 0,
+            joined_at: Utc::now(),
+            left_at: None,
+            version: 0,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+        })
+        .await
+        .expect("create foreign room membership");
+
+    let owned_playlist = playlist_repo
+        .create(&make_playlist(
+            &owned_room.id,
+            &doomed_user.id,
+            "owned playlist",
+            0,
+        ))
+        .await
+        .expect("create playlist in owned room");
+    let owned_media = media_repo
+        .create(&make_media(
+            &owned_room.id,
+            Some(&owned_playlist.id),
+            &doomed_user.id,
+            "owned media",
+            0,
+        ))
+        .await
+        .expect("create media in owned room");
+
+    let foreign_playlist = playlist_repo
+        .create(&make_playlist(
+            &foreign_room.id,
+            &doomed_user.id,
+            "foreign doomed playlist",
+            0,
+        ))
+        .await
+        .expect("create playlist in foreign room");
+    let foreign_media = media_repo
+        .create(&make_media(
+            &foreign_room.id,
+            Some(&foreign_playlist.id),
+            &doomed_user.id,
+            "foreign doomed media",
+            0,
+        ))
+        .await
+        .expect("create media in foreign room");
+
+    let survivor_playlist = playlist_repo
+        .create(&make_playlist(
+            &foreign_room.id,
+            &other_creator.id,
+            "foreign survivor playlist",
+            1,
+        ))
+        .await
+        .expect("create surviving playlist");
+    let survivor_media = media_repo
+        .create(&make_media(
+            &foreign_room.id,
+            Some(&survivor_playlist.id),
+            &other_creator.id,
+            "foreign survivor media",
+            0,
+        ))
+        .await
+        .expect("create surviving media");
+
+    sqlx::query(
+        "INSERT INTO room_playback_state
+             (room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version)
+         VALUES ($1, $2, NULL, ''::bytea, 12.5, 1.0, TRUE, NOW(), 0)",
+    )
+    .bind(foreign_room.id.as_str())
+    .bind(foreign_media.id.as_str())
+    .execute(&pool)
+    .await
+    .expect("create playback state");
+
+    sqlx::query(
+        "INSERT INTO oauth2_clients (id, provider, provider_user_id, user_id, username, email)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(synctv_common::snanoid!(12))
+    .bind("github")
+    .bind("delete-owner-gh")
+    .bind(doomed_user.id.as_str())
+    .bind("delete_owner")
+    .bind("delete_owner@example.com")
+    .execute(&pool)
+    .await
+    .expect("create oauth2 mapping");
+
+    sqlx::query(
+        "INSERT INTO notifications (user_id, title, content, type, is_read, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, FALSE, NOW(), NOW())",
+    )
+    .bind(doomed_user.id.as_str())
+    .bind("title")
+    .bind("body")
+    .bind("system")
+    .execute(&pool)
+    .await
+    .expect("create notification");
+
+    sqlx::query(
+        "INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+         VALUES ($1, $2, $3, $4, 1, NOW())",
+    )
+    .bind(synctv_common::snanoid!(12))
+    .bind(foreign_room.id.as_str())
+    .bind(doomed_user.id.as_str())
+    .bind("hello")
+    .execute(&pool)
+    .await
+    .expect("create chat message");
+
+    let summary = service
+        .delete_user_with_summary(&doomed_user.id)
+        .await
+        .expect("delete_user_with_summary should succeed");
+
+    assert_eq!(summary.user_id, doomed_user.id);
+    assert_eq!(summary.username, doomed_user.username);
+    assert_eq!(summary.deleted_room_ids, vec![owned_room.id.clone()]);
+    assert_eq!(summary.membership_room_ids, vec![foreign_room.id.clone()]);
+    assert_eq!(summary.modified_rooms.len(), 1);
+    assert_eq!(summary.modified_rooms[0].room_id, foreign_room.id);
+    assert_eq!(
+        summary.modified_rooms[0].deleted_media_ids,
+        vec![foreign_media.id.clone()]
+    );
+    assert!(
+        summary.modified_rooms[0].playback_reset,
+        "deleting the currently playing foreign media must reset playback"
+    );
+
+    assert!(
+        user_repo
+            .get_by_id(&doomed_user.id)
+            .await
+            .expect("get user")
+            .is_none(),
+        "deleted user must no longer be visible"
+    );
+    assert!(
+        room_repo
+            .get_by_id(&owned_room.id)
+            .await
+            .expect("get owned room")
+            .is_none(),
+        "owned room must be soft-deleted"
+    );
+    assert!(
+        room_repo
+            .get_by_id(&foreign_room.id)
+            .await
+            .expect("get foreign room")
+            .is_some(),
+        "foreign room must survive"
+    );
+
+    assert!(
+        playlist_repo
+            .get_by_id(&owned_playlist.id)
+            .await
+            .expect("get owned playlist")
+            .is_none(),
+        "owned room playlist should be deleted"
+    );
+    assert!(
+        media_repo
+            .get_by_id(&owned_media.id)
+            .await
+            .expect("get owned media")
+            .is_none(),
+        "owned room media should be deleted"
+    );
+    assert!(
+        playlist_repo
+            .get_by_id(&foreign_playlist.id)
+            .await
+            .expect("get foreign playlist")
+            .is_none(),
+        "user-created playlist in foreign room should be deleted"
+    );
+    assert!(
+        media_repo
+            .get_by_id(&foreign_media.id)
+            .await
+            .expect("get foreign media")
+            .is_none(),
+        "user-created media in foreign room should be deleted"
+    );
+    assert!(
+        playlist_repo
+            .get_by_id(&survivor_playlist.id)
+            .await
+            .expect("get survivor playlist")
+            .is_some(),
+        "other users' playlists must survive"
+    );
+    assert!(
+        media_repo
+            .get_by_id(&survivor_media.id)
+            .await
+            .expect("get survivor media")
+            .is_some(),
+        "other users' media must survive"
+    );
+
+    let member_after = room_member_repo
+        .get(&foreign_room.id, &doomed_user.id)
+        .await
+        .expect("get membership");
+    assert!(
+        member_after.is_none(),
+        "deleted user must no longer be an active member of surviving rooms"
+    );
+
+    let playback_row = sqlx::query_as::<_, (Option<String>, Option<String>, bool)>(
+        "SELECT playing_media_id, playing_playlist_id, is_playing
+         FROM room_playback_state
+         WHERE room_id = $1",
+    )
+    .bind(foreign_room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .expect("query playback");
+    assert_eq!(playback_row.0, None, "playing media must be cleared");
+    assert_eq!(playback_row.1, None, "playing playlist must be cleared");
+    assert!(!playback_row.2, "playback must be stopped");
+
+    let oauth2_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM oauth2_clients WHERE user_id = $1")
+            .bind(doomed_user.id.as_str())
+            .fetch_one(&pool)
+            .await
+            .expect("count oauth2 mappings");
+    assert_eq!(oauth2_count, 0, "oauth2 mappings must be deleted");
+
+    let notification_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE user_id = $1")
+            .bind(doomed_user.id.as_str())
+            .fetch_one(&pool)
+            .await
+            .expect("count notifications");
+    assert_eq!(notification_count, 0, "notifications must be deleted");
+
+    let chat_user_ids: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT user_id FROM chat_messages WHERE room_id = $1")
+            .bind(foreign_room.id.as_str())
+            .fetch_all(&pool)
+            .await
+            .expect("query chat messages");
+    assert_eq!(
+        chat_user_ids,
+        vec![None],
+        "chat author should be anonymized"
+    );
+}
+
 // ============================================================================
 // Registration brute-force lockout tests (Task #42)
 // ============================================================================
@@ -373,6 +763,8 @@ async fn test_user_service_registration_login_and_delete_flows() {
 
     let delete_twice_service = create_user_service(pool.clone());
     assert_delete_user_already_deleted_returns_error(&delete_twice_service).await;
+
+    assert_delete_user_removes_owned_resources_and_resets_foreign_room_playback(pool.clone()).await;
 
     assert_delete_user_concurrent_deletion_atomicity(pool).await;
 }

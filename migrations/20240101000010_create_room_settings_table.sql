@@ -3,7 +3,7 @@
 -- Only settings that have been explicitly set are stored (no default rows)
 
 CREATE TABLE IF NOT EXISTS room_settings (
-    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
     key VARCHAR(100) NOT NULL,
     value TEXT NOT NULL DEFAULT '',
     version BIGINT NOT NULL DEFAULT 0,

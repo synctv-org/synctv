@@ -57,14 +57,15 @@ service ManagementService {
     rpc GetPlaylist(GetPlaylistRequest) returns (synctv.client.GetPlaylistResponse);
     rpc CreatePlaylist(CreatePlaylistRequest) returns (synctv.client.CreatePlaylistResponse);
     rpc UpdatePlaylist(UpdatePlaylistRequest) returns (synctv.client.UpdatePlaylistResponse);
+    rpc MovePlaylist(MovePlaylistRequest) returns (synctv.client.MovePlaylistResponse);
     rpc DeletePlaylist(DeletePlaylistRequest) returns (synctv.client.DeletePlaylistResponse);
 
     rpc ListMedia(ListMediaRequest) returns (synctv.client.ListPlaylistItemsResponse);
     rpc AddMedia(AddMediaRequest) returns (synctv.client.AddMediaResponse);
     rpc AddDirectUrlMedia(AddDirectUrlMediaRequest) returns (synctv.client.AddMediaResponse);
     rpc EditMedia(EditMediaRequest) returns (synctv.client.EditMediaResponse);
+    rpc MoveMedia(MoveMediaRequest) returns (synctv.client.MoveMediaResponse);
     rpc DeleteMedia(DeleteMediaRequest) returns (synctv.client.DeleteMediaResponse);
-    rpc ReorderMediaBatch(ReorderMediaBatchRequest) returns (synctv.client.ReorderMediaBatchResponse);
 
     rpc ListProviderInstances(ListProviderInstancesRequest) returns (synctv.admin.ListProviderInstancesResponse);
     rpc AddProviderInstance(AddProviderInstanceRequest) returns (synctv.admin.AddProviderInstanceResponse);
@@ -475,7 +476,15 @@ message UpdatePlaylistRequest {
     string room_id = 1;
     string playlist_id = 2;
     optional string name = 3;
-    optional int32 position = 4;
+}
+
+message MovePlaylistRequest {
+    string room_id = 1;
+    string playlist_id = 2;
+    oneof anchor {
+        string before_playlist_id = 3;
+        string after_playlist_id = 4;
+    }
 }
 
 message DeletePlaylistRequest {
@@ -521,20 +530,19 @@ message EditMediaRequest {
     string title = 3;
 }
 
+message MoveMediaRequest {
+    string room_id = 1;
+    string media_id = 2;
+    oneof anchor {
+        string before_media_id = 3;
+        string after_media_id = 4;
+    }
+}
+
 message DeleteMediaRequest {
     string room_id = 1;
     string media_id = 2;
     bool force = 3;
-}
-
-message MediaReorderUpdate {
-    string media_id = 1;
-    int32 position = 2;
-}
-
-message ReorderMediaBatchRequest {
-    string room_id = 1;
-    repeated MediaReorderUpdate updates = 2;
 }
 
 message ListProviderInstancesRequest {

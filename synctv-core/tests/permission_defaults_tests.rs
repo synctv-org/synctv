@@ -7,10 +7,7 @@
 
 mod permission_test_support;
 
-use synctv_core::{
-    models::PermissionBits,
-    repository::UserRepository,
-};
+use synctv_core::{models::PermissionBits, repository::UserRepository};
 use synctv_core_testing::create_test_pool;
 
 use permission_test_support::{make_room_service, make_user};

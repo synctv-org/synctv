@@ -10,6 +10,10 @@ use super::convert::{
 use super::ClientApiImpl;
 use super::{validate_password_for_set, validate_password_for_verify};
 
+fn settings_registry_unavailable_error() -> ApiError {
+    ApiError::ServiceUnavailable("Public settings are not available on this server.".to_string())
+}
+
 fn build_public_room_list_query(
     req: crate::proto::client::ListRoomsRequest,
 ) -> synctv_core::models::RoomListQuery {
@@ -126,7 +130,7 @@ impl ClientApiImpl {
         let query = build_public_room_list_query(req);
         let (rooms, total) = self
             .room_service
-            .list_rooms(&query)
+            .list_accessible_rooms(&query)
             .await
             .map_err(ApiError::from)?;
 
@@ -159,7 +163,7 @@ impl ClientApiImpl {
         let query = build_participated_room_list_query(req);
         let (rooms, total) = self
             .room_service
-            .list_joined_rooms_with_query(&uid, &query)
+            .list_accessible_joined_rooms_with_query(&uid, &query)
             .await
             .map_err(ApiError::from)?;
 
@@ -817,7 +821,7 @@ impl ClientApiImpl {
         let reg = self
             .settings_registry
             .as_ref()
-            .ok_or_else(|| ApiError::Internal("Settings registry not configured".to_string()))?;
+            .ok_or_else(settings_registry_unavailable_error)?;
 
         let s = reg.to_public_settings();
         Ok(crate::proto::client::GetPublicSettingsResponse {
@@ -1049,7 +1053,11 @@ impl ClientApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_participated_room_list_query, build_public_room_list_query};
+    use super::{
+        build_participated_room_list_query, build_public_room_list_query,
+        settings_registry_unavailable_error,
+    };
+    use crate::impls::ErrorKind;
 
     #[test]
     fn build_public_room_list_query_maps_sorting_and_defaults() {
@@ -1099,6 +1107,16 @@ mod tests {
         assert_eq!(
             query.sort_direction,
             synctv_core::models::SortDirection::Asc
+        );
+    }
+
+    #[test]
+    fn get_public_settings_missing_registry_is_service_unavailable() {
+        let err = settings_registry_unavailable_error();
+        assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
+        assert_eq!(
+            err.message(),
+            "Public settings are not available on this server."
         );
     }
 }

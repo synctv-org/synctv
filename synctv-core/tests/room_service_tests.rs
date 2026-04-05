@@ -13,8 +13,9 @@ use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        Media, MediaId, MemberStatus, PermissionBits, Playlist, PlaylistId, RoomId, RoomRole,
-        RoomSettings, User, UserId, UserRole, UserStatus,
+        Media, MediaId, MemberStatus, PageParams, PermissionBits, Playlist, PlaylistId,
+        RelatedRoomListQuery, RoomId, RoomListQuery, RoomRole, RoomSettings, RoomStatus, User,
+        UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
@@ -601,6 +602,105 @@ async fn test_banned_user_cannot_rejoin_room() {
     }
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_with_banned_creator_becomes_unavailable_to_existing_members() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("inactive_owner_creator"))
+        .await
+        .unwrap();
+    let member = user_repo
+        .create(&make_user("inactive_owner_member"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Inactive Owner Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
+        .bind(creator.id.as_str())
+        .bind(UserStatus::Banned)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let result = room_service.check_membership(&room.id, &member.id).await;
+    match result.expect_err("member access must fail once creator is banned") {
+        Error::Authorization(message) => {
+            assert!(
+                message.contains("creator") && message.contains("active"),
+                "error should explain creator status: {message}"
+            );
+        }
+        other => panic!("expected authorization error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_with_banned_creator_rejects_new_joins() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("inactive_join_creator"))
+        .await
+        .unwrap();
+    let joiner = user_repo
+        .create(&make_user("inactive_join_member"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Inactive Join Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
+        .bind(creator.id.as_str())
+        .bind(UserStatus::Banned)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let result = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .await;
+    match result.expect_err("room with banned creator must reject joins") {
+        Error::Authorization(message) => {
+            assert!(
+                message.contains("creator") && message.contains("active"),
+                "error should explain creator status: {message}"
+            );
+        }
+        other => panic!("expected authorization error, got: {other:?}"),
+    }
+}
+
 // ========== Room Description Validation Tests ==========
 
 #[tokio::test]
@@ -1031,12 +1131,10 @@ impl synctv_core::service::distributed_lock::MigrationLock for MockDistributedLo
     }
 }
 
-/// Test concurrent room creation with the same name by different users
-/// This test verifies that without a distributed lock, concurrent room creations
-/// would both succeed (each user creates their own room with the same name).
+/// Test that different users can create rooms with the same display name.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_concurrent_room_creation_without_lock_creates_separate_rooms() {
+async fn test_concurrent_room_creation_same_name_different_users_succeeds() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -1050,7 +1148,7 @@ async fn test_concurrent_room_creation_without_lock_creates_separate_rooms() {
         .await
         .unwrap();
 
-    // Both users create rooms with the same name simultaneously
+    // Both users create rooms with the same name simultaneously.
     let room_name = "Same Name Room".to_string();
 
     let (result1, result2) = tokio::join!(
@@ -1070,7 +1168,6 @@ async fn test_concurrent_room_creation_without_lock_creates_separate_rooms() {
         )
     );
 
-    // Both should succeed - they are separate rooms
     assert!(
         result1.is_ok(),
         "User1 should create room: {:?}",
@@ -1082,22 +1179,59 @@ async fn test_concurrent_room_creation_without_lock_creates_separate_rooms() {
         result2.err()
     );
 
-    let (room1, _) = result1.unwrap();
-    let (room2, _) = result2.unwrap();
-
-    // Same name, but different room IDs
-    assert_eq!(room1.name, room2.name);
-    assert_ne!(
-        room1.id, room2.id,
-        "Different users should create different rooms"
-    );
+    let room_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM rooms WHERE name = $1 AND deleted_at IS NULL")
+            .bind(&room_name)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(room_count, 2, "Both active rooms should exist");
 }
 
-/// Test that distributed lock prevents duplicate room creation by the SAME user
-/// This is a mock-based test that simulates what happens with distributed lock enabled.
+/// Test that the same user cannot create two rooms with the same name.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_concurrent_room_creation_same_user_without_lock_allows_duplicate() {
+async fn test_same_user_cannot_create_duplicate_room_name() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let user = user_repo
+        .create(&make_user("same_user_duplicate_room"))
+        .await
+        .unwrap();
+
+    room_service
+        .create_room(
+            "Repeated Name".to_string(),
+            "Desc1".to_string(),
+            user.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let result = room_service
+        .create_room(
+            "Repeated Name".to_string(),
+            "Desc2".to_string(),
+            user.id.clone(),
+            None,
+            None,
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(Error::AlreadyExists(ref msg)) if msg == "You already have a room with this name"
+    ));
+}
+
+/// Test that the same user can still create multiple rooms when the names differ.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_same_user_can_create_multiple_rooms_with_distinct_names() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -1107,12 +1241,9 @@ async fn test_concurrent_room_creation_same_user_without_lock_allows_duplicate()
         .await
         .unwrap();
 
-    // Same user tries to create two rooms concurrently (e.g., double-click or network retry)
-    let room_name = "User's Room".to_string();
-
     let (result1, result2) = tokio::join!(
         room_service.create_room(
-            room_name.clone(),
+            "User Room A".to_string(),
             "Desc1".to_string(),
             user.id.clone(),
             None,
@@ -1127,8 +1258,6 @@ async fn test_concurrent_room_creation_same_user_without_lock_allows_duplicate()
         )
     );
 
-    // Without distributed lock, both should succeed
-    // (With distributed lock, one would wait or fail)
     assert!(
         result1.is_ok(),
         "First room should be created: {:?}",
@@ -2393,7 +2522,7 @@ async fn test_remove_media_respects_admin_override_columns() {
         playlist_id: None,
         room_id: room.id.clone(),
         name: "Protected Media".to_string(),
-        position: 0,
+        position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({}),
         provider_instance_name: "direct_url".to_string(),
@@ -2447,7 +2576,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
             creator_id: Some(owner.id.clone()),
             name: "Folder".to_string(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -2464,7 +2593,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
             playlist_id: None,
             room_id: room.id.clone(),
             name: "root-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -2482,7 +2611,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
             playlist_id: Some(top_level_playlist.id.clone()),
             room_id: room.id.clone(),
             name: "child-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -2573,7 +2702,7 @@ async fn test_get_playlist_only_returns_room_root_media() {
             playlist_id: None,
             room_id: room_a.id.clone(),
             name: "room-a-root".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -2590,7 +2719,7 @@ async fn test_get_playlist_only_returns_room_root_media() {
             playlist_id: None,
             room_id: room_b.id.clone(),
             name: "room-b-root".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -2660,7 +2789,7 @@ async fn test_delete_entries_allows_playlist_delete_with_granted_reorder_permiss
             creator_id: Some(owner.id.clone()),
             name: "Granted Delete".to_string(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -2743,7 +2872,7 @@ async fn test_delete_entries_denies_playlist_delete_when_reorder_permission_revo
             creator_id: Some(owner.id.clone()),
             name: "Revoked Delete".to_string(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -2812,7 +2941,7 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
             playlist_id: None,
             room_id: room.id.clone(),
             name: "foreign-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -2870,7 +2999,7 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
             playlist_id: None,
             room_id: room.id.clone(),
             name: "notify-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -2941,7 +3070,7 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
             playlist_id: None,
             room_id: room.id.clone(),
             name: "clear-notify-1".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -2958,7 +3087,7 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
             playlist_id: None,
             room_id: room.id.clone(),
             name: "clear-notify-2".to_string(),
-            position: 1,
+            position: 1.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -3034,7 +3163,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
             playlist_id: None,
             room_id: room.id.clone(),
             name: "playing-root-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -3139,7 +3268,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
             creator_id: Some(owner.id.clone()),
             name: "Parent".to_string(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -3156,7 +3285,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
             creator_id: Some(owner.id.clone()),
             name: "Child".to_string(),
             parent_id: Some(parent.id.clone()),
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -3174,7 +3303,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
             playlist_id: Some(parent.id.clone()),
             room_id: room.id.clone(),
             name: "parent-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -3191,7 +3320,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
             playlist_id: Some(child.id.clone()),
             room_id: room.id.clone(),
             name: "child-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -3216,7 +3345,10 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
         .await
         .unwrap();
 
-    assert_eq!(result.deleted_playlists, 1);
+    assert_eq!(
+        result.deleted_playlists, 2,
+        "delete_entries must count the full deleted playlist subtree"
+    );
     assert_eq!(
         result.deleted_media, 2,
         "delete_entries must count media removed through playlist cascade"
@@ -3264,7 +3396,7 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
             creator_id: Some(owner.id.clone()),
             name: "Cascade Playlist".to_string(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -3281,7 +3413,7 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
             playlist_id: Some(playlist.id.clone()),
             room_id: room.id.clone(),
             name: "cascade-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -3352,7 +3484,7 @@ async fn test_delete_entries_rejects_currently_playing_media_without_force() {
             playlist_id: None,
             room_id: room.id.clone(),
             name: "playing-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -3426,7 +3558,7 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
             creator_id: Some(owner.id.clone()),
             name: "parent".to_string(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -3443,7 +3575,7 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
             creator_id: Some(owner.id.clone()),
             name: "child".to_string(),
             parent_id: Some(parent.id.clone()),
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -3460,7 +3592,7 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
             playlist_id: Some(child.id.clone()),
             room_id: room.id.clone(),
             name: "deep-playing-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -3532,7 +3664,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_med
             playlist_id: None,
             room_id: room.id.clone(),
             name: "force-playing-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -3614,7 +3746,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
             creator_id: Some(owner.id.clone()),
             name: "force-parent".to_string(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -3631,7 +3763,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
             creator_id: Some(owner.id.clone()),
             name: "force-child".to_string(),
             parent_id: Some(parent.id.clone()),
-            position: 0,
+            position: 0.0,
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
@@ -3647,7 +3779,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
             playlist_id: Some(child.id.clone()),
             room_id: room.id.clone(),
             name: "force-deep-playing-media".to_string(),
-            position: 0,
+            position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: "direct_url".to_string(),
@@ -3684,7 +3816,10 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
         .await
         .unwrap();
 
-    assert_eq!(result.deleted_playlists, 1);
+    assert_eq!(
+        result.deleted_playlists, 2,
+        "force deleting an ancestor playlist must count descendants too"
+    );
     assert_eq!(result.deleted_media, 1);
     assert!(playlist_repo.get_by_id(&parent.id).await.unwrap().is_none());
     assert!(playlist_repo.get_by_id(&child.id).await.unwrap().is_none());
@@ -4348,6 +4483,147 @@ async fn test_list_rooms_by_creator() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let active_owner = user_repo
+        .create(&make_user("accessible_owner"))
+        .await
+        .unwrap();
+    let inactive_owner = user_repo
+        .create(&make_user("inaccessible_owner"))
+        .await
+        .unwrap();
+
+    let (visible_room, _) = room_service
+        .create_room(
+            "Visible Room".to_string(),
+            String::new(),
+            active_owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    room_service
+        .create_room(
+            "Hidden Room".to_string(),
+            String::new(),
+            inactive_owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .user_service()
+        .set_user_status(&inactive_owner.id, UserStatus::Banned)
+        .await
+        .unwrap();
+
+    let (rooms, total) = room_service
+        .list_accessible_rooms(&RoomListQuery {
+            pagination: PageParams::default(),
+            status: Some(RoomStatus::Active),
+            is_banned: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        total, 1,
+        "only rooms with active creators should be counted"
+    );
+    assert_eq!(
+        rooms.len(),
+        1,
+        "only rooms with active creators should be listed"
+    );
+    assert_eq!(rooms[0].id, visible_room.id);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let active_owner = user_repo
+        .create(&make_user("joined_visible_owner"))
+        .await
+        .unwrap();
+    let inactive_owner = user_repo
+        .create(&make_user("joined_hidden_owner"))
+        .await
+        .unwrap();
+    let member = user_repo.create(&make_user("joined_member")).await.unwrap();
+
+    let (visible_room, _) = room_service
+        .create_room(
+            "Joined Visible Room".to_string(),
+            String::new(),
+            active_owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let (hidden_room, _) = room_service
+        .create_room(
+            "Joined Hidden Room".to_string(),
+            String::new(),
+            inactive_owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(visible_room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+    room_service
+        .join_room(hidden_room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+
+    room_service
+        .user_service()
+        .set_user_status(&inactive_owner.id, UserStatus::Banned)
+        .await
+        .unwrap();
+
+    let (rooms, total) = room_service
+        .list_accessible_joined_rooms_with_query(
+            &member.id,
+            &RelatedRoomListQuery {
+                pagination: PageParams::default(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        total, 1,
+        "joined-room total should exclude rooms whose creator is inactive"
+    );
+    assert_eq!(
+        rooms.len(),
+        1,
+        "joined-room list should exclude rooms whose creator is inactive"
+    );
+    assert_eq!(rooms[0].0.id, visible_room.id);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_list_rooms_pagination() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4999,7 +5275,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         room_id: room.id.clone(),
         parent_id: None,
         name: "Test Playlist".to_string(),
-        position: 0,
+        position: 0.0,
         creator_id: Some(owner.id.clone()),
         source_provider: None,
         source_config: None,
@@ -5016,7 +5292,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         playlist_id: Some(playlist.id.clone()),
         room_id: room.id.clone(),
         name: "Test Media".to_string(),
-        position: 0,
+        position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({}),
         provider_instance_name: "direct_url".to_string(),
@@ -5101,7 +5377,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         "Members should be immediately cleaned up"
     );
 
-    // Playlists should be immediately deleted (cascade to media via FK)
+    // Playlists should be immediately deleted together with their nested media.
     let playlist_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
             .bind(room.id.as_str())
@@ -5179,7 +5455,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
 async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let user_service = make_user_service(pool.clone());
+    let _user_service = make_user_service(pool.clone());
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
@@ -5210,8 +5486,12 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
     admin.role = UserRole::Admin;
     let admin = user_repo.update(&admin, 0).await.unwrap();
 
-    // Soft-delete the creator (simulating user deletion)
-    user_service.delete_user(&creator.id).await.unwrap();
+    // Soft-delete the creator row directly to simulate a pre-existing orphaned room.
+    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
+        .bind(creator.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Verify the creator is soft-deleted (get_by_id returns None for soft-deleted users)
     let deleted_creator = user_repo.get_by_id(&creator.id).await.unwrap();
@@ -5239,7 +5519,7 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
 async fn test_admin_delete_orphaned_room_requires_admin_role() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let user_service = make_user_service(pool.clone());
+    let _user_service = make_user_service(pool.clone());
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
@@ -5263,7 +5543,11 @@ async fn test_admin_delete_orphaned_room_requires_admin_role() {
         .await
         .unwrap();
 
-    user_service.delete_user(&creator.id).await.unwrap();
+    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
+        .bind(creator.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let result = room_service
         .admin_delete_orphaned_room(&room.id, &regular_user.id)
@@ -5386,7 +5670,7 @@ async fn test_admin_delete_orphaned_room_rejects_active_creator() {
 async fn test_admin_delete_orphaned_room_rejects_non_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let user_service = make_user_service(pool.clone());
+    let _user_service = make_user_service(pool.clone());
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
@@ -5410,7 +5694,11 @@ async fn test_admin_delete_orphaned_room_rejects_non_admin() {
         .await
         .unwrap();
 
-    user_service.delete_user(&creator.id).await.unwrap();
+    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
+        .bind(creator.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let result = room_service
         .admin_delete_orphaned_room(&room.id, &regular_user.id)
@@ -5433,7 +5721,7 @@ async fn test_admin_delete_orphaned_room_rejects_non_admin() {
 async fn test_admin_delete_orphaned_room_already_deleted_room() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let user_service = make_user_service(pool.clone());
+    let _user_service = make_user_service(pool.clone());
     let room_service = make_room_service(pool.clone());
 
     // Create and delete a creator
@@ -5456,8 +5744,12 @@ async fn test_admin_delete_orphaned_room_already_deleted_room() {
     admin.role = UserRole::Admin;
     user_repo.update(&admin, admin.version).await.unwrap();
 
-    // Delete the creator first
-    user_service.delete_user(&creator.id).await.unwrap();
+    // Soft-delete the creator row directly to leave the room orphaned.
+    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
+        .bind(creator.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Delete the room normally
     room_service

@@ -1,13 +1,17 @@
 //! Media operations: add, remove, edit, swap, clear, batch operations, playlist items
 
 use crate::impls::ApiError;
-use std::cmp::Ordering;
 use std::str::FromStr;
 use synctv_core::models::{
-    Media, Playlist, ProviderType, SortDirection as CoreSortDirection, UserId,
+    MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy, Playlist,
+    PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
+    ProviderType, SortDirection as CoreSortDirection, UserId,
 };
 
-use super::convert::{media_to_proto, playlist_path_node_to_proto, playlist_to_proto};
+use super::convert::{
+    media_to_proto, media_to_proto_with_availability, playlist_path_node_to_proto,
+    playlist_to_proto_with_availability,
+};
 use super::ClientApiImpl;
 
 /// Sanitize and truncate a title extracted from a URL path segment.
@@ -66,257 +70,46 @@ fn normalize_non_empty_filter(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then_some(trimmed.to_string())
 }
 
-#[derive(Debug, Clone)]
-struct StaticPlaylistItemsQuery {
-    page: usize,
-    page_size: usize,
-    search: Option<String>,
-    source_provider: Option<String>,
-    provider_instance_name: Option<String>,
-    sort_by: crate::proto::client::MediaListSortBy,
-    sort_direction: CoreSortDirection,
-}
-
-impl StaticPlaylistItemsQuery {
-    fn from_request(req: &crate::proto::client::ListPlaylistItemsRequest) -> Self {
-        Self {
-            page: req.page.max(1) as usize,
-            page_size: req.page_size.clamp(1, 100) as usize,
-            search: normalize_non_empty_filter(&req.search).map(|value| value.to_ascii_lowercase()),
-            source_provider: normalize_non_empty_filter(&req.source_provider),
-            provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
-            sort_by: crate::proto::client::MediaListSortBy::try_from(req.sort_by)
-                .unwrap_or(crate::proto::client::MediaListSortBy::Position),
-            sort_direction: match crate::proto::client::SortDirection::try_from(req.sort_direction)
-            {
-                Ok(crate::proto::client::SortDirection::Desc) => CoreSortDirection::Desc,
-                _ => CoreSortDirection::Asc,
-            },
-        }
+fn map_sort_direction(sort_direction: i32) -> CoreSortDirection {
+    match crate::proto::client::SortDirection::try_from(sort_direction) {
+        Ok(crate::proto::client::SortDirection::Desc) => CoreSortDirection::Desc,
+        _ => CoreSortDirection::Asc,
     }
 }
 
-pub(crate) struct StaticPlaylistItemsPage {
-    pub playlists: Vec<Playlist>,
-    pub media: Vec<Media>,
-    pub total: usize,
-    pub folder_count: usize,
-    pub file_count: usize,
-}
-
-fn compare_playlists_for_media_query(
-    left: &Playlist,
-    right: &Playlist,
-    sort_by: crate::proto::client::MediaListSortBy,
-    sort_direction: CoreSortDirection,
-) -> Ordering {
-    let ordering = match sort_by {
-        crate::proto::client::MediaListSortBy::Name => left
-            .name
-            .to_ascii_lowercase()
-            .cmp(&right.name.to_ascii_lowercase())
-            .then_with(|| left.position.cmp(&right.position)),
-        crate::proto::client::MediaListSortBy::AddedAt => left
-            .created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.position.cmp(&right.position)),
-        crate::proto::client::MediaListSortBy::UpdatedAt => left
-            .updated_at
-            .cmp(&right.updated_at)
-            .then_with(|| left.position.cmp(&right.position)),
-        crate::proto::client::MediaListSortBy::SourceProvider => left
-            .source_provider
-            .as_deref()
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .cmp(
-                &right
-                    .source_provider
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase(),
-            )
-            .then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            }),
-        crate::proto::client::MediaListSortBy::ProviderInstanceName => left
-            .provider_instance_name
-            .as_deref()
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .cmp(
-                &right
-                    .provider_instance_name
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase(),
-            )
-            .then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            }),
-        crate::proto::client::MediaListSortBy::Position
-        | crate::proto::client::MediaListSortBy::Unspecified => {
-            left.position.cmp(&right.position).then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            })
-        }
-    };
-
-    match sort_direction {
-        CoreSortDirection::Asc => ordering,
-        CoreSortDirection::Desc => ordering.reverse(),
+fn map_playlist_sort_from_media_sort(sort_by: i32) -> CorePlaylistListSortBy {
+    match crate::proto::client::MediaListSortBy::try_from(sort_by)
+        .unwrap_or(crate::proto::client::MediaListSortBy::Position)
+    {
+        crate::proto::client::MediaListSortBy::Name => CorePlaylistListSortBy::Name,
+        crate::proto::client::MediaListSortBy::AddedAt => CorePlaylistListSortBy::CreatedAt,
+        crate::proto::client::MediaListSortBy::UpdatedAt => CorePlaylistListSortBy::UpdatedAt,
+        _ => CorePlaylistListSortBy::Position,
     }
 }
 
-fn compare_media_for_query(
-    left: &Media,
-    right: &Media,
-    sort_by: crate::proto::client::MediaListSortBy,
-    sort_direction: CoreSortDirection,
-) -> Ordering {
-    let ordering = match sort_by {
-        crate::proto::client::MediaListSortBy::Name => left
-            .name
-            .to_ascii_lowercase()
-            .cmp(&right.name.to_ascii_lowercase())
-            .then_with(|| left.position.cmp(&right.position)),
-        crate::proto::client::MediaListSortBy::AddedAt => left
-            .added_at
-            .cmp(&right.added_at)
-            .then_with(|| left.position.cmp(&right.position)),
-        crate::proto::client::MediaListSortBy::UpdatedAt => left
-            .updated_at
-            .cmp(&right.updated_at)
-            .then_with(|| left.position.cmp(&right.position)),
-        crate::proto::client::MediaListSortBy::SourceProvider => left
-            .source_provider
-            .to_ascii_lowercase()
-            .cmp(&right.source_provider.to_ascii_lowercase())
-            .then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            }),
-        crate::proto::client::MediaListSortBy::ProviderInstanceName => left
-            .provider_instance_name
-            .to_ascii_lowercase()
-            .cmp(&right.provider_instance_name.to_ascii_lowercase())
-            .then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            }),
-        crate::proto::client::MediaListSortBy::Position
-        | crate::proto::client::MediaListSortBy::Unspecified => {
-            left.position.cmp(&right.position).then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            })
+fn map_media_sort(sort_by: i32) -> CoreMediaListSortBy {
+    match crate::proto::client::MediaListSortBy::try_from(sort_by)
+        .unwrap_or(crate::proto::client::MediaListSortBy::Position)
+    {
+        crate::proto::client::MediaListSortBy::Name => CoreMediaListSortBy::Name,
+        crate::proto::client::MediaListSortBy::AddedAt => CoreMediaListSortBy::AddedAt,
+        crate::proto::client::MediaListSortBy::UpdatedAt => CoreMediaListSortBy::UpdatedAt,
+        crate::proto::client::MediaListSortBy::SourceProvider => CoreMediaListSortBy::SourceProvider,
+        crate::proto::client::MediaListSortBy::ProviderInstanceName => {
+            CoreMediaListSortBy::ProviderInstanceName
         }
-    };
-
-    match sort_direction {
-        CoreSortDirection::Asc => ordering,
-        CoreSortDirection::Desc => ordering.reverse(),
+        _ => CoreMediaListSortBy::Position,
     }
 }
 
-fn playlist_matches_static_query(playlist: &Playlist, query: &StaticPlaylistItemsQuery) -> bool {
-    if let Some(search) = &query.search {
-        if !playlist.name.to_ascii_lowercase().contains(search) {
-            return false;
-        }
-    }
-    if let Some(source_provider) = query.source_provider.as_deref() {
-        if playlist.source_provider.as_deref() != Some(source_provider) {
-            return false;
-        }
-    }
-    if let Some(provider_instance_name) = query.provider_instance_name.as_deref() {
-        if playlist.provider_instance_name.as_deref() != Some(provider_instance_name) {
-            return false;
-        }
-    }
-    true
-}
-
-fn media_matches_static_query(media: &Media, query: &StaticPlaylistItemsQuery) -> bool {
-    if let Some(search) = &query.search {
-        if !media.name.to_ascii_lowercase().contains(search) {
-            return false;
-        }
-    }
-    if let Some(source_provider) = query.source_provider.as_deref() {
-        if media.source_provider != source_provider {
-            return false;
-        }
-    }
-    if let Some(provider_instance_name) = query.provider_instance_name.as_deref() {
-        if media.provider_instance_name != provider_instance_name {
-            return false;
-        }
-    }
-    true
-}
-
-pub(crate) fn build_static_playlist_items_page(
-    mut playlists: Vec<Playlist>,
-    mut media: Vec<Media>,
-    req: &crate::proto::client::ListPlaylistItemsRequest,
-) -> StaticPlaylistItemsPage {
-    let query = StaticPlaylistItemsQuery::from_request(req);
-    playlists.retain(|playlist| playlist_matches_static_query(playlist, &query));
-    media.retain(|item| media_matches_static_query(item, &query));
-
-    playlists.sort_by(|left, right| {
-        compare_playlists_for_media_query(left, right, query.sort_by, query.sort_direction)
-    });
-    media.sort_by(|left, right| {
-        compare_media_for_query(left, right, query.sort_by, query.sort_direction)
-    });
-
-    let folder_count = playlists.len();
-    let file_count = media.len();
-    let total = folder_count + file_count;
-    let skip = (query.page - 1) * query.page_size;
-    let (playlists, media) = if skip < folder_count {
-        let page_playlists: Vec<Playlist> = playlists
-            .into_iter()
-            .skip(skip)
-            .take(query.page_size)
-            .collect();
-        let remaining = query.page_size.saturating_sub(page_playlists.len());
-        let page_media = if remaining > 0 {
-            media.into_iter().take(remaining).collect()
-        } else {
-            Vec::new()
-        };
-        (page_playlists, page_media)
-    } else {
-        let media_skip = skip - folder_count;
-        (
-            Vec::new(),
-            media
-                .into_iter()
-                .skip(media_skip)
-                .take(query.page_size)
-                .collect(),
-        )
-    };
-
-    StaticPlaylistItemsPage {
-        playlists,
-        media,
-        total,
-        folder_count,
-        file_count,
+fn map_availability_filter(filter: i32) -> Option<bool> {
+    match crate::proto::client::ResourceAvailabilityFilter::try_from(filter)
+        .unwrap_or(crate::proto::client::ResourceAvailabilityFilter::All)
+    {
+        crate::proto::client::ResourceAvailabilityFilter::All => None,
+        crate::proto::client::ResourceAvailabilityFilter::Available => Some(true),
+        crate::proto::client::ResourceAvailabilityFilter::Unavailable => Some(false),
     }
 }
 
@@ -890,35 +683,17 @@ impl ClientApiImpl {
         Ok(crate::proto::client::AddMediaBatchResponse { results })
     }
 
-    /// Bulk reorder multiple media items
-    pub async fn reorder_media_batch(
+    pub async fn move_media(
         &self,
         user_id: &str,
         room_id: &str,
-        req: crate::proto::client::ReorderMediaBatchRequest,
-    ) -> Result<crate::proto::client::ReorderMediaBatchResponse, ApiError> {
-        if req.updates.is_empty() {
-            return Err(ApiError::InvalidInput(
-                "updates array cannot be empty".to_string(),
-            ));
-        }
-        if req.updates.len() > 100 {
-            return Err(ApiError::InvalidInput(
-                "Too many items (max 100 per batch)".to_string(),
-            ));
-        }
-
-        for update in &req.updates {
-            crate::http::validation::validate_id(&update.media_id, "media_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
-        }
-
+        req: crate::proto::client::MoveMediaRequest,
+    ) -> Result<crate::proto::client::MoveMediaResponse, ApiError> {
+        crate::http::validation::validate_id(&req.media_id, "media_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
 
-        // Defense-in-depth: check REORDER_PLAYLIST permission at the API layer
-        // (the service layer also checks, but checking here provides early rejection
-        // and consistent error handling with other API methods like clear_playlist)
         self.room_service
             .check_permission(
                 &rid,
@@ -928,30 +703,50 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
-        let updates_converted: Vec<(synctv_core::models::MediaId, i32)> = req
-            .updates
-            .into_iter()
-            .map(|u| {
-                (
-                    synctv_core::models::MediaId::from_string(u.media_id),
-                    u.position,
-                )
-            })
-            .collect();
+        let anchor = req.anchor.ok_or_else(|| {
+            ApiError::InvalidInput(
+                "Exactly one of before_media_id or after_media_id must be set".to_string(),
+            )
+        })?;
+
+        let (before_media_id, after_media_id) = match anchor {
+            crate::proto::client::move_media_request::Anchor::BeforeMediaId(anchor_id) => {
+                crate::http::validation::validate_id(&anchor_id, "before_media_id").map_err(
+                    |e| ApiError::InvalidInput(format!("Invalid before_media_id: {e}")),
+                )?;
+                (Some(synctv_core::models::MediaId::from_string(anchor_id)), None)
+            }
+            crate::proto::client::move_media_request::Anchor::AfterMediaId(anchor_id) => {
+                crate::http::validation::validate_id(&anchor_id, "after_media_id").map_err(
+                    |e| ApiError::InvalidInput(format!("Invalid after_media_id: {e}")),
+                )?;
+                (None, Some(synctv_core::models::MediaId::from_string(anchor_id)))
+            }
+        };
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
-        self.room_service
+        let media = self
+            .room_service
             .media_service()
-            .reorder_media_batch(rid.clone(), uid, updates_converted)
+            .move_media(
+                rid.clone(),
+                uid,
+                synctv_core::service::media::MoveMediaRequest {
+                    media_id: synctv_core::models::MediaId::from_string(req.media_id),
+                    before_media_id,
+                    after_media_id,
+                },
+            )
             .await
             .map_err(ApiError::from)?;
 
-        // Invalidate room cache on other replicas so they refresh playlist order
         if let Some(cache_invalidation) = cache_invalidation {
             cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
         }
 
-        Ok(crate::proto::client::ReorderMediaBatchResponse { success: true })
+        Ok(crate::proto::client::MoveMediaResponse {
+            media: Some(media_to_proto(&media)),
+        })
     }
 
     /// List playlist items (supports both static and dynamic playlists)
@@ -988,43 +783,115 @@ impl ClientApiImpl {
                     "target must be empty when browsing the room root".to_string(),
                 ));
             }
-
-            let playlists = self
+            let playlist_query = CorePlaylistListQuery {
+                pagination: synctv_core::models::PageParams::new(
+                    Some(req.page.max(1) as u32),
+                    Some(req.page_size.clamp(1, 100) as u32),
+                ),
+                search: normalize_non_empty_filter(&req.search),
+                source_provider: normalize_non_empty_filter(&req.source_provider),
+                provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
+                dynamic_only: None,
+                availability: map_availability_filter(req.availability),
+                sort_by: map_playlist_sort_from_media_sort(req.sort_by),
+                sort_direction: map_sort_direction(req.sort_direction),
+            };
+            let media_query = CoreMediaListQuery {
+                pagination: synctv_core::models::PageParams::new(
+                    Some(req.page.max(1) as u32),
+                    Some(req.page_size.clamp(1, 100) as u32),
+                ),
+                search: normalize_non_empty_filter(&req.search),
+                source_provider: normalize_non_empty_filter(&req.source_provider),
+                provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
+                availability: map_availability_filter(req.availability),
+                sort_by: map_media_sort(req.sort_by),
+                sort_direction: map_sort_direction(req.sort_direction),
+            };
+            let folder_count = self
                 .room_service
-                .playlist_service()
-                .get_top_level_playlists(&rid)
+                .count_client_playlists(&rid, None, &playlist_query)
                 .await
-                .map_err(ApiError::from)?;
-            let media = self
+                .map_err(ApiError::from)? as usize;
+            let file_count = self
                 .room_service
-                .media_service()
-                .get_room_root_media(&rid)
+                .count_client_media(&rid, None, &media_query)
                 .await
-                .map_err(ApiError::from)?;
-            let page = build_static_playlist_items_page(playlists, media, &req);
-            let folder_ids: Vec<&str> = page.playlists.iter().map(|pl| pl.id.as_str()).collect();
+                .map_err(ApiError::from)? as usize;
+            let total = folder_count + file_count;
+            let page_size = req.page_size.clamp(1, 100) as usize;
+            let skip = (req.page.max(1) as usize - 1) * page_size;
+            let (playlists, media) = if skip < folder_count {
+                let playlists = self
+                    .room_service
+                    .list_client_playlists(
+                        &rid,
+                        None,
+                        &playlist_query,
+                        page_size as i64,
+                        skip as i64,
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+                let remaining = page_size.saturating_sub(playlists.len());
+                let media = if remaining > 0 {
+                    self.room_service
+                        .list_client_media(&rid, None, &media_query, remaining as i64, 0)
+                        .await
+                        .map_err(ApiError::from)?
+                } else {
+                    Vec::new()
+                };
+                (playlists, media)
+            } else {
+                let media_skip = skip - folder_count;
+                let media = self
+                    .room_service
+                    .list_client_media(
+                        &rid,
+                        None,
+                        &media_query,
+                        page_size as i64,
+                        media_skip as i64,
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+                (Vec::new(), media)
+            };
+            let folder_ids: Vec<&str> = playlists.iter().map(|pl| pl.playlist.id.as_str()).collect();
             let counts = self
                 .room_service
                 .media_service()
                 .count_playlist_media_batch(&folder_ids)
                 .await
                 .unwrap_or_default();
-            let proto_playlists = page
-                .playlists
+            let proto_playlists = playlists
                 .iter()
-                .map(|pl| {
-                    let item_count = counts.get(pl.id.as_str()).copied().unwrap_or(0) as i32;
-                    playlist_to_proto(pl, item_count)
+                .map(|entry| {
+                    let item_count = counts
+                        .get(entry.playlist.id.as_str())
+                        .copied()
+                        .unwrap_or(0) as i32;
+                    playlist_to_proto_with_availability(
+                        &entry.playlist,
+                        item_count,
+                        entry.is_available,
+                    )
                 })
                 .collect();
-            let proto_media = page.media.iter().map(media_to_proto).collect();
+            let proto_media = media
+                .iter()
+                .map(|entry| {
+                    media_to_proto_with_availability(&entry.media, entry.is_available)
+                })
+                .collect();
 
             return Ok(crate::proto::client::ListPlaylistItemsResponse {
                 playlists: proto_playlists,
                 media: proto_media,
-                total: page.total as i32,
-                folder_count: page.folder_count as i32,
-                file_count: page.file_count as i32,
+                total: total as i32,
+                folder_count: folder_count as i32,
+                file_count: file_count as i32,
                 dynamic_items: Vec::new(),
                 current_path: Vec::new(),
             });
@@ -1050,6 +917,10 @@ impl ClientApiImpl {
             .collect();
 
         if playlist.is_dynamic() {
+            self.room_service
+                .ensure_client_usable_playlist(&playlist)
+                .await
+                .map_err(ApiError::from)?;
             if !validate_dynamic_playlist_query_support(&playlist, &req)? {
                 return Ok(crate::proto::client::ListPlaylistItemsResponse {
                     playlists: Vec::new(),
@@ -1140,88 +1011,118 @@ impl ClientApiImpl {
             ));
         }
 
-        let playlists = self
+        let playlist_query = CorePlaylistListQuery {
+            pagination: synctv_core::models::PageParams::new(
+                Some(req.page.max(1) as u32),
+                Some(req.page_size.clamp(1, 100) as u32),
+            ),
+            search: normalize_non_empty_filter(&req.search),
+            source_provider: normalize_non_empty_filter(&req.source_provider),
+            provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
+            dynamic_only: None,
+            availability: map_availability_filter(req.availability),
+            sort_by: map_playlist_sort_from_media_sort(req.sort_by),
+            sort_direction: map_sort_direction(req.sort_direction),
+        };
+        let media_query = CoreMediaListQuery {
+            pagination: synctv_core::models::PageParams::new(
+                Some(req.page.max(1) as u32),
+                Some(req.page_size.clamp(1, 100) as u32),
+            ),
+            search: normalize_non_empty_filter(&req.search),
+            source_provider: normalize_non_empty_filter(&req.source_provider),
+            provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
+            availability: map_availability_filter(req.availability),
+            sort_by: map_media_sort(req.sort_by),
+            sort_direction: map_sort_direction(req.sort_direction),
+        };
+        let folder_count = self
             .room_service
-            .playlist_service()
-            .get_children(&playlist_id)
+            .count_client_playlists(&rid, Some(&playlist_id), &playlist_query)
             .await
-            .map_err(ApiError::from)?;
-        let media = self
+            .map_err(ApiError::from)? as usize;
+        let file_count = self
             .room_service
-            .media_service()
-            .get_playlist_media(&playlist_id)
+            .count_client_media(&rid, Some(&playlist_id), &media_query)
             .await
-            .map_err(ApiError::from)?;
-        let page = build_static_playlist_items_page(playlists, media, &req);
-        let folder_ids: Vec<&str> = page.playlists.iter().map(|pl| pl.id.as_str()).collect();
+            .map_err(ApiError::from)? as usize;
+        let total = folder_count + file_count;
+        let page_size = req.page_size.clamp(1, 100) as usize;
+        let skip = (req.page.max(1) as usize - 1) * page_size;
+        let (playlists, media) = if skip < folder_count {
+            let playlists = self
+                .room_service
+                .list_client_playlists(
+                    &rid,
+                    Some(&playlist_id),
+                    &playlist_query,
+                    page_size as i64,
+                    skip as i64,
+                )
+                .await
+                .map_err(ApiError::from)?;
+            let remaining = page_size.saturating_sub(playlists.len());
+            let media = if remaining > 0 {
+                self.room_service
+                    .list_client_media(&rid, Some(&playlist_id), &media_query, remaining as i64, 0)
+                    .await
+                    .map_err(ApiError::from)?
+            } else {
+                Vec::new()
+            };
+            (playlists, media)
+        } else {
+            let media_skip = skip - folder_count;
+            let media = self
+                .room_service
+                .list_client_media(
+                    &rid,
+                    Some(&playlist_id),
+                    &media_query,
+                    page_size as i64,
+                    media_skip as i64,
+                )
+                .await
+                .map_err(ApiError::from)?;
+            (Vec::new(), media)
+        };
+        let folder_ids: Vec<&str> = playlists.iter().map(|pl| pl.playlist.id.as_str()).collect();
         let counts = self
             .room_service
             .media_service()
             .count_playlist_media_batch(&folder_ids)
             .await
             .unwrap_or_default();
-        let proto_playlists = page
-            .playlists
+        let proto_playlists = playlists
             .iter()
-            .map(|pl| {
-                let item_count = counts.get(pl.id.as_str()).copied().unwrap_or(0) as i32;
-                playlist_to_proto(pl, item_count)
+            .map(|entry| {
+                let item_count = counts
+                    .get(entry.playlist.id.as_str())
+                    .copied()
+                    .unwrap_or(0) as i32;
+                playlist_to_proto_with_availability(
+                    &entry.playlist,
+                    item_count,
+                    entry.is_available,
+                )
             })
             .collect();
-        let proto_media = page.media.iter().map(media_to_proto).collect();
+        let proto_media = media
+            .iter()
+            .map(|entry| {
+                media_to_proto_with_availability(&entry.media, entry.is_available)
+            })
+            .collect();
 
         Ok(crate::proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
             media: proto_media,
-            total: page.total as i32,
-            folder_count: page.folder_count as i32,
-            file_count: page.file_count as i32,
+            total: total as i32,
+            folder_count: folder_count as i32,
+            file_count: file_count as i32,
             dynamic_items: Vec::new(),
             current_path,
         })
-    }
-
-    pub async fn swap_media(
-        &self,
-        user_id: &str,
-        room_id: &str,
-        req: crate::proto::client::SwapMediaRequest,
-    ) -> Result<crate::proto::client::SwapMediaResponse, ApiError> {
-        crate::http::validation::validate_id(&req.media_id1, "media_id1")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id1: {e}")))?;
-        crate::http::validation::validate_id(&req.media_id2, "media_id2")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id2: {e}")))?;
-
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
-
-        // Defense-in-depth: check REORDER_PLAYLIST permission at the API layer
-        // (the service layer also checks, but checking here provides early rejection
-        // and consistent error handling with other API methods like clear_playlist)
-        self.room_service
-            .check_permission(
-                &rid,
-                &uid,
-                synctv_core::models::PermissionBits::REORDER_PLAYLIST,
-            )
-            .await
-            .map_err(Self::map_room_access_error)?;
-
-        let media_id1 = synctv_core::models::MediaId::from_string(req.media_id1.clone());
-        let media_id2 = synctv_core::models::MediaId::from_string(req.media_id2.clone());
-        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
-
-        self.room_service
-            .swap_media(rid.clone(), uid, media_id1, media_id2)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Invalidate room cache on other replicas so they refresh playlist order
-        if let Some(cache_invalidation) = cache_invalidation {
-            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
-        }
-
-        Ok(crate::proto::client::SwapMediaResponse { success: true })
     }
 
     /// Get a single media record from database
@@ -1256,20 +1157,28 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
+        let availability = self
+            .room_service
+            .media_availability(&media)
+            .await
+            .map_err(ApiError::from)?;
 
-        Ok(media_to_proto(&media))
+        Ok(media_to_proto_with_availability(
+            &media,
+            availability.is_available(),
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_static_playlist_items_page, parse_add_media_provider,
-        resolve_add_media_provider_instance, validate_dynamic_playlist_query_support,
+        parse_add_media_provider, resolve_add_media_provider_instance,
+        validate_dynamic_playlist_query_support,
     };
     use chrono::Utc;
     use serde_json::json;
-    use synctv_core::models::{Media, Playlist, PlaylistId, ProviderType, RoomId, UserId};
+    use synctv_core::models::{Playlist, PlaylistId, ProviderType, RoomId, UserId};
 
     fn make_playlist(
         name: &str,
@@ -1282,33 +1191,11 @@ mod tests {
             creator_id: Some(UserId::new()),
             name: name.to_string(),
             parent_id: None,
-            position: 0,
+            position: 0.0,
             source_provider: source_provider.map(str::to_string),
             source_config: Some(json!({})),
             provider_instance_name: provider_instance_name.map(str::to_string),
             created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        }
-    }
-
-    fn make_media(
-        name: &str,
-        source_provider: &str,
-        provider_instance_name: &str,
-        position: i32,
-    ) -> Media {
-        Media {
-            id: synctv_core::models::MediaId::new(),
-            playlist_id: None,
-            room_id: RoomId::new(),
-            creator_id: Some(UserId::new()),
-            name: name.to_string(),
-            position,
-            source_provider: source_provider.to_string(),
-            source_config: json!({}),
-            provider_instance_name: provider_instance_name.to_string(),
-            added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
         }
@@ -1356,41 +1243,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_static_playlist_items_page_applies_search_filter_and_media_provider_filters() {
-        let playlists = vec![
-            make_playlist("Alpha Folder", Some("alist"), Some("alist-main")),
-            make_playlist("Beta Folder", None, None),
-        ];
-        let media = vec![
-            make_media("Alpha Media", "direct_url", "direct_url", 1),
-            make_media("Beta Media", "direct_url", "direct_url", 2),
-        ];
-
-        let page = build_static_playlist_items_page(
-            playlists,
-            media,
-            &crate::proto::client::ListPlaylistItemsRequest {
-                playlist_id: String::new(),
-                target: Vec::new(),
-                page: 1,
-                page_size: 10,
-                search: "alpha".to_string(),
-                source_provider: "direct_url".to_string(),
-                provider_instance_name: "direct_url".to_string(),
-                sort_by: crate::proto::client::MediaListSortBy::Name as i32,
-                sort_direction: crate::proto::client::SortDirection::Asc as i32,
-            },
-        );
-
-        assert_eq!(page.total, 1);
-        assert_eq!(page.folder_count, 0);
-        assert_eq!(page.file_count, 1);
-        assert!(page.playlists.is_empty());
-        assert_eq!(page.media.len(), 1);
-        assert_eq!(page.media[0].name, "Alpha Media");
-    }
-
-    #[test]
     fn test_validate_dynamic_playlist_query_support_rejects_search() {
         let playlist = make_playlist("Dynamic Folder", Some("alist"), Some("alist-main"));
         let err = validate_dynamic_playlist_query_support(
@@ -1405,6 +1257,7 @@ mod tests {
                 provider_instance_name: String::new(),
                 sort_by: crate::proto::client::MediaListSortBy::Position as i32,
                 sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
             },
         )
         .unwrap_err();

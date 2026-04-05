@@ -8,7 +8,7 @@
 //! # Test Coverage
 //!
 //! - Multi-user concurrent join with `max_members` limit enforcement
-//! - Concurrent creation of rooms with same name by different users
+//! - Concurrent creation of rooms with the same name by different users succeeds
 //! - Concurrent room settings updates (optimistic lock retry)
 //!
 //! # Requirements
@@ -330,10 +330,7 @@ async fn test_concurrent_join_boundary_condition() {
 // Test: Concurrent Room Creation with Same Name
 // ============================================================================
 
-/// Test that concurrent room creation with same name by different users works.
-///
-/// Note: Room names are NOT unique in the system - each room gets a unique ID.
-/// This test verifies that concurrent creation doesn't cause race conditions.
+/// Test that concurrent room creation with the same name by different users succeeds.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_room_creation_same_name_different_users() {
@@ -354,7 +351,7 @@ async fn test_concurrent_room_creation_same_name_different_users() {
     let room_repo = Arc::new(RoomRepository::new(pool.clone()));
     let barrier = Arc::new(Barrier::new(10));
 
-    let room_name = "Same Name Room"; // All rooms have the same name
+    let room_name = "Same Name Room";
     let mut handles = Vec::with_capacity(10);
 
     for user in users {
@@ -371,31 +368,30 @@ async fn test_concurrent_room_creation_same_name_different_users() {
         handles.push(handle);
     }
 
-    // All should succeed since room IDs are unique (shared base62 IDs)
-    let mut created_room_ids = std::collections::HashSet::new();
     let mut success_count = 0;
 
     for handle in handles {
         match handle.await.expect("Task panicked") {
             Ok(room) => {
-                assert!(
-                    created_room_ids.insert(room.id.as_str().to_string()),
-                    "Room IDs must be unique"
-                );
+                assert_eq!(room.name, room_name);
                 success_count += 1;
             }
-            Err(e) => panic!("Room creation should succeed: {e:?}"),
+            Err(e) => panic!("Unexpected room creation error: {e:?}"),
         }
     }
 
     assert_eq!(success_count, 10, "All 10 rooms should be created");
-    assert_eq!(created_room_ids.len(), 10, "All room IDs should be unique");
+
+    let persisted_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM rooms WHERE name = $1 AND deleted_at IS NULL")
+            .bind(room_name)
+            .fetch_one(pool)
+            .await
+            .expect("Failed to count persisted rooms");
+    assert_eq!(persisted_count, 10, "All active rooms should persist");
 }
 
-/// Test that concurrent room creation by the SAME user is prevented.
-///
-/// This tests the distributed lock mechanism (when available) or database-level
-/// uniqueness constraints that prevent a single user from creating duplicate rooms.
+/// Test that concurrent room creation by the same user with the same name is prevented.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_room_creation_same_user_prevented() {
@@ -413,36 +409,39 @@ async fn test_concurrent_room_creation_same_user_prevented() {
     let barrier = Arc::new(Barrier::new(5));
     let user_id = user.id.clone();
 
-    // Same user creates 5 rooms concurrently
+    // Same user creates the same room 5 times concurrently.
     let mut handles = Vec::with_capacity(5);
-    for i in 0..5 {
+    for _ in 0..5 {
         let room_repo_clone = room_repo.clone();
         let barrier_clone = barrier.clone();
         let user_id_clone = user_id.clone();
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
-            let room = make_room(
-                &format!("Room {i}"),
-                &format!("Description {i}"),
-                &user_id_clone,
-            );
+            let room = make_room("Repeated Room", "Repeated Description", &user_id_clone);
             room_repo_clone.create(&room).await
         });
         handles.push(handle);
     }
 
-    // All should succeed since there's no constraint on number of rooms per user
-    // (Each room has a unique ID)
     let mut success_count = 0;
+    let mut already_exists_count = 0;
     for handle in handles {
-        if handle.await.expect("Task panicked").is_ok() {
-            success_count += 1;
+        match handle.await.expect("Task panicked") {
+            Ok(_) => success_count += 1,
+            Err(Error::AlreadyExists(msg)) => {
+                assert_eq!(msg, "You already have a room with this name");
+                already_exists_count += 1;
+            }
+            Err(e) => panic!("Unexpected room creation error: {e:?}"),
         }
     }
 
-    // All 5 rooms should be created (no constraint prevents this)
-    assert_eq!(success_count, 5, "User can create multiple rooms");
+    assert_eq!(success_count, 1, "Only one room should be created");
+    assert_eq!(
+        already_exists_count, 4,
+        "All other competing creates should fail with AlreadyExists"
+    );
 }
 
 // ============================================================================

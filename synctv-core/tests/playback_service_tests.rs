@@ -85,7 +85,7 @@ async fn create_top_level_playlist(
         creator_id: None,
         name: "Top Level".to_string(),
         parent_id: None,
-        position: 0,
+        position: 0.0,
         source_provider: None,
         source_config: None,
         provider_instance_name: None,
@@ -259,7 +259,7 @@ async fn test_switch_media_resets_position() {
         room_id: room.id.clone(),
         creator_id: Some(owner.id.clone()),
         name: "Test Video".to_string(),
-        position: 0,
+        position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
         provider_instance_name: "direct_url".to_string(),
@@ -331,7 +331,7 @@ async fn test_switch_media_rejects_target() {
         room_id: room.id.clone(),
         creator_id: Some(owner.id.clone()),
         name: "Standalone Video".to_string(),
-        position: 0,
+        position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/standalone.mp4"}),
         provider_instance_name: "direct_url".to_string(),
@@ -353,6 +353,80 @@ async fn test_switch_media_rejects_target() {
         .await;
 
     assert!(matches!(result, Err(Error::InvalidInput(_))));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_switch_media_rejects_inactive_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("switch_inactive_creator_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Switch Inactive Creator Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let media_creator = user_repo
+        .create(&make_user("switch_inactive_media_creator"))
+        .await
+        .unwrap();
+
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: None,
+        room_id: room.id.clone(),
+        creator_id: Some(media_creator.id.clone()),
+        name: "Inactive Creator Video".to_string(),
+        position: 0.0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/inactive.mp4"}),
+        provider_instance_name: "direct_url".to_string(),
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    media_repo.create(&media).await.unwrap();
+
+    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
+        .bind(media_creator.id.as_str())
+        .bind(UserStatus::Banned)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let result = room_service
+        .playback_service()
+        .switch(
+            room.id.clone(),
+            owner.id.clone(),
+            Some(media.id.clone()),
+            None,
+            Vec::new(),
+        )
+        .await;
+
+    match result.expect_err("media created by banned user must not be playable") {
+        Error::Authorization(message) => {
+            assert!(
+                message.contains("creator") && message.contains("active"),
+                "error should explain creator status: {message}"
+            );
+        }
+        other => panic!("expected authorization error, got: {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -385,7 +459,7 @@ async fn test_switch_with_empty_target_clears_playback_state() {
         room_id: room.id.clone(),
         creator_id: Some(owner.id.clone()),
         name: "Clearable Video".to_string(),
-        position: 0,
+        position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/clearable.mp4"}),
         provider_instance_name: "direct_url".to_string(),
@@ -617,7 +691,7 @@ async fn test_play_next_concurrent_playlist_modification() {
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
             name: format!("Video {i}"),
-            position: i,
+            position: i as f64,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/video{}.mp4", i)}),
             provider_instance_name: "direct_url".to_string(),
@@ -706,7 +780,7 @@ async fn test_play_next_at_end_of_playlist() {
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
             name: format!("End Video {i}"),
-            position: i,
+            position: i as f64,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/end{}.mp4", i)}),
             provider_instance_name: "direct_url".to_string(),
@@ -790,7 +864,7 @@ async fn test_play_next_with_loop_enabled() {
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
             name: format!("Loop Video {i}"),
-            position: i,
+            position: i as f64,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/loop{}.mp4", i)}),
             provider_instance_name: "direct_url".to_string(),
@@ -1001,7 +1075,7 @@ async fn test_state_consistency_after_mixed_operations() {
         room_id: room.id.clone(),
         creator_id: Some(owner.id.clone()),
         name: "Mixed Test Video".to_string(),
-        position: 0,
+        position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/mixed.mp4"}),
         provider_instance_name: "direct_url".to_string(),

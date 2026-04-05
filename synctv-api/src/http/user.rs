@@ -258,8 +258,8 @@ pub async fn delete_me(
     State(state): State<AppState>,
 ) -> AppResult<axum::http::StatusCode> {
     state
-        .user_service
-        .delete_self(&auth.user_id)
+        .client_api
+        .delete_current_user(auth.user_id.as_str())
         .await
         .map_err(super::AppError::from)?;
 

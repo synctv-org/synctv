@@ -77,7 +77,7 @@ pub struct Room {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_Media))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Media {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
@@ -93,9 +93,9 @@ pub struct Media {
     #[prost(bytes = "vec", tag = "6")]
     #[serde(with = "crate::http_serde::json_bytes")]
     pub metadata: ::prost::alloc::vec::Vec<u8>,
-    /// Position in playlist
-    #[prost(int32, tag = "7")]
-    pub position: i32,
+    /// Order position in playlist
+    #[prost(double, tag = "7")]
+    pub position: f64,
     #[prost(int64, tag = "8")]
     pub added_at: i64,
     /// Also known as creator_id
@@ -108,11 +108,14 @@ pub struct Media {
     #[prost(bytes = "vec", tag = "11")]
     #[serde(with = "crate::http_serde::json_bytes")]
     pub source_config: ::prost::alloc::vec::Vec<u8>,
+    /// Availability derived from creator state
+    #[prost(enumeration = "ResourceAvailability", tag = "12")]
+    pub availability: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_Playlist))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Playlist {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
@@ -123,9 +126,9 @@ pub struct Playlist {
     /// Parent playlist ID for nested playlists (null for root)
     #[prost(string, tag = "4")]
     pub parent_id: ::prost::alloc::string::String,
-    /// Position among sibling playlists
-    #[prost(int32, tag = "5")]
-    pub position: i32,
+    /// Order position among sibling playlists
+    #[prost(double, tag = "5")]
+    pub position: f64,
     /// True if this is a dynamic playlist (provider-based)
     #[prost(bool, tag = "6")]
     pub is_dynamic: bool,
@@ -136,6 +139,9 @@ pub struct Playlist {
     pub created_at: i64,
     #[prost(int64, tag = "9")]
     pub updated_at: i64,
+    /// Availability derived from creator state
+    #[prost(enumeration = "ResourceAvailability", tag = "10")]
+    pub availability: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -645,7 +651,7 @@ pub struct CreatePlaylistRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePlaylistResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreatePlaylistResponse {
     #[prost(message, optional, tag = "1")]
     pub playlist: ::core::option::Option<Playlist>,
@@ -662,16 +668,43 @@ pub struct UpdatePlaylistRequest {
     #[prost(string, tag = "2")]
     #[serde(default)]
     pub name: ::prost::alloc::string::String,
-    /// Optional new position
-    #[prost(int32, tag = "3")]
-    #[serde(default = "crate::serde_defaults::update_playlist_position")]
-    pub position: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdatePlaylistResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdatePlaylistResponse {
+    #[prost(message, optional, tag = "1")]
+    pub playlist: ::core::option::Option<Playlist>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MovePlaylistRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MovePlaylistRequest {
+    #[prost(string, tag = "1")]
+    pub playlist_id: ::prost::alloc::string::String,
+    #[prost(oneof = "move_playlist_request::Anchor", tags = "2, 3")]
+    pub anchor: ::core::option::Option<move_playlist_request::Anchor>,
+}
+/// Nested message and enum types in `MovePlaylistRequest`.
+pub mod move_playlist_request {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+    #[cfg_attr(feature = "openapi", schema(as = synctv_client_MovePlaylistRequest))]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Anchor {
+        #[prost(string, tag = "2")]
+        BeforePlaylistId(::prost::alloc::string::String),
+        #[prost(string, tag = "3")]
+        AfterPlaylistId(::prost::alloc::string::String),
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MovePlaylistResponse))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MovePlaylistResponse {
     #[prost(message, optional, tag = "1")]
     pub playlist: ::core::option::Option<Playlist>,
 }
@@ -706,7 +739,7 @@ pub struct GetPlaylistRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPlaylistResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetPlaylistResponse {
     #[prost(message, optional, tag = "1")]
     pub playlist: ::core::option::Option<Playlist>,
@@ -744,6 +777,8 @@ pub struct ListPlaylistsRequest {
     pub sort_by: i32,
     #[prost(enumeration = "SortDirection", tag = "9")]
     pub sort_direction: i32,
+    #[prost(enumeration = "ResourceAvailabilityFilter", tag = "10")]
+    pub availability: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -827,7 +862,7 @@ pub struct AddMediaRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMediaResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AddMediaResponse {
     #[prost(message, optional, tag = "1")]
     pub media: ::core::option::Option<Media>,
@@ -912,6 +947,8 @@ pub struct ListPlaylistItemsRequest {
     #[prost(enumeration = "SortDirection", tag = "9")]
     #[serde(default)]
     pub sort_direction: i32,
+    #[prost(enumeration = "ResourceAvailabilityFilter", tag = "10")]
+    pub availability: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -985,21 +1022,34 @@ pub struct PlaylistBrowsePathNode {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_SwapMediaRequest))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MoveMediaRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SwapMediaRequest {
+pub struct MoveMediaRequest {
     #[prost(string, tag = "1")]
-    pub media_id1: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub media_id2: ::prost::alloc::string::String,
+    pub media_id: ::prost::alloc::string::String,
+    #[prost(oneof = "move_media_request::Anchor", tags = "2, 3")]
+    pub anchor: ::core::option::Option<move_media_request::Anchor>,
+}
+/// Nested message and enum types in `MoveMediaRequest`.
+pub mod move_media_request {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+    #[cfg_attr(feature = "openapi", schema(as = synctv_client_MoveMediaRequest))]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Anchor {
+        #[prost(string, tag = "2")]
+        BeforeMediaId(::prost::alloc::string::String),
+        #[prost(string, tag = "3")]
+        AfterMediaId(::prost::alloc::string::String),
+    }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_SwapMediaResponse))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SwapMediaResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MoveMediaResponse))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MoveMediaResponse {
+    #[prost(message, optional, tag = "1")]
+    pub media: ::core::option::Option<Media>,
 }
 /// Edit Media
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1016,7 +1066,7 @@ pub struct EditMediaRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_EditMediaResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EditMediaResponse {
     #[prost(message, optional, tag = "1")]
     pub media: ::core::option::Option<Media>,
@@ -1054,33 +1104,6 @@ pub struct AddMediaBatchRequest {
 pub struct AddMediaBatchResponse {
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<AddMediaResponse>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaReorderUpdate))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct MediaReorderUpdate {
-    #[prost(string, tag = "1")]
-    pub media_id: ::prost::alloc::string::String,
-    #[prost(int32, tag = "2")]
-    pub position: i32,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_ReorderMediaBatchRequest))]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ReorderMediaBatchRequest {
-    #[prost(message, repeated, tag = "1")]
-    #[serde(default)]
-    pub updates: ::prost::alloc::vec::Vec<MediaReorderUpdate>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_ReorderMediaBatchResponse))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ReorderMediaBatchResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
 }
 /// Empty: just resume playback
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1148,9 +1171,9 @@ pub struct PlaybackResult {
     /// Media name
     #[prost(string, tag = "4")]
     pub name: ::prost::alloc::string::String,
-    /// Position in playlist
-    #[prost(int32, tag = "5")]
-    pub position: i32,
+    /// Order position in playlist
+    #[prost(double, tag = "5")]
+    pub position: f64,
     /// Multiple playback modes (e.g., "direct", "proxied", "cdn1", "cdn2")
     /// Provider can define arbitrary mode names
     #[prost(map = "string, message", tag = "6")]
@@ -2139,7 +2162,7 @@ pub struct PermissionChanged {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistCreated))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaylistCreated {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
@@ -2149,7 +2172,7 @@ pub struct PlaylistCreated {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistUpdated))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaylistUpdated {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
@@ -2185,7 +2208,7 @@ pub struct PlaylistReordered {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlayingChanged))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlayingChanged {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
@@ -2539,6 +2562,70 @@ pub struct DeleteAllReadRequest {}
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteAllReadResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteAllReadResponse {}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceAvailability))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ResourceAvailability {
+    Unspecified = 0,
+    Available = 1,
+    CreatorInactive = 2,
+}
+impl ResourceAvailability {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RESOURCE_AVAILABILITY_UNSPECIFIED",
+            Self::Available => "RESOURCE_AVAILABILITY_AVAILABLE",
+            Self::CreatorInactive => "RESOURCE_AVAILABILITY_CREATOR_INACTIVE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RESOURCE_AVAILABILITY_UNSPECIFIED" => Some(Self::Unspecified),
+            "RESOURCE_AVAILABILITY_AVAILABLE" => Some(Self::Available),
+            "RESOURCE_AVAILABILITY_CREATOR_INACTIVE" => Some(Self::CreatorInactive),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceAvailabilityFilter))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ResourceAvailabilityFilter {
+    All = 0,
+    Available = 1,
+    Unavailable = 2,
+}
+impl ResourceAvailabilityFilter {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::All => "RESOURCE_AVAILABILITY_FILTER_ALL",
+            Self::Available => "RESOURCE_AVAILABILITY_FILTER_AVAILABLE",
+            Self::Unavailable => "RESOURCE_AVAILABILITY_FILTER_UNAVAILABLE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RESOURCE_AVAILABILITY_FILTER_ALL" => Some(Self::All),
+            "RESOURCE_AVAILABILITY_FILTER_AVAILABLE" => Some(Self::Available),
+            "RESOURCE_AVAILABILITY_FILTER_UNAVAILABLE" => Some(Self::Unavailable),
+            _ => None,
+        }
+    }
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SortDirection))]
@@ -5062,6 +5149,30 @@ pub mod room_service_client {
                 .insert(GrpcMethod::new("synctv.client.RoomService", "UpdatePlaylist"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn move_playlist(
+            &mut self,
+            request: impl tonic::IntoRequest<super::MovePlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::MovePlaylistResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/MovePlaylist",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "MovePlaylist"));
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn delete_playlist(
             &mut self,
             request: impl tonic::IntoRequest<super::DeletePlaylistRequest>,
@@ -5233,11 +5344,11 @@ pub mod room_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        pub async fn swap_media(
+        pub async fn move_media(
             &mut self,
-            request: impl tonic::IntoRequest<super::SwapMediaRequest>,
+            request: impl tonic::IntoRequest<super::MoveMediaRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::SwapMediaResponse>,
+            tonic::Response<super::MoveMediaResponse>,
             tonic::Status,
         > {
             self.inner
@@ -5250,11 +5361,11 @@ pub mod room_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/SwapMedia",
+                "/synctv.client.RoomService/MoveMedia",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "SwapMedia"));
+                .insert(GrpcMethod::new("synctv.client.RoomService", "MoveMedia"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn clear_playlist(
@@ -5304,32 +5415,6 @@ pub mod room_service_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("synctv.client.RoomService", "AddMediaBatch"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn reorder_media_batch(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ReorderMediaBatchRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ReorderMediaBatchResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/ReorderMediaBatch",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.RoomService", "ReorderMediaBatch"),
-                );
             self.inner.unary(req, path, codec).await
         }
         /// Playback Control (room-scoped operations)
@@ -5621,6 +5706,13 @@ pub mod room_service_server {
             tonic::Response<super::UpdatePlaylistResponse>,
             tonic::Status,
         >;
+        async fn move_playlist(
+            &self,
+            request: tonic::Request<super::MovePlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::MovePlaylistResponse>,
+            tonic::Status,
+        >;
         async fn delete_playlist(
             &self,
             request: tonic::Request<super::DeletePlaylistRequest>,
@@ -5671,11 +5763,11 @@ pub mod room_service_server {
             tonic::Response<super::ListPlaylistItemsResponse>,
             tonic::Status,
         >;
-        async fn swap_media(
+        async fn move_media(
             &self,
-            request: tonic::Request<super::SwapMediaRequest>,
+            request: tonic::Request<super::MoveMediaRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::SwapMediaResponse>,
+            tonic::Response<super::MoveMediaResponse>,
             tonic::Status,
         >;
         async fn clear_playlist(
@@ -5691,13 +5783,6 @@ pub mod room_service_server {
             request: tonic::Request<super::AddMediaBatchRequest>,
         ) -> std::result::Result<
             tonic::Response<super::AddMediaBatchResponse>,
-            tonic::Status,
-        >;
-        async fn reorder_media_batch(
-            &self,
-            request: tonic::Request<super::ReorderMediaBatchRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ReorderMediaBatchResponse>,
             tonic::Status,
         >;
         /// Playback Control (room-scoped operations)
@@ -6557,6 +6642,51 @@ pub mod room_service_server {
                     };
                     Box::pin(fut)
                 }
+                "/synctv.client.RoomService/MovePlaylist" => {
+                    #[allow(non_camel_case_types)]
+                    struct MovePlaylistSvc<T: RoomService>(pub Arc<T>);
+                    impl<
+                        T: RoomService,
+                    > tonic::server::UnaryService<super::MovePlaylistRequest>
+                    for MovePlaylistSvc<T> {
+                        type Response = super::MovePlaylistResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::MovePlaylistRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as RoomService>::move_playlist(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = MovePlaylistSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/synctv.client.RoomService/DeletePlaylist" => {
                     #[allow(non_camel_case_types)]
                     struct DeletePlaylistSvc<T: RoomService>(pub Arc<T>);
@@ -6873,25 +7003,25 @@ pub mod room_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.RoomService/SwapMedia" => {
+                "/synctv.client.RoomService/MoveMedia" => {
                     #[allow(non_camel_case_types)]
-                    struct SwapMediaSvc<T: RoomService>(pub Arc<T>);
+                    struct MoveMediaSvc<T: RoomService>(pub Arc<T>);
                     impl<
                         T: RoomService,
-                    > tonic::server::UnaryService<super::SwapMediaRequest>
-                    for SwapMediaSvc<T> {
-                        type Response = super::SwapMediaResponse;
+                    > tonic::server::UnaryService<super::MoveMediaRequest>
+                    for MoveMediaSvc<T> {
+                        type Response = super::MoveMediaResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::SwapMediaRequest>,
+                            request: tonic::Request<super::MoveMediaRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as RoomService>::swap_media(&inner, request).await
+                                <T as RoomService>::move_media(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6902,7 +7032,7 @@ pub mod room_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = SwapMediaSvc(inner);
+                        let method = MoveMediaSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -6993,52 +7123,6 @@ pub mod room_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = AddMediaBatchSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/ReorderMediaBatch" => {
-                    #[allow(non_camel_case_types)]
-                    struct ReorderMediaBatchSvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::ReorderMediaBatchRequest>
-                    for ReorderMediaBatchSvc<T> {
-                        type Response = super::ReorderMediaBatchResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ReorderMediaBatchRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::reorder_media_batch(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ReorderMediaBatchSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -36,7 +36,10 @@ pub use playlist::{
     CreatePlaylistRequest, Playlist, PlaylistListQuery, PlaylistListSortBy, PlaylistWithCount,
     UpdatePlaylistRequest,
 };
-pub use provider_instance::{ProviderCredential, ProviderInstance, UserProviderCredential};
+pub use provider_instance::{
+    ProviderCredential, ProviderInstance, ProviderInstanceListQuery,
+    ProviderInstanceListSortBy, UserProviderCredential,
+};
 pub use query::SortDirection;
 pub use room::{
     AutoPlaySettings, CreateRoomRequest, PlayMode, Room, RoomListQuery, RoomListSortBy,

@@ -200,8 +200,8 @@ mod tests {
         GetSystemStatsRequest, GetUserByUsernameRequest, GetUserRequest, GetUserRoomsRequest,
         KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
         ListMediaRequest, ListPlaylistsRequest, ListProviderInstancesRequest,
-        ListRoomStreamsRequest, ListRoomsRequest, ListUsersRequest,
-        ReconnectProviderInstanceRequest, RemoveAdminRequest, ReorderMediaBatchRequest,
+        ListRoomStreamsRequest, ListRoomsRequest, ListUsersRequest, MoveMediaRequest,
+        MovePlaylistRequest, ReconnectProviderInstanceRequest, RemoveAdminRequest,
         ResetRoomSettingsRequest, SendTestEmailRequest, StartPlaybackRequest, StopPlaybackRequest,
         StopServerEvent, StopServerRequest, UnbanMemberRequest, UnbanRoomRequest, UnbanUserRequest,
         UpdateMemberPermissionsRequest, UpdatePlaylistRequest, UpdateProviderInstanceRequest,
@@ -546,6 +546,12 @@ mod tests {
         ) -> std::result::Result<Response<client_proto::UpdatePlaylistResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
+        async fn move_playlist(
+            &self,
+            _: Request<MovePlaylistRequest>,
+        ) -> std::result::Result<Response<client_proto::MovePlaylistResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
         async fn delete_playlist(
             &self,
             _: Request<DeletePlaylistRequest>,
@@ -577,17 +583,16 @@ mod tests {
         ) -> std::result::Result<Response<client_proto::EditMediaResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
+        async fn move_media(
+            &self,
+            _: Request<MoveMediaRequest>,
+        ) -> std::result::Result<Response<client_proto::MoveMediaResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
         async fn delete_media(
             &self,
             _: Request<DeleteMediaRequest>,
         ) -> std::result::Result<Response<client_proto::DeleteMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
-        }
-        async fn reorder_media_batch(
-            &self,
-            _: Request<ReorderMediaBatchRequest>,
-        ) -> std::result::Result<Response<client_proto::ReorderMediaBatchResponse>, Status>
-        {
             Err(Status::unimplemented("test stub"))
         }
         async fn list_provider_instances(

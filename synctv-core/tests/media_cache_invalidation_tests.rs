@@ -112,7 +112,7 @@ async fn test_edit_media_sends_notification() {
                 creator_id: Some(owner.id.clone()),
                 name: String::new(),
                 parent_id: None,
-                position: 0,
+                position: 0.0,
                 source_provider: None,
                 source_config: None,
                 provider_instance_name: None,
@@ -240,7 +240,6 @@ async fn test_edit_media_sends_notification() {
     let edit_req = EditMediaRequest {
         media_id: media.id.clone(),
         name: Some("Updated Media".to_string()),
-        position: None,
     };
 
     let updated_media = media_service
@@ -347,7 +346,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
                 creator_id: Some(owner.id.clone()),
                 name: String::new(),
                 parent_id: None,
-                position: 0,
+                position: 0.0,
                 source_provider: None,
                 source_config: None,
                 provider_instance_name: None,
@@ -425,7 +424,6 @@ async fn test_edit_media_without_notification_service_succeeds() {
     let edit_req = EditMediaRequest {
         media_id: media.id.clone(),
         name: Some("Updated Media".to_string()),
-        position: None,
     };
 
     let updated_media = media_service

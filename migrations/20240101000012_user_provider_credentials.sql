@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS user_media_provider_credentials (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- Constraints
-    CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT,
     CONSTRAINT fk_media_provider_instance FOREIGN KEY (provider_instance_name) REFERENCES media_provider_instances(name) ON DELETE SET NULL,
     CONSTRAINT unique_user_media_provider_server UNIQUE(user_id, provider, server_id),
     CONSTRAINT valid_server_id CHECK (length(trim(server_id)) > 0 AND length(server_id) <= 64)

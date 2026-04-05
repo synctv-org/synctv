@@ -136,7 +136,7 @@ where
                 error = %error,
                 "Rejecting logout because the presented token is not a valid access token"
             );
-            ApiError::Authentication(error.to_string())
+            ApiError::Authentication("Invalid or expired token".to_string())
         })?;
 
     if claims.jti.is_empty() {
@@ -227,9 +227,7 @@ mod tests {
         match result {
             Err(ApiError::Authentication(message)) => {
                 assert!(
-                    message.contains("Invalid token")
-                        || message.contains("verification failed")
-                        || message.contains("invalid"),
+                    message == "Invalid or expired token",
                     "unexpected authentication error: {message}"
                 );
             }
@@ -252,7 +250,7 @@ mod tests {
         match result {
             Err(ApiError::Authentication(message)) => {
                 assert!(
-                    message.contains("Not an access token"),
+                    message == "Invalid or expired token",
                     "unexpected authentication error: {message}"
                 );
             }

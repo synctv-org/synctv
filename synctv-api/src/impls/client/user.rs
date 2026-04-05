@@ -8,6 +8,28 @@ use super::convert::user_to_proto;
 use super::ClientApiImpl;
 
 impl ClientApiImpl {
+    pub async fn delete_current_user(&self, user_id: &str) -> Result<(), ApiError> {
+        let uid = UserId::from_string(user_id.to_string());
+        let summary = self
+            .user_service
+            .delete_user_with_summary(&uid)
+            .await
+            .map_err(ApiError::from)?;
+
+        crate::impls::finalize_user_deletion(
+            &self.room_service,
+            &self.connection_manager,
+            self.live_streaming_infrastructure.as_ref(),
+            self.redis_publish_tx.as_ref(),
+            &summary,
+            &uid,
+            "user_deleted",
+        )
+        .await;
+
+        Ok(())
+    }
+
     pub async fn update_profile(
         &self,
         user_id: &str,

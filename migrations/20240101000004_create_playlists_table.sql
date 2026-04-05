@@ -4,19 +4,25 @@ CREATE TABLE IF NOT EXISTS playlists (
     id CHAR(12) PRIMARY KEY,
 
     -- Basic information
-    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-    creator_id CHAR(12) REFERENCES users(id) ON DELETE SET NULL,
+    -- Room deletion is application-orchestrated: playlists must be explicitly
+    -- deleted before a room row can be hard-deleted.
+    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
+    -- User deletion is application-orchestrated: playlists must be explicitly
+    -- deleted or reassigned before a user row can be hard-deleted.
+    creator_id CHAR(12) REFERENCES users(id) ON DELETE RESTRICT,
 
     -- Playlist display name
     name VARCHAR(255) NOT NULL DEFAULT '',
 
     -- Tree structure (file system style)
-    parent_id CHAR(12) REFERENCES playlists(id) ON DELETE CASCADE,
+    -- Nested playlist cleanup is application-orchestrated: descendants must be
+    -- deleted explicitly in depth-first order.
+    parent_id CHAR(12) REFERENCES playlists(id) ON DELETE RESTRICT,
 
-    -- Sort position (support manual directory reordering).
-    -- No DEFAULT: callers must always compute the next position via MAX+1
-    -- to avoid UNIQUE constraint violations on concurrent inserts.
-    position INT NOT NULL,
+    -- Sort position (support append and anchor-based reordering).
+    -- Floating-point gaps allow moving a single row between siblings without
+    -- rewriting every sibling on each drag operation.
+    position DOUBLE PRECISION NOT NULL,
 
     -- ========== Dynamic folder support ==========
     source_provider VARCHAR(64),
@@ -37,25 +43,16 @@ CREATE TABLE IF NOT EXISTS playlists (
         OR
         (source_provider IS NULL AND source_config IS NULL)
     ),
-    CONSTRAINT unique_playlist_id_room UNIQUE (id, room_id),
-    CONSTRAINT unique_playlist_position UNIQUE (room_id, parent_id, position)
+    CONSTRAINT unique_playlist_id_room UNIQUE (id, room_id)
 );
 
 -- Indexes
 CREATE INDEX idx_playlists_room ON playlists(room_id);
-CREATE INDEX idx_playlists_parent ON playlists(parent_id, position);
-CREATE INDEX idx_playlists_tree ON playlists(room_id, parent_id, position);
+CREATE INDEX idx_playlists_parent ON playlists(parent_id, position, id);
+CREATE INDEX idx_playlists_tree ON playlists(room_id, parent_id, position, id);
 CREATE INDEX idx_playlists_creator ON playlists(creator_id);
 CREATE INDEX idx_playlists_source_provider ON playlists(source_provider) WHERE source_provider IS NOT NULL;
 CREATE INDEX idx_playlists_created_at ON playlists(created_at DESC);
-
--- Same NULL handling for position uniqueness: the UNIQUE constraint
--- unique_playlist_position on (room_id, parent_id, position) does not
--- prevent duplicates when parent_id IS NULL. This partial index ensures
--- unique positions among top-level playlists in a room.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique_root_position
-    ON playlists(room_id, position)
-    WHERE parent_id IS NULL;
 
 -- Trigger to update updated_at
 CREATE TRIGGER update_playlists_updated_at
@@ -66,7 +63,7 @@ CREATE TRIGGER update_playlists_updated_at
 COMMENT ON TABLE playlists IS 'Playlist table supporting top-level and nested static or dynamic folders.';
 COMMENT ON COLUMN playlists.name IS 'Playlist display name. It is not a routing key or unique path segment.';
 COMMENT ON COLUMN playlists.parent_id IS 'Parent playlist ID. NULL means this playlist is directly under the room root.';
-COMMENT ON COLUMN playlists.position IS 'Sort position in parent directory';
+COMMENT ON COLUMN playlists.position IS 'Floating-point order position in parent directory';
 COMMENT ON COLUMN playlists.source_provider IS 'Media provider type name (NULL=static folder, non-NULL=dynamic folder, e.g., "alist", "emby")';
 COMMENT ON COLUMN playlists.source_config IS 'Media provider configuration (required for dynamic folders)';
 COMMENT ON COLUMN playlists.provider_instance_name IS 'Recommended media provider backend instance name (optional)';

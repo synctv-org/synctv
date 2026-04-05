@@ -1,7 +1,7 @@
 -- Create room_members table with Allow/Deny permission pattern
 CREATE TABLE IF NOT EXISTS room_members (
-    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-    user_id CHAR(12) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
+    user_id CHAR(12) NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
 
     -- Role and Status (separated as per design)
     role SMALLINT NOT NULL DEFAULT 3,  -- 1=creator, 2=admin, 3=member, 4=guest
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS room_members (
 
     -- Banned info
     banned_at TIMESTAMPTZ,
-    banned_by CHAR(12) REFERENCES users(id) ON DELETE SET NULL,
+    banned_by CHAR(12) REFERENCES users(id) ON DELETE RESTRICT,
     banned_reason TEXT,
 
     PRIMARY KEY (room_id, user_id)

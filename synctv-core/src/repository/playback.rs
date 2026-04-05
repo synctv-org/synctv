@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 
 use crate::{
-    models::{RoomId, RoomPlaybackState},
+    models::{RoomId, RoomPlaybackState, UserId},
     Error, Result,
 };
 
@@ -141,6 +141,43 @@ impl RoomPlaybackStateRepository {
             None => Err(Error::OptimisticLockConflict),
         }
     }
+
+    /// Reset playback state for every room currently playing media or playlists
+    /// created by the specified user.
+    pub async fn reset_playback_for_creator(
+        &self,
+        creator_id: &UserId,
+    ) -> Result<Vec<RoomPlaybackState>> {
+        let states = sqlx::query_as::<_, RoomPlaybackState>(
+            r#"
+            WITH impacted_rooms AS (
+                SELECT DISTINCT rps.room_id
+                FROM room_playback_state rps
+                LEFT JOIN media m ON m.id = rps.playing_media_id
+                LEFT JOIN playlists p ON p.id = rps.playing_playlist_id
+                WHERE m.creator_id = $1 OR p.creator_id = $1
+            )
+            UPDATE room_playback_state rps
+            SET playing_media_id = NULL,
+                playing_playlist_id = NULL,
+                target = ''::bytea,
+                "current_time" = 0,
+                speed = 1.0,
+                is_playing = false,
+                updated_at = NOW(),
+                version = version + 1
+            FROM impacted_rooms impacted
+            WHERE rps.room_id = impacted.room_id
+            RETURNING rps.room_id, rps.playing_media_id, rps.playing_playlist_id, rps.target,
+                      rps."current_time", rps.speed, rps.is_playing, rps.updated_at, rps.version
+            "#,
+        )
+        .bind(creator_id.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(states)
+    }
 }
 
 #[cfg(test)]
@@ -244,7 +281,7 @@ mod tests {
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
             "default".to_string(),
-            0,
+            0.0,
         );
         let media = media_repo.create(&media).await.unwrap();
 

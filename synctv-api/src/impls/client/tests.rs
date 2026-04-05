@@ -276,8 +276,23 @@ fn test_livestream_backend_error_service_unavailable_stays_service_unavailable()
     let mapped = super::ClientApiImpl::map_livestream_backend_error(&stream_error);
 
     assert!(
-        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg.contains("redis temporarily unavailable")),
+        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "Live streaming service is temporarily unavailable. Please try again later."),
         "livestream backend failures must remain service unavailable, got: {mapped:?}"
+    );
+}
+
+#[test]
+fn test_livestream_backend_error_finds_nested_stream_error() {
+    let err = anyhow::Error::new(synctv_livestream::error::StreamError::ResourceExhausted(
+        "max concurrent streams reached (limit: 100)".to_string(),
+    ))
+    .context("wrapped by anyhow");
+
+    let mapped = super::ClientApiImpl::map_livestream_backend_error(err.as_ref());
+
+    assert!(
+        matches!(mapped, ApiError::RateLimited(ref msg) if msg == "Live streaming capacity limit reached. Please try again later."),
+        "nested livestream resource exhaustion must remain rate limited, got: {mapped:?}"
     );
 }
 
@@ -416,7 +431,7 @@ fn test_provider_error_invalid_config_preserves_invalid_input_semantics() {
 }
 
 #[test]
-fn test_provider_error_upstream_http_preserves_upstream_context() {
+fn test_provider_error_upstream_http_is_sanitized() {
     let err = ApiError::from(synctv_core::provider::ProviderError::UpstreamHttp {
         status: 502,
         url: "https://provider.example/playback".to_string(),
@@ -424,10 +439,42 @@ fn test_provider_error_upstream_http_preserves_upstream_context() {
 
     match err {
         ApiError::ServiceUnavailable(message) => {
-            assert!(message.contains("502"));
-            assert!(message.contains("provider.example"));
+            assert_eq!(
+                message,
+                "Upstream provider service is temporarily unavailable."
+            );
         }
         other => panic!("expected upstream unavailability, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_provider_error_upstream_http_404_maps_to_not_found() {
+    let err = ApiError::from(synctv_core::provider::ProviderError::UpstreamHttp {
+        status: 404,
+        url: "https://provider.example/playback".to_string(),
+    });
+
+    match err {
+        ApiError::NotFound(message) => {
+            assert_eq!(message, "Provider resource not found");
+        }
+        other => panic!("expected provider resource not found, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_provider_error_upstream_http_400_maps_to_invalid_input() {
+    let err = ApiError::from(synctv_core::provider::ProviderError::UpstreamHttp {
+        status: 400,
+        url: "https://provider.example/playback".to_string(),
+    });
+
+    match err {
+        ApiError::InvalidInput(message) => {
+            assert_eq!(message, "Upstream provider rejected the request.");
+        }
+        other => panic!("expected upstream provider invalid input, got {other:?}"),
     }
 }
 
@@ -608,7 +655,7 @@ fn make_test_media() -> synctv_core::models::Media {
         room_id: RoomId::from_string("room1".to_string()),
         creator_id: Some(UserId::from_string("user1".to_string())),
         name: "Test Video".to_string(),
-        position: 3,
+        position: 3.0,
         source_provider: "bilibili".to_string(),
         source_config: serde_json::json!({"bvid": "BV1234"}),
         provider_instance_name: "bili_main".to_string(),
@@ -627,7 +674,7 @@ fn test_media_to_proto_basic() {
     assert_eq!(proto.room_id, "room1");
     assert_eq!(proto.provider, "bilibili");
     assert_eq!(proto.title, "Test Video");
-    assert_eq!(proto.position, 3);
+    assert_eq!(proto.position, 3.0);
     assert_eq!(proto.added_by, "user1");
     assert_eq!(proto.provider_instance_name, "bili_main");
 }
@@ -644,7 +691,7 @@ fn test_media_to_proto_direct_media_uses_direct_url_instance_binding() {
             "https://example.com/video.mp4".to_string(),
             "1080p".to_string(),
         ),
-        1,
+        1.0,
     );
     let proto = media_to_proto(&media);
     assert_eq!(proto.provider_instance_name, "direct_url");
@@ -719,7 +766,7 @@ fn test_playlist_to_proto() {
         creator_id: Some(UserId::from_string("user1".to_string())),
         name: "My Playlist".to_string(),
         parent_id: None,
-        position: 0,
+        position: 0.0,
         source_provider: None,
         source_config: None,
         provider_instance_name: None,
@@ -746,7 +793,7 @@ fn test_playlist_to_proto_dynamic() {
         creator_id: Some(UserId::from_string("user1".to_string())),
         name: "Bilibili Folder".to_string(),
         parent_id: Some(PlaylistId::from_string("pl1".to_string())),
-        position: 1,
+        position: 1.0,
         source_provider: Some("bilibili".to_string()),
         source_config: Some(serde_json::json!({})),
         provider_instance_name: None,
@@ -852,7 +899,6 @@ fn test_pagination_page_positive_passes_through() {
     assert_eq!(crate::http::validation::validate_page(Some(5)), 5);
     assert_eq!(crate::http::validation::validate_page(Some(100)), 100);
 }
-
 
 #[test]
 fn test_members_to_proto_pattern_multiple_roles() {

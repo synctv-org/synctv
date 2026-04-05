@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS rooms (
 );
 
 -- Create indexes
+-- Partial unique index: a creator cannot own two active rooms with the same name.
+-- Different creators may reuse the same display name. Soft-deleted room names
+-- can be reused by the same creator.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rooms_created_by_name ON rooms(created_by, name) WHERE deleted_at IS NULL;
 CREATE INDEX idx_rooms_created_by ON rooms(created_by);
 CREATE INDEX idx_rooms_status ON rooms(status) WHERE deleted_at IS NULL;
 CREATE INDEX idx_rooms_is_banned ON rooms(is_banned) WHERE is_banned = TRUE;  -- Quick lookup of banned rooms
@@ -44,9 +48,8 @@ ALTER TABLE rooms ADD CONSTRAINT rooms_status_check
 -- Comments
 COMMENT ON TABLE rooms IS 'Video watching rooms - all settings stored in room_settings table';
 COMMENT ON COLUMN rooms.id IS '12-character base62 ID';
+COMMENT ON COLUMN rooms.name IS 'Room display name, unique per creator among active (non-deleted) rooms';
 COMMENT ON COLUMN rooms.description IS 'Room description, max 500 characters';
 COMMENT ON COLUMN rooms.status IS 'Room lifecycle status: 1=active, 2=pending, 3=closed';
 COMMENT ON COLUMN rooms.is_banned IS 'Ban flag set by global admin. Room retains its status when banned/unbanned.';
 COMMENT ON COLUMN rooms.version IS 'Monotonically increasing integer for optimistic locking. Incremented on each UPDATE.';
-
-

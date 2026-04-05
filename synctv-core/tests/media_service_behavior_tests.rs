@@ -166,17 +166,15 @@ fn test_edit_media_request_name_only() {
     let request = EditMediaRequest {
         media_id: MediaId::new(),
         name: Some("New Name".to_string()),
-        position: None,
     };
-    assert!(request.position.is_none());
+    assert_eq!(request.name.as_deref(), Some("New Name"));
 }
 
 #[test]
-fn test_edit_media_request_position_only() {
+fn test_edit_media_request_allows_name_to_be_absent() {
     let request = EditMediaRequest {
         media_id: MediaId::new(),
         name: None,
-        position: Some(42),
     };
     assert!(request.name.is_none());
 }

@@ -100,14 +100,13 @@ pub(crate) async fn list_backends(
 ) -> Result<Json<ProviderBackendsResponseDoc>, super::AppError> {
     let instances = state
         .provider_instance_manager
-        .get_all_instances()
+        .find_instances_by_provider(&provider_type)
         .await
         .map_err(|e| {
             tracing::error!(provider_type = %provider_type, error = %e, "Failed to list provider backends");
             provider_registry_unavailable_error("list_backends", &e)
         })?
         .into_iter()
-        .filter(|i| i.enabled && i.providers.iter().any(|p| p == &provider_type))
         .map(|i| i.name)
         .collect::<Vec<_>>();
 

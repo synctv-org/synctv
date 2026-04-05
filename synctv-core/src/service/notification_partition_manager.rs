@@ -311,5 +311,4 @@ mod tests {
         assert_eq!(health.health_status, "warning");
         assert_eq!(health.missing_partitions.len(), 1);
     }
-
 }

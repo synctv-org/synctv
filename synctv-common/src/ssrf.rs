@@ -496,5 +496,4 @@ mod tests {
         // HTTP should still be allowed
         assert!(acl.is_scheme_allowed("http").is_allowed());
     }
-
 }

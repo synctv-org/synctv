@@ -24,6 +24,9 @@ pub struct RoomRepository {
     pool: PgPool,
 }
 
+const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
+    "EXISTS (SELECT 1 FROM users u WHERE u.id = r.created_by AND u.deleted_at IS NULL AND u.status = 1)";
+
 impl RoomRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -31,29 +34,19 @@ impl RoomRepository {
     }
 
     /// Create a new room
+    ///
+    /// Relies on the database UNIQUE constraint on `(created_by, name)` to
+    /// reject duplicate active room names for the same creator atomically (no
+    /// TOCTOU race condition).
     pub async fn create(&self, room: &Room) -> Result<Room> {
-        let created = sqlx::query_as::<_, Room>(
-            "INSERT INTO rooms (id, name, description, created_by, status, is_banned, created_at, updated_at, version, last_activity_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-             RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at"
-        )
-        .bind(room.id.as_str())
-        .bind(&room.name)
-        .bind(&room.description)
-        .bind(room.created_by.as_str())
-        .bind(room.status)
-        .bind(room.is_banned)
-        .bind(room.created_at)
-        .bind(room.updated_at)
-        .bind(room.version)
-        .bind(room.last_activity_at)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(created)
+        self.create_with_executor(room, &self.pool).await
     }
 
     /// Create a new room using a provided executor (pool or transaction)
+    ///
+    /// Relies on the database UNIQUE constraint on `(created_by, name)` to
+    /// reject duplicate active room names for the same creator atomically (no
+    /// TOCTOU race condition).
     pub async fn create_with_executor<'e, E>(&self, room: &Room, executor: E) -> Result<Room>
     where
         E: sqlx::PgExecutor<'e>,
@@ -74,7 +67,22 @@ impl RoomRepository {
         .bind(room.version)
         .bind(room.last_activity_at)
         .fetch_one(executor)
-        .await?;
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
+                let constraint = db_err.constraint().unwrap_or("");
+                if constraint.contains("idx_rooms_created_by_name")
+                    || constraint.contains("rooms_created_by_name")
+                {
+                    crate::Error::AlreadyExists(
+                        "You already have a room with this name".to_string(),
+                    )
+                } else {
+                    crate::Error::Database(e)
+                }
+            }
+            _ => crate::Error::Database(e),
+        })?;
 
         Ok(created)
     }
@@ -158,17 +166,12 @@ impl RoomRepository {
     }
 
     /// Hard delete room (used for cleanup of partially created rooms).
-    ///
-    /// This performs a real `DELETE` which triggers `ON DELETE CASCADE` on all
-    /// related tables (`room_settings`, `room_members`, playlists, `room_playback_state`,
-    /// etc.), ensuring no orphaned rows are left behind.
     pub async fn hard_delete(&self, room_id: &RoomId) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM rooms WHERE id = $1")
-            .bind(room_id.as_str())
-            .execute(&self.pool)
-            .await?;
-
-        Ok(result.rows_affected() > 0)
+        let mut tx = self.pool.begin().await?;
+        let deleted =
+            crate::service::room::hard_delete_room_and_cleanup_in_tx(&mut tx, room_id).await?;
+        tx.commit().await?;
+        Ok(deleted)
     }
 
     /// Build the shared WHERE clause conditions for room list queries.
@@ -273,6 +276,41 @@ impl RoomRepository {
             "SELECT r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
              FROM rooms r
              WHERE {list_where}
+             ORDER BY {order_by}
+             LIMIT $1 OFFSET $2"
+        );
+        let list_qb = sqlx::query_as::<_, Room>(&list_sql)
+            .bind(limit)
+            .bind(offset);
+        let rooms: Vec<Room> = Self::bind_filters(list_qb, query, &search_pattern)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok((rooms, count))
+    }
+
+    /// List only rooms whose creator is still active.
+    pub async fn list_accessible(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
+        let limit = query.pagination.limit() as i64;
+        let offset = query.pagination.offset() as i64;
+        let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
+        let wb = Self::build_room_list_conditions(query);
+
+        let (count_where, _) = wb.build(1);
+        let count_sql = format!(
+            "SELECT COUNT(*) as count FROM rooms r WHERE {count_where} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}"
+        );
+        let count: i64 =
+            Self::bind_filters_scalar(sqlx::query_scalar(&count_sql), query, &search_pattern)
+                .fetch_one(&self.pool)
+                .await?;
+
+        let (list_where, _) = wb.build(3);
+        let order_by = Self::build_order_by(query);
+        let list_sql = format!(
+            "SELECT r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
+             FROM rooms r
+             WHERE {list_where} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}
              ORDER BY {order_by}
              LIMIT $1 OFFSET $2"
         );
@@ -894,6 +932,82 @@ mod tests {
         assert_eq!(created.name, "Test Room");
         assert_eq!(created.created_by, owner.id);
         assert!(room_repo.exists(&created.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_room_duplicate_name_for_same_owner_returns_already_exists() {
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
+
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+
+        let owner = user_repo
+            .create(&UserFixture::new().with_username("room_dup_owner1").build())
+            .await
+            .unwrap();
+
+        let room1 = RoomFixture::new()
+            .with_name("Duplicate Room Name")
+            .with_owner(owner.id.clone())
+            .build();
+        room_repo.create(&room1).await.unwrap();
+
+        let room2 = RoomFixture::new()
+            .with_name("Duplicate Room Name")
+            .with_owner(owner.id.clone())
+            .build();
+        let result = room_repo.create(&room2).await;
+
+        assert!(matches!(
+            result,
+            Err(crate::Error::AlreadyExists(ref msg))
+                if msg == "You already have a room with this name"
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_room_duplicate_name_for_different_owner_succeeds() {
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
+
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+
+        let owner1 = user_repo
+            .create(
+                &UserFixture::new()
+                    .with_username("room_shared_owner1")
+                    .build(),
+            )
+            .await
+            .unwrap();
+        let owner2 = user_repo
+            .create(
+                &UserFixture::new()
+                    .with_username("room_shared_owner2")
+                    .build(),
+            )
+            .await
+            .unwrap();
+
+        let room1 = RoomFixture::new()
+            .with_name("Shared Room Name")
+            .with_owner(owner1.id.clone())
+            .build();
+        let room2 = RoomFixture::new()
+            .with_name("Shared Room Name")
+            .with_owner(owner2.id.clone())
+            .build();
+
+        room_repo.create(&room1).await.unwrap();
+        let created = room_repo.create(&room2).await.unwrap();
+        assert_eq!(created.name, "Shared Room Name");
+        assert_eq!(created.created_by, owner2.id);
     }
 
     /// Unit test: Room model methods

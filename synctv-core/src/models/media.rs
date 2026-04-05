@@ -68,6 +68,7 @@ pub struct MediaListQuery {
     pub search: Option<String>,
     pub source_provider: Option<String>,
     pub provider_instance_name: Option<String>,
+    pub availability: Option<bool>,
     #[serde(default)]
     pub sort_by: MediaListSortBy,
     #[serde(default)]
@@ -81,6 +82,7 @@ impl Default for MediaListQuery {
             search: None,
             source_provider: None,
             provider_instance_name: None,
+            availability: None,
             sort_by: MediaListSortBy::Position,
             sort_direction: SortDirection::Asc,
         }
@@ -141,7 +143,7 @@ pub struct Media {
     pub room_id: RoomId,
     pub creator_id: Option<UserId>,
     pub name: String,
-    pub position: i32,
+    pub position: f64,
     /// Provider type name (e.g., "bilibili", "alist", "emby", "`direct_url`")
     /// Stored as string for flexibility, not an enum
     pub source_provider: String,
@@ -169,7 +171,7 @@ pub struct FromProviderParams {
     pub source_config: JsonValue,
     pub provider_name: String,
     pub provider_instance_name: String,
-    pub position: i32,
+    pub position: f64,
 }
 
 impl Media {
@@ -197,7 +199,7 @@ impl Media {
         source_config: JsonValue,
         provider_name: &str,
         provider_instance_name: String,
-        position: i32,
+        position: f64,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -247,7 +249,7 @@ impl Media {
         playback_infos: std::collections::HashMap<String, PlaybackInfo>,
         default_mode: String,
         metadata: std::collections::HashMap<String, JsonValue>,
-        position: i32,
+        position: f64,
     ) -> Self {
         // Only store playback_infos, default_mode, and metadata in source_config
         // id, playlist_id, room_id, name, position are stored in Media fields
@@ -283,7 +285,7 @@ impl Media {
         name: String,
         mode_name: &str,
         playback_info: PlaybackInfo,
-        position: i32,
+        position: f64,
     ) -> Self {
         let mut playback_infos = std::collections::HashMap::new();
         playback_infos.insert(mode_name.to_string(), playback_info);
@@ -328,7 +330,7 @@ pub struct PlaybackResult {
     pub name: String,
 
     /// Position in playlist
-    pub position: i32,
+    pub position: f64,
 
     /// Playback mode `HashMap` (multiple `PlaybackInfo` objects)
     /// Provider can define arbitrary mode names, such as:
@@ -506,7 +508,7 @@ impl PlaybackResult {
         playlist_id: Option<PlaylistId>,
         room_id: RoomId,
         name: String,
-        position: i32,
+        position: f64,
     ) -> PlaybackResultBuilder {
         PlaybackResultBuilder {
             id: None,
@@ -540,7 +542,7 @@ pub struct PlaybackResultBuilder {
     playlist_id: Option<PlaylistId>,
     room_id: RoomId,
     name: String,
-    position: i32,
+    position: f64,
     /// Uses `IndexMap` to guarantee insertion-order determinism when falling
     /// back to the first mode as default (avoids `HashMap::keys().next()`
     /// non-determinism).
@@ -765,7 +767,7 @@ mod tests {
                 Some(playlist_id.clone()),
                 room_id.clone(),
                 "test".to_string(),
-                0,
+                0.0,
             )
             .add_mode(
                 "alpha".to_string(),
@@ -794,7 +796,7 @@ mod tests {
         let playlist_id = PlaylistId::from_string("pl1".to_string());
         let room_id = RoomId::from_string("r1".to_string());
 
-        let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0)
+        let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
             .add_mode(
                 "direct".to_string(),
                 PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),
@@ -816,7 +818,7 @@ mod tests {
         let room_id = RoomId::from_string("r1".to_string());
 
         let result =
-            PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0).build();
+            PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0).build();
         assert!(result.is_none());
     }
 
@@ -825,7 +827,7 @@ mod tests {
         let playlist_id = PlaylistId::from_string("pl1".to_string());
         let room_id = RoomId::from_string("r1".to_string());
 
-        let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0)
+        let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
             .add_mode(
                 "direct".to_string(),
                 PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),

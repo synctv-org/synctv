@@ -8,6 +8,83 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+use super::{pagination::PageParams, query::SortDirection};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderInstanceListSortBy {
+    Name,
+    Endpoint,
+    UpdatedAt,
+    #[default]
+    CreatedAt,
+}
+
+impl ProviderInstanceListSortBy {
+    #[must_use]
+    pub const fn as_sql(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Endpoint => "endpoint",
+            Self::UpdatedAt => "updated_at",
+            Self::CreatedAt => "created_at",
+        }
+    }
+}
+
+impl std::str::FromStr for ProviderInstanceListSortBy {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "name" => Ok(Self::Name),
+            "endpoint" => Ok(Self::Endpoint),
+            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
+            "created_at" | "createdat" => Ok(Self::CreatedAt),
+            other => Err(format!("Unknown provider instance list sort field: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for ProviderInstanceListSortBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Name => "name",
+            Self::Endpoint => "endpoint",
+            Self::UpdatedAt => "updated_at",
+            Self::CreatedAt => "created_at",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderInstanceListQuery {
+    pub pagination: PageParams,
+    pub provider_type: Option<String>,
+    pub search: Option<String>,
+    pub enabled: Option<bool>,
+    pub tls: Option<bool>,
+    #[serde(default)]
+    pub sort_by: ProviderInstanceListSortBy,
+    #[serde(default)]
+    pub sort_direction: SortDirection,
+}
+
+impl Default for ProviderInstanceListQuery {
+    fn default() -> Self {
+        Self {
+            pagination: PageParams::default(),
+            provider_type: None,
+            search: None,
+            enabled: None,
+            tls: None,
+            sort_by: ProviderInstanceListSortBy::CreatedAt,
+            sort_direction: SortDirection::Desc,
+        }
+    }
+}
+
 /// Media Provider Instance Configuration
 ///
 /// Represents a gRPC media provider instance that can be deployed in different regions

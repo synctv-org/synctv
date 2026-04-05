@@ -98,6 +98,22 @@ pub fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
     }
 }
 
+#[must_use]
+pub fn map_auth_authorization_error(err: &synctv_core::Error) -> tonic::Status {
+    match err {
+        synctv_core::Error::Authorization(message) => {
+            tonic::Status::permission_denied(message.clone())
+        }
+        synctv_core::Error::EmailNotVerified => tonic::Status::permission_denied(
+            "Email not verified. Please verify your email to continue.",
+        ),
+        other => {
+            tracing::error!(error = %other, "Unexpected authorization-classified auth error");
+            tonic::Status::permission_denied("You do not have permission to perform this action")
+        }
+    }
+}
+
 /// Map a `ProviderError` to an appropriate gRPC status code.
 ///
 /// Uses typed matching on the `ProviderError` enum instead of
@@ -110,10 +126,17 @@ pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> t
             tonic::Status::unavailable(msg)
         }
         ProviderError::UpstreamHttp { status, .. } => {
-            if (400..500).contains(&status) {
-                tonic::Status::failed_precondition(msg)
+            if status == 401 || status == 403 {
+                tonic::Status::unauthenticated("Provider authentication failed")
+            } else if status == 404 {
+                tonic::Status::not_found("Provider resource not found")
+            } else if status == 408 || status == 429 {
+                tonic::Status::unavailable("Upstream provider service is temporarily unavailable.")
+            } else if (400..500).contains(&status) {
+                tonic::Status::invalid_argument("Upstream provider rejected the request.")
             } else {
-                tonic::Status::unavailable(msg)
+                tracing::warn!(status, "Upstream provider unavailable");
+                tonic::Status::unavailable("Upstream provider service is temporarily unavailable.")
             }
         }
         ProviderError::ParseError(_)
@@ -1300,7 +1323,7 @@ pub async fn serve(mut grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> 
 mod tests {
     use super::{
         effective_grpc_request_timeout, extract_client_ip, grpc_service_registration_plan,
-        grpc_unary_request_timeout, set_registered_grpc_services_not_serving,
+        grpc_unary_request_timeout, map_provider_error, set_registered_grpc_services_not_serving,
         set_registered_grpc_services_serving, should_fail_user_notification_fanout,
         should_mark_cluster_service_serving, should_mark_email_service_serving,
         should_mark_livestream_relay_serving, should_mark_notification_service_serving,
@@ -1695,6 +1718,70 @@ mod tests {
             )
             .await,
             Ok(ServingStatus::NotServing),
+        );
+    }
+
+    #[test]
+    fn test_map_provider_error_sanitizes_upstream_http_url() {
+        let status = map_provider_error(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 503,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            status.message(),
+            "Upstream provider service is temporarily unavailable."
+        );
+    }
+
+    #[test]
+    fn test_map_provider_error_maps_upstream_http_400_to_invalid_argument() {
+        let status = map_provider_error(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 400,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "Upstream provider rejected the request.");
+    }
+
+    #[test]
+    fn test_map_provider_error_maps_upstream_http_404_to_not_found() {
+        let status = map_provider_error(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 404,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+
+        assert_eq!(status.code(), tonic::Code::NotFound);
+        assert_eq!(status.message(), "Provider resource not found");
+    }
+
+    #[test]
+    fn test_map_provider_error_maps_upstream_http_408_to_unavailable() {
+        let status = map_provider_error(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 408,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            status.message(),
+            "Upstream provider service is temporarily unavailable."
+        );
+    }
+
+    #[test]
+    fn test_map_provider_error_maps_upstream_http_429_to_unavailable() {
+        let status = map_provider_error(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 429,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            status.message(),
+            "Upstream provider service is temporarily unavailable."
         );
     }
 }

@@ -62,7 +62,7 @@ fn make_playlist(
         creator_id: None,
         name: name.to_string(),
         parent_id: parent_id.cloned(),
-        position,
+        position: f64::from(position),
         source_provider: None,
         source_config: None,
         provider_instance_name: None,

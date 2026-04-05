@@ -53,55 +53,27 @@ fn create_live_provider_router() -> Router<AppState> {
         .route("/streams", get(handle_room_streams))
 }
 
-fn find_stream_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a StreamError> {
-    let mut current = Some(error);
-    while let Some(err) = current {
-        if let Some(stream_error) = err.downcast_ref::<StreamError>() {
-            return Some(stream_error);
-        }
-        current = err.source();
-    }
-    None
-}
-
 fn map_stream_error(context: &str, error: &StreamError) -> AppError {
-    match error {
-        StreamError::NoPublisher(_)
-        | StreamError::StreamNotFound(_)
-        | StreamError::InvalidStreamKey(_) => AppError::not_found(format!("{context}: {error}")),
-        StreamError::PermissionDenied(_) | StreamError::AuthenticationFailed(_) => {
-            AppError::forbidden(format!("{context}: {error}"))
-        }
-        StreamError::ResourceExhausted(_) => {
-            AppError::too_many_requests(format!("{context}: {error}"))
-        }
-        StreamError::InvalidAddress(_)
-        | StreamError::ProtocolError(_)
-        | StreamError::HandshakeFailed(_)
-        | StreamError::InvalidState(_) => AppError::bad_request(format!("{context}: {error}")),
-        StreamError::RedisError(_)
-        | StreamError::RegistryError(_)
-        | StreamError::GrpcError(_)
-        | StreamError::ConnectionFailed(_)
-        | StreamError::StaleEpoch(_)
-        | StreamError::StreamHubError(_) => AppError::service_unavailable(),
-        StreamError::IoError(_)
-        | StreamError::Internal(_)
-        | StreamError::AlreadyPublishing(_)
-        | StreamError::PublisherExists(_) => {
-            tracing::error!(context, error = %error, "Livestream internal error");
-            AppError::internal_server_error("Live streaming request failed")
-        }
+    let api_error = crate::impls::map_livestream_stream_error(error);
+    if matches!(api_error, crate::impls::ApiError::Internal(_)) {
+        tracing::error!(context, error = %error, "Livestream internal error");
+        return AppError::internal_server_error("Live streaming request failed");
     }
+
+    map_api_error(api_error)
 }
 
 fn map_livestream_error(context: &str, error: &(dyn std::error::Error + 'static)) -> AppError {
-    if let Some(stream_error) = find_stream_error(error) {
+    if let Some(stream_error) = crate::impls::find_livestream_stream_error(error) {
         return map_stream_error(context, stream_error);
     }
 
     tracing::error!(context, error = %error, "Unexpected livestream error");
     AppError::internal_server_error("Live streaming request failed")
+}
+
+fn live_streaming_unavailable_http_error() -> AppError {
+    AppError::service_unavailable()
 }
 
 #[cfg_attr(
@@ -238,7 +210,7 @@ async fn execute_flv_stream(
     let infrastructure = state
         .client_api
         .live_infrastructure()
-        .ok_or_else(|| AppError::internal_server_error("Live streaming not configured"))?;
+        .ok_or_else(live_streaming_unavailable_http_error)?;
 
     let source_url = if provider_name == "live_proxy" {
         state
@@ -361,7 +333,7 @@ async fn execute_hls_playlist(
     let infrastructure = state
         .client_api
         .live_infrastructure()
-        .ok_or_else(|| AppError::internal_server_error("Live streaming not configured"))?;
+        .ok_or_else(live_streaming_unavailable_http_error)?;
 
     let segment_disguised_as_png = live_segments_disguised_as_png(state);
 
@@ -436,7 +408,7 @@ async fn execute_hls_segment(
     let infrastructure = state
         .client_api
         .live_infrastructure()
-        .ok_or_else(|| AppError::internal_server_error("Live streaming not configured"))?;
+        .ok_or_else(live_streaming_unavailable_http_error)?;
 
     let ts_data = HlsStreamingApi::get_segment(infrastructure, room_id, media_id, validated_name)
         .await
@@ -559,7 +531,10 @@ mod tests {
             ),
         );
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
-        assert!(err.message.contains("max concurrent streams reached"));
+        assert_eq!(
+            err.message,
+            "Live streaming capacity limit reached. Please try again later."
+        );
     }
 
     #[test]
@@ -569,6 +544,7 @@ mod tests {
             &StreamError::NoPublisher("room1/media1".to_string()),
         );
         assert_eq!(err.status, StatusCode::NOT_FOUND);
+        assert_eq!(err.message, "Live stream is not currently available");
     }
 
     #[test]
@@ -578,6 +554,10 @@ mod tests {
             &StreamError::PermissionDenied("not allowed".to_string()),
         );
         assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            err.message,
+            "You do not have permission to access this live stream"
+        );
     }
 
     #[test]
@@ -598,7 +578,10 @@ mod tests {
 
         let mapped = map_livestream_error("Failed to create FLV session", err.as_ref());
         assert_eq!(mapped.status, StatusCode::TOO_MANY_REQUESTS);
-        assert!(mapped.message.contains("Resource exhausted"));
+        assert_eq!(
+            mapped.message,
+            "Live streaming capacity limit reached. Please try again later."
+        );
     }
 
     #[test]
@@ -617,5 +600,11 @@ mod tests {
         );
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.message, "Live streaming request failed");
+    }
+
+    #[test]
+    fn live_streaming_unavailable_http_error_maps_to_503() {
+        let err = live_streaming_unavailable_http_error();
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 }

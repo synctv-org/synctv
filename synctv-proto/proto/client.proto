@@ -71,6 +71,7 @@ service RoomService {
     rpc CreatePlaylist(CreatePlaylistRequest) returns (CreatePlaylistResponse);
     rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse);
     rpc UpdatePlaylist(UpdatePlaylistRequest) returns (UpdatePlaylistResponse);
+    rpc MovePlaylist(MovePlaylistRequest) returns (MovePlaylistResponse);
     rpc DeletePlaylist(DeletePlaylistRequest) returns (DeletePlaylistResponse);
     rpc ListPlaylists(ListPlaylistsRequest) returns (ListPlaylistsResponse);
 
@@ -80,12 +81,11 @@ service RoomService {
     rpc DeleteEntries(DeleteEntriesRequest) returns (DeleteEntriesResponse);
     rpc EditMedia(EditMediaRequest) returns (EditMediaResponse);
     rpc ListPlaylistItems(ListPlaylistItemsRequest) returns (ListPlaylistItemsResponse); // List dynamic playlist items
-    rpc SwapMedia(SwapMediaRequest) returns (SwapMediaResponse);
+    rpc MoveMedia(MoveMediaRequest) returns (MoveMediaResponse);
     rpc ClearPlaylist(ClearPlaylistRequest) returns (ClearPlaylistResponse);
 
     // Batch Operations (room-scoped)
     rpc AddMediaBatch(AddMediaBatchRequest) returns (AddMediaBatchResponse);
-    rpc ReorderMediaBatch(ReorderMediaBatchRequest) returns (ReorderMediaBatchResponse);
 
     // Playback Control (room-scoped operations)
     // Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
@@ -176,11 +176,12 @@ message Media {
     string provider = 4; // bilibili, alist, emby, direct (also known as source_provider)
     string title = 5; // Also known as name
     bytes metadata = 6; // JSON metadata
-    int32 position = 7; // Position in playlist
+    double position = 7; // Order position in playlist
     int64 added_at = 8;
     string added_by = 9; // Also known as creator_id
     string provider_instance_name = 10; // e.g., "bilibili_main", "alist_company"
     bytes source_config = 11; // JSON source config (replaces url for flexibility)
+    ResourceAvailability availability = 12; // Availability derived from creator state
 }
 
 message Playlist {
@@ -188,11 +189,24 @@ message Playlist {
     string room_id = 2;
     string name = 3;
     string parent_id = 4; // Parent playlist ID for nested playlists (null for root)
-    int32 position = 5; // Position among sibling playlists
+    double position = 5; // Order position among sibling playlists
     bool is_dynamic = 6; // True if this is a dynamic playlist (provider-based)
     int32 item_count = 7; // Number of items in this playlist
     int64 created_at = 8;
     int64 updated_at = 9;
+    ResourceAvailability availability = 10; // Availability derived from creator state
+}
+
+enum ResourceAvailability {
+    RESOURCE_AVAILABILITY_UNSPECIFIED = 0;
+    RESOURCE_AVAILABILITY_AVAILABLE = 1;
+    RESOURCE_AVAILABILITY_CREATOR_INACTIVE = 2;
+}
+
+enum ResourceAvailabilityFilter {
+    RESOURCE_AVAILABILITY_FILTER_ALL = 0;
+    RESOURCE_AVAILABILITY_FILTER_AVAILABLE = 1;
+    RESOURCE_AVAILABILITY_FILTER_UNAVAILABLE = 2;
 }
 
 message PlaybackState {
@@ -482,10 +496,21 @@ message CreatePlaylistResponse {
 message UpdatePlaylistRequest {
     string playlist_id = 1;
     string name = 2; // Optional new name
-    int32 position = 3; // Optional new position
 }
 
 message UpdatePlaylistResponse {
+    Playlist playlist = 1;
+}
+
+message MovePlaylistRequest {
+    string playlist_id = 1;
+    oneof anchor {
+        string before_playlist_id = 2;
+        string after_playlist_id = 3;
+    }
+}
+
+message MovePlaylistResponse {
     Playlist playlist = 1;
 }
 
@@ -520,6 +545,7 @@ message ListPlaylistsRequest {
     optional bool dynamic_only = 7;
     PlaylistListSortBy sort_by = 8;
     SortDirection sort_direction = 9;
+    ResourceAvailabilityFilter availability = 10;
 }
 
 message ListPlaylistsResponse {
@@ -594,6 +620,7 @@ message ListPlaylistItemsRequest {
     string provider_instance_name = 7;
     MediaListSortBy sort_by = 8;
     SortDirection sort_direction = 9;
+    ResourceAvailabilityFilter availability = 10;
 }
 
 message ListPlaylistItemsResponse {
@@ -629,13 +656,16 @@ message PlaylistBrowsePathNode {
     bytes target = 3; // Provider-facing target payload for this segment; empty for static playlist nodes
 }
 
-message SwapMediaRequest {
-    string media_id1 = 1;
-    string media_id2 = 2;
+message MoveMediaRequest {
+    string media_id = 1;
+    oneof anchor {
+        string before_media_id = 2;
+        string after_media_id = 3;
+    }
 }
 
-message SwapMediaResponse {
-    bool success = 1;
+message MoveMediaResponse {
+    Media media = 1;
 }
 
 // Edit Media
@@ -660,17 +690,6 @@ message AddMediaBatchRequest {
 }
 message AddMediaBatchResponse {
     repeated AddMediaResponse results = 1;
-}
-
-message MediaReorderUpdate {
-    string media_id = 1;
-    int32 position = 2;
-}
-message ReorderMediaBatchRequest {
-    repeated MediaReorderUpdate updates = 1;
-}
-message ReorderMediaBatchResponse {
-    bool success = 1;
 }
 
 // Playback Control Messages
@@ -712,7 +731,7 @@ message PlaybackResult {
     string playlist_id = 2; // Playlist ID
     string room_id = 3; // Room ID
     string name = 4; // Media name
-    int32 position = 5; // Position in playlist
+    double position = 5; // Order position in playlist
 
     // Multiple playback modes (e.g., "direct", "proxied", "cdn1", "cdn2")
     // Provider can define arbitrary mode names

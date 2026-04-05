@@ -1,48 +1,14 @@
 //! Playlist operations: create, update, delete, list playlists
 
 use serde_json::Value as JsonValue;
-use std::cmp::Ordering;
 use synctv_core::models::{
-    PermissionBits, Playlist, PlaylistListSortBy as CorePlaylistListSortBy,
+    PermissionBits, PlaylistListSortBy as CorePlaylistListSortBy,
     SortDirection as CoreSortDirection, UserId,
 };
 
-use super::convert::playlist_to_proto;
+use super::convert::playlist_to_proto_with_availability;
 use super::ClientApiImpl;
 use crate::impls::ApiError;
-
-fn compare_playlists(
-    left: &Playlist,
-    right: &Playlist,
-    sort_by: CorePlaylistListSortBy,
-    sort_direction: CoreSortDirection,
-) -> Ordering {
-    let ordering = match sort_by {
-        CorePlaylistListSortBy::Name => left
-            .name
-            .to_ascii_lowercase()
-            .cmp(&right.name.to_ascii_lowercase())
-            .then_with(|| left.position.cmp(&right.position)),
-        CorePlaylistListSortBy::CreatedAt => left
-            .created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.position.cmp(&right.position)),
-        CorePlaylistListSortBy::UpdatedAt => left
-            .updated_at
-            .cmp(&right.updated_at)
-            .then_with(|| left.position.cmp(&right.position)),
-        CorePlaylistListSortBy::Position => left.position.cmp(&right.position).then_with(|| {
-            left.name
-                .to_ascii_lowercase()
-                .cmp(&right.name.to_ascii_lowercase())
-        }),
-    };
-
-    match sort_direction {
-        CoreSortDirection::Asc => ordering,
-        CoreSortDirection::Desc => ordering.reverse(),
-    }
-}
 
 impl ClientApiImpl {
     pub async fn create_playlist(
@@ -84,7 +50,6 @@ impl ClientApiImpl {
             room_id: rid.clone(),
             name: req.name,
             parent_id,
-            position: None,
             source_provider,
             source_config,
             provider_instance_name,
@@ -111,7 +76,7 @@ impl ClientApiImpl {
             .unwrap_or(0) as i32;
 
         Ok(crate::proto::client::CreatePlaylistResponse {
-            playlist: Some(playlist_to_proto(&playlist, item_count)),
+            playlist: Some(playlist_to_proto_with_availability(&playlist, item_count, true)),
         })
     }
 
@@ -139,16 +104,10 @@ impl ClientApiImpl {
         } else {
             Some(req.name)
         };
-        let position = if req.position == -1 {
-            None
-        } else {
-            Some(req.position)
-        };
 
         let service_req = synctv_core::service::playlist::SetPlaylistRequest {
             playlist_id,
             name,
-            position,
         };
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
@@ -172,7 +131,84 @@ impl ClientApiImpl {
             .unwrap_or(0) as i32;
 
         Ok(crate::proto::client::UpdatePlaylistResponse {
-            playlist: Some(playlist_to_proto(&playlist, item_count)),
+            playlist: Some(playlist_to_proto_with_availability(&playlist, item_count, true)),
+        })
+    }
+
+    pub async fn move_playlist(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        req: crate::proto::client::MovePlaylistRequest,
+    ) -> Result<crate::proto::client::MovePlaylistResponse, ApiError> {
+        crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
+
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
+
+        self.room_service
+            .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
+            .await
+            .map_err(Self::map_room_access_error)?;
+
+        let anchor = req
+            .anchor
+            .ok_or_else(|| {
+                ApiError::InvalidInput(
+                    "Exactly one of before_playlist_id or after_playlist_id must be set"
+                        .to_string(),
+                )
+            })?;
+
+        let (before_playlist_id, after_playlist_id) = match anchor {
+            crate::proto::client::move_playlist_request::Anchor::BeforePlaylistId(anchor_id) => {
+                crate::http::validation::validate_id(&anchor_id, "before_playlist_id").map_err(
+                    |e| ApiError::InvalidInput(format!("Invalid before_playlist_id: {e}")),
+                )?;
+                (
+                    Some(synctv_core::models::PlaylistId::from_string(anchor_id)),
+                    None,
+                )
+            }
+            crate::proto::client::move_playlist_request::Anchor::AfterPlaylistId(anchor_id) => {
+                crate::http::validation::validate_id(&anchor_id, "after_playlist_id").map_err(
+                    |e| ApiError::InvalidInput(format!("Invalid after_playlist_id: {e}")),
+                )?;
+                (
+                    None,
+                    Some(synctv_core::models::PlaylistId::from_string(anchor_id)),
+                )
+            }
+        };
+
+        let service_req = synctv_core::service::playlist::MovePlaylistRequest {
+            playlist_id: synctv_core::models::PlaylistId::from_string(req.playlist_id),
+            before_playlist_id,
+            after_playlist_id,
+        };
+        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
+
+        let playlist = self
+            .room_service
+            .playlist_service()
+            .move_playlist(rid.clone(), uid, service_req)
+            .await
+            .map_err(ApiError::from)?;
+
+        if let Some(cache_invalidation) = cache_invalidation {
+            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+        }
+
+        let item_count = self
+            .room_service
+            .media_service()
+            .count_playlist_media(&playlist.id)
+            .await
+            .unwrap_or(0) as i32;
+
+        Ok(crate::proto::client::MovePlaylistResponse {
+            playlist: Some(playlist_to_proto_with_availability(&playlist, item_count, true)),
         })
     }
 
@@ -226,8 +262,12 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
+        let playlist_availability = self
+            .room_service
+            .playlist_availability(&playlist)
+            .await
+            .map_err(ApiError::from)?;
 
-        // Count child folders and media files
         let child_folder_count = self
             .room_service
             .playlist_service()
@@ -243,7 +283,11 @@ impl ClientApiImpl {
             .unwrap_or(0) as i32;
 
         Ok(crate::proto::client::GetPlaylistResponse {
-            playlist: Some(playlist_to_proto(&playlist, media_count)),
+            playlist: Some(playlist_to_proto_with_availability(
+                &playlist,
+                media_count,
+                playlist_availability.is_available(),
+            )),
             child_folder_count,
             media_count,
         })
@@ -302,12 +346,8 @@ impl ClientApiImpl {
             _ => CoreSortDirection::Asc,
         };
 
-        let mut playlists = if req.parent_id.is_empty() {
-            self.room_service
-                .playlist_service()
-                .get_top_level_playlists(&rid)
-                .await
-                .map_err(ApiError::from)?
+        let parent_id = if req.parent_id.is_empty() {
+            None
         } else {
             let parent_id = synctv_core::models::PlaylistId::from_string(req.parent_id);
             let parent = self
@@ -322,43 +362,52 @@ impl ClientApiImpl {
                     "Parent playlist does not belong to this room".to_string(),
                 ));
             }
-            self.room_service
-                .playlist_service()
-                .get_children(&parent_id)
-                .await
-                .map_err(ApiError::from)?
+            Some(parent_id)
         };
-
-        playlists.retain(|playlist| {
-            if let Some(search) = &search {
-                if !playlist.name.to_ascii_lowercase().contains(search) {
-                    return false;
-                }
-            }
-            if let Some(source_provider) = source_provider.as_deref() {
-                if playlist.source_provider.as_deref() != Some(source_provider) {
-                    return false;
-                }
-            }
-            if let Some(provider_instance_name) = provider_instance_name.as_deref() {
-                if playlist.provider_instance_name.as_deref() != Some(provider_instance_name) {
-                    return false;
-                }
-            }
-            if let Some(dynamic_only) = req.dynamic_only {
-                if playlist.is_dynamic() != dynamic_only {
-                    return false;
-                }
-            }
-            true
-        });
-        playlists.sort_by(|left, right| compare_playlists(left, right, sort_by, sort_direction));
-        let total = playlists.len() as i32;
+        let query = synctv_core::models::PlaylistListQuery {
+            pagination: synctv_core::models::PageParams::new(
+                Some(page as u32),
+                Some(page_size as u32),
+            ),
+            search,
+            source_provider,
+            provider_instance_name,
+            dynamic_only: req.dynamic_only,
+            availability: match crate::proto::client::ResourceAvailabilityFilter::try_from(
+                req.availability,
+            )
+            .unwrap_or(crate::proto::client::ResourceAvailabilityFilter::All)
+            {
+                crate::proto::client::ResourceAvailabilityFilter::All => None,
+                crate::proto::client::ResourceAvailabilityFilter::Available => Some(true),
+                crate::proto::client::ResourceAvailabilityFilter::Unavailable => Some(false),
+            },
+            sort_by,
+            sort_direction,
+        };
+        let total = self
+            .room_service
+            .count_client_playlists(&rid, parent_id.as_ref(), &query)
+            .await
+            .map_err(ApiError::from)? as i32;
         let offset = (page - 1) * page_size;
-        let playlists: Vec<Playlist> = playlists.into_iter().skip(offset).take(page_size).collect();
+        let playlists = self
+            .room_service
+            .list_client_playlists(
+                &rid,
+                parent_id.as_ref(),
+                &query,
+                page_size as i64,
+                offset as i64,
+            )
+            .await
+            .map_err(ApiError::from)?;
 
         // Batch-fetch media counts to avoid N+1 queries.
-        let playlist_ids: Vec<&str> = playlists.iter().map(|pl| pl.id.as_str()).collect();
+        let playlist_ids: Vec<&str> = playlists
+            .iter()
+            .map(|entry| entry.playlist.id.as_str())
+            .collect();
         let counts = self
             .room_service
             .media_service()
@@ -368,9 +417,16 @@ impl ClientApiImpl {
 
         let proto_playlists: Vec<_> = playlists
             .iter()
-            .map(|pl| {
-                let item_count = counts.get(pl.id.as_str()).copied().unwrap_or(0) as i32;
-                playlist_to_proto(pl, item_count)
+            .map(|entry| {
+                let item_count = counts
+                    .get(entry.playlist.id.as_str())
+                    .copied()
+                    .unwrap_or(0) as i32;
+                playlist_to_proto_with_availability(
+                    &entry.playlist,
+                    item_count,
+                    entry.is_available,
+                )
             })
             .collect();
 

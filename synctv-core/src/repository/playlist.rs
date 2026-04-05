@@ -2,11 +2,19 @@
 //!
 //! Design reference: /Volumes/workspace/rust/design/04-数据库设计.md §2.4.1
 
+use super::query_builder::escape_ilike;
 use crate::{
-    models::{Playlist, PlaylistId, RoomId},
+    models::{Playlist, PlaylistId, PlaylistListQuery, RoomId, UserStatus},
     Result,
 };
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgPool, Row};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone)]
+pub struct PlaylistListItem {
+    pub playlist: Playlist,
+    pub is_available: bool,
+}
 
 /// Playlist repository
 #[derive(Clone)]
@@ -18,6 +26,139 @@ impl PlaylistRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    fn build_playlist_list_order_by(query: &PlaylistListQuery) -> String {
+        let direction = query.sort_direction.as_sql();
+        match query.sort_by {
+            crate::models::PlaylistListSortBy::Name => {
+                format!("p.name {direction}, p.position {direction}, p.id {direction}")
+            }
+            crate::models::PlaylistListSortBy::CreatedAt => {
+                format!("p.created_at {direction}, p.position {direction}, p.id {direction}")
+            }
+            crate::models::PlaylistListSortBy::UpdatedAt => {
+                format!("p.updated_at {direction}, p.position {direction}, p.id {direction}")
+            }
+            crate::models::PlaylistListSortBy::Position => {
+                format!("p.position {direction}, p.name {direction}, p.id {direction}")
+            }
+        }
+    }
+
+    fn push_playlist_scope_filters(
+        builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+        query: &PlaylistListQuery,
+    ) {
+        const ACTIVE_STATUS_SQL: i16 = UserStatus::Active as i16;
+
+        builder.push(" FROM playlists p LEFT JOIN users u ON p.creator_id = u.id AND u.deleted_at IS NULL WHERE p.room_id = ");
+        builder.push_bind(room_id.as_str().to_owned());
+        match parent_id {
+            Some(parent_id) => {
+                builder.push(" AND p.parent_id = ");
+                builder.push_bind(parent_id.as_str().to_owned());
+            }
+            None => {
+                builder.push(" AND p.parent_id IS NULL");
+            }
+        }
+
+        if let Some(search) = &query.search {
+            let pattern = escape_ilike(search);
+            builder.push(" AND p.name ILIKE ");
+            builder.push_bind(pattern);
+            builder.push(" ESCAPE '\\'");
+        }
+        if let Some(source_provider) = &query.source_provider {
+            builder.push(" AND p.source_provider = ");
+            builder.push_bind(source_provider.clone());
+        }
+        if let Some(provider_instance_name) = &query.provider_instance_name {
+            builder.push(" AND p.provider_instance_name = ");
+            builder.push_bind(provider_instance_name.clone());
+        }
+        if let Some(dynamic_only) = query.dynamic_only {
+            if dynamic_only {
+                builder.push(" AND p.source_provider IS NOT NULL");
+            } else {
+                builder.push(" AND p.source_provider IS NULL");
+            }
+        }
+        match query.availability {
+            Some(true) => {
+                builder.push(" AND (p.creator_id IS NULL OR (u.id IS NOT NULL AND u.status = ");
+                builder.push_bind(ACTIVE_STATUS_SQL);
+                builder.push("))");
+            }
+            Some(false) => {
+                builder.push(" AND p.creator_id IS NOT NULL AND (u.id IS NULL OR u.status <> ");
+                builder.push_bind(ACTIVE_STATUS_SQL);
+                builder.push(")");
+            }
+            None => {}
+        }
+    }
+
+    pub async fn count_filtered_by_parent(
+        &self,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+        query: &PlaylistListQuery,
+    ) -> Result<i64> {
+        let mut builder =
+            sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*)");
+        Self::push_playlist_scope_filters(&mut builder, room_id, parent_id, query);
+        builder.build_query_scalar().fetch_one(&self.pool).await.map_err(Into::into)
+    }
+
+    pub async fn list_filtered_by_parent(
+        &self,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+        query: &PlaylistListQuery,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<PlaylistListItem>> {
+        const ACTIVE_STATUS_SQL: i16 = UserStatus::Active as i16;
+
+        let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT p.id, p.room_id, p.creator_id, p.name, p.parent_id, p.position,
+                    p.source_provider, p.source_config, p.provider_instance_name,
+                    p.created_at, p.updated_at, p.version,
+                    CASE
+                      WHEN p.creator_id IS NULL THEN TRUE
+                      WHEN u.id IS NOT NULL AND u.status = ",
+        );
+        builder.push_bind(ACTIVE_STATUS_SQL);
+        builder.push(
+            " THEN TRUE
+                      ELSE FALSE
+                    END AS is_available",
+        );
+        Self::push_playlist_scope_filters(&mut builder, room_id, parent_id, query);
+        let order_by = Self::build_playlist_list_order_by(query);
+        builder.push(format!(" ORDER BY {order_by} LIMIT "));
+        builder.push_bind(limit);
+        builder.push(" OFFSET ");
+        builder.push_bind(offset);
+
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(PlaylistListItem {
+                    playlist: Playlist::from_row(&row)?,
+                    is_available: row.try_get("is_available")?,
+                })
+            })
+            .collect()
     }
 
     /// Get playlist by ID
@@ -265,171 +406,160 @@ impl PlaylistRepository {
             .collect()
     }
 
-    /// Create a new playlist
-    ///
-    /// If `playlist.position` is negative, the position is computed within a
-    /// transaction using a `PostgreSQL` advisory lock to prevent concurrent inserts
-    /// from computing the same position. Pass a non-negative position to use
-    /// an explicit value (e.g., when the caller already holds a lock).
-    ///
-    /// `SELECT MAX(position) FOR UPDATE` cannot protect empty tables because
-    /// there are no rows to lock when the table is empty. Two concurrent inserts
-    /// can both see `MAX = NULL` and both compute `position = 0`, producing a
-    /// UNIQUE constraint violation. An advisory lock on (`room_id`, `parent_id`)
-    /// serializes position computation regardless of whether rows exist.
-    pub async fn create(&self, playlist: &Playlist) -> Result<Playlist> {
-        if playlist.position < 0 {
-            // Use a transaction with a transaction-scoped PostgreSQL advisory lock
-            // to serialize position computation across concurrent inserts, including
-            // when the table is empty (where FOR UPDATE cannot lock any rows).
-            let mut tx = self.pool.begin().await?;
+    const ORDER_STEP: f64 = 1024.0;
+    const MIN_ORDER_GAP: f64 = 1e-9;
 
-            let parent_id_str = playlist
-                .parent_id
-                .as_ref()
-                .map(super::super::models::id::PlaylistId::as_str);
+    fn scope_lock_key(room_id: &RoomId, parent_id: Option<&PlaylistId>) -> i64 {
+        use std::hash::{Hash, Hasher};
 
-            // Derive a stable 64-bit advisory lock key from (room_id, parent_id).
-            // We use a deterministic combination that minimizes collision probability
-            // by spreading the hash values across the 64-bit space.
-            //
-            // Task #56: Changed from simple hash to structured combination to reduce
-            // collision risk. Old implementation could have collisions with different
-            // (room_id, parent_id) pairs hashing to the same 64-bit value.
-            let lock_key: i64 = {
-                use std::hash::{Hash, Hasher};
+        let room_hash = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            room_id.as_str().hash(&mut h);
+            h.finish()
+        };
+        let parent_hash = parent_id.map_or(0, |pid| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            pid.as_str().hash(&mut h);
+            h.finish()
+        });
+        let room_bits = (room_hash & 0x7FFFFFFF) as i64;
+        let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
+        (room_bits << 31) | parent_bits
+    }
 
-                // Hash room_id to get first 32 bits
-                let room_hash = {
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    playlist.room_id.as_str().hash(&mut h);
-                    h.finish()
-                };
+    async fn lock_scope_with_tx(
+        &self,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<()> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(Self::scope_lock_key(room_id, parent_id))
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
 
-                // Hash parent_id to get second 32 bits
-                let parent_hash = parent_id_str.map_or(0, |pid| {
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    pid.hash(&mut h);
-                    h.finish()
-                });
+    async fn get_scope_previous_position_with_tx(
+        &self,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+        exclude_playlist_id: &PlaylistId,
+        anchor_position: f64,
+        anchor_playlist_id: &PlaylistId,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Option<f64>> {
+        sqlx::query_scalar(
+            r"
+            SELECT position
+            FROM playlists
+            WHERE room_id = $1
+              AND parent_id IS NOT DISTINCT FROM $2
+              AND id <> $3
+              AND (
+                    position < $4
+                 OR (position = $4 AND id < $5)
+              )
+            ORDER BY position DESC, id DESC
+            LIMIT 1
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(parent_id.map(PlaylistId::as_str))
+        .bind(exclude_playlist_id.as_str())
+        .bind(anchor_position)
+        .bind(anchor_playlist_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(Into::into)
+    }
 
-                // Combine using upper 32 bits for room and lower 32 bits for parent
-                // This significantly reduces collision probability compared to hashing
-                // both together, as collisions now require specific bit patterns in
-                // both the upper and lower halves.
-                //
-                // Use the lower 32 bits of each hash to avoid overflow issues
-                let room_bits = (room_hash & 0x7FFFFFFF) as i64; // 31 bits, positive
-                let parent_bits = (parent_hash & 0x7FFFFFFF) as i64; // 31 bits, positive
+    async fn get_scope_next_position_with_tx(
+        &self,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+        exclude_playlist_id: &PlaylistId,
+        anchor_position: f64,
+        anchor_playlist_id: &PlaylistId,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Option<f64>> {
+        sqlx::query_scalar(
+            r"
+            SELECT position
+            FROM playlists
+            WHERE room_id = $1
+              AND parent_id IS NOT DISTINCT FROM $2
+              AND id <> $3
+              AND (
+                    position > $4
+                 OR (position = $4 AND id > $5)
+              )
+            ORDER BY position ASC, id ASC
+            LIMIT 1
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(parent_id.map(PlaylistId::as_str))
+        .bind(exclude_playlist_id.as_str())
+        .bind(anchor_position)
+        .bind(anchor_playlist_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(Into::into)
+    }
 
-                // Combine: room in upper 32 bits, parent in lower 32 bits
-                // This gives us 62 useful bits (31+31), staying within i64 range
-                (room_bits << 31) | parent_bits
-            };
+    async fn rebalance_scope_with_tx(
+        &self,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<()> {
+        let rows = sqlx::query(
+            r"
+            SELECT id
+            FROM playlists
+            WHERE room_id = $1
+              AND parent_id IS NOT DISTINCT FROM $2
+            ORDER BY position ASC, id ASC
+            FOR UPDATE
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(parent_id.map(PlaylistId::as_str))
+        .fetch_all(&mut **tx)
+        .await?;
 
-            // pg_advisory_xact_lock acquires a session-exclusive advisory lock that
-            // is automatically released when the transaction commits or rolls back.
-            // It blocks until the lock is available, serialising concurrent inserts
-            // for the same (room_id, parent_id) pair.
-            sqlx::query("SELECT pg_advisory_xact_lock($1)")
-                .bind(lock_key)
-                .execute(&mut *tx)
+        for (index, row) in rows.into_iter().enumerate() {
+            let playlist_id: String = row.try_get("id")?;
+            let position = Self::ORDER_STEP * ((index + 1) as f64);
+            sqlx::query("UPDATE playlists SET position = $2, version = version + 1 WHERE id = $1")
+                .bind(playlist_id)
+                .bind(position)
+                .execute(&mut **tx)
                 .await?;
-
-            let max_pos: Option<i32> = sqlx::query_scalar(
-                r"
-                SELECT MAX(position)
-                FROM playlists
-                WHERE room_id = $1
-                  AND parent_id IS NOT DISTINCT FROM $2
-                ",
-            )
-            .bind(playlist.room_id.as_str())
-            .bind(parent_id_str)
-            .fetch_one(&mut *tx)
-            .await?;
-
-            let next_position = max_pos.unwrap_or(-1) + 1;
-
-            let source_provider_str = playlist.source_provider.as_deref();
-            let row = sqlx::query(
-                r"
-                INSERT INTO playlists (id, room_id, creator_id, name, parent_id, position,
-                                       source_provider, source_config, provider_instance_name)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                RETURNING id, room_id, creator_id, name, parent_id, position,
-                          source_provider, source_config, provider_instance_name,
-                          created_at, updated_at, version
-                ",
-            )
-            .bind(playlist.id.as_str())
-            .bind(playlist.room_id.as_str())
-            .bind(
-                playlist
-                    .creator_id
-                    .as_ref()
-                    .map(super::super::models::id::UserId::as_str),
-            )
-            .bind(&playlist.name)
-            .bind(parent_id_str)
-            .bind(next_position)
-            .bind(source_provider_str)
-            .bind(&playlist.source_config)
-            .bind(&playlist.provider_instance_name)
-            .fetch_one(&mut *tx)
-            .await?;
-
-            let result = Playlist::from_row(&row)?;
-            tx.commit().await?;
-            Ok(result)
-        } else {
-            // Explicit position provided by caller
-            let source_provider_str = playlist.source_provider.as_deref();
-            let parent_id_str = playlist
-                .parent_id
-                .as_ref()
-                .map(super::super::models::id::PlaylistId::as_str);
-            let row = sqlx::query(
-                r"
-                INSERT INTO playlists (id, room_id, creator_id, name, parent_id, position,
-                                       source_provider, source_config, provider_instance_name)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                RETURNING id, room_id, creator_id, name, parent_id, position,
-                          source_provider, source_config, provider_instance_name,
-                          created_at, updated_at, version
-                ",
-            )
-            .bind(playlist.id.as_str())
-            .bind(playlist.room_id.as_str())
-            .bind(
-                playlist
-                    .creator_id
-                    .as_ref()
-                    .map(super::super::models::id::UserId::as_str),
-            )
-            .bind(&playlist.name)
-            .bind(parent_id_str)
-            .bind(playlist.position)
-            .bind(source_provider_str)
-            .bind(&playlist.source_config)
-            .bind(&playlist.provider_instance_name)
-            .fetch_one(&self.pool)
-            .await?;
-
-            Ok(Playlist::from_row(&row)?)
         }
+
+        Ok(())
+    }
+
+    fn midpoint(previous: f64, next: f64) -> Option<f64> {
+        let gap = next - previous;
+        if !gap.is_finite() || gap <= Self::MIN_ORDER_GAP {
+            return None;
+        }
+        let midpoint = previous + gap / 2.0;
+        if !midpoint.is_finite() || midpoint <= previous || midpoint >= next {
+            return None;
+        }
+        Some(midpoint)
+    }
+
+    /// Create a new playlist.
+    pub async fn create(&self, playlist: &Playlist) -> Result<Playlist> {
+        self.create_with_executor(playlist, &self.pool).await
     }
 
     /// Create a playlist using a provided executor (pool or transaction).
-    ///
-    /// **Important:** When `playlist.position` is negative (auto-position), the
-    /// caller MUST pass a transaction as the executor and should call
-    /// [`get_next_position_for_update`] first to lock the relevant rows. This
-    /// method will return an error if auto-position is requested, because the
-    /// inline subquery cannot acquire a `FOR UPDATE` lock, leading to duplicate
-    /// positions under concurrent inserts.
-    ///
-    /// Pass a non-negative position to use an explicit value.
     pub async fn create_with_executor<'e, E>(
         &self,
         playlist: &Playlist,
@@ -438,18 +568,6 @@ impl PlaylistRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        if playlist.position < 0 {
-            // Auto-position without a FOR UPDATE lock is unsafe under concurrency.
-            // Callers must use a transaction with get_next_position_for_update()
-            // and pass an explicit (non-negative) position. The self-contained
-            // `create()` method handles this correctly with its own transaction.
-            return Err(crate::Error::InvalidInput(
-                "auto-position (negative position) requires using create() or \
-                 calling get_next_position_for_update() in a transaction first"
-                    .to_string(),
-            ));
-        }
-
         let source_provider_str = playlist.source_provider.as_deref();
         let parent_id_str = playlist
             .parent_id
@@ -486,60 +604,16 @@ impl PlaylistRepository {
         Ok(Playlist::from_row(&row)?)
     }
 
-    /// Get next available position in a parent, using an advisory lock to
-    /// serialize concurrent position computation.
-    ///
-    /// Must be called within a transaction. The advisory lock is transaction-scoped
-    /// (`pg_advisory_xact_lock`) and is automatically released when the transaction
-    /// commits or rolls back.
-    ///
-    /// Unlike `SELECT MAX(position) FOR UPDATE`, this correctly handles empty
-    /// tables — `FOR UPDATE` on an aggregate cannot lock any rows when none exist,
-    /// allowing two concurrent inserts to both compute `position = 0`.
-    pub async fn get_next_position_for_update<'e>(
+    /// Get the next append position within a scope.
+    pub async fn get_next_append_position_with_tx<'e>(
         &self,
         room_id: &RoomId,
         parent_id: Option<&PlaylistId>,
         tx: &mut sqlx::Transaction<'e, sqlx::Postgres>,
-    ) -> Result<i32> {
-        let parent_id_str = parent_id.map(super::super::models::id::PlaylistId::as_str);
+    ) -> Result<f64> {
+        self.lock_scope_with_tx(room_id, parent_id, tx).await?;
 
-        // Acquire a transaction-scoped advisory lock on (room_id, parent_id) to
-        // serialize position computation. The lock is automatically released when
-        // the surrounding transaction commits or rolls back.
-        //
-        // IMPORTANT: This must use the SAME hash strategy as the create() method
-        // (lines 175-204) to ensure both methods acquire the SAME lock for the
-        // same (room_id, parent_id) pair. Different keys would defeat the lock.
-        let lock_key: i64 = {
-            use std::hash::{Hash, Hasher};
-
-            // Hash room_id to get first 32 bits
-            let room_hash = {
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                room_id.as_str().hash(&mut h);
-                h.finish()
-            };
-
-            // Hash parent_id to get second 32 bits
-            let parent_hash = parent_id_str.map_or(0, |pid| {
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                pid.hash(&mut h);
-                h.finish()
-            });
-
-            // Combine using upper 32 bits for room and lower 32 bits for parent
-            // This is IDENTICAL to the strategy in create() method.
-            let room_bits = (room_hash & 0x7FFFFFFF) as i64; // 31 bits, positive
-            let parent_bits = (parent_hash & 0x7FFFFFFF) as i64; // 31 bits, positive
-            (room_bits << 31) | parent_bits
-        };
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(lock_key)
-            .execute(&mut **tx)
-            .await?;
-
-        let max_pos: Option<i32> = sqlx::query_scalar(
+        let max_pos: Option<f64> = sqlx::query_scalar(
             r"
             SELECT MAX(position)
             FROM playlists
@@ -548,36 +622,14 @@ impl PlaylistRepository {
             ",
         )
         .bind(room_id.as_str())
-        .bind(parent_id_str)
+        .bind(parent_id.map(PlaylistId::as_str))
         .fetch_one(&mut **tx)
         .await?;
 
-        Ok(max_pos.unwrap_or(-1) + 1)
-    }
-
-    /// Get next available position in a parent (non-locking, for read-only use).
-    ///
-    /// **Warning:** This does NOT acquire a lock. For concurrent-safe position
-    /// computation, use [`get_next_position_for_update`] within a transaction.
-    pub async fn get_next_position(
-        &self,
-        room_id: &RoomId,
-        parent_id: Option<&PlaylistId>,
-    ) -> Result<i32> {
-        let max_pos: Option<i32> = sqlx::query_scalar(
-            r"
-            SELECT MAX(position)
-            FROM playlists
-            WHERE room_id = $1
-              AND parent_id IS NOT DISTINCT FROM $2
-            ",
-        )
-        .bind(room_id.as_str())
-        .bind(parent_id.map(super::super::models::id::PlaylistId::as_str))
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(max_pos.unwrap_or(-1) + 1)
+        match max_pos {
+            Some(position) if position.is_finite() => Ok(position + Self::ORDER_STEP),
+            _ => Ok(Self::ORDER_STEP),
+        }
     }
 
     /// Update playlist with optimistic locking.
@@ -619,14 +671,205 @@ impl PlaylistRepository {
         }
     }
 
-    /// Delete playlist (cascade to children and media)
-    pub async fn delete(&self, id: &PlaylistId) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM playlists WHERE id = $1")
-            .bind(id.as_str())
-            .execute(&self.pool)
+    pub async fn move_with_tx(
+        &self,
+        playlist_id: &PlaylistId,
+        before_playlist_id: Option<&PlaylistId>,
+        after_playlist_id: Option<&PlaylistId>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Playlist> {
+        let anchor_id = match (before_playlist_id, after_playlist_id) {
+            (Some(anchor_id), None) | (None, Some(anchor_id)) => anchor_id,
+            _ => {
+                return Err(crate::Error::InvalidInput(
+                    "Exactly one of before_playlist_id or after_playlist_id must be set"
+                        .to_string(),
+                ))
+            }
+        };
+
+        if playlist_id == anchor_id {
+            return Err(crate::Error::InvalidInput(
+                "Cannot move a playlist relative to itself".to_string(),
+            ));
+        }
+
+        let moved = sqlx::query(
+            r"
+            SELECT id, room_id, creator_id, name, parent_id, position,
+                   source_provider, source_config, provider_instance_name,
+                   created_at, updated_at, version
+            FROM playlists
+            WHERE id = $1
+            FOR UPDATE
+            ",
+        )
+        .bind(playlist_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|row| Playlist::from_row(&row))
+        .transpose()?
+        .ok_or_else(|| crate::Error::NotFound("Playlist not found".to_string()))?;
+
+        let anchor = sqlx::query(
+            r"
+            SELECT id, room_id, creator_id, name, parent_id, position,
+                   source_provider, source_config, provider_instance_name,
+                   created_at, updated_at, version
+            FROM playlists
+            WHERE id = $1
+            FOR UPDATE
+            ",
+        )
+        .bind(anchor_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|row| Playlist::from_row(&row))
+        .transpose()?
+        .ok_or_else(|| crate::Error::NotFound("Anchor playlist not found".to_string()))?;
+
+        if moved.room_id != anchor.room_id || moved.parent_id != anchor.parent_id {
+            return Err(crate::Error::InvalidInput(
+                "Playlist can only be moved relative to a sibling in the same parent scope"
+                    .to_string(),
+            ));
+        }
+
+        self.lock_scope_with_tx(&moved.room_id, moved.parent_id.as_ref(), tx)
             .await?;
 
-        Ok(result.rows_affected() > 0)
+        for _ in 0..2 {
+            let anchor_position: f64 = sqlx::query_scalar(
+                "SELECT position FROM playlists WHERE id = $1 FOR UPDATE",
+            )
+            .bind(anchor.id.as_str())
+            .fetch_one(&mut **tx)
+            .await?;
+
+            let new_position = if before_playlist_id.is_some() {
+                match self
+                    .get_scope_previous_position_with_tx(
+                        &moved.room_id,
+                        moved.parent_id.as_ref(),
+                        &moved.id,
+                        anchor_position,
+                        &anchor.id,
+                        tx,
+                    )
+                    .await?
+                {
+                    Some(previous) => Self::midpoint(previous, anchor_position),
+                    None => Some(anchor_position - Self::ORDER_STEP),
+                }
+            } else {
+                match self
+                    .get_scope_next_position_with_tx(
+                        &moved.room_id,
+                        moved.parent_id.as_ref(),
+                        &moved.id,
+                        anchor_position,
+                        &anchor.id,
+                        tx,
+                    )
+                    .await?
+                {
+                    Some(next) => Self::midpoint(anchor_position, next),
+                    None => Some(anchor_position + Self::ORDER_STEP),
+                }
+            };
+
+            if let Some(position) = new_position.filter(|position| position.is_finite()) {
+                let row = sqlx::query(
+                    r"
+                    UPDATE playlists
+                    SET position = $2, version = version + 1
+                    WHERE id = $1
+                    RETURNING id, room_id, creator_id, name, parent_id, position,
+                              source_provider, source_config, provider_instance_name,
+                              created_at, updated_at, version
+                    ",
+                )
+                .bind(moved.id.as_str())
+                .bind(position)
+                .fetch_one(&mut **tx)
+                .await?;
+
+                return Ok(Playlist::from_row(&row)?);
+            }
+
+            self.rebalance_scope_with_tx(&moved.room_id, moved.parent_id.as_ref(), tx)
+                .await?;
+        }
+
+        Err(crate::Error::Internal(
+            "Failed to compute a stable playlist order position".to_string(),
+        ))
+    }
+
+    /// Delete a playlist subtree and all media attached to that subtree.
+    ///
+    /// Playback-state `RESTRICT` foreign keys are intentionally preserved: if the
+    /// target playlist or any nested media is still referenced by current room
+    /// playback, the delete fails and the transaction rolls back.
+    pub async fn delete(&self, id: &PlaylistId) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+
+        let room_id: Option<String> =
+            sqlx::query_scalar("SELECT room_id FROM playlists WHERE id = $1")
+                .bind(id.as_str())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(room_id) = room_id else {
+            return Ok(false);
+        };
+
+        let rows = sqlx::query(
+            "WITH RECURSIVE playlist_tree AS (
+                SELECT id, 0 AS depth
+                FROM playlists
+                WHERE id = $1
+                UNION ALL
+                SELECT p.id, pt.depth + 1
+                FROM playlists p
+                JOIN playlist_tree pt ON p.parent_id = pt.id
+                WHERE p.room_id = $2
+            )
+            SELECT id, MAX(depth) AS depth
+            FROM playlist_tree
+            GROUP BY id
+            ORDER BY MAX(depth) DESC, id",
+        )
+        .bind(id.as_str())
+        .bind(&room_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut ids_by_depth = BTreeMap::<i32, Vec<String>>::new();
+        let mut playlist_ids = Vec::with_capacity(rows.len());
+        for row in rows {
+            let playlist_id = row.try_get::<String, _>("id")?;
+            let depth = row.try_get::<i32, _>("depth")?;
+            playlist_ids.push(playlist_id.clone());
+            ids_by_depth.entry(depth).or_default().push(playlist_id);
+        }
+
+        if !playlist_ids.is_empty() {
+            sqlx::query("DELETE FROM media WHERE room_id = $1 AND playlist_id = ANY($2)")
+                .bind(&room_id)
+                .bind(&playlist_ids)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        for (_depth, ids) in ids_by_depth.into_iter().rev() {
+            sqlx::query("DELETE FROM playlists WHERE id = ANY($1)")
+                .bind(&ids)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(true)
     }
 
     /// Delete playlists by IDs using a provided executor (for transaction support)
@@ -865,7 +1108,7 @@ mod tests {
         let created = playlist_repo.create(&playlist).await.unwrap();
 
         assert!(created.is_top_level());
-        assert_eq!(created.position, 0);
+        assert_eq!(created.position, 0.0);
 
         // Get by ID
         let fetched = playlist_repo.get_by_id(&created.id).await.unwrap();
@@ -1003,14 +1246,14 @@ mod tests {
         // Update playlist
         let mut updated = created.clone();
         updated.name = "Updated Name".to_string();
-        updated.position = 5;
+        updated.position = 5.0;
 
         let result = playlist_repo
             .update_with_version(&updated, created.version)
             .await
             .unwrap();
         assert_eq!(result.name, "Updated Name");
-        assert_eq!(result.position, 5);
+        assert_eq!(result.position, 5.0);
         assert!(result.version > created.version); // Version should increment
     }
 
@@ -1118,7 +1361,7 @@ mod tests {
         assert!(!deleted_again);
     }
 
-    /// Integration test: Delete cascades to children
+    /// Integration test: Delete removes descendant playlists too.
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_delete_cascades() {
@@ -1158,7 +1401,7 @@ mod tests {
             .build();
         let created_grandchild = playlist_repo.create(&grandchild).await.unwrap();
 
-        // Delete child (should cascade to grandchild)
+        // Delete child - the whole subtree should be removed.
         let deleted = playlist_repo.delete(&created_child.id).await.unwrap();
         assert!(deleted);
 
@@ -1170,10 +1413,10 @@ mod tests {
         assert!(fetched.is_none());
     }
 
-    /// Integration test: Get next position
+    /// Integration test: Append helper returns sparse floating positions.
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_get_next_position() {
+    async fn test_get_next_append_position_with_tx() {
         use crate::repository::room::RoomRepository;
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
@@ -1198,83 +1441,30 @@ mod tests {
         let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
-        // Initially no children, next position should be 0
+        let mut tx = pool.begin().await.unwrap();
         let next_pos = playlist_repo
-            .get_next_position(&room.id, Some(&created_root.id))
+            .get_next_append_position_with_tx(&room.id, Some(&created_root.id), &mut tx)
             .await
             .unwrap();
-        assert_eq!(next_pos, 0);
+        assert_eq!(next_pos, 1024.0);
 
         // Create children with explicit positions
         for i in 0..3 {
             let child = PlaylistFixture::new_child(created_root.id.clone())
                 .with_room_id(room.id.clone())
                 .with_name(&format!("Child {i}"))
-                .with_position(i)
+                .with_position((i + 1) * 1024)
                 .build();
-            playlist_repo.create(&child).await.unwrap();
+            playlist_repo.create_with_executor(&child, &mut *tx).await.unwrap();
         }
 
-        // Next position should be 3
+        // Next append position should continue the sparse sequence.
         let next_pos = playlist_repo
-            .get_next_position(&room.id, Some(&created_root.id))
+            .get_next_append_position_with_tx(&room.id, Some(&created_root.id), &mut tx)
             .await
             .unwrap();
-        assert_eq!(next_pos, 3);
-    }
-
-    /// Integration test: Auto-position on create
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_create_auto_position() {
-        use crate::repository::room::RoomRepository;
-        use crate::repository::user::UserRepository;
-        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
-
-        let (_postgres, pool) = create_test_pool().await;
-        let user_repo = UserRepository::new(pool.clone());
-        let room_repo = RoomRepository::new(pool.clone());
-        let playlist_repo = PlaylistRepository::new(pool.clone());
-
-        let owner = UserFixture::new()
-            .with_username("auto_position_owner")
-            .build();
-        let owner = user_repo.create(&owner).await.unwrap();
-
-        let room = RoomFixture::new()
-            .with_name("Auto Position Room")
-            .with_owner(owner.id.clone())
-            .build();
-        let room = room_repo.create(&room).await.unwrap();
-
-        // Create root
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
-        let created_root = playlist_repo.create(&root).await.unwrap();
-
-        // Create children with auto-position (negative position)
-        let child1 = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
-            .with_name("Auto 1")
-            .with_position(-1) // Negative triggers auto-position
-            .build();
-        let created1 = playlist_repo.create(&child1).await.unwrap();
-        assert_eq!(created1.position, 0);
-
-        let child2 = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
-            .with_name("Auto 2")
-            .with_position(-1)
-            .build();
-        let created2 = playlist_repo.create(&child2).await.unwrap();
-        assert_eq!(created2.position, 1);
-
-        let child3 = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
-            .with_name("Auto 3")
-            .with_position(-1)
-            .build();
-        let created3 = playlist_repo.create(&child3).await.unwrap();
-        assert_eq!(created3.position, 2);
+        assert_eq!(next_pos, 4096.0);
+        tx.commit().await.unwrap();
     }
 
     /// Integration test: Get children
@@ -1321,7 +1511,7 @@ mod tests {
 
         // Should be sorted by position
         for (i, child) in children.iter().enumerate() {
-            assert_eq!(child.position, i as i32);
+            assert_eq!(child.position, i as f64);
         }
     }
 
@@ -1582,10 +1772,10 @@ mod tests {
         assert_eq!(page2.len(), 6);
     }
 
-    /// Integration test: Create with executor (explicit position required)
+    /// Integration test: Create with executor preserves explicit sparse positions.
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_create_with_executor_requires_position() {
+    async fn test_create_with_executor_preserves_position() {
         use crate::repository::room::RoomRepository;
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
@@ -1608,26 +1798,16 @@ mod tests {
         let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
-        // Attempt to create with executor using auto-position should fail
-        let child_auto = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
-            .with_name("Auto Child")
-            .with_position(-1) // Auto-position
-            .build();
-
-        let result = playlist_repo.create_with_executor(&child_auto, &pool).await;
-        assert!(result.is_err());
-
-        // Create with explicit position should succeed
         let child_explicit = PlaylistFixture::new_child(created_root.id.clone())
             .with_room_id(room.id.clone())
             .with_name("Explicit Child")
-            .with_position(0) // Explicit position
+            .with_position(2048)
             .build();
 
         let result = playlist_repo
             .create_with_executor(&child_explicit, &pool)
             .await;
-        assert!(result.is_ok());
+        let created = result.expect("create with executor should succeed");
+        assert_eq!(created.position, 2048.0);
     }
 }

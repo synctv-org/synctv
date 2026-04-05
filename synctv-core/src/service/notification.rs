@@ -496,6 +496,18 @@ impl NotificationService {
         self.broadcast_to_room(room_id, event).await
     }
 
+    /// Notify that media order changed within a playlist scope.
+    pub async fn notify_playlist_reordered(
+        &self,
+        room_id: &RoomId,
+        media_ids: &[String],
+    ) -> Result<()> {
+        let event = RoomEvent::PlaylistReordered {
+            media_ids: media_ids.to_vec(),
+        };
+        self.broadcast_to_room(room_id, event).await
+    }
+
     /// Notify permission changed
     pub async fn notify_permission_changed(
         &self,

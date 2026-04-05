@@ -4519,29 +4519,37 @@ impl AdminApiImpl {
         req: crate::proto::client::MoveMediaRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::MoveMediaResponse, ApiError> {
-        crate::http::validation::validate_id(&req.media_id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
 
-        let anchor = req.anchor.ok_or_else(|| {
-            ApiError::InvalidInput(
-                "Exactly one of before_media_id or after_media_id must be set".to_string(),
-            )
-        })?;
-        let (before_media_id, after_media_id) = match anchor {
-            crate::proto::client::move_media_request::Anchor::BeforeMediaId(anchor_id) => {
+        for media_id in &req.media_ids {
+            crate::http::validation::validate_id(media_id, "media_ids")
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_ids: {e}")))?;
+        }
+        if let Some(ref playlist_id) = req.source_playlist_id {
+            crate::http::validation::validate_id(playlist_id, "source_playlist_id").map_err(
+                |e| ApiError::InvalidInput(format!("Invalid source_playlist_id: {e}")),
+            )?;
+        }
+        if let Some(ref playlist_id) = req.target_playlist_id {
+            crate::http::validation::validate_id(playlist_id, "target_playlist_id").map_err(
+                |e| ApiError::InvalidInput(format!("Invalid target_playlist_id: {e}")),
+            )?;
+        }
+        let (before_media_id, after_media_id) = match req.anchor {
+            Some(crate::proto::client::move_media_request::Anchor::BeforeMediaId(anchor_id)) => {
                 crate::http::validation::validate_id(&anchor_id, "before_media_id").map_err(
                     |e| ApiError::InvalidInput(format!("Invalid before_media_id: {e}")),
                 )?;
                 (Some(MediaId::from_string(anchor_id)), None)
             }
-            crate::proto::client::move_media_request::Anchor::AfterMediaId(anchor_id) => {
+            Some(crate::proto::client::move_media_request::Anchor::AfterMediaId(anchor_id)) => {
                 crate::http::validation::validate_id(&anchor_id, "after_media_id").map_err(
                     |e| ApiError::InvalidInput(format!("Invalid after_media_id: {e}")),
                 )?;
                 (None, Some(MediaId::from_string(anchor_id)))
             }
+            None => (None, None),
         };
 
         let cache_invalidation = reserve_cluster_event_publish(
@@ -4558,7 +4566,10 @@ impl AdminApiImpl {
                 rid.clone(),
                 admin_user_id.clone(),
                 synctv_core::service::media::MoveMediaRequest {
-                    media_id: MediaId::from_string(req.media_id),
+                    media_ids: req.media_ids.into_iter().map(MediaId::from_string).collect(),
+                    source_playlist_id: req.source_playlist_id.map(PlaylistId::from_string),
+                    target_playlist_id: req.target_playlist_id.map(PlaylistId::from_string),
+                    all_from_scope: req.all_from_scope,
                     before_media_id,
                     after_media_id,
                 },
@@ -4572,7 +4583,8 @@ impl AdminApiImpl {
         }
 
         Ok(crate::proto::client::MoveMediaResponse {
-            media: Some(media_to_proto(&media)),
+            moved_count: media.len() as i32,
+            media: media.iter().map(media_to_proto).collect(),
         })
     }
 
@@ -9766,7 +9778,10 @@ mod tests {
             .move_media(
                 room.id.as_str(),
                 crate::proto::client::MoveMediaRequest {
-                    media_id: media_b.id.as_str().to_string(),
+                    media_ids: vec![media_b.id.as_str().to_string()],
+                    source_playlist_id: None,
+                    target_playlist_id: None,
+                    all_from_scope: false,
                     anchor: Some(crate::proto::client::move_media_request::Anchor::BeforeMediaId(
                         media_a.id.as_str().to_string(),
                     )),

@@ -16,6 +16,7 @@ use crate::{
     Error, Result,
 };
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Maximum number of items allowed in a single batch operation
@@ -51,7 +52,10 @@ pub struct EditMediaRequest {
 
 #[derive(Debug, Clone)]
 pub struct MoveMediaRequest {
-    pub media_id: MediaId,
+    pub media_ids: Vec<MediaId>,
+    pub source_playlist_id: Option<PlaylistId>,
+    pub target_playlist_id: Option<PlaylistId>,
+    pub all_from_scope: bool,
     pub before_media_id: Option<MediaId>,
     pub after_media_id: Option<MediaId>,
 }
@@ -84,6 +88,17 @@ impl std::fmt::Debug for MediaService {
 }
 
 impl MediaService {
+    fn dedup_media_ids(media_ids: Vec<MediaId>) -> Vec<MediaId> {
+        let mut seen = std::collections::HashSet::new();
+        let mut deduped = Vec::with_capacity(media_ids.len());
+        for media_id in media_ids {
+            if seen.insert(media_id.clone()) {
+                deduped.push(media_id);
+            }
+        }
+        deduped
+    }
+
     /// Create a new media service
     #[must_use]
     pub const fn new(
@@ -1050,7 +1065,7 @@ impl MediaService {
         room_id: RoomId,
         user_id: UserId,
         request: MoveMediaRequest,
-    ) -> Result<Media> {
+    ) -> Result<Vec<Media>> {
         self.move_media_internal(room_id, user_id, request, false).await
     }
 
@@ -1059,7 +1074,7 @@ impl MediaService {
         room_id: RoomId,
         admin_user_id: UserId,
         request: MoveMediaRequest,
-    ) -> Result<Media> {
+    ) -> Result<Vec<Media>> {
         self.move_media_internal(room_id, admin_user_id, request, true)
             .await
     }
@@ -1070,7 +1085,7 @@ impl MediaService {
         user_id: UserId,
         request: MoveMediaRequest,
         bypass_room_permissions: bool,
-    ) -> Result<Media> {
+    ) -> Result<Vec<Media>> {
         if !bypass_room_permissions {
             self.permission_service
                 .check_permission_no_cache(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
@@ -1079,48 +1094,221 @@ impl MediaService {
 
         let has_before = request.before_media_id.is_some();
         let has_after = request.after_media_id.is_some();
-        if has_before == has_after {
+        if has_before && has_after {
             return Err(Error::InvalidInput(
-                "Exactly one of before_media_id or after_media_id must be set".to_string(),
+                "At most one of before_media_id or after_media_id may be set".to_string(),
             ));
         }
 
+        if request.all_from_scope && !request.media_ids.is_empty() {
+            return Err(Error::InvalidInput(
+                "media_ids cannot be provided when all_from_scope is true".to_string(),
+            ));
+        }
+
+        if !request.all_from_scope && request.source_playlist_id.is_some() {
+            return Err(Error::InvalidInput(
+                "source_playlist_id is only valid when all_from_scope is true".to_string(),
+            ));
+        }
+
+        let explicit_media_ids = Self::dedup_media_ids(request.media_ids);
+        if !request.all_from_scope && explicit_media_ids.is_empty() {
+            return Err(Error::InvalidInput(
+                "At least one media_id is required".to_string(),
+            ));
+        }
+
+        if !request.all_from_scope && explicit_media_ids.len() > MAX_BATCH_SIZE {
+            return Err(Error::InvalidInput(format!(
+                "Batch size exceeds maximum of {MAX_BATCH_SIZE}"
+            )));
+        }
+
         let mut tx = self.media_repo.pool().begin().await?;
+
+        if let Some(ref source_playlist_id) = request.source_playlist_id {
+            let playlists = self
+                .playlist_repo
+                .get_by_ids_with_executor(std::slice::from_ref(source_playlist_id), &mut *tx)
+                .await?;
+            let source_playlist = playlists
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::NotFound("Source playlist not found".to_string()))?;
+            if source_playlist.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Source playlist does not belong to this room".to_string(),
+                ));
+            }
+            if source_playlist.is_dynamic() {
+                return Err(Error::InvalidInput(
+                    "Source playlist must be static".to_string(),
+                ));
+            }
+        }
+
+        if let Some(ref target_playlist_id) = request.target_playlist_id {
+            let playlists = self
+                .playlist_repo
+                .get_by_ids_with_executor(std::slice::from_ref(target_playlist_id), &mut *tx)
+                .await?;
+            let target_playlist = playlists
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::NotFound("Target playlist not found".to_string()))?;
+            if target_playlist.room_id != room_id {
+                return Err(Error::Authorization(
+                    "Target playlist does not belong to this room".to_string(),
+                ));
+            }
+            if target_playlist.is_dynamic() {
+                return Err(Error::InvalidInput(
+                    "Target playlist must be static".to_string(),
+                ));
+            }
+        }
+
+        let original_media = if request.all_from_scope {
+            self.media_repo
+                .get_scope_with_executor(&room_id, request.source_playlist_id.as_ref(), &mut *tx)
+                .await?
+        } else {
+            let fetched = self
+                .media_repo
+                .get_by_ids_with_executor(&explicit_media_ids, &mut *tx)
+                .await?;
+            if fetched.len() != explicit_media_ids.len() {
+                return Err(Error::NotFound("Media not found".to_string()));
+            }
+            let mut fetched_map = HashMap::with_capacity(fetched.len());
+            for media in fetched {
+                fetched_map.insert(media.id.clone(), media);
+            }
+            explicit_media_ids
+                .iter()
+                .map(|media_id| {
+                    fetched_map
+                        .remove(media_id)
+                        .ok_or_else(|| Error::NotFound("Media not found".to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+
+        if original_media.iter().any(|media| media.room_id != room_id) {
+            return Err(Error::Authorization(
+                "Media does not belong to this room".to_string(),
+            ));
+        }
+
+        if request.all_from_scope
+            && original_media.is_empty()
+        {
+            tx.commit().await?;
+            return Ok(Vec::new());
+        }
+
+        let original_scope_by_id: HashMap<MediaId, Option<PlaylistId>> = original_media
+            .iter()
+            .map(|media| (media.id.clone(), media.playlist_id.clone()))
+            .collect();
+        let media_ids: Vec<MediaId> = original_media.iter().map(|media| media.id.clone()).collect();
+
         let moved = self
             .media_repo
-            .move_with_tx(
-                &request.media_id,
+            .move_batch_to_scope_with_tx(
+                &room_id,
+                &media_ids,
+                request.target_playlist_id.as_ref(),
                 request.before_media_id.as_ref(),
                 request.after_media_id.as_ref(),
                 &mut tx,
             )
             .await?;
 
-        if moved.room_id != room_id {
-            return Err(Error::Authorization(
-                "Media does not belong to this room".to_string(),
-            ));
-        }
-
         tx.commit().await?;
 
         tracing::info!(
             room_id = %room_id.as_str(),
-            media_id = %moved.id.as_str(),
-            position = moved.position,
+            moved_count = moved.len(),
             "Media moved"
         );
 
         if let Some(ref ns) = self.notification_service {
-            if let Err(e) = ns
-                .notify_media_updated(&room_id, moved.id.as_str(), &moved.name, moved.position)
-                .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    "Failed to broadcast media moved event"
-                );
+            let moved_within_same_scope = moved.iter().all(|media| {
+                original_scope_by_id
+                    .get(&media.id)
+                    .is_some_and(|original_scope| *original_scope == media.playlist_id)
+            });
+
+            if moved_within_same_scope {
+                if moved.len() == 1 {
+                    let media = &moved[0];
+                    if let Err(e) = ns
+                        .notify_media_updated(&room_id, media.id.as_str(), &media.name, media.position)
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            room_id = %room_id.as_str(),
+                            media_id = %media.id.as_str(),
+                            "Failed to broadcast media moved event"
+                        );
+                    }
+                } else {
+                    let moved_ids: Vec<String> =
+                        moved.iter().map(|media| media.id.as_str().to_string()).collect();
+                    if let Err(e) = ns.notify_playlist_reordered(&room_id, &moved_ids).await {
+                        tracing::warn!(
+                            error = %e,
+                            room_id = %room_id.as_str(),
+                            "Failed to broadcast playlist reordered event"
+                        );
+                    }
+                }
+            } else {
+                for media in &moved {
+                    if let Some(original_scope) = original_scope_by_id.get(&media.id) {
+                        if *original_scope != media.playlist_id {
+                            if let Err(e) = ns.notify_media_removed(&room_id, media.id.as_str()).await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    room_id = %room_id.as_str(),
+                                    media_id = %media.id.as_str(),
+                                    "Failed to broadcast moved media removal event"
+                                );
+                            }
+                            if let Err(e) = ns
+                                .notify_media_added(
+                                    &room_id,
+                                    media.id.as_str(),
+                                    &media.name,
+                                    "",
+                                    media.position,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    room_id = %room_id.as_str(),
+                                    media_id = %media.id.as_str(),
+                                    "Failed to broadcast moved media add event"
+                                );
+                            }
+                        } else if let Err(e) = ns
+                            .notify_media_updated(&room_id, media.id.as_str(), &media.name, media.position)
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                room_id = %room_id.as_str(),
+                                media_id = %media.id.as_str(),
+                                "Failed to broadcast media moved event"
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -1573,11 +1761,15 @@ mod tests {
     #[test]
     fn test_move_media_request_before_anchor() {
         let request = MoveMediaRequest {
-            media_id: MediaId::new(),
+            media_ids: vec![MediaId::new()],
+            source_playlist_id: None,
+            target_playlist_id: None,
+            all_from_scope: false,
             before_media_id: Some(MediaId::new()),
             after_media_id: None,
         };
 
+        assert_eq!(request.media_ids.len(), 1);
         assert!(request.before_media_id.is_some());
         assert!(request.after_media_id.is_none());
     }
@@ -1585,11 +1777,15 @@ mod tests {
     #[test]
     fn test_move_media_request_after_anchor() {
         let request = MoveMediaRequest {
-            media_id: MediaId::new(),
+            media_ids: vec![MediaId::new()],
+            source_playlist_id: None,
+            target_playlist_id: None,
+            all_from_scope: false,
             before_media_id: None,
             after_media_id: Some(MediaId::new()),
         };
 
+        assert_eq!(request.media_ids.len(), 1);
         assert!(request.before_media_id.is_none());
         assert!(request.after_media_id.is_some());
     }

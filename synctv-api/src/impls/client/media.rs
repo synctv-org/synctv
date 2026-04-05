@@ -689,8 +689,6 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::MoveMediaRequest,
     ) -> Result<crate::proto::client::MoveMediaResponse, ApiError> {
-        crate::http::validation::validate_id(&req.media_id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
 
@@ -703,25 +701,35 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
-        let anchor = req.anchor.ok_or_else(|| {
-            ApiError::InvalidInput(
-                "Exactly one of before_media_id or after_media_id must be set".to_string(),
-            )
-        })?;
+        for media_id in &req.media_ids {
+            crate::http::validation::validate_id(media_id, "media_ids")
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_ids: {e}")))?;
+        }
+        if let Some(ref playlist_id) = req.source_playlist_id {
+            crate::http::validation::validate_id(playlist_id, "source_playlist_id").map_err(
+                |e| ApiError::InvalidInput(format!("Invalid source_playlist_id: {e}")),
+            )?;
+        }
+        if let Some(ref playlist_id) = req.target_playlist_id {
+            crate::http::validation::validate_id(playlist_id, "target_playlist_id").map_err(
+                |e| ApiError::InvalidInput(format!("Invalid target_playlist_id: {e}")),
+            )?;
+        }
 
-        let (before_media_id, after_media_id) = match anchor {
-            crate::proto::client::move_media_request::Anchor::BeforeMediaId(anchor_id) => {
+        let (before_media_id, after_media_id) = match req.anchor {
+            Some(crate::proto::client::move_media_request::Anchor::BeforeMediaId(anchor_id)) => {
                 crate::http::validation::validate_id(&anchor_id, "before_media_id").map_err(
                     |e| ApiError::InvalidInput(format!("Invalid before_media_id: {e}")),
                 )?;
                 (Some(synctv_core::models::MediaId::from_string(anchor_id)), None)
             }
-            crate::proto::client::move_media_request::Anchor::AfterMediaId(anchor_id) => {
+            Some(crate::proto::client::move_media_request::Anchor::AfterMediaId(anchor_id)) => {
                 crate::http::validation::validate_id(&anchor_id, "after_media_id").map_err(
                     |e| ApiError::InvalidInput(format!("Invalid after_media_id: {e}")),
                 )?;
                 (None, Some(synctv_core::models::MediaId::from_string(anchor_id)))
             }
+            None => (None, None),
         };
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
@@ -732,7 +740,18 @@ impl ClientApiImpl {
                 rid.clone(),
                 uid,
                 synctv_core::service::media::MoveMediaRequest {
-                    media_id: synctv_core::models::MediaId::from_string(req.media_id),
+                    media_ids: req
+                        .media_ids
+                        .into_iter()
+                        .map(synctv_core::models::MediaId::from_string)
+                        .collect(),
+                    source_playlist_id: req
+                        .source_playlist_id
+                        .map(synctv_core::models::PlaylistId::from_string),
+                    target_playlist_id: req
+                        .target_playlist_id
+                        .map(synctv_core::models::PlaylistId::from_string),
+                    all_from_scope: req.all_from_scope,
                     before_media_id,
                     after_media_id,
                 },
@@ -745,7 +764,8 @@ impl ClientApiImpl {
         }
 
         Ok(crate::proto::client::MoveMediaResponse {
-            media: Some(media_to_proto(&media)),
+            moved_count: media.len() as i32,
+            media: media.iter().map(media_to_proto).collect(),
         })
     }
 

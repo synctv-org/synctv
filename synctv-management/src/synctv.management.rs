@@ -549,9 +549,15 @@ pub struct EditMediaRequest {
 pub struct MoveMediaRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub media_id: ::prost::alloc::string::String,
-    #[prost(oneof = "move_media_request::Anchor", tags = "3, 4")]
+    #[prost(string, repeated, tag = "2")]
+    pub media_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "3")]
+    pub source_playlist_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "4")]
+    pub target_playlist_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag = "5")]
+    pub all_from_scope: bool,
+    #[prost(oneof = "move_media_request::Anchor", tags = "6, 7")]
     pub anchor: ::core::option::Option<move_media_request::Anchor>,
 }
 /// Nested message and enum types in `MoveMediaRequest`.
@@ -559,9 +565,9 @@ pub mod move_media_request {
     #[derive(serde::Serialize, serde::Deserialize)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Anchor {
-        #[prost(string, tag = "3")]
+        #[prost(string, tag = "6")]
         BeforeMediaId(::prost::alloc::string::String),
-        #[prost(string, tag = "4")]
+        #[prost(string, tag = "7")]
         AfterMediaId(::prost::alloc::string::String),
     }
 }

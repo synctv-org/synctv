@@ -520,7 +520,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_move_media_requires_exactly_one_anchor() {
+async fn test_move_media_rejects_conflicting_anchor_flags() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -560,28 +560,16 @@ async fn test_move_media_requires_exactly_one_anchor() {
     };
     let media = media_repo.create(&media).await.unwrap();
 
-    let missing_anchor = room_service
-        .media_service()
-        .move_media(
-            room.id.clone(),
-            owner.id.clone(),
-            synctv_core::service::media::MoveMediaRequest {
-                media_id: media.id.clone(),
-                before_media_id: None,
-                after_media_id: None,
-            },
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(missing_anchor, Error::InvalidInput(_)));
-
     let conflicting_anchor = room_service
         .media_service()
         .move_media(
             room.id.clone(),
             owner.id.clone(),
             synctv_core::service::media::MoveMediaRequest {
-                media_id: media.id.clone(),
+                media_ids: vec![media.id.clone()],
+                source_playlist_id: None,
+                target_playlist_id: None,
+                all_from_scope: false,
                 before_media_id: Some(media.id.clone()),
                 after_media_id: Some(media.id.clone()),
             },
@@ -658,7 +646,10 @@ async fn test_move_media_reorders_using_anchor_positions() {
             room.id.clone(),
             owner.id.clone(),
             synctv_core::service::media::MoveMediaRequest {
-                media_id: media2.id.clone(),
+                media_ids: vec![media2.id.clone()],
+                source_playlist_id: None,
+                target_playlist_id: None,
+                all_from_scope: false,
                 before_media_id: Some(media1.id.clone()),
                 after_media_id: None,
             },
@@ -668,6 +659,293 @@ async fn test_move_media_reorders_using_anchor_positions() {
 
     let updated1 = media_repo.get_by_id(&media1.id).await.unwrap().unwrap();
     let updated2 = media_repo.get_by_id(&media2.id).await.unwrap().unwrap();
-    assert_eq!(moved.id, media2.id);
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].id, media2.id);
     assert!(updated2.position < updated1.position);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_move_media_batch_preserves_request_order() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("move_media_batch_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Move Media Batch".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
+
+    let make_media = |name: &str, position: f64| synctv_core::models::Media {
+        id: synctv_core::models::MediaId::new(),
+        playlist_id: Some(playlist.id.clone()),
+        room_id: room.id.clone(),
+        name: name.to_string(),
+        position,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({}),
+        provider_instance_name: "direct_url".to_string(),
+        creator_id: Some(owner.id.clone()),
+        added_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        version: 0,
+    };
+
+    let media1 = media_repo.create(&make_media("Media 1", 1024.0)).await.unwrap();
+    let media2 = media_repo.create(&make_media("Media 2", 2048.0)).await.unwrap();
+    let _media3 = media_repo.create(&make_media("Media 3", 3072.0)).await.unwrap();
+    let media4 = media_repo.create(&make_media("Media 4", 4096.0)).await.unwrap();
+
+    let moved = room_service
+        .media_service()
+        .move_media(
+            room.id.clone(),
+            owner.id.clone(),
+            synctv_core::service::media::MoveMediaRequest {
+                media_ids: vec![media4.id.clone(), media2.id.clone()],
+                source_playlist_id: None,
+                target_playlist_id: None,
+                all_from_scope: false,
+                before_media_id: Some(media1.id.clone()),
+                after_media_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(moved.len(), 2);
+    let ordered = media_repo.get_by_playlist(&playlist.id).await.unwrap();
+    let ordered_names: Vec<String> = ordered.into_iter().map(|item| item.name).collect();
+    assert_eq!(
+        ordered_names,
+        vec![
+            "Media 4".to_string(),
+            "Media 2".to_string(),
+            "Media 1".to_string(),
+            "Media 3".to_string()
+        ]
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_move_media_to_another_playlist_appends_by_default() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("move_media_cross_playlist_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Move Media Cross Playlist".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let src = create_top_level_playlist(&pool, &room.id).await;
+    let dst = synctv_core::repository::PlaylistRepository::new(pool.clone())
+        .create(&Playlist {
+            id: synctv_core::models::PlaylistId::new(),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "Destination".to_string(),
+            parent_id: None,
+            position: 1024.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
+    let moving = media_repo
+        .create(&synctv_core::models::Media {
+            id: synctv_core::models::MediaId::new(),
+            playlist_id: Some(src.id.clone()),
+            room_id: room.id.clone(),
+            name: "Move Me".to_string(),
+            position: 1024.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: "direct_url".to_string(),
+            creator_id: Some(owner.id.clone()),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+    let existing = media_repo
+        .create(&synctv_core::models::Media {
+            id: synctv_core::models::MediaId::new(),
+            playlist_id: Some(dst.id.clone()),
+            room_id: room.id.clone(),
+            name: "Already There".to_string(),
+            position: 1024.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: "direct_url".to_string(),
+            creator_id: Some(owner.id.clone()),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let moved = room_service
+        .media_service()
+        .move_media(
+            room.id.clone(),
+            owner.id.clone(),
+            synctv_core::service::media::MoveMediaRequest {
+                media_ids: vec![moving.id.clone()],
+                source_playlist_id: None,
+                target_playlist_id: Some(dst.id.clone()),
+                all_from_scope: false,
+                before_media_id: None,
+                after_media_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(moved.len(), 1);
+    let moved_item = &moved[0];
+    assert_eq!(moved_item.playlist_id.as_ref(), Some(&dst.id));
+    assert!(moved_item.position > existing.position);
+    assert!(media_repo.get_by_playlist(&src.id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("move_all_media_scope_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Move All Media Scope".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let src = create_top_level_playlist(&pool, &room.id).await;
+    let dst = synctv_core::repository::PlaylistRepository::new(pool.clone())
+        .create(&Playlist {
+            id: synctv_core::models::PlaylistId::new(),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "Target".to_string(),
+            parent_id: None,
+            position: 1024.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
+    let _a = media_repo
+        .create(&synctv_core::models::Media {
+            id: synctv_core::models::MediaId::new(),
+            playlist_id: Some(src.id.clone()),
+            room_id: room.id.clone(),
+            name: "A".to_string(),
+            position: 1024.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: "direct_url".to_string(),
+            creator_id: Some(owner.id.clone()),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+    let _b = media_repo
+        .create(&synctv_core::models::Media {
+            id: synctv_core::models::MediaId::new(),
+            playlist_id: Some(src.id.clone()),
+            room_id: room.id.clone(),
+            name: "B".to_string(),
+            position: 2048.0,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({}),
+            provider_instance_name: "direct_url".to_string(),
+            creator_id: Some(owner.id.clone()),
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let moved = room_service
+        .media_service()
+        .move_media(
+            room.id.clone(),
+            owner.id.clone(),
+            synctv_core::service::media::MoveMediaRequest {
+                media_ids: Vec::new(),
+                source_playlist_id: Some(src.id.clone()),
+                target_playlist_id: Some(dst.id.clone()),
+                all_from_scope: true,
+                before_media_id: None,
+                after_media_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(moved.len(), 2);
+    let dst_names: Vec<String> = media_repo
+        .get_by_playlist(&dst.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|item| item.name)
+        .collect();
+    assert_eq!(dst_names, vec!["A".to_string(), "B".to_string()]);
+    assert!(media_repo.get_by_playlist(&src.id).await.unwrap().is_empty());
 }

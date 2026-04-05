@@ -1025,9 +1025,18 @@ pub struct PlaylistBrowsePathNode {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MoveMediaRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MoveMediaRequest {
-    #[prost(string, tag = "1")]
-    pub media_id: ::prost::alloc::string::String,
-    #[prost(oneof = "move_media_request::Anchor", tags = "2, 3")]
+    #[prost(string, repeated, tag = "1")]
+    pub media_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Used only when all_from_scope=true. Omit for room root.
+    #[prost(string, optional, tag = "2")]
+    pub source_playlist_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Omit for room root. When anchor is set, this must match the anchor scope.
+    #[prost(string, optional, tag = "3")]
+    pub target_playlist_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Move every media item from the source scope instead of explicit media_ids.
+    #[prost(bool, tag = "4")]
+    pub all_from_scope: bool,
+    #[prost(oneof = "move_media_request::Anchor", tags = "5, 6")]
     pub anchor: ::core::option::Option<move_media_request::Anchor>,
 }
 /// Nested message and enum types in `MoveMediaRequest`.
@@ -1037,9 +1046,9 @@ pub mod move_media_request {
     #[cfg_attr(feature = "openapi", schema(as = synctv_client_MoveMediaRequest))]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Anchor {
-        #[prost(string, tag = "2")]
+        #[prost(string, tag = "5")]
         BeforeMediaId(::prost::alloc::string::String),
-        #[prost(string, tag = "3")]
+        #[prost(string, tag = "6")]
         AfterMediaId(::prost::alloc::string::String),
     }
 }
@@ -1048,8 +1057,10 @@ pub mod move_media_request {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MoveMediaResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MoveMediaResponse {
-    #[prost(message, optional, tag = "1")]
-    pub media: ::core::option::Option<Media>,
+    #[prost(int32, tag = "1")]
+    pub moved_count: i32,
+    #[prost(message, repeated, tag = "2")]
+    pub media: ::prost::alloc::vec::Vec<Media>,
 }
 /// Edit Media
 #[derive(serde::Serialize, serde::Deserialize)]

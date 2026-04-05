@@ -657,15 +657,19 @@ message PlaylistBrowsePathNode {
 }
 
 message MoveMediaRequest {
-    string media_id = 1;
+    repeated string media_ids = 1;
+    optional string source_playlist_id = 2; // Used only when all_from_scope=true. Omit for room root.
+    optional string target_playlist_id = 3; // Omit for room root. When anchor is set, this must match the anchor scope.
+    bool all_from_scope = 4; // Move every media item from the source scope instead of explicit media_ids.
     oneof anchor {
-        string before_media_id = 2;
-        string after_media_id = 3;
+        string before_media_id = 5;
+        string after_media_id = 6;
     }
 }
 
 message MoveMediaResponse {
-    Media media = 1;
+    int32 moved_count = 1;
+    repeated Media media = 2;
 }
 
 // Edit Media

@@ -4,6 +4,7 @@
 
 use super::query_builder::escape_ilike;
 use sqlx::{FromRow, PgPool, Row};
+use std::collections::HashMap;
 
 use crate::{
     models::{Media, MediaId, MediaListQuery, PageParams, PlaylistId, RoomId, UserStatus},
@@ -492,6 +493,37 @@ impl MediaRepository {
             .collect()
     }
 
+    /// Get all media inside a scope ordered by position.
+    pub async fn get_scope_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        playlist_id: Option<&PlaylistId>,
+        executor: E,
+    ) -> Result<Vec<Media>>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        let rows = sqlx::query(
+            r"
+            SELECT id, playlist_id, room_id, creator_id, name, position,
+                   source_provider, source_config, provider_instance_name,
+                   added_at, updated_at, version
+            FROM media
+            WHERE room_id = $1
+              AND playlist_id IS NOT DISTINCT FROM $2
+            ORDER BY position ASC, id ASC
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(playlist_id.map(PlaylistId::as_str))
+        .fetch_all(executor)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Ok(Media::from_row(&row)?))
+            .collect()
+    }
+
     /// Get media directly under the room root.
     pub async fn get_room_root(&self, room_id: &RoomId) -> Result<Vec<Media>> {
         let rows = sqlx::query(
@@ -778,6 +810,348 @@ impl MediaRepository {
             .execute(&mut **tx)
             .await?;
         Ok(())
+    }
+
+    async fn lock_scopes_with_tx(
+        &self,
+        scopes: &[(RoomId, Option<PlaylistId>)],
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<()> {
+        let mut unique_scopes: Vec<(RoomId, Option<PlaylistId>)> = Vec::new();
+        for (room_id, playlist_id) in scopes {
+            if unique_scopes
+                .iter()
+                .any(|(seen_room, seen_playlist)| seen_room == room_id && seen_playlist == playlist_id)
+            {
+                continue;
+            }
+            unique_scopes.push((room_id.clone(), playlist_id.clone()));
+        }
+
+        unique_scopes.sort_by(|(left_room, left_playlist), (right_room, right_playlist)| {
+            left_room
+                .as_str()
+                .cmp(right_room.as_str())
+                .then_with(|| {
+                    left_playlist
+                        .as_ref()
+                        .map(PlaylistId::as_str)
+                        .unwrap_or("")
+                        .cmp(
+                            right_playlist
+                                .as_ref()
+                                .map(PlaylistId::as_str)
+                                .unwrap_or(""),
+                        )
+                })
+        });
+
+        for (room_id, playlist_id) in unique_scopes {
+            self.lock_scope_with_tx(&room_id, playlist_id.as_ref(), tx)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    fn allocate_positions(
+        previous: Option<f64>,
+        next: Option<f64>,
+        count: usize,
+    ) -> Option<Vec<f64>> {
+        if count == 0 {
+            return Some(Vec::new());
+        }
+
+        match (previous, next) {
+            (Some(previous), Some(next)) => {
+                let gap = next - previous;
+                if !gap.is_finite() || gap <= Self::MIN_ORDER_GAP {
+                    return None;
+                }
+                let step = gap / ((count + 1) as f64);
+                if !step.is_finite() || step <= Self::MIN_ORDER_GAP {
+                    return None;
+                }
+                let mut positions = Vec::with_capacity(count);
+                for index in 1..=count {
+                    let position = previous + step * (index as f64);
+                    if !position.is_finite() || position <= previous || position >= next {
+                        return None;
+                    }
+                    positions.push(position);
+                }
+                Some(positions)
+            }
+            (None, Some(next)) => {
+                if !next.is_finite() {
+                    return None;
+                }
+                let start = next - Self::ORDER_STEP * (count as f64);
+                if !start.is_finite() {
+                    return None;
+                }
+                let mut positions = Vec::with_capacity(count);
+                for index in 0..count {
+                    let position = start + Self::ORDER_STEP * (index as f64);
+                    if !position.is_finite() || position >= next {
+                        return None;
+                    }
+                    positions.push(position);
+                }
+                Some(positions)
+            }
+            (Some(previous), None) => {
+                if !previous.is_finite() {
+                    return None;
+                }
+                let mut positions = Vec::with_capacity(count);
+                for index in 1..=count {
+                    let position = previous + Self::ORDER_STEP * (index as f64);
+                    if !position.is_finite() || position <= previous {
+                        return None;
+                    }
+                    positions.push(position);
+                }
+                Some(positions)
+            }
+            (None, None) => {
+                let mut positions = Vec::with_capacity(count);
+                for index in 1..=count {
+                    positions.push(Self::ORDER_STEP * (index as f64));
+                }
+                Some(positions)
+            }
+        }
+    }
+
+    pub async fn move_batch_to_scope_with_tx(
+        &self,
+        room_id: &RoomId,
+        media_ids: &[MediaId],
+        target_playlist_id: Option<&PlaylistId>,
+        before_media_id: Option<&MediaId>,
+        after_media_id: Option<&MediaId>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Vec<Media>> {
+        if media_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if before_media_id.is_some() && after_media_id.is_some() {
+            return Err(crate::Error::InvalidInput(
+                "At most one of before_media_id or after_media_id may be set".to_string(),
+            ));
+        }
+
+        let media_id_strs: Vec<&str> = media_ids.iter().map(MediaId::as_str).collect();
+        let moved_rows = sqlx::query(
+            r"
+            SELECT id, playlist_id, room_id, creator_id, name, position,
+                   source_provider, source_config, provider_instance_name,
+                   added_at, updated_at, version
+            FROM media
+            WHERE id = ANY($1)
+            FOR UPDATE
+            ",
+        )
+        .bind(&media_id_strs)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        if moved_rows.len() != media_ids.len() {
+            return Err(crate::Error::NotFound("Media not found".to_string()));
+        }
+
+        let mut moved_map = HashMap::with_capacity(moved_rows.len());
+        for row in moved_rows {
+            let media = Media::from_row(&row)?;
+            if media.room_id != *room_id {
+                return Err(crate::Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
+            }
+            moved_map.insert(media.id.clone(), media);
+        }
+
+        let moved_media: Vec<Media> = media_ids
+            .iter()
+            .map(|media_id| {
+                moved_map
+                    .remove(media_id)
+                    .ok_or_else(|| crate::Error::NotFound("Media not found".to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let anchor_id = match (before_media_id, after_media_id) {
+            (Some(anchor_id), None) | (None, Some(anchor_id)) => Some(anchor_id),
+            (None, None) => None,
+            _ => {
+                return Err(crate::Error::InvalidInput(
+                    "At most one of before_media_id or after_media_id may be set".to_string(),
+                ))
+            }
+        };
+
+        if let Some(anchor_id) = anchor_id {
+            if media_ids.iter().any(|media_id| media_id == anchor_id) {
+                return Err(crate::Error::InvalidInput(
+                    "Cannot move media relative to itself".to_string(),
+                ));
+            }
+        }
+
+        let anchor_media = if let Some(anchor_id) = anchor_id {
+            let anchor_media = sqlx::query(
+                r"
+                SELECT id, playlist_id, room_id, creator_id, name, position,
+                       source_provider, source_config, provider_instance_name,
+                       added_at, updated_at, version
+                FROM media
+                WHERE id = $1
+                FOR UPDATE
+                ",
+            )
+            .bind(anchor_id.as_str())
+            .fetch_optional(&mut **tx)
+            .await?
+            .map(|row| Media::from_row(&row))
+            .transpose()?
+            .ok_or_else(|| crate::Error::NotFound("Anchor media not found".to_string()))?;
+
+            if anchor_media.room_id != *room_id {
+                return Err(crate::Error::Authorization(
+                    "Anchor media does not belong to this room".to_string(),
+                ));
+            }
+            Some(anchor_media)
+        } else {
+            None
+        };
+
+        let effective_target_playlist_id = match (target_playlist_id, anchor_media.as_ref()) {
+            (Some(target_playlist_id), Some(anchor_media)) => {
+                if anchor_media.playlist_id.as_ref() != Some(target_playlist_id) {
+                    return Err(crate::Error::InvalidInput(
+                        "Anchor media must belong to the target playlist scope".to_string(),
+                    ));
+                }
+                Some(target_playlist_id.clone())
+            }
+            (None, Some(anchor_media)) => anchor_media.playlist_id.clone(),
+            (Some(target_playlist_id), None) => Some(target_playlist_id.clone()),
+            (None, None) => {
+                let first_scope = moved_media[0].playlist_id.clone();
+                if moved_media
+                    .iter()
+                    .any(|media| media.playlist_id != first_scope)
+                {
+                    return Err(crate::Error::InvalidInput(
+                        "Moving media from multiple scopes requires target_playlist_id or an anchor"
+                            .to_string(),
+                    ));
+                }
+                first_scope
+            }
+        };
+
+        let mut affected_scopes: Vec<(RoomId, Option<PlaylistId>)> = moved_media
+            .iter()
+            .map(|media| (media.room_id.clone(), media.playlist_id.clone()))
+            .collect();
+        affected_scopes.push((room_id.clone(), effective_target_playlist_id.clone()));
+        self.lock_scopes_with_tx(&affected_scopes, tx).await?;
+
+        for _ in 0..2 {
+            let target_rows = sqlx::query(
+                r"
+                SELECT id, position
+                FROM media
+                WHERE room_id = $1
+                  AND playlist_id IS NOT DISTINCT FROM $2
+                  AND NOT (id = ANY($3))
+                ORDER BY position ASC, id ASC
+                FOR UPDATE
+                ",
+            )
+            .bind(room_id.as_str())
+            .bind(effective_target_playlist_id.as_ref().map(PlaylistId::as_str))
+            .bind(&media_id_strs)
+            .fetch_all(&mut **tx)
+            .await?;
+
+            let target_rows: Vec<(MediaId, f64)> = target_rows
+                .into_iter()
+                .map(|row| {
+                    Ok((
+                        MediaId::from_string(row.try_get::<String, _>("id")?),
+                        row.try_get::<f64, _>("position")?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let insertion_index = if let Some(anchor_media) = anchor_media.as_ref() {
+                let anchor_index = target_rows
+                    .iter()
+                    .position(|(media_id, _)| media_id == &anchor_media.id)
+                    .ok_or_else(|| {
+                        crate::Error::InvalidInput(
+                            "Anchor media must remain in the target playlist scope".to_string(),
+                        )
+                    })?;
+                if before_media_id.is_some() {
+                    anchor_index
+                } else {
+                    anchor_index + 1
+                }
+            } else {
+                target_rows.len()
+            };
+
+            let previous = insertion_index
+                .checked_sub(1)
+                .map(|index| target_rows[index].1);
+            let next = target_rows.get(insertion_index).map(|(_, position)| *position);
+            let Some(positions) =
+                Self::allocate_positions(previous, next, moved_media.len())
+            else {
+                self.rebalance_scope_with_tx(
+                    room_id,
+                    effective_target_playlist_id.as_ref(),
+                    tx,
+                )
+                .await?;
+                continue;
+            };
+
+            let mut updated_media = Vec::with_capacity(moved_media.len());
+            for (media, position) in moved_media.iter().zip(positions.into_iter()) {
+                let row = sqlx::query(
+                    r"
+                    UPDATE media
+                    SET playlist_id = $2,
+                        position = $3,
+                        version = version + 1
+                    WHERE id = $1
+                    RETURNING id, playlist_id, room_id, creator_id, name, position,
+                              source_provider, source_config, provider_instance_name,
+                              added_at, updated_at, version
+                    ",
+                )
+                .bind(media.id.as_str())
+                .bind(effective_target_playlist_id.as_ref().map(PlaylistId::as_str))
+                .bind(position)
+                .fetch_one(&mut **tx)
+                .await?;
+                updated_media.push(Media::from_row(&row)?);
+            }
+
+            return Ok(updated_media);
+        }
+
+        Err(crate::Error::Internal(
+            "Failed to compute stable positions for moved media".to_string(),
+        ))
     }
 
     async fn get_scope_previous_position_with_tx(

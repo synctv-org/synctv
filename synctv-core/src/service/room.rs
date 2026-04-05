@@ -2933,7 +2933,7 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
         request: crate::service::media::MoveMediaRequest,
-    ) -> Result<crate::models::Media> {
+    ) -> Result<Vec<crate::models::Media>> {
         self.media_service
             .move_media(room_id, user_id, request)
             .await

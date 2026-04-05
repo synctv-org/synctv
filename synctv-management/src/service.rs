@@ -1354,7 +1354,10 @@ impl ManagementService for ManagementServiceImpl {
             .move_media(
                 &req.room_id,
                 client_proto::MoveMediaRequest {
-                    media_id: req.media_id,
+                    media_ids: req.media_ids,
+                    source_playlist_id: req.source_playlist_id,
+                    target_playlist_id: req.target_playlist_id,
+                    all_from_scope: req.all_from_scope,
                     anchor: req.anchor.map(|anchor| match anchor {
                         crate::proto::move_media_request::Anchor::BeforeMediaId(id) => {
                             client_proto::move_media_request::Anchor::BeforeMediaId(id)

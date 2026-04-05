@@ -1675,7 +1675,7 @@ pub enum MediaSubcommand {
     Update(MediaEditArgs),
     /// Delete a media item
     Delete(MediaDeleteArgs),
-    /// Move a media item before or after a sibling
+    /// Reorder media in place or move media into another static playlist
     Move(MediaMoveArgs),
 }
 
@@ -1778,22 +1778,37 @@ pub struct MediaDeleteArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(group(
-    ArgGroup::new("media_move_anchor")
-        .args(["before_media_id", "after_media_id"])
-        .required(true)
-        .multiple(false)
-))]
 pub struct MediaMoveArgs {
     #[command(flatten)]
     pub room: RoomScopedRemoteArgs,
 
-    #[arg(allow_hyphen_values = true)]
-    pub media_id: String,
+    /// Media ID to move. Repeat this flag to move multiple media items in order.
+    #[arg(
+        long = "media-id",
+        value_name = "MEDIA_ID",
+        allow_hyphen_values = true,
+        action = ArgAction::Append,
+        required_unless_present = "all_from_scope"
+    )]
+    pub media_ids: Vec<String>,
 
+    /// Move every media item from the room root or the source playlist scope.
+    #[arg(long, default_value_t = false)]
+    pub all_from_scope: bool,
+
+    /// Source static playlist when using --all-from-scope. Omit for the room root scope.
+    #[arg(long, requires = "all_from_scope")]
+    pub from_playlist_id: Option<String>,
+
+    /// Target static playlist. Omit to keep media in the current scope.
+    #[arg(long)]
+    pub to_playlist_id: Option<String>,
+
+    /// Insert before this media in the target scope. Omit both anchors to append to the target scope.
     #[arg(long, conflicts_with = "after_media_id")]
     pub before_media_id: Option<String>,
 
+    /// Insert after this media in the target scope. Omit both anchors to append to the target scope.
     #[arg(long, conflicts_with = "before_media_id")]
     pub after_media_id: Option<String>,
 }
@@ -3415,7 +3430,8 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                 (None, Some(id)) => {
                     Some(management_proto::move_media_request::Anchor::AfterMediaId(id))
                 }
-                _ => bail!("media move requires exactly one of --before-media-id or --after-media-id"),
+                (None, None) => None,
+                _ => bail!("media move accepts at most one of --before-media-id or --after-media-id"),
             };
             let response = management_unary_call!(
                 session,
@@ -3423,7 +3439,10 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                 move_media,
                 management_proto::MoveMediaRequest {
                     room_id: args.room.room_id,
-                    media_id: args.media_id,
+                    media_ids: args.media_ids,
+                    source_playlist_id: args.from_playlist_id,
+                    target_playlist_id: args.to_playlist_id,
+                    all_from_scope: args.all_from_scope,
                     anchor,
                 }
             )?;
@@ -4384,6 +4403,12 @@ struct HumanMediaResponse<T> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct HumanMediaBatchResponse<T> {
+    moved_count: i32,
+    media: Vec<T>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct HumanPlaylistItemsResponse<P, M> {
     playlists: Vec<P>,
     media: Vec<M>,
@@ -5071,10 +5096,11 @@ impl ToHuman for synctv_proto::client::EditMediaResponse {
 }
 
 impl ToHuman for synctv_proto::client::MoveMediaResponse {
-    type Human = HumanMediaResponse<HumanMedia>;
+    type Human = HumanMediaBatchResponse<HumanMedia>;
 
     fn to_human(&self) -> Self::Human {
-        HumanMediaResponse {
+        HumanMediaBatchResponse {
+            moved_count: self.moved_count,
             media: self.media.to_human(),
         }
     }
@@ -6672,6 +6698,7 @@ mod tests {
             "room-123",
             "--before-media-id",
             "media-2",
+            "--media-id",
             "media-1",
         ]);
         match cli.command {
@@ -6680,7 +6707,7 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.room.room_id, "room-123");
-                assert_eq!(args.media_id, "media-1");
+                assert_eq!(args.media_ids, vec!["media-1".to_string()]);
                 assert_eq!(args.before_media_id.as_deref(), Some("media-2"));
                 assert!(args.after_media_id.is_none());
             }
@@ -6737,6 +6764,7 @@ mod tests {
             "room-123",
             "--after-media-id",
             "media-b",
+            "--media-id",
             "media-a",
         ]);
         match cli.command {
@@ -6745,7 +6773,7 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.room.room_id, "room-123");
-                assert_eq!(args.media_id, "media-a");
+                assert_eq!(args.media_ids, vec!["media-a".to_string()]);
                 assert_eq!(args.after_media_id.as_deref(), Some("media-b"));
                 assert!(args.before_media_id.is_none());
             }
@@ -6763,16 +6791,17 @@ mod tests {
             "room-123",
             "--before-media-id",
             "media-1",
+            "--media-id",
             "-99tNxdXRosK",
         ])
-        .expect("hyphen-prefixed media ids should be accepted as positional media ids");
+        .expect("hyphen-prefixed media ids should be accepted as explicit media ids");
         match cli.command {
             Commands::Media(MediaCommand {
                 command: MediaSubcommand::Move(args),
                 ..
             }) => {
                 assert_eq!(args.room.room_id, "room-123");
-                assert_eq!(args.media_id, "-99tNxdXRosK");
+                assert_eq!(args.media_ids, vec!["-99tNxdXRosK".to_string()]);
                 assert_eq!(args.before_media_id.as_deref(), Some("media-1"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -6780,22 +6809,166 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_media_move_without_anchor() {
-        let error = Cli::try_parse_from([
+    fn cli_parses_media_move_without_anchor_as_append() {
+        let cli = Cli::parse_from([
             "synctv",
             "media",
             "move",
             "--room-id",
             "room-123",
+            "--media-id",
             "media-1",
-        ])
-        .expect_err("move should require one anchor flag");
-        let rendered = error.to_string();
+        ]);
+        match cli.command {
+            Commands::Media(MediaCommand {
+                command: MediaSubcommand::Move(args),
+                ..
+            }) => {
+                assert_eq!(args.media_ids, vec!["media-1".to_string()]);
+                assert!(args.before_media_id.is_none());
+                assert!(args.after_media_id.is_none());
+                assert!(!args.all_from_scope);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_media_move_batch_to_playlist() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "media",
+            "move",
+            "--room-id",
+            "room-123",
+            "--to-playlist-id",
+            "playlist-9",
+            "--after-media-id",
+            "media-anchor",
+            "--media-id",
+            "media-1",
+            "--media-id",
+            "media-2",
+        ]);
+        match cli.command {
+            Commands::Media(MediaCommand {
+                command: MediaSubcommand::Move(args),
+                ..
+            }) => {
+                assert_eq!(
+                    args.media_ids,
+                    vec!["media-1".to_string(), "media-2".to_string()]
+                );
+                assert_eq!(args.to_playlist_id.as_deref(), Some("playlist-9"));
+                assert_eq!(args.after_media_id.as_deref(), Some("media-anchor"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_media_move_all_from_scope() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "media",
+            "move",
+            "--room-id",
+            "room-123",
+            "--all-from-scope",
+            "--from-playlist-id",
+            "playlist-src",
+            "--to-playlist-id",
+            "playlist-dst",
+        ]);
+        match cli.command {
+            Commands::Media(MediaCommand {
+                command: MediaSubcommand::Move(args),
+                ..
+            }) => {
+                assert!(args.media_ids.is_empty());
+                assert!(args.all_from_scope);
+                assert_eq!(args.from_playlist_id.as_deref(), Some("playlist-src"));
+                assert_eq!(args.to_playlist_id.as_deref(), Some("playlist-dst"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_media_move_from_playlist_without_all_from_scope() {
+        let result = Cli::try_parse_from([
+            "synctv",
+            "media",
+            "move",
+            "--room-id",
+            "room-123",
+            "--from-playlist-id",
+            "playlist-src",
+            "--media-id",
+            "media-1",
+        ]);
         assert!(
-            rendered.contains("--before-media-id")
-                || rendered.contains("--after-media-id")
-                || rendered.contains("required"),
-            "unexpected error: {rendered}"
+            result.is_err(),
+            "media move must reject --from-playlist-id without --all-from-scope"
+        );
+    }
+
+    #[test]
+    fn cli_parses_media_move_without_consuming_trailing_global_output_flag() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "media",
+            "move",
+            "--room-id",
+            "room-123",
+            "--before-media-id",
+            "media-2",
+            "--media-id",
+            "media-1",
+            "--output",
+            "json",
+        ]);
+        match &cli.command {
+            Commands::Media(MediaCommand {
+                command: MediaSubcommand::Move(args),
+                ..
+            }) => {
+                assert_eq!(args.room.room_id, "room-123");
+                assert_eq!(args.media_ids, vec!["media-1".to_string()]);
+                assert_eq!(args.before_media_id.as_deref(), Some("media-2"));
+                assert_eq!(args.room.remote.output, RemoteOutputFormat::Json);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_media_move_help_describes_scope_and_append_semantics() {
+        let mut command = Cli::command();
+        let media = command
+            .find_subcommand_mut("media")
+            .expect("media subcommand should exist");
+        let move_cmd = media
+            .find_subcommand_mut("move")
+            .expect("media move subcommand should exist");
+
+        let mut help = Vec::new();
+        move_cmd
+            .write_long_help(&mut help)
+            .expect("media move help should render");
+        let help = String::from_utf8(help).expect("media move help should be utf-8");
+
+        assert!(
+            help.contains("--media-id <MEDIA_ID>"),
+            "media move help should expose repeatable --media-id: {help}"
+        );
+        assert!(
+            help.contains("Target static playlist. Omit to keep media in the current scope"),
+            "media move help should explain optional target scope: {help}"
+        );
+        assert!(
+            help.contains("Omit both anchors to append to the target scope"),
+            "media move help should explain append semantics without anchors: {help}"
         );
     }
 

@@ -1059,6 +1059,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             &room_id,
             "--before-media-id",
             &media_one_id,
+            "--media-id",
             &media_two_id,
         ],
     );

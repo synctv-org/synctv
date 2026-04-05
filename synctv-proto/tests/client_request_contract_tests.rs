@@ -28,6 +28,7 @@ fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
         provider_instance_name: String::new(),
         sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
     };
 
     let json = serde_json::to_value(&request).expect("serialize list request");
@@ -35,6 +36,10 @@ fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
     let target_bytes: Vec<u8> =
         serde_json::from_value(json["target"].clone()).expect("target bytes");
     assert!(target_bytes.is_empty());
+    assert_eq!(
+        json["availability"],
+        synctv_proto::client::ResourceAvailabilityFilter::All as i32
+    );
 }
 
 #[test]

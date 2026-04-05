@@ -92,7 +92,17 @@ impl From<ListPlaylistItemsBody> for crate::proto::client::ListPlaylistItemsRequ
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MoveMediaBody {
-    pub media_id: String,
+    #[serde(default)]
+    pub media_ids: Vec<String>,
+
+    #[serde(default)]
+    pub source_playlist_id: Option<String>,
+
+    #[serde(default)]
+    pub target_playlist_id: Option<String>,
+
+    #[serde(default)]
+    pub all_from_scope: bool,
 
     #[serde(default)]
     pub before_media_id: Option<String>,
@@ -112,16 +122,20 @@ impl TryFrom<MoveMediaBody> for MoveMediaRequest {
             (None, Some(id)) => {
                 Some(crate::proto::client::move_media_request::Anchor::AfterMediaId(id))
             }
+            (None, None) => None,
             _ => {
                 return Err(super::AppError::validation_failed(
                     "anchor",
-                    "exactly one of before_media_id or after_media_id must be set",
+                    "at most one of before_media_id or after_media_id may be set",
                 ))
             }
         };
 
         Ok(MoveMediaRequest {
-            media_id: value.media_id,
+            media_ids: value.media_ids,
+            source_playlist_id: value.source_playlist_id,
+            target_playlist_id: value.target_playlist_id,
+            all_from_scope: value.all_from_scope,
             anchor,
         })
     }
@@ -1974,13 +1988,13 @@ mod tests {
     fn test_update_media_batch_request_deserializes_move_without_room_id() {
         let json = r#"{
             "move_media": {
-                "media_id": "media-1",
+                "media_ids": ["media-1"],
                 "before_media_id": "media-2"
             }
         }"#;
         let req: UpdateMediaBatchRequest = serde_json::from_str(json).unwrap();
         let move_media = req.move_media.expect("move operation should deserialize");
-        assert_eq!(move_media.media_id, "media-1");
+        assert_eq!(move_media.media_ids, vec!["media-1".to_string()]);
         assert_eq!(move_media.before_media_id.as_deref(), Some("media-2"));
         assert!(move_media.after_media_id.is_none());
     }

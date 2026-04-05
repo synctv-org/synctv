@@ -532,10 +532,13 @@ message EditMediaRequest {
 
 message MoveMediaRequest {
     string room_id = 1;
-    string media_id = 2;
+    repeated string media_ids = 2;
+    optional string source_playlist_id = 3;
+    optional string target_playlist_id = 4;
+    bool all_from_scope = 5;
     oneof anchor {
-        string before_media_id = 3;
-        string after_media_id = 4;
+        string before_media_id = 6;
+        string after_media_id = 7;
     }
 }
 

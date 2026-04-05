@@ -26,10 +26,10 @@ const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SEC
 const DEFAULT_DOCKER_STARTUP_PARALLELISM: usize = 8;
 const MIN_DOCKER_STARTUP_PARALLELISM: usize = 1;
 const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLELISM";
-const DEFAULT_SHARED_ADMIN_POOL_MAX_CONNECTIONS: u32 = 16;
+const DEFAULT_SHARED_ADMIN_POOL_MAX_CONNECTIONS: u32 = 64;
 const MIN_SHARED_ADMIN_POOL_MAX_CONNECTIONS: u32 = 2;
 const SHARED_ADMIN_POOL_MAX_CONNECTIONS_ENV: &str = "SYNCTV_TEST_PG_ADMIN_POOL_MAX_CONNECTIONS";
-const DEFAULT_TEST_POOL_MAX_CONNECTIONS: u32 = 8;
+const DEFAULT_TEST_POOL_MAX_CONNECTIONS: u32 = 32;
 const MIN_TEST_POOL_MAX_CONNECTIONS: u32 = 1;
 const TEST_POOL_MAX_CONNECTIONS_ENV: &str = "SYNCTV_TEST_PG_POOL_MAX_CONNECTIONS";
 const TEST_RUN_LABEL: &str = "synctv.test.run_id";
@@ -38,6 +38,70 @@ const TEMPLATE_DATABASE_PREFIX: &str = "synctv_template";
 const TEST_DATABASE_PREFIX: &str = "synctv_test";
 const MAX_DATABASE_IDENTIFIER_LEN: usize = 63;
 const DATABASE_NAME_RANDOM_LEN: usize = 10;
+const POSTGRES_EPHEMERAL_TUNING_ARGS: &[&str] = &[
+    // --- Durability / WAL (safe for ephemeral test data) ---
+    "-c",
+    "fsync=off",
+    "-c",
+    "synchronous_commit=off",
+    "-c",
+    "full_page_writes=off",
+    "-c",
+    "wal_level=minimal",
+    "-c",
+    "max_wal_senders=0",
+    "-c",
+    "checkpoint_timeout=1h",
+    "-c",
+    "max_wal_size=8GB",
+    // --- Background maintenance ---
+    "-c",
+    "autovacuum=off",
+    "-c",
+    "max_worker_processes=4",
+    // --- Capacity ---
+    "-c",
+    "max_connections=1024",
+    "-c",
+    "superuser_reserved_connections=0",
+    // --- Memory ---
+    "-c",
+    "shared_buffers=512MB",
+    "-c",
+    "temp_buffers=1MB",
+    "-c",
+    "work_mem=1MB",
+    "-c",
+    "maintenance_work_mem=256MB",
+    "-c",
+    "effective_cache_size=1GB",
+    // --- Planner / executor ---
+    "-c",
+    "jit=off",
+    "-c",
+    "max_parallel_workers_per_gather=0",
+    "-c",
+    "max_parallel_workers=0",
+    "-c",
+    "random_page_cost=1.0",
+    // --- Logging / observability overhead ---
+    "-c",
+    "log_statement=none",
+    "-c",
+    "log_duration=off",
+    "-c",
+    "log_min_duration_statement=-1",
+    "-c",
+    "log_connections=off",
+    "-c",
+    "log_disconnections=off",
+    "-c",
+    "log_lock_waits=off",
+];
+
+fn postgres_ephemeral_tuning_args() -> impl Iterator<Item = &'static str> {
+    POSTGRES_EPHEMERAL_TUNING_ARGS.iter().copied()
+}
 
 static SHARED_POSTGRES: OnceCell<Arc<SharedPostgresServer>> = OnceCell::const_new();
 static TEST_DATABASE_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -513,34 +577,7 @@ fn named_postgres_request(
         .with_container_name(container_name.to_string())
         .with_label(TEST_RUN_LABEL, run_id)
         .with_reuse(ReuseDirective::Always)
-        .with_cmd([
-            // --- Performance (safe for ephemeral test data) ---
-            "-c",
-            "fsync=off",
-            "-c",
-            "synchronous_commit=off",
-            "-c",
-            "full_page_writes=off",
-            "-c",
-            "checkpoint_timeout=1h",
-            "-c",
-            "max_wal_size=4GB",
-            // --- Capacity ---
-            "-c",
-            "max_connections=500",
-            // --- Memory ---
-            "-c",
-            "shared_buffers=256MB",
-            "-c",
-            "work_mem=4MB",
-            "-c",
-            "maintenance_work_mem=128MB",
-            "-c",
-            "effective_cache_size=256MB",
-            // --- Planner ---
-            "-c",
-            "random_page_cost=1.0",
-        ])
+        .with_cmd(postgres_ephemeral_tuning_args())
         .with_ready_conditions(postgres_ready_conditions())
 }
 
@@ -1077,6 +1114,81 @@ mod tests {
             matches!(ready_conditions.as_slice(), [WaitFor::Log(_)]),
             "postgres test container should wait for the second ready log instead of the first init-server ready log"
         );
+    }
+
+    #[test]
+    fn named_postgres_request_uses_ephemeral_pg18_tuning() {
+        let request = named_postgres_request("postgres", "synctv-pg-test");
+        let cmd: Vec<_> = request.cmd().map(|value| value.into_owned()).collect();
+
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "wal_level=minimal"]),
+            "ephemeral test postgres should minimize WAL volume: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "max_wal_senders=0"]),
+            "wal_level=minimal requires wal senders to be disabled: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2).any(|pair| pair == ["-c", "autovacuum=off"]),
+            "ephemeral test postgres should disable autovacuum background churn: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2).any(|pair| pair == ["-c", "jit=off"]),
+            "jit compilation overhead should stay disabled for short-lived test workloads: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "max_parallel_workers_per_gather=0"]),
+            "parallel query workers add avoidable overhead for small test workloads: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "max_connections=1024"]),
+            "test postgres should not over-allocate connection slots: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "superuser_reserved_connections=0"]),
+            "ephemeral test postgres should expose all connection slots to test clients: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "log_statement=none"]),
+            "test postgres should disable statement logging overhead: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2).any(|pair| pair == ["-c", "log_duration=off"]),
+            "test postgres should disable query duration logging overhead: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "log_min_duration_statement=-1"]),
+            "test postgres should disable slow query logging overhead: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "log_connections=off"]),
+            "test postgres should disable connection logging overhead: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "log_disconnections=off"]),
+            "test postgres should disable disconnection logging overhead: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "log_lock_waits=off"]),
+            "test postgres should disable lock-wait logging overhead: {cmd:?}"
+        );
+    }
+
+    #[test]
+    fn pool_defaults_match_high_concurrency_nextest_profile() {
+        assert_eq!(shared_admin_pool_max_connections_from(None), 64);
+        assert_eq!(default_test_pool_max_connections_from(None), 32);
     }
 
     #[test]

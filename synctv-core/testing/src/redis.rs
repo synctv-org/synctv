@@ -8,7 +8,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use redis::AsyncCommands;
-use testcontainers::core::{ImageExt, IntoContainerPort, ReuseDirective};
+use testcontainers::core::{ImageExt, IntoContainerPort, ReuseDirective, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
@@ -20,13 +20,51 @@ pub type RedisConnectionManager = redis::aio::ConnectionManager;
 pub type RedisConnectionHandle = Arc<RwLock<redis::aio::ConnectionManager>>;
 static REDIS_START_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
-const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 8;
+const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 32;
 const MIN_REDIS_ACTIVE_PARALLELISM: usize = 1;
 const REDIS_ACTIVE_PARALLELISM_ENV: &str = "SYNCTV_TEST_REDIS_ACTIVE_PARALLELISM";
 static REDIS_ACTIVE_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(redis_active_parallelism()));
 const TEST_RUN_LABEL: &str = "synctv.test.run_id";
 pub const REDIS_VERSION: &str = "8";
+const REDIS_EPHEMERAL_TUNING_ARGS: &[&str] = &[
+    // --- Disable persistence / durability (ephemeral test data) ---
+    "--save",
+    "",
+    "--appendonly",
+    "no",
+    "--stop-writes-on-bgsave-error",
+    "no",
+    // --- Capacity ---
+    "--maxclients",
+    "100000",
+    "--maxmemory",
+    "1gb",
+    "--maxmemory-policy",
+    "noeviction",
+    // --- Threading ---
+    "--io-threads",
+    "8",
+    "--io-threads-do-reads",
+    "yes",
+    // --- Disable non-essential background / observability overhead ---
+    "--loglevel",
+    "warning",
+    "--slowlog-log-slower-than",
+    "-1",
+    "--slowlog-max-len",
+    "0",
+    "--latency-monitor-threshold",
+    "0",
+    "--activerehashing",
+    "no",
+    "--activedefrag",
+    "no",
+];
+
+fn redis_ephemeral_tuning_args() -> impl Iterator<Item = &'static str> {
+    REDIS_EPHEMERAL_TUNING_ARGS.iter().copied()
+}
 
 static SHARED_REDIS: OnceCell<Arc<SharedRedisServer>> = OnceCell::const_new();
 
@@ -181,25 +219,14 @@ fn named_redis_request(container_name: &str) -> testcontainers::ContainerRequest
         .with_label(TEST_RUN_LABEL, current_test_run_id())
         .with_reuse(ReuseDirective::Always)
         .with_tag(REDIS_VERSION)
-        .with_cmd([
-            // --- Disable persistence (ephemeral test data) ---
-            "--save",
-            "",
-            "--appendonly",
-            "no",
-            // --- Capacity ---
-            "--maxclients",
-            "10000",
-            "--maxmemory",
-            "512mb",
-            "--maxmemory-policy",
-            "noeviction",
-            // --- Threading ---
-            "--io-threads",
-            "4",
-            "--io-threads-do-reads",
-            "yes",
-        ])
+        .with_cmd(redis_ephemeral_tuning_args())
+        // The Redis 8 image no longer emits the legacy "Ready to accept
+        // connections" stdout line that testcontainers-modules waits for.
+        // We intentionally skip image-level log readiness and rely on the
+        // explicit TCP + PING readiness probes in resolve_host_port /
+        // wait_for_redis_ready instead.
+        .with_ready_conditions(Vec::<WaitFor>::new())
+        .with_ulimit("nofile", 200_000, Some(200_000))
 }
 
 fn redis_connection_url(host: &str, port: u16) -> String {
@@ -922,7 +949,7 @@ mod tests {
             redis_active_parallelism_from(None),
             DEFAULT_REDIS_ACTIVE_PARALLELISM
         );
-        assert_eq!(DEFAULT_REDIS_ACTIVE_PARALLELISM, 8);
+        assert_eq!(DEFAULT_REDIS_ACTIVE_PARALLELISM, 32);
     }
 
     #[test]
@@ -956,6 +983,57 @@ mod tests {
         let url = redis_connection_url("::1", 6379);
 
         assert_eq!(url, "redis://[::1]:6379");
+    }
+
+    #[test]
+    fn named_redis_request_uses_high_concurrency_ephemeral_tuning() {
+        let request = named_redis_request("synctv-redis-test");
+        let cmd: Vec<_> = request.cmd().map(|value| value.into_owned()).collect();
+
+        assert!(
+            cmd.windows(2).any(|pair| pair == ["--appendonly", "no"]),
+            "test redis should disable AOF persistence: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["--stop-writes-on-bgsave-error", "no"]),
+            "test redis should not fail closed on snapshot persistence errors when persistence is disabled: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2).any(|pair| pair == ["--maxclients", "100000"]),
+            "test redis should expose a very high client limit for nextest-scale concurrency: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2).any(|pair| pair == ["--io-threads", "8"]),
+            "test redis should enable additional IO threads for high concurrency: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["--slowlog-log-slower-than", "-1"]),
+            "test redis should disable slowlog collection overhead: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["--latency-monitor-threshold", "0"]),
+            "test redis should disable latency monitor overhead: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair == ["--activerehashing", "no"]),
+            "test redis should disable active rehashing overhead for ephemeral workloads: {cmd:?}"
+        );
+        assert!(
+            cmd.windows(2).any(|pair| pair == ["--activedefrag", "no"]),
+            "test redis should disable active defragmentation overhead for ephemeral workloads: {cmd:?}"
+        );
+        assert!(
+            format!("{request:?}").contains("nofile"),
+            "test redis should raise the container nofile ulimit for high maxclients settings"
+        );
+        assert!(
+            request.ready_conditions().is_empty(),
+            "test redis should bypass stale image-level log readiness and use explicit ping readiness"
+        );
     }
 
     #[test]

@@ -133,3 +133,45 @@ fn test_amf0_object_roundtrip() {
     let result = roundtrip(&original);
     assert_eq!(result, original);
 }
+
+#[test]
+fn test_amf0_strict_array_read_support() {
+    let data: [u8; 23] = [
+        0x0a,
+        0x00,
+        0x00,
+        0x00,
+        0x03,
+        0x00,
+        0x40,
+        0x45,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x02,
+        0x00,
+        0x05,
+        0x68,
+        0x65,
+        0x6c,
+        0x6c,
+        0x6f,
+        0x05,
+    ];
+
+    let reader = BytesReader::new(bytes::BytesMut::from(&data[..]));
+    let mut amf_reader = Amf0Reader::new(reader);
+
+    let result = amf_reader.read_any().unwrap();
+    assert_eq!(
+        result,
+        Amf0ValueType::StrictArray(vec![
+            Amf0ValueType::Number(42.0),
+            Amf0ValueType::UTF8String("hello".to_string()),
+            Amf0ValueType::Null,
+        ])
+    );
+}

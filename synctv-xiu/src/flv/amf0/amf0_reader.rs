@@ -77,6 +77,7 @@ impl Amf0Reader {
             amf0_markers::OBJECT => self.read_object(),
             amf0_markers::NULL => self.read_null(),
             amf0_markers::ECMA_ARRAY => self.read_ecma_array(),
+            amf0_markers::STRICT_ARRAY => self.read_strict_array(),
             amf0_markers::LONG_STRING => self.read_long_string(),
             _ => Err(Amf0ReadError {
                 value: Amf0ReadErrorValue::UnknownMarker { marker: markers },
@@ -220,6 +221,33 @@ impl Amf0Reader {
         }
 
         Ok(Amf0ValueType::Object(properties))
+    }
+
+    pub fn read_strict_array(&mut self) -> Result<Amf0ValueType, Amf0ReadError> {
+        self.enter_nested()?;
+        let result = self.read_strict_array_inner();
+        self.exit_nested();
+        result
+    }
+
+    fn read_strict_array_inner(&mut self) -> Result<Amf0ValueType, Amf0ReadError> {
+        let len = self.reader.read_u32::<BigEndian>()? as usize;
+
+        if len > MAX_KEYS {
+            return Err(Amf0ReadError {
+                value: Amf0ReadErrorValue::KeyLimitExceeded {
+                    count: len,
+                    max: MAX_KEYS,
+                },
+            });
+        }
+
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..len {
+            values.push(self.read_any()?);
+        }
+
+        Ok(Amf0ValueType::StrictArray(values))
     }
 
     /// Maximum length for AMF0 long strings (16 MB)

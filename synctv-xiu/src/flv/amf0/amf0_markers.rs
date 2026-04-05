@@ -5,4 +5,5 @@ pub const OBJECT: u8 = 0x03;
 pub const NULL: u8 = 0x05;
 pub const ECMA_ARRAY: u8 = 0x08;
 pub const OBJECT_END: u8 = 0x09;
+pub const STRICT_ARRAY: u8 = 0x0a;
 pub const LONG_STRING: u8 = 0x0c;
